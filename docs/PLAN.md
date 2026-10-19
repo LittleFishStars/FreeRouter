@@ -4,16 +4,17 @@
 > [iJetLi/dsh-providers-hub](https://github.com/iJetLi/dsh-providers-hub) 的订阅额度池。
 >
 > **已定决策**：Go + chi · 独立服务 · 公网暴露 + 完整鉴权 ·
-> **不做智能应用 / 团队 / 远程**
+> **账号制**（注册需审核 / 管理员导入账密）· **不做智能应用 / 团队 / 远程**
 >
-> 状态：待你过目，未开工。v1 的多租户与三层路由已被第 1 章推翻。
+> 状态：待你过目，未开工。v2「不做组织层」的判断已被 v3 的账号制取代（见 1.2）。
 
 ---
 
 ## 0. 定位
 
-FreeRouter 是一个**纯中转站**：把 dsh-providers-hub 已有的订阅额度池 + 本机 OpenAI 网关，
-变成一个有入站协议、有访问控制、有日志的对外出口。
+FreeRouter 是一个**面向多用户的账号制中转站**：把 dsh-providers-hub 已有的订阅额度池 +
+本机 OpenAI 网关，变成一个有入站协议、有访问控制、有日志的对外出口。
+账号由注册（需管理员审核）或管理员导入账密产生，每个账号持有自己的 API Key。
 
 **只做三件事**：协议转换、访问控制、可观测。
 **不做**：客户端接入管理、团队协作、聊天机器人。
@@ -29,27 +30,43 @@ FreeRouter 是一个**纯中转站**：把 dsh-providers-hub 已有的订阅额�
 | 模块 | 它实际是什么（证据） | 我们的处置 |
 |---|---|---|
 | **智能应用** | 中文 UI 里 Agent 模块的标题（`frontend/src/i18n/locales/zh/agent.ts` 的 `"title": "智能应用"`）。它是**面向 agent 客户端的接入向导 + 逐客户端监控台**：把 Claude Code / Codex / OpenCode 逐个登记，显示「已接入」「最近请求」「错误率」「用量」「日志」，带"开始使用这个 Profile / 连接 AI"引导 | **不做**。我们的观测维度是 **API Key**，不是"已接入的客户端"。谁在用不重要，用了多少才重要 |
-| **团队** | README `Team - Shared Model Deployment`：共享端点 + 集中管控模型规则 + *"Each member gets a dedicated Team Key, and usage is tracked per user"* + `Dashboard → Team usage` 面板 | **不做组织层**。见 1.2 的关键区分 |
+| **团队** | README `Team - Shared Model Deployment`：共享端点 + 集中管控模型规则 + *"Each member gets a dedicated Team Key, and usage is tracked per user"* + `Dashboard → Team usage` 面板 | **不做**。用扁平的账号制替代它，见 1.2 |
 | **远程** | `remote.ts`：IM Bot 配置（TG / 微信 / 企业微信 / 飞书 / Lark / 钉钉），字段含 `bashAllowlist`（允许 `/bash` 执行 `cd/ls/pwd`）、`chatIdLock`、`proxyUrl` | **不做**，整个模块从路线图删除。v1 曾把它列在 P2，现在连 P2 都不留 |
 
-### 1.2 关键区分：不做「团队」≠ 不做多 Key
+### 1.2 「团队」不做，但要做账号制
 
-这两件事很容易混，必须说清，否则会误删公网自保的必需件：
+v2 曾把用户管理整体砍掉（"只有一堆 Key，没有人的概念"）。v3 修正：**要账号，不要团队**。
+两者不是一回事：
 
-| | 不做（组织层） | 保留（技术层） |
+| | 不做：团队（Tingly Box 的 Team） | 做：账号制 |
 |---|---|---|
-| 概念 | 成员、邀请、共享端点、团队归属 | 就是一堆 API Key |
-| 视图 | 按成员汇总用量、Team usage 面板 | 按 Key 粒度看用量，不聚合到"人" |
-| Key | Team Key（语义上属于某成员） | 普通 Key，每个带自己的额度 / 限速 / 模型白名单 |
+| 组织形态 | 一个团队共享一个端点，成员归属团队 | 每个用户独立账号，互不相干 |
+| 准入 | 成员由团队创建 / 邀请 | **注册 + 管理员审核**，或管理员直接导入账密 |
+| 归属 | Team Key 属于某成员，用量汇总到团队 | API Key 属于某账号，但账号之间无归属关系 |
+| 视角 | Team usage 面板（团队维度汇总） | 「我的用量」只看自己；管理员看全部 |
+| 端点 | 每团队一个共享端点 | 全站一个端点，按 Key 区分 |
 
-**理由**：公网暴露时，「每个 Key 有独立上限」是防止被人白嫖你账号额度的唯一手段（见第 6 章）。
-去掉这个等于去掉安全带。去掉的只是**组织语义**——没有成员、没有团队视角的汇总。
+差别在于**没有"团队"这个中间层**：账号是扁平的、彼此独立的，不存在 A 属于 B，
+也没有共享端点、邀请、团队级汇总。管理员看到的是一张账号列表，不是一棵组织树。
+
+**权限模型**（两类角色，视图完全不同）：
+
+| 能力 | 管理员 `admin` | 用户 `user` |
+|---|---|---|
+| 账号 | 审核 / 批准 / 拒绝 / 禁用 / 导入 / 重置密码 / 改配额 | 改自己的密码 |
+| 模型 | 全量可见，定义权限组 | 只见到被授权的组 |
+| Key | 全站可查可禁 | 只管自己的（受账号上限约束） |
+| 日志 | 全站 | 只看自己的 |
+| 上游 | 配置 / 健康 / 密钥 | 不可见 |
+
+**默认最小权限**：审核通过时必须挂一个**权限组**（管理员预先定义，如"基础组 =
+aggregate 推荐模型 + deepseek-official"）。新账号不继承任何模型权限。
 
 ### 1.3 顺带砍掉的复杂度
 
 | 砍掉 | v1 的设计 | 现在 |
 |---|---|---|
-| 多租户 | `tenants` 表、租户归属、分账 | 删表。Key 直接挂全局 |
+| 团队 / 租户 | `tenants` 表、成员归属、团队级汇总 | 删表。改为扁平的 `accounts`（个人账号）：无上级归属、无邀请、无团队汇总 |
 | 三层路由 | `model_aliases` + `routes` + `route_targets` | 见 1.4 |
 | 计费 | `cost` 字段（金额） | 删。订阅额度没有单价，算不出真钱。只记 token 消耗量 |
 
@@ -251,14 +268,17 @@ FreeRouter/
 
 ### MVP
 
+- [ ] 账号制：注册（`pending`）→ 管理员批准 / 拒绝 → 登录；管理员直接导入账密（单个 / 批量 CSV）
+- [ ] 角色与权限组：`admin` / `user`，审核时分配模型权限组
+- [ ] 会话：HttpOnly session、登录限速、登出、自助改密、管理员重置
 - [ ] 入站 `POST /v1/chat/completions`（流式 + 非流式 + tool_calls + 图片）
 - [ ] 入站 `POST /v1/messages`（Anthropic，含 `tool_use` / `thinking` / SSE 事件名对齐）
 - [ ] 入站 `GET /v1/models`（按 Key 可见性过滤）
 - [ ] 上游 `dshgateway`：key 自举、目录发现与缓存、连接池、重试、离线降级
 - [ ] 模型管理：分组 / 置顶 / 改名 / 隐藏（116 个直铺是灾难）
-- [ ] 多 Key：创建 / 禁用 / 过期 / 额度 / RPM·TPM / 模型白名单（**无组织层**）
+- [ ] API Key：归属账号，可创建 / 禁用 / 过期 / 额度 / RPM·TPM / 模型白名单；数量与额度受账号上限约束
 - [ ] 请求日志：端点、模型、实际上游、状态、TTFT、总耗时、token、错误码
-- [ ] 控制台六页：Overview / Keys / Upstreams / Models / Logs / Playground
+- [ ] 控制台：公共页（登录 / 注册 / 待审核）+ 管理员八页（Overview / 账号审核 / Keys / Upstreams / Models / Logs / Playground / 设置）+ 用户四页（我的用量 / 我的 Key / 我的日志 / Playground）
 - [ ] 安全基线（第 6 章全部，公网形态不可裁剪）
 - [ ] 部署：Docker Compose + Caddy 模板 + systemd unit
 
@@ -269,6 +289,8 @@ FreeRouter/
 - [ ] 上游健康：主动探活、失败冷却、半开恢复
 - [ ] 管理面 TOTP
 - [ ] 上下文压缩，可开关
+- [ ] 账号体验：邮箱验证与找回密码（需 SMTP）、注册开关 / 邀请码、审核结果通知
+- [ ] 账号配额与权限组的自助申请（用户提交，管理员批准）
 
 ### P2
 
@@ -288,7 +310,7 @@ FreeRouter/
 **上游额度是你自己的账号。** 谁拿到 Key 谁就白嫖你的额度，账记在你头上。原则：
 **默认拒绝、显式授权、额度护栏先行**。
 
-1. 新建 Key **默认额度 0、模型白名单为空**，必须管理员显式配置才能用。
+1. **账号默认不激活**（注册即 `pending`），激活时必须挂权限组；新建 Key **默认额度 0、模型白名单为空**——一律显式授权。
 2. 每个 Key 强制日 / 月 token 上限与并发上限，可设全局默认兜底。
 3. 全局预算熔断：全站当日超标自动拒绝并告警。
 4. 异常用量检测：单 Key 单位时间用量突增 → 告警（可选自动暂停）。
@@ -304,12 +326,31 @@ FreeRouter/
 | CORS | 默认关闭（同源）；跨域需显式白名单，**禁止 `*` + 凭据** |
 | 请求体 | 入站默认 32 MiB → 超限 413，提前于上游的 300 MiB 拒绝 |
 
-### 6.3 管理面
+### 6.3 账号、注册与管理面
 
-- `/admin` 与 API 面路径分离，独立鉴权：argon2id + HttpOnly/Secure/SameSite=Strict session。
-- **首次启动强制设置管理员密码**（未设置时只监听 `127.0.0.1`，设置后才开公网）。
-- 登录防爆破：失败计数 + 指数退避 + 锁定，失败记录含 IP / UA 进审计。
-- 可选 IP 允许列表。P1 加 TOTP。
+**初始化向导**：首次启动若库中无任何账号，只监听 `127.0.0.1` 并引导创建管理员账号
+（无默认密码）；管理员创建完成前不开公网。
+
+**注册**（`POST /register`）：
+- 全局开关，默认**开启但需审核**；可选邀请码（P1）。
+- 注册即 `pending`，**未审核不能登录**（登录返回"账号待管理员审核"）。
+- 按 IP 限速；用户名 / 邮箱做**防枚举**：响应时间恒定，错误信息不区分"已存在 / 不存在"。
+- 密码策略 ≥12 字符，argon2id 存储。
+
+**审核**：管理端审核队列 → 批准（选权限组 + 配额，账号转 `active`）/ 拒绝（可填理由）。
+
+**管理员导入账密**：单个添加，或批量粘贴 / CSV（每行 `用户名,密码[,权限组][,日额度]`）。
+导入即 `active`，跳过审核；密码留空则生成随机密码，仅在结果里一次性展示。
+导入动作（谁、何时、几个）全部进审计。
+
+**会话**：HttpOnly + Secure + SameSite=Strict，登录时轮换 session id，默认 12 小时过期；
+**改密或禁用会吊销该账号全部会话**。
+
+**禁用联动**：账号转 `disabled` → 名下所有 API Key 立即 401（鉴权层实时查账号状态，
+不依赖可能有延迟的缓存）。
+
+**登录防爆破**：失败计数 + 指数退避 + 锁定，失败记录含 IP / UA 进审计。
+可选 IP 允许列表（仅管理端）。P1 加 TOTP。
 
 ### 6.4 密钥
 
@@ -338,7 +379,11 @@ SQLite（WAL），编号 SQL 迁移，启动时自动执行。
 
 | 表 | 关键字段 | 说明 |
 |---|---|---|
-| `api_keys` | id, key_hash, prefix, name, status, expires_at, quota_limit, quota_used, rpm_limit, tpm_limit, daily_token_cap, max_concurrency | **无 tenant_id**；只存 hash |
+| `accounts` | id, username, email, password_hash, role, status, perm_group_id, quota_daily_tokens, quota_monthly_tokens, key_limit, created_at, approved_at, approved_by, last_login_at, note | status: `pending` / `active` / `disabled` / `rejected`；role: `admin` / `user`；**无上级归属** |
+| `sessions` | id, account_id, token_hash, created_at, expires_at, ip, ua | 改密 / 禁用即吊销 |
+| `perm_groups` | id, name, description, created_at | 权限组：一组模型的命名封装，审核时挂给账号 |
+| `perm_group_models` | group_id, model_id | 组 ↔ 模型 |
+| `api_keys` | id, account_id, key_hash, prefix, name, status, expires_at, quota_limit, quota_used, rpm_limit, tpm_limit, daily_token_cap, max_concurrency | **必须归属账号**；只存 hash |
 | `upstreams` | id, kind, name, base_url, secret_id, enabled, last_seen_at | kind: `dshgateway` / `openaicompat` |
 | `upstream_secrets` | id, upstream_id, ciphertext, nonce | AES-GCM，主密钥不入库 |
 | `models` | id, upstream_id, upstream_model_id, display_name, group_name, context_window, modalities, efforts, enabled, hidden, sort_order, source | source: `auto` / `override` |
@@ -348,7 +393,8 @@ SQLite（WAL），编号 SQL 迁移，启动时自动执行。
 | `audit_log` | id, ts, actor, action, target, ip, ua, result, detail | append-only |
 | `settings` | key, value | 全局配置 |
 
-对比 v1 删除的表：`tenants`、`model_aliases`、`routes`、`route_targets`（四张）。
+对比 v1：`model_aliases`、`routes`、`route_targets` 三张删除；
+`tenants` 不复活——代之以扁平的 `accounts`，没有归属关系。
 
 ---
 
@@ -371,12 +417,13 @@ SQLite（WAL），编号 SQL 迁移，启动时自动执行。
 
 ### 8.3 116 个模型怎么摆
 
-直铺等于把渠道构成全暴露给每个 Key 持有者。规则：
+直铺等于把渠道构成全暴露给每个用户。可见性**两层收敛**：
+**账号权限组（管理员分配）∩ Key 白名单（用户自己收窄）= 实际可用模型**
 
-- 默认**只对管理员可见**；新 Key 的 `model_allow` 为空 → 一个也调不了（见 6.1）。
+- 新账号默认**无任何模型权限**，审核时必须挂权限组（见 6.3）。
 - 分组：`aggregate/*` 归「推荐」，其余按渠道前缀分组。
 - 置顶：管理员标记常用项；隐藏：`hidden=1` 但保留（不删，便于恢复）。
-- 对外的 `/v1/models` 只返回该 Key 白名单内的项。
+- 对外的 `/v1/models` 只返回"该 Key 实际可用"的项。
 
 ### 8.4 打标与对账
 
@@ -396,15 +443,16 @@ providers-hub 升级后先跑契约测试，红了再适配。
 | 阶段 | 内容 | 产出 | 估时 |
 |---|---|---|---|
 | M0 | 骨架：go.mod、chi 起服务、SQLite 迁移、配置、`/healthz` | `go run ./cmd/freerouter` 能起 | 0.5 天 |
-| M1 | OpenAI Chat 入站 + dshgateway 上游（连接池/重试）+ 单 Key 鉴权 + SSE | Cherry Studio 跑通一轮对话 | 1 天 |
+| M1 | OpenAI Chat 入站 + dshgateway 上游（连接池 / 重试）+ 单 Key 鉴权 + SSE | Cherry Studio 跑通一轮对话 | 1 天 |
 | M2 | Anthropic Messages 入站（含 tool_use / thinking） | Claude Code 接得进来 | 1 天 |
-| M3 | 多 Key + 三维限速 + 额度护栏 + 请求日志 | 可对外发 Key | 1 天 |
-| M4 | 公网安全基线（TLS / 管理面鉴权 / 审计 / 安全头）+ 部署产物 | 可安全暴露公网 | 1 天 |
-| M5 | 控制台六页 + 模型分组管理 | 可运维 | 1.5 天 |
-| M6 | 健康探测 + 契约测试 + 压测 | 可长期跑 | 1 天 |
+| M3 | **账号制**：初始化向导、注册→审核、管理员导入、登录会话、角色与权限组 | 能把账号发给人用 | 1.5 天 |
+| M4 | API Key（归属账号）+ 三维限速 + 额度护栏 + 请求日志 | 用户可自助取 Key | 1 天 |
+| M5 | 公网安全基线（TLS / 禁用联动 / 审计 / 安全头）+ 部署产物 | 可安全暴露公网 | 1 天 |
+| M6 | 控制台：管理员八页 + 用户四页 | 可运维 | 2 天 |
+| M7 | 健康探测 + 契约测试 + 压测 | 可长期跑 | 1 天 |
 
-约 7 天。M1 结束即有实用价值，M2 结束覆盖两大主流客户端。
-**M4 不可跳过**——公网形态下没有安全基线等于把账号送出去。
+约 9 天。M1 结束即有实用价值；**M3 结束就能把账号发给别人用**。
+**M5 不可跳过**——公网形态下没有安全基线等于把账号送出去。
 
 ---
 
@@ -412,7 +460,7 @@ providers-hub 升级后先跑契约测试，红了再适配。
 
 | 风险 | 影响 | 对策 |
 |---|---|---|
-| **公网泄露 Key → 白嫖本人账号额度** | 额度损失 + 账号风险 | 默认额度 0；日/月上限 + 并发上限；全局熔断；异常告警；一键吊销 |
+| **公网泄露 Key / 账号被盗 → 白嫖本人账号额度** | 额度损失 + 账号风险 | 账号默认待审核；Key 默认额度 0；日/月上限 + 并发上限；全局熔断；异常告警；一键禁用账号（联动吊销全部 Key 与会话） |
 | 上游偶发连接失败（实测 `http=000`） | 请求随机失败 | 连接池 + 幂等重试 + 健康探测；失败计入 `requests` 便于观察频率 |
 | providers-hub 升级接口漂移 | 上游断 | 只依赖 4 个 HTTP 端点 + 契约测试锁字段 |
 | 上游拒绝通配 / 只绑回环 | 跨机不可用 | 唯一出口原则：上游永走 `127.0.0.1` |
@@ -424,6 +472,8 @@ providers-hub 升级后先跑契约测试，红了再适配。
 | 单点进程 | 服务中断 | systemd `Restart=always` + 优雅关闭 drain；P2 多节点 |
 | 116 模型对每个 Key 全暴露 | 渠道构成泄露 + 误调用 | 默认全隐藏，按 Key 白名单放行（8.3） |
 | 借额度自用的合规边界 | 账号风控 | README 写明「仅限本人已登录账号、自用」；不内置任何绕过、代理池、指纹伪装 |
+| 开放注册被刷号 | 垃圾账号、额度被薅 | 默认需审核（不自动激活）+ 注册限速；可选邀请码（P1） |
+| 审核积压无人处理 | 用户等不到批准 | 管理端审核队列置顶 + 待办计数；可选通知（P1） |
 
 ---
 
@@ -439,9 +489,14 @@ providers-hub 升级后先跑契约测试，红了再适配。
 8. 公网无 HTTPS 时被拒；伪造 `X-Forwarded-For` 不能绕过 IP 限速。
 9. `docker compose up -d` 后宿主 443 等价于第 1 条。
 10. `govulncheck ./...` 无高危；容器非 root 运行。
+11. **注册**：新账号 `pending` 时登录被拒且提示待审核；管理员批准并选权限组后可登录。
+12. **导入**：粘贴 3 行 `用户名,密码` → 3 个账号立即可登录，审计里能看到这次导入。
+13. **禁用联动**：账号置 `disabled` → 名下所有 Key **立刻** 401，不等缓存过期。
+14. **权限组**：账号未获批模型组时 `/v1/models` 为空、调用返回 403。
+15. **防枚举**：注册"已存在的用户名"与"全新用户名"，响应时间与文案无差异。
 
-**反面验收（确认没做多）**：控制台没有"成员 / 团队 / 共享端点"入口，
-没有"已接入客户端"引导，没有任何 IM Bot 配置项。
+**反面验收（确认没做多）**：控制台没有"团队 / 共享端点 / 邀请成员"入口，
+账号之间没有任何归属关系；没有"已接入客户端"引导；没有任何 IM Bot 配置项。
 
 ---
 
