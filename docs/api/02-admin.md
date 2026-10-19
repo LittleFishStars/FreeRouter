@@ -352,8 +352,8 @@ GET /api/admin/abstract-models/am_fast/chain
 ```json
 {
   "data": {
-    "chain": ["fast", "balanced", "smart"],
-    "hops": 2, "final_active": "smart", "warning": "迁移链过长，建议收敛",
+    "chain": ["<抽象模型名 A>", "<抽象模型名 B>", "<抽象模型名 C>"],
+    "hops": 2, "final_active": "<抽象模型名 C>", "warning": "迁移链过长，建议收敛",
     "capability_check": {"ok": true, "checks": {"context_window": true, "max_output": true, "tool_calling": true, "vision": true}}
   }
 }
@@ -449,7 +449,7 @@ GET /api/admin/abstract-models/am_fast/chain
 | `global_budget_cap` | 配错导致全站拒绝 |
 | `trusted_proxies` | 配错会让 IP 限速失效或误封 |
 | `record_request_body` | 直接把用户内容纳入存储 |
-| `admin_ip_allowlist` | 配错会把管理员锁在外面 |
+| ~~`admin_ip_allowlist`~~ | **不提供**（2026-10-19 定案）。公网下管理员 IP 会变，白名单是唯一能把自己锁在门外的配置 |
 
 **为什么 `ip-check` 是一个独立端点**：它是唯一一个能让管理员 自锁的配置。[../ui/03-admin.md](../ui/03-admin.md) 第 11 节要求 保存前用当前源 IP 自检，独立端点让这个自检与保存解耦， 前端可以先自检再提交。
 

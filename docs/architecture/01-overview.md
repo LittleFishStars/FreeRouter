@@ -83,7 +83,7 @@ IR、上游、sidecar、存储、运行时的细节分别在 [02-ir.md](02-ir.md
 
 ```
 1. 恢复 / 请求 ID 注入      （最早，保证 panic 也能带 ID）
-2. 安全头 + 强制 HTTPS      （拒绝明文，见 ../ops/01-security.md）
+2. 安全头 + 可选 TLS       （TLS 默认关闭；非回环监听未启用时告警，见 ../ops/01-security.md）
 3. 可信代理判定 → 真实 IP   （只有在 TRUSTED_PROXIES 命中时才信 XFF）
 4. 请求体上限                （32 MiB，超限 413，早于读 body）
 5. 鉴权                      （API Key → account + acting_class + key_id）

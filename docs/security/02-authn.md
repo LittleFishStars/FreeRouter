@@ -139,7 +139,7 @@ session {
 |---|---|---|
 | 存储 | 只存 `token_hash` | 库被拖走时会话不能直接复用；与 API Key 只存哈希同一原则（PLAN 9.4） |
 | Cookie | `HttpOnly` | PLAN 8 明定；挡 XSS 直接把会话读走 |
-| Cookie | `Secure` | 传输层强制 HTTPS（PLAN 9.2），不加 `Secure` 等于给降级留口 |
+| Cookie | `Secure` | **仅在启用 TLS 时加**（PLAN 9.2 定案：默认直连 IP + 端口，TLS 可选）。未启用 TLS 时**不加**——浏览器不会通过 HTTP 回传带 `Secure` 的 Cookie，无条件加等于登录直接不可用；这种形态下的风险由“非回环监听 + 无 TLS”的启动告警提示，而不是靠一个会把服务弄坏的属性 |
 | Cookie | `SameSite` 取值见待定 | 与 CORS 默认关闭（PLAN 9.2）配套，防止跨站请求携带会话 |
 | 绑定 | 记录 `ip` / `ua` 仅**留痕**，不做强绑定 | 移动网络下 IP 常变，强绑定会频繁踢人；留痕用于审计与异常告警 |
 | 提权状态 | `elevated_until` | 类级提权的落地字段，见第 6 节 |

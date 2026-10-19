@@ -88,7 +88,8 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 | `request_too_large` | 413 | `invalid_request_error` | 请求体超过入站上限（默认 32 MiB） | 不重试，缩减请求 |
 | `model_not_found` | 404 | `not_found_error` | 抽象模型不存在 / 请求的是真实模型名 / 对当前 Key 不可见 | 不重试；先 `GET /v1/models` 对照 |
 | `model_retired` | 410 | `not_found_error` | 模型 `Sunset` 到期后已 `disabled` | 不重试；按迁移文档换名 |
-| `quota_exceeded` | 429 | `rate_limit_error` | 日 / 月 token 上限或全局预算熔断 | 按 `Retry-After`（若有）等待，或等额度重置 |
+| `quota_exceeded` | 429 | `rate_limit_error` | 个人日 / 月 token 上限，或全局预算熔断 | 按 `Retry-After`（若有）等待，或等额度重置 |
+| `pool_exhausted` | 429 | `rate_limit_error` | **所属组的共享额度池**已耗尽 | 管理员调池或等重置；改 Key / 换参数均无效 |
 | `rate_limited` | 429 | `rate_limit_error` | 超出 RPM / TPM / 并发上限 | **必须**按 `Retry-After` 退避重试 |
 | `upstream_unavailable` | 502 | `service_unavailable_error` | 上游网关不可达（如 DSH 未运行） | 可重试；退避 |
 | `upstream_timeout` | 504 | `service_unavailable_error` | 上游未在超时内响应 | 可重试；退避 |
@@ -147,7 +148,7 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 | 410 | 曾经存在，现已不可用 | `model_retired` |
 | 413 | 请求体过大 | `request_too_large` |
 | 415 | `Content-Type` 不支持 | `invalid_request` |
-| 429 | 速率或额度受限 | `rate_limited`、`quota_exceeded`、`too_many_attempts` |
+| 429 | 速率或额度受限 | `rate_limited`、`quota_exceeded`、`pool_exhausted`、`too_many_attempts` |
 | 500 | 服务端未预期故障 | `internal_error` |
 | 502 | 上游不可用或返回了坏响应 | `upstream_unavailable`、`upstream_error` |
 | 503 | 服务侧暂时无资源 | `no_candidate` |
@@ -188,6 +189,7 @@ Retry-After: 30
 |---|---|---|
 | `rate_limited` | **必有**，整数秒 | 验收第 4 条要求"429 + 有值 Retry-After" |
 | `quota_exceeded`（日 / 月上限） | 有值，指向额度重置时刻；无法计算时省略 | 额度重置时刻是可计算的 |
+| `pool_exhausted` | 有值，指向**池**的重置时刻（`period_anchor` + 1 日 / 1 月） | 与个人额度不同但同样可计算 |
 | `quota_exceeded`（全局预算熔断） | 省略 | 熔断解除依赖人工，给一个数字是误导 |
 | `no_candidate` | 可选 | 候选恢复时间不可预测 |
 | `upstream_unavailable` / `upstream_timeout` | 可选 | 上游恢复时间不可预测 |
@@ -276,6 +278,7 @@ data: [DONE]
 | 分类 | 码 | 客户端做法 |
 |---|---|---|
 | 可重试（带退避） | `rate_limited`、`quota_exceeded`、`no_candidate`、`upstream_*`、`internal_error` | 指数退避；有 `Retry-After` 时以它为准 |
+| 不可重试（等重置） | `pool_exhausted` | 重试、换 Key、改参数均无效 |
 | 不可重试 | `invalid_api_key`、`invalid_request`、`capability_unsupported`、`request_too_large`、`model_not_found`、`model_retired` | 修改请求或配置后重新发起 |
 | 需人工介入 | `elevation_required`、`forbidden` | 去提权 / 申请权限类 |
 

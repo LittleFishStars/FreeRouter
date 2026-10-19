@@ -144,6 +144,18 @@ CREATE TABLE group_policies (
     policy_value TEXT    NOT NULL,       -- JSON
     PRIMARY KEY (group_id, policy_key)
 ) WITHOUT ROWID;
+
+-- 组级共享池：有状态的消耗计数，**不进** group_policies（原因见下文）
+CREATE TABLE group_quota_pools (
+    group_id      INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    dimension     TEXT    NOT NULL CHECK (dimension IN ('requests', 'tokens')),
+    period        TEXT    NOT NULL CHECK (period IN ('day', 'month')),
+    pool_limit    INTEGER NOT NULL CHECK (pool_limit > 0),
+    pool_used     INTEGER NOT NULL DEFAULT 0 CHECK (pool_used >= 0),
+    period_anchor TEXT    NOT NULL,              -- 'YYYY-MM-DD'：pool_used 属于哪个周期的起点
+    updated_at    INTEGER NOT NULL,
+    PRIMARY KEY (group_id, dimension, period)
+) WITHOUT ROWID;
 ```
 
 **为什么 `ux_groups_default` 是部分唯一索引**：默认组**有且只有一个**（新账户的兜底授权）。
@@ -153,6 +165,38 @@ CREATE TABLE group_policies (
 （限速覆盖、额度覆盖、能力开关……）。每加一个策略就改表结构，会带来"每加一个功能一次迁移"，
 而迁移是线上操作中风险最高的一类。**代价**：值无法由 DB 约束校验形状，必须在应用层用
 schema 校验——这个代价我们接受，因为策略值本来就是 JSON 文档。
+
+**为什么共享池另开一表，而不是又往 `group_policies` 里塞一行 `{"dimension":…,"limit":…}`**：
+
+| 理由 | 说明 |
+|---|---|
+| 它是**状态**，不是**策略** | `group_policies` 存的是"管理员设了什么"，值是声明；`pool_used` 是"已经消耗了多少"，每次请求都变。两类数据写频差几个数量级，混在同一张表里会让"改策略"与"扣额度"争同一个行的写锁 |
+| 它需要**单条条件 UPDATE** | 扣减必须写成 `UPDATE … WHERE … AND pool_used + :cost <= pool_limit`（见 [第 7.4 节](#74-组级共享池的并发扣减与惰性重置)）。JSON 列里的数字无法在 `WHERE` 里参与计算与比较，只能先读出来再写回去——正是要避免的读-改-写 |
+| 主键形态不同 | 策略的主键是 `(group_id, policy_key)`；池的主键是 `(group_id, dimension, period)`，一个组可以同时有 `requests/day` 与 `tokens/day` 两行 |
+| 可索引、可审计 | `pool_used` 是要拿来排序与告警的（"哪些组快满了"），JSON 值不可索引 |
+
+**为什么"没设"与"设为 0"在类型层面就已经互斥**：`pool_limit` 是 `NOT NULL CHECK (pool_limit > 0)`，
+因此"有行"必然是一个严格正的上限，`0` 无法写入。为什么不允许 `0`：`0` 唯一可能的意图是"全停本组"，
+而"全停"有更明确的表达——把组授权里的抽象模型全部取消（那才是"这个组不能用"的正解），
+或在应急时把上限调到低于已用量（关闸，见本节末尾）。让 `0` 不可写，就把"到底是没配还是配了 0"这个问题
+从运行期挪到了写入期。
+
+**为什么"不设池"用"没有这一行"表达，而不是把 `pool_limit` 设为可空**：
+SQL 里 `NULL` 参与比较的结果是 `UNKNOWN`（既不真也不假），而条件 `UPDATE` 的 `WHERE` 只接受"真"。
+于是"有行但 `pool_limit IS NULL`"会让 `pool_used + :cost <= NULL` 恒为 `UNKNOWN`，**每一次扣减都静默失败**——表现与"池子已耗尽"一模一样，
+管理员会把"我明明没设池"误当成"额度被用完了"去排查。用"无行 = 不设池"，
+"有行"就必然有一个正整数的上限，两种状态在表结构层面互斥，不需要任何额外判断。
+**停用池 = 删行**；**保留配置但停用**这个需求我们主动不做（见 [../security/03-groups.md](../security/03-groups.md) 第 4 节）。
+
+**为什么 `period_anchor` 与 `period` 要分两列**：`period` 说明"周期粒度"，`period_anchor` 说明
+"`pool_used` 这个数字属于哪一个具体周期"。只有粒度没有锚点，就无法判断跨日/跨月时该不该清零；
+从 `updated_at` 反推也不行——一个组可能连续几天没有任何请求，`updated_at` 会停在旧日期，
+反推出来的"周期"与实际不符。
+
+**不加 `CHECK (pool_used <= pool_limit)`**：管理员把上限**调小到低于已用量**是合法且必要的应急手段
+（等价于"立刻停止本周期消耗"），而这条 CHECK 会让该操作直接写入失败。
+上限是闸门，不是不变式：闸门可以被关到"已经过不去了"，这时的正确表现是**后续请求全被拒**，
+而不是**拒绝管理员关闸**。
 
 ### 3.4 抽象模型与目录
 
@@ -462,6 +506,7 @@ GROUP BY uc.id;
 | `ix_requests_key_ts` 等 | 用量查询、对账、排障 | 都带时间范围，故索引前导列是**实体 id + ts** |
 | `ix_usage_daily_*` | 日报表 | 主键是 `(day, …)`，按 day 查走主键；按 key 查需要额外索引 |
 | `ux_upstream_credentials_external` | 去重 | 硬约束，不是优化 |
+| `group_quota_pools` 的**隐式**主键索引 | 每次结算的原子扣减、组详情页的 "还剩多少" | 扣减的 `WHERE` 要命中 `(group_id, dimension, period)` 全列；没有额外索引，因为主键已经正好是这个形状 |
 
 **通用原则：时间序列类索引的末列是 `ts`，不是首列。** 因为所有真实查询都是
 "某个实体在某段时间内的记录"。反过来（`ts` 在前）会导致范围扫描在时间维度展开，
@@ -568,11 +613,12 @@ checkpoint。这是"长报表查询把 `-wal` 撑大"这类问题的根治手段
 | 操作 | 事务边界 | 为什么 |
 |---|---|---|
 | Key 校验 | 单条 `SELECT`，无显式事务 | 自动提交；且**必须实时查账户状态**（PLAN 9：账户转 `disabled` 后名下 Key 立即 401），不能靠缓存 |
-| 一次模型请求的落库 | 流结束后**一个**事务：`INSERT requests` + `usage_daily` upsert（+ 额度递增） | 三段必须原子：否则会出现"有请求记录但日汇总少一笔"，对账时无法解释 |
+| 一次模型请求的落库 | 流结束后**一个**事务：`INSERT requests` + `usage_daily` upsert（+ 额度递增 + 组池扣减） | 四段必须原子：否则会出现"有请求记录但日汇总少一笔"或"池子扣了但用量没记"，两种都对不上账 |
 | `usage_daily` 累加 | `INSERT … ON CONFLICT(day,key_id,abstract_model_id,real_model_id) DO UPDATE SET requests=requests+?` | 读-改-写会在并发下丢更新；upsert 由 DB 保证原子 |
 | `api_keys.quota_used` 递增 | `UPDATE api_keys SET quota_used = quota_used + ? WHERE id = ?` | 同上 |
 | 抽象模型/候选/组策略变更 | 单事务（含替代链成环校验） | 校验与写入必须同事务，否则并发下会出现"校验时没环、写下去有环" |
 | 账户合并 | 单事务（多个表） | 合并是多表改写的；中途失败留下半个身份是灾难 |
+| 组级共享池扣减 | **与请求落库同一个事务**，单条条件 `UPDATE`（见第 3.3 节与 [第 7.4 节](#74-组级共享池的并发扣减与惰性重置)） | 池扣减与用量必须同生同死；而条件 `UPDATE` 把"判定+递增"压进一条语句，避免并发超发 |
 | 审计追加 | 与它所属的业务写操作**同事务** | 审计与业务动作必须同时成立或不成立（"动作成功但没记审计"是不可接受的） |
 
 ### 7.3 转发热路径上不能做的事
@@ -586,6 +632,69 @@ checkpoint。这是"长报表查询把 `-wal` 撑大"这类问题的根治手段
 
 **请求落库的时机（终态由 `defer` 保证）**：正常结束、上游报错、客户端断开、超时、drain——
 **所有**路径都必须走到写库那一步。一个"客户端断开导致没记账"的漏洞，在计费产品里就是事故。
+
+### 7.4 组级共享池的并发扣减与惰性重置
+
+池是**全组共享、会被并发争用**的资源，它的正确写法只有一个：**判定与扣减是同一条带条件的 UPDATE**，
+以"受影响行数"为成败。
+
+```sql
+-- 扣减：0 行 = 额度不足（拒绝）；1 行 = 成功（放行）
+UPDATE group_quota_pools
+   SET pool_used = pool_used + :cost, updated_at = :now
+ WHERE group_id = :gid AND dimension = :dim AND period = :period
+   AND period_anchor = :current_anchor      -- 先由下面的重置语句保证锚点是当期
+   AND pool_used + :cost <= pool_limit;
+```
+
+**为什么不用"先 SELECT 判定、再 UPDATE 扣减"**：两步之间存在窗口，N 个并发请求会**都**读到
+`pool_used = N < limit`，然后各自扣减成功——池子被超发，且**超发的量随并发度线性增长**。
+更坑的是它在开发环境永远不出现（并发低），只在真实流量峰值时出现。
+条件 UPDATE 把"判定 + 递增"压进一个语句，由 SQLite 的写锁串行化，窗口从根上消失。
+这不是性能优化，而是**正确性要求**。
+
+**扣减本身不会超发，但周期总额可能超出 `pool_limit`**——这是"终态一次结算"的必然结果，必须分清这两件事：
+
+| 现象 | 是否可能 | 为什么 |
+|---|---|---|
+| 同一条 `UPDATE` 内的判定与递增之间超发 | **不可能** | 单写连接把写操作串行化，`WHERE` 与 `SET` 在同一语句里原子生效 |
+| 本周期 `pool_used` 最终超过 `pool_limit` | **可能**，上界 = 峰值并发 × 单请求消耗 | 在途请求不占额度（见 [../security/03-groups.md](../security/03-groups.md) 第 4 节"消耗时机"），它们都是先通过判定、后结算 |
+
+**为什么接受后者**：要消灭它只能预扣，而预扣必须为失败/取消设计返还；返还写错的方向是**多扣**
+（无故停掉全组），而超额的方向是**少扣**（池子比预期宽松一点）。两害相权，选少扣。
+同理，扣减写失败（进程崩溃）也表现为少扣——这与第 7.1 节所述"在途请求没有对账价值"是同一取舍。
+
+**为什么不设一个"超发容忍比例"参数**：添一个可配比例会让实现者以为读-改-写是可接受的近似，
+而它根本不是"近似"——在峰值并发下它会稳定地打穿池子。宁可把"超额的真实来源"（在途请求）写清楚。
+
+**重置：惰性重置（lazy reset），不用定时任务。** 扣减前先跑一条幂等的"跨周期归零"语句：
+
+```sql
+UPDATE group_quota_pools
+   SET pool_used = 0, period_anchor = :current_anchor, updated_at = :now
+ WHERE group_id = :gid AND dimension = :dim AND period = :period
+   AND period_anchor <> :current_anchor;
+```
+
+| 方案 | 取舍 |
+|---|---|
+| **惰性重置**（选定） | 归零发生在"下一次用到它"的瞬间，**幂等且与重启无关**；成本是每个活跃组每周期只多一条命中主键的 UPDATE（而且因为它自带 `WHERE period_anchor <> …`，非跨周期时受影响行数为 0） |
+| 定时任务 | 需要一个调度器与"任务没跑成怎么办"的补偿逻辑；漏跑的后果是**全组被凭空卡死一整个周期**（池子明明该归零却没归零），而这类故障发现得晚、影响面大 |
+| 读时判定（不落地归零） | 每次读都要判断"这是当期的数吗"，而 `pool_used` 是累加计数，无法用"读时加减"得到当期值 |
+
+**为什么惰性重置必须先于扣减、且两者写在同一个事务里**：分开写会出现"已跨周期但尚未归零"的窗口，
+此窗口内的请求会拿上期的 `pool_used` 去比本期的 `pool_limit`，结果要么误拒（上期用满了），
+要么误放（上期用得少）。放在同一事务里，外部观察不到这个中间态。
+
+**为什么重置与扣减不能合并成一条 `UPDATE`**：合并写法需要把 `CASE WHEN` 塞进 `SET`
+（`SET pool_used = CASE WHEN period_anchor <> :now_anchor THEN :cost ELSE pool_used + :cost END`），
+而 `WHERE` 里的额度比较就必须同时考虑两种情形（本期余量 vs 新周期满额），
+一条语句里两个分支**无法都写成可走主键的条件**。拆成两条语句，两条都只命中一行，总成本仍然是一次事务。
+
+**为什么不给池子建额外的"累计表"**：`pool_used` 是**闸门口的权威数字**，
+而 `usage_daily` 是**报表口径**。两者都从同一次结算写入，但前者可被管理员手工调小
+（应急关闸），后者不可。刻意保留这份"不一致"而不用事件溯源去协调它们——
+因为我们的需求是"闸门准"而不是"两个数字相等"（见 [第 9 节](#9-待定项) 的待定项）。
 
 ---
 
@@ -647,4 +756,21 @@ checkpoint。这是"长报表查询把 `-wal` 撑大"这类问题的根治手段
 
 > **待定**：`group_policies` 的 `policy_key` 是否需要一张"策略定义"元数据表来约束取值形状。
 > 当前靠应用层校验。
+
+> **待定**：`pool_used` 与 `usage_daily` 是否需要一次定期的对账任务（前者是闸门口径，后者是报表口径，
+> 两者因"管理员手工重置/调小上限"而**允许**不一致）。倾向**不做自动对账**，只做一条"偏差超过阈值就告警"的只读巡检——
+> 自动回写会把管理员的人工干预抹掉，反而掩盖真实操作。需与 [../ops/](../ops/) 的巡检项一起拍板。
+
+> **待定**：池的**并发上限**是否要随池一起配（当前池只管总量，瞬时并发由组级并发上限管，见
+> [../security/03-groups.md](../security/03-groups.md)）。若实测发现"总额度超发上界 = 峰值并发 × 单请求消耗"过大，
+> 可能需要给池加一个"在途预占计数"——但那会把预扣-返还的逻辑重新引进来（见第 7.4 节为何拒绝预扣）。
+
+> **待定**：组级共享池进入 MVP 后，`usage_daily` 是否还需要一张**按组聚合**的视图/表来回答
+> "这个组今天用了多少"。可行做法是现查（`usage_daily` 不带 `group_id`，需要 join `group_members`，
+> 且用户换组后历史会跟着新组算），或另建 `usage_daily_by_group`（多一份写放大，但口径稳定）。
+> 当前池子的权威数字是 `group_quota_pools.pool_used`，所以**报表口径**与**闸门口径**可以不一致，
+> 需要 lead 拍板以哪个为准。
+
+> **待定**：`group_quota_pools` 的惰性重置与 `usage_daily.day`（UTC）是否共用同一日界。
+> 当前设计是共用，但两者都是"用户看到的今天"与"系统判定的今天"不一致的来源。
 

@@ -298,7 +298,7 @@ curl -s -o /dev/null -w "%{http_code}\n" ...   # 期望 503 + 专用错误码
 
 ### 任务
 
-- [ ] `groups` / `group_members` / `group_models` / `group_limits`
+- [ ] `groups` / `group_members` / `group_models` / `group_policies` / `group_quota_pools`
 - [ ] 组的策略合并语义（放开取并集、限制取最严）
 - [ ] 默认组（新账号自动加入；删组不删人，退回默认组）
 - [ ] 管理面：组列表 / 组详情 / 租户批量加入移除
@@ -405,8 +405,9 @@ npx playwright test --project=chromium
 # 安全基线 12 项
 ./scripts/security-checklist.sh    # 逐项输出 PASS/FAIL
 
-# 无 TLS 拒绝启动
-FR_SERVER_LISTEN=0.0.0.0:443 FR_TLS_MODE=off ./bin/freerouter   # 期望：拒绝启动
+# 非回环 + 无 TLS：默认只告警；把策略升级为 deny 后才拒绝启动
+FR_SERVER_LISTEN=0.0.0.0:8080 FR_TLS_MODE=off ./bin/freerouter            # 期望：启动并打印醒目警告
+FR_SERVER_LISTEN=0.0.0.0:8080 FR_TLS_MODE=off FR_SERVER_INSECURE_PUBLIC_LISTEN=deny ./bin/freerouter  # 期望：拒绝启动
 
 # 恢复演练
 sqlite3 ... "VACUUM INTO '/tmp/backup.db'"
@@ -438,11 +439,10 @@ rm data/freerouter.db && cp /tmp/backup.db data/freerouter.db
 | 账户模型 A / B（总纲 15 章第 1 项） | M3 | **已定案 2026-10-19：选 A**（单账户 + 权限类集合 + 类级提权）→ **M3 已解锁，可开工** |
 | 贡献者回报机制 | M8 的贡献者侧 | **已定案 2026-10-19：贡献者无偿**（不折算额度、不给优先使用权、不给升级凭据，只保留贡献统计）→ **M8 贡献侧已解锁**；取消"收益"模块，只有统计呈现，工时 2.5 → **2.0** |
 | 前端选型（Next.js / Go 模板 + htmx） | M9 | 待用户拍板 |
-| 组级共享额度池是否进 MVP | M7 | 待用户拍板 |
-| 域名 / 部署位置 / 反代 | M10 | 待用户提供 |
+| ~~组级共享额度池是否进 MVP~~ | ~~M7~~ | **已定案：进 MVP**（2026-10-19，每人上限与组级共享池可单用可并用） |
+| ~~部署位置 / 反代方案~~ | ~~M10~~ | **已定案：先本地跑；不用反代，默认 IP + 端口**（2026-10-19）；**域名**仍待用户提供 |
 
-**其它（不阻塞）**：预置抽象模型名、平台自有凭据归属、
-管理面是否限来源 IP、Prometheus 指标。
+**其它（不阻塞）**：平台自有凭据归属、Prometheus 指标。
 
 **M0–M3 不依赖任何待定项**，可以立即开工——M0 的契约测试与
 M1 的上游接入都与账户模型无关，M3 的账户模型也已定案（选 A）。
