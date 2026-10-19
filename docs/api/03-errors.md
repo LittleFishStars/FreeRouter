@@ -111,7 +111,7 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 |---|---|---|---|
 | `invalid_credentials` | 401 | `authentication_error` | 登录时用户名或密码错误 |
 | `session_expired` | 401 | `authentication_error` | 会话不存在或已过期 |
-| `elevation_required` | 403 | `permission_error` | 有 `admin` 类但未提权，或提权已过期 |
+| `elevation_required` | 403 | `permission_error` | 有 `admin` 类但未提权、提权已过期，或四项逐次重验的请求缺 `X-FR-StepUp` / 该凭据已用过 |
 | `forbidden` | 403 | `permission_error` | 身份可接受但缺少对应权限类 |
 | `not_found` | 404 | `not_found_error` | 资源不存在 |
 | `conflict` | 409 | `conflict_error` | 唯一性冲突（如用户名已存在、`UNIQUE(provider, external_id)` 撞身份） |

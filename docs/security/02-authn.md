@@ -172,16 +172,30 @@ session {
 | 危险操作 | **每次**重新验证 | 见下表 |
 | 审计 | `elevated=true` | 与普通操作分开，见 [06-audit.md](06-audit.md) |
 
-**危险操作清单**（PLAN 2.5 明定四项，且要求每次重验）：
+**危险操作清单**（PLAN 2.5 四项；2026-10-20 用户拍板：**恰好四项、每次都重验**）：
 
-| 操作 | 影响面 |
-|---|---|
-| 删账户 | 不可逆；会牵动 Key、凭据、审计主体 |
-| 改组 | 一次改动可同时改变一批账户的模型可见性与额度 |
-| 改抽象模型 | 影响全站对外契约（候选集、能力声明） |
-| 改弃用 | 影响所有已发出的客户端请求的落点 |
+| 操作 | 影响面 | 落在哪些端点 |
+|---|---|---|
+| 删账户 | 不可逆；会牵动 Key、凭据、审计主体 | 账户转 `disabled` / `merged`（没有物理删除，见 [01-accounts.md](01-accounts.md) 第 6 节） |
+| 改组 | 一次改动可同时改变一批账户的模型可见性与额度 | 组策略、组成员、默认组、删组（[03-groups.md](03-groups.md) 第 8 节的 5 个动作**同属这一项**） |
+| 改抽象模型 | 影响全站对外契约（候选集、能力声明） | 显示名、能力模式、能力声明、策略链、候选集 |
+| 改弃用 | 影响所有已发出的客户端请求的落点 | 弃用配置与替代链 |
+
+三条硬约束：
+
+1. **恰好四项，不外扩**。清单**硬编码**在授权判定里，不通过 `settings` 维护、不由实现自行增删（原 Q126 结案）。
+2. **每次重验**：这四个操作**不认** 15 分钟窗口，每一次都要重新提交第二因子。一次提权后连做四个动作 = 连验四次。
+3. **不复用**：一次重验只覆盖一次操作，不能"验一次然后批量提交"——这也是管理 API 不提供批量危险操作端点的理由（[../api/02-admin.md](../api/02-admin.md) 2.3）。
+
+**两层危险等级（不要混）**：
+
+| 层 | 范围 | 谁强制 | 机制 |
+|---|---|---|---|
+| 危险写 · 二次确认 | [../ui/06-design.md](../ui/06-design.md) 第 5 节的 5 条判据（不可逆 / 一对多 / 跨账户 / 失去可恢复性 / 提权动作本身） | 界面 | AlertDialog：影响面 + 不可逆程度 + 具体动作按钮（[../ui/03-admin.md](../ui/03-admin.md) 1.3） |
+| 危险写 · 逐次重验 | **恰好上面四项** | 服务端 | 每个请求都必须带可验证的第二因子（`X-FR-StepUp`），判定链第 6 步（[04-authz.md](04-authz.md#6-判定链)） |
 
 - 为什么这四项要"每次"而不是"每次提权后 15 分钟内"：这四项的误操作与恶意操作后果都是全站级且不可即时回滚的，而额外一次验证只多花几秒。
+- 为什么其余危险写**不**做逐次重验：重置密码、封禁凭据、人工改判这类操作已在 15 分钟提权窗口内，且都被二次确认挡了一道；把它们也做成逐次重验，只会让管理员把危险操作攒成一批一次做完，反而拉长暴露窗口。**边界由用户 2026-10-20 拍板：恰好四项**（原 Q152 / Q153 结案为「不列入」）。
 
 **与 OAuth 登录会话的关系**（PLAN 4.3、9.3）：**用 OAuth 登录得到的会话默认只给低权限上下文**。这不影响上表——即使是密码登录的会话，进管理面同样要提权。
 **定案（写入者裁定，已与总纲口径对齐）**：OAuth 会话**可以**提权，条件是该账户带 `admin`
@@ -193,7 +207,7 @@ session {
 
 > **待定**："空闲即失效"的空闲阈值——总纲只给了 15 分钟有效期，未定义空闲计时规则（是否与有效期同一计时器）。
 
-> **待定**：危险操作清单是否允许扩展（是否需要在 `settings` 里维护清单，还是硬编码这四项）。
+> **已定案（2026-10-20 用户拍板）**：危险操作清单**恰好四项、硬编码**，不进 `settings`、不允许扩展（原 Q126，见上表三条硬约束）。
 
 ## 7. 上游 OAuth 登录
 
@@ -359,11 +373,15 @@ type AuthnService interface {
     // ---- 类级提权（见第 6 节）----
     BeginStepUp(actor Subject, factor StepUpFactor) (challenge string, err error)
     ConfirmStepUp(actor Subject, challenge, proof string) (*Session, error)
-    // RequireElevated 在危险操作前逐次调用（PLAN 2.5：每次重新验证）。
-    RequireElevated(actor Subject, op DangerOp) error
+    // RequireStepUp 在每个写请求上调用一次。op 命中四项时必须校验本次请求
+    // 携带的 X-FR-StepUp（一次性，用后作废）；其余 op 只校验 elevated_until。
+    RequireStepUp(actor Subject, op DangerOp, proof string) error
 }
 
-// DangerOp 是要求每次重验的操作（PLAN 2.5 四项，扩展性见待定）。
+// DangerOp 是「需要逐次重验」的四项操作（PLAN 2.5）。这个常量集合就是完整清单：
+// 恰好四项、硬编码在授权判定里、不读 settings、不允许实现自行增删（Q126 已结案）。
+// 其余危险写（重置密码 / 封禁凭据 / 人工改判 / 危险设置）不进这个集合，
+// 它们由 elevated_until + 界面二次确认覆盖。
 type DangerOp string
 
 const (
@@ -372,6 +390,15 @@ const (
     DangerEditAbstractModel   DangerOp = "edit_abstract_model"
     DangerEditDeprecation     DangerOp = "edit_deprecation"
 )
+
+// 四项之外一律落到普通危险写，不做逐次重验。
+func (op DangerOp) RequiresStepUp() bool {
+    switch op {
+    case DangerDeleteAccount, DangerEditGroup, DangerEditAbstractModel, DangerEditDeprecation:
+        return true
+    }
+    return false
+}
 
 type ImportRow struct {
     Username   string

@@ -9,7 +9,7 @@
 |---|---|
 | 单一消费方 | 控制台前端。**不承诺第三方兼容性** |
 | 会话承载 | 认证走 HttpOnly 会话 Cookie，不签 API Token |
-| 提权敏感 | 每个写端点声明是否需要提权（`elevated`）与是否每次重验 |
+| 提权敏感 | 每个写端点声明是否需要提权（`elevated`）与是否属「逐次重验」四项（`step_up_required`） |
 
 **为什么管理 API 不签发 API Token**：总纲 2.5 的提权模型是 "进管理面当场再验一次，有效期 15 分钟"。一个长期 Token 天然绕过这个模型—— 它一旦签发，15 分钟就变成了"永不过期"。不签发是从结构上消除这个漏洞。
 
@@ -46,27 +46,35 @@ Cookie: fr_session=...
 X-FR-StepUp: <本次操作的短时凭据>
 ```
 
-| 端点类别 | 需要 `admin` 类 | 需要提权 | 危险操作需每次重验 |
+- `fr_session` 携带 `elevated_until`：进管理面时提权一次，15 分钟窗口内可连做普通写与「仅二次确认」的危险写。
+- `X-FR-StepUp` **只**在四项逐次重验的写请求上必填，**一次性**（用后作废，重放返回 403 + `elevation_required`）。缺头或头失效时错误体见 [03-errors.md](03-errors.md)。
+
+**两层标记，不要混**（权威定义在 [../security/02-authn.md](../security/02-authn.md) 第 6 节）：
+
+- **⚠️ 逐次重验**（服务端强制）：**恰好四项**——删账户、改组、改抽象模型、改弃用。这四个操作**不认** 15 分钟提权窗口，每个请求都必须带可验证的第二因子（`X-FR-StepUp`）。
+- **二次确认**（界面强制，不占 ⚠️ 标记）：[../ui/06-design.md](../ui/06-design.md) 第 5 节 5 条判据命中的其余写操作。在提权窗口内即可，只多一道 AlertDialog。标记约定：`🔒` = 需提权（15 分钟窗口），`⚠️` = 逐次重验（隐含需提权）。
+
+| 端点类别 | 需要 `admin` 类 | 需要提权 | 每次重验 |
 |---|---|---|---|
 | 只读查询 | ✅ | ✅ | ➖ |
-| 普通写（增删成员、启停凭据） | ✅ | ✅ | ➖ |
-| 危险写（见下表） | ✅ | ✅ | ✅ |
+| 普通写（改名、建组、启停凭据） | ✅ | ✅ | ➖ |
+| 危险写 · 仅二次确认 | ✅ | ✅ | ➖（提权窗口内即可） |
+| 危险写 · 逐次重验（恰好四项） | ✅ | ✅ | ⚠️ |
 
-危险写清单（总纲 2.5 的"删账户、改组、改抽象模型、改弃用" + [../ui/06-design.md](../ui/06-design.md) 第 5 节的判据）：
+**逐次重验清单（恰好四项，硬编码，不外扩）**：
 
-| 类别 | 端点 |
-|---|---|
-| 账户 | 改权限类、授予 `admin`、禁用、重置密码、合并 |
-| 组 | 改模型授权、改策略、删除组 |
-| 抽象模型 | 改能力模式、改策略链、增删候选、保存弃用配置、设 `disabled` |
-| 上游 / 凭据 | 禁用上游、封禁凭据 |
-| 鉴定 | 人工改判 |
-| 设置 | 见第 11 节的五类危险配置 |
+| 项 | 包含的动作 | 端点 |
+|---|---|---|
+| 删账户 | 禁用、合并（含回滚） | `PATCH /accounts/{id}` 的状态类字段、`POST /accounts/{id}/merge`、`POST /accounts/{id}/merge/rollback` |
+| 改组 | 改模型授权、改策略、增/移成员、设默认组、删组 | `PUT /groups/{id}/models`、`PUT /groups/{id}/policies`、成员增删、`PATCH /groups/{id}`、`DELETE /groups/{id}` |
+| 改抽象模型 | 改显示名/能力模式/能力声明/策略链、替换候选集、设 `disabled` | `PATCH /abstract-models/{id}`、`PUT /abstract-models/{id}/candidates` |
+| 改弃用 | 保存弃用配置与替代链 | `PUT /abstract-models/{id}/deprecation` |
 
-**为什么把"危险写清单"显式列出而不是让实现判断**：清单是 [../ui/03-admin.md](../ui/03-admin.md) 1.3 的确认框与审计的 `elevated` 标志 共同依赖的判据。留一个"其他类似操作自行判断"的口子， 必然出现某些危险操作被漏掉确认。
+**不逐次重验、但仍需提权（均另需二次确认）**：重置密码、合入前审批/拒绝、禁用上游、封禁凭据、人工改判、改设置。理由见 [../security/02-authn.md](../security/02-authn.md) 第 6 节（Q152/Q153 已结案为「不列入」）。
 
-**为什么不给管理 API 加"批量危险操作"端点**：批量会把"每次重验" 变成"一次重验执行 N 个危险操作"。UI 上的批量批准（ [../ui/03-admin.md](../ui/03-admin.md) 第 3 节）是非危险的，不在此列。
+**为什么把逐次重验清单显式列出而不是让实现判断**：清单是 [../ui/03-admin.md](../ui/03-admin.md) 1.3 确认框、路由 ⚠️ 图例与审计 `elevated` 标志共同依赖的判据。留一个「其他类似操作自行判断」的口子，必然出现某些危险操作被漏掉确认。清单本身**硬编码**，不进 `settings`（Q126 已结案）。
 
+**为什么不给管理 API 加「批量危险操作」端点**：批量会把「每次重验」变成「一次重验执行 N 个危险操作」。UI 上的批量批准（[../ui/03-admin.md](../ui/03-admin.md) 第 3 节）是非危险的，不在此列。
 ## 3. 通用约定
 
 ### 3.1 请求与响应
@@ -125,14 +133,14 @@ X-FR-StepUp: <本次操作的短时凭据>
 | `GET` | `/api/admin/accounts/{id}` | 详情 | ➖ |
 | `POST` | `/api/admin/accounts` | 单个添加（同 CSV 导入的字段） | ➖ |
 | `POST` | `/api/admin/accounts/import` | CSV 导入 | ➖ |
-| `PATCH` | `/api/admin/accounts/{id}` | 改权限类、状态、所属组、备注、显示名 | ⚠️ |
-| `POST` | `/api/admin/accounts/{id}/password` | 重置密码 | ⚠️ 每次重验 |
+| `PATCH` | `/api/admin/accounts/{id}` | 改权限类、状态、所属组、备注、显示名 | ⚠️（删账户：仅状态类字段） |
+| `POST` | `/api/admin/accounts/{id}/password` | 重置密码 | 🔒（二次确认，不逐次重验） |
 | `POST` | `/api/admin/accounts/{id}/sessions/revoke` | 吊销全部会话 | ➖ |
-| `POST` | `/api/admin/accounts/{id}/merge` | 合并到目标账户 | ⚠️ 每次重验 |
-| `POST` | `/api/admin/accounts/{id}/merge/rollback` | `reversible_until` 内回滚 | ⚠️ |
+| `POST` | `/api/admin/accounts/{id}/merge` | 合并到目标账户 | ⚠️（删账户） |
+| `POST` | `/api/admin/accounts/{id}/merge/rollback` | `reversible_until` 内回滚 | ⚠️（删账户） |
 | `GET` | `/api/admin/accounts/pending` | 审核队列 | ➖ |
 | `POST` | `/api/admin/accounts/pending/{id}/approve` | 批准（**必填组 + 配额**） | ➖ |
-| `POST` | `/api/admin/accounts/pending/{id}/reject` | 拒绝（可填理由） | ⚠️ |
+| `POST` | `/api/admin/accounts/pending/{id}/reject` | 拒绝（可填理由） | 🔒（二次确认） |
 
 **没有 `DELETE /api/admin/accounts/{id}`**。总纲的数据模型里 `requests` / `audit_log` 引用 `account_id`，物理删除会让历史悬空。
 
@@ -151,7 +159,7 @@ X-FR-StepUp: <本次操作的短时凭据>
 
 | 字段 | 可写 | 说明 |
 |---|---|---|
-| `classes` | ✅ | 三个值的集合；**增删都要 ⚠️** |
+| `classes` | ✅ | 三个值的集合；**增删都要 🔒（提权动作本身，二次确认；不逐次重验）** |
 | `status` | ✅ | `active` / `disabled` / `rejected` |
 | `groups` | ✅ | 组 ID 数组 |
 | `key_count` | ➖ | **只给数量，不给 Key 列表**（见下） |
@@ -189,12 +197,12 @@ bob,,grp_default,
 | `GET` | `/api/admin/groups` | 列表 | ➖ |
 | `GET` | `/api/admin/groups/{id}` | 详情（成员、模型授权、策略） | ➖ |
 | `POST` | `/api/admin/groups` | 新建 | ➖ |
-| `PATCH` | `/api/admin/groups/{id}` | 改基本信息（名称、描述） | ➖ |
-| `PUT` | `/api/admin/groups/{id}/models` | **替换**模型授权集合 | ⚠️ 每次重验 |
-| `PUT` | `/api/admin/groups/{id}/policies` | **替换**策略集合 | ⚠️ 每次重验 |
-| `POST` | `/api/admin/groups/{id}/members` | 增成员 | ➖ |
-| `DELETE` | `/api/admin/groups/{id}/members/{account_id}` | 移出成员 | ➖ |
-| `DELETE` | `/api/admin/groups/{id}` | 删组（成员退回默认组） | ⚠️ 每次重验 |
+| `PATCH` | `/api/admin/groups/{id}` | 改基本信息（名称、描述） | ➖（但 `is_default` 字段变更属「改组」⚠️） |
+| `PUT` | `/api/admin/groups/{id}/models` | **替换**模型授权集合 | ⚠️（改组） |
+| `PUT` | `/api/admin/groups/{id}/policies` | **替换**策略集合 | ⚠️（改组） |
+| `POST` | `/api/admin/groups/{id}/members` | 增成员 | ⚠️（改组） |
+| `DELETE` | `/api/admin/groups/{id}/members/{account_id}` | 移出成员 | ⚠️（改组） |
+| `DELETE` | `/api/admin/groups/{id}` | 删组（成员退回默认组） | ⚠️（改组） |
 | `POST` | `/api/admin/groups/{id}/duplicate` | 复制组 | ➖ |
 
 **为什么模型授权与策略用 `PUT` 整体替换而不是 `PATCH` 局部改**： 总纲 2.6 的合并语义（放开取并集、限制取最严、布尔 deny 优先） 是对**整个集合**求值的。允许在集合上做局部增删， 会让"当前生效值"依赖一段难以复盘的历史。整体替换让每次变更 都是"从集合 A 到集合 B"的完整记录。
@@ -265,11 +273,11 @@ bob,,grp_default,
 | `GET` | `/api/admin/abstract-models` | 列表（含候选数与可用候选数） | ➖ |
 | `GET` | `/api/admin/abstract-models/{id}` | 详情 | ➖ |
 | `POST` | `/api/admin/abstract-models` | 新建 | ➖ |
-| `PATCH` | `/api/admin/abstract-models/{id}` | 改显示名、能力模式、能力声明、策略链 | ⚠️ 每次重验 |
-| `PUT` | `/api/admin/abstract-models/{id}/candidates` | **替换**候选集 | ⚠️ 每次重验 |
+| `PATCH` | `/api/admin/abstract-models/{id}` | 改显示名、能力模式、能力声明、策略链 | ⚠️（改抽象模型） |
+| `PUT` | `/api/admin/abstract-models/{id}/candidates` | **替换**候选集 | ⚠️（改抽象模型） |
 | `POST` | `/api/admin/abstract-models/{id}/dry-run` | 保存前干跑 | ➖ |
 | `GET` | `/api/admin/abstract-models/{id}/chain` | 替代链预览 | ➖ |
-| `PUT` | `/api/admin/abstract-models/{id}/deprecation` | 保存弃用配置 | ⚠️ 每次重验 |
+| `PUT` | `/api/admin/abstract-models/{id}/deprecation` | 保存弃用配置 | ⚠️（改弃用） |
 | `GET` | `/api/admin/abstract-models/{id}/references` | 被哪些组引用 | ➖ |
 
 ### 8.1 关键字段
@@ -377,12 +385,12 @@ GET /api/admin/abstract-models/am_fast/chain
 |---|---|---|---|
 | `GET` | `/api/admin/upstreams` | 列表 | ➖ |
 | `POST` | `/api/admin/upstreams` | 新建 | ➖ |
-| `PATCH` | `/api/admin/upstreams/{id}` | 改名称、base_url、启用 | ⚠️（禁用时） |
+| `PATCH` | `/api/admin/upstreams/{id}` | 改名称、base_url、启用 | ➖（禁用时 🔒 二次确认） |
 | `POST` | `/api/admin/upstreams/{id}/test` | 连通性测试 | ➖ |
 | `GET` | `/api/admin/credentials` | 列表（筛选 `owner` / `provider` / `verify_status` / `status`） | ➖ |
 | `GET` | `/api/admin/credentials/{id}` | 详情（**无明文**） | ➖ |
 | `POST` | `/api/admin/credentials/{id}/suspend` | 暂停 | ➖ |
-| `POST` | `/api/admin/credentials/{id}/ban` | 封禁 | ⚠️ 每次重验 |
+| `POST` | `/api/admin/credentials/{id}/ban` | 封禁 | 🔒（二次确认） |
 | `POST` | `/api/admin/credentials/{id}/notify` | 通知贡献者 | ➖ |
 
 **没有任何端点返回凭据明文**。总纲 9.4 定"凭据明文永不回显"。 管理端详情返回的是 `provider` / `external_label` / `verify_detail` 等元数据。
@@ -396,7 +404,7 @@ GET /api/admin/abstract-models/am_fast/chain
 | `GET` | `/api/admin/verifications` | 队列（筛选 `verdict` / `provider` / `source`） | ➖ |
 | `GET` | `/api/admin/verifications/{id}` | 详情 + 证据 + 复检历史 | ➖ |
 | `POST` | `/api/admin/verifications/{id}/l2` | 触发 L2 深度鉴定 | ➖ |
-| `POST` | `/api/admin/verifications/{id}/override` | 人工改判（**必填理由**） | ⚠️ 每次重验 |
+| `POST` | `/api/admin/verifications/{id}/override` | 人工改判（**必填理由**） | 🔒（二次确认） |
 | `POST` | `/api/admin/verifications/{id}/recheck` | 加入 / 移出复检队列 | ➖ |
 
 ### 10.1 关键字段
@@ -436,12 +444,12 @@ GET /api/admin/abstract-models/am_fast/chain
 | `GET` | `/api/admin/audit/{id}` | 单条详情 | ➖ |
 | `GET` | `/api/admin/audit/export` | 导出 | ➖ |
 | `GET` | `/api/admin/settings` | 全部设置（按分组） | ➖ |
-| `PATCH` | `/api/admin/settings` | 批量改设置 | ⚠️（见下表） |
+| `PATCH` | `/api/admin/settings` | 批量改设置 | 🔒（二次确认，见下表） |
 | `POST` | `/api/admin/settings/ip-check` | 用当前源 IP 自检管理面允许列表 | ➖ |
 
 **没有 `DELETE /api/admin/audit`**。总纲 9.5 的 append-only 是绝对约束。
 
-五类需要 ⚠️ 每次重验的设置（与 [../ui/03-admin.md](../ui/03-admin.md) 第 11 节一致）：
+**四类需要二次确认（🔒）的设置**（与 [../ui/03-admin.md](../ui/03-admin.md) 第 11 节一致）。设置项**不属于**逐次重验的四项，提权窗口内即可：
 
 | 设置键 | 为什么 |
 |---|---|
@@ -460,6 +468,8 @@ GET /api/admin/abstract-models/am_fast/chain
 > **待定**：管理 API 是否需要为控制台提供一个 "聚合仪表盘"端点（一次返回各分组的关键计数）？ 当前每个分组各自查询，首页会发出多次请求。
 
 > **待定**：`X-FR-StepUp` 凭据的具体形态（一次性口令 / TOTP 验证后的短时令牌）。 总纲 2.5 只说"当场再验（TOTP 或重输密码）"，未定提权后如何承载。
+
+> **已定（2026-10-20）**：无论形态如何，这个凭据必须**一次性、单操作**——用后作废，不与 `elevated_until` 合并成一个"可用于未来 N 分钟"的令牌，否则四项的"每次重验"会退化成第二次 15 分钟窗口。
 
 > **待定**：审计导出的格式（CSV / JSONL）与保留期。 与 [../ui/03-admin.md](../ui/03-admin.md) 第 12 节的对应待定项相关。
 

@@ -163,7 +163,7 @@ freerouter verify --upstream X --model 某冷门模型 --level L1
 - [ ] 注册 → `pending`；审核队列（批准选组 / 拒绝填理由）
 - [ ] 管理员 CSV 导入账密（`用户名,密码[,组][,日额度]`；留空则生成随机密码一次性展示）
 - [ ] 登录：argon2id + 会话（HttpOnly/Secure/SameSite=Lax）+ 防枚举 + 防爆破
-- [ ] **类级提权**：进管理面当场再验，15 分钟有效期，危险操作每次重验
+- [ ] **类级提权**：进管理面当场再验，15 分钟有效期，**恰好四项**危险操作逐次重验（删账户 / 改组 / 改抽象模型 / 改弃用）
 - [ ] **禁用联动**：账户 `disabled` → 名下 Key 立即 401、会话立即吊销
 - [ ] 审计：`account_id + acting_class + elevated + ip + ua + result`
 - [ ] 自助改密、管理员重置、改密即吊销会话

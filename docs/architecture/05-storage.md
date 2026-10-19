@@ -99,7 +99,7 @@ CREATE TABLE sessions (
     token_hash     BLOB    NOT NULL,           -- SHA-256(token)，32 字节
     created_at     INTEGER NOT NULL,
     expires_at     INTEGER NOT NULL,
-    elevated_until INTEGER,                    -- 提权窗口（15 分钟，README 术语表）
+    elevated_until INTEGER,                    -- 提权窗口（15 分钟，README 术语表）；只管非四项，四项每次抓 X-FR-StepUp
     ip             TEXT,
     ua             TEXT
 ) WITHOUT ROWID;
