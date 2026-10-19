@@ -2,14 +2,18 @@
 
 **自由路由** · **免费路由**
 
-> 把散落在各个 AI 供应商账号里的订阅额度，聚合成一个可管理、可计量、可授权的统一入口。
+> 把各大厂 AI Agent 自带的那份免费额度聚成一个池子，让用不完的人不再浪费、不够用的人有处可借。
 
-`Free` 是个双关：**自由**——自己决定模型怎么路由、额度怎么分、谁能用哪个模型，不被单一供应商锁定；**免费**——你手里已经付过钱的订阅额度，不必再买一遍。
+`Free` 是个双关：**自由**——路由策略自己定，额度怎么分、谁能用哪个模型由你决定，不被单一供应商锁定；
+**免费**——上游不花钱，接的是各大厂 Agent 官方免费额度的反代，而不是买 API 额度转卖。
 
-> **English** — FreeRouter is a self-hosted AI gateway that turns scattered provider
-> subscriptions into one managed endpoint. *Free* as in **freedom** (you own the
-> routing and the quotas), and *free* as in **you already paid for it** (reuse the
-> subscriptions you have instead of buying new API credits).
+> **English** — FreeRouter pools the *free tiers* that major AI coding agents hand to every
+> user and routes them out as one shared endpoint. The problem is distribution, not access:
+> everyone gets the same free quota, yet consumption is wildly uneven — heavy users run dry
+> while light users watch their quota expire unused. *Free* as in **freedom** (you own the
+> routing and the quotas) and *free* as in **the upstream costs nothing** (reverse-proxying
+> official agent free tiers instead of buying credits). Being a full-featured relay is
+> secondary.
 
 ---
 
@@ -29,18 +33,22 @@
 
 ## 它解决什么问题
 
-**第一，额度是碎的。** 一个人手上往往同时有若干个 AI 编程工具的订阅——它们各自带着额度，
-各自有各自的登录方式、各自的限流、各自的到期时间。想用的时候得先想「今天该开哪个」，
-用完还得回头查「哪个快到期了」。
+**第一，额度是碎的。** 各大厂 AI Agent 几乎都在给免费额度——DeepSeek、TRAE、Qoder、
+CodeArts、Gemini、Cline、ModelScope……每个背后都是一个账号、一套登录方式、一套限流、
+一个到期时间。想用的时候得先想「今天该开哪个」，用完还得回头查「哪个快到期了」。
 
-**第二，额度是不可分享的。** 这些额度通常绑死在个人账号上。想让同事用一点、
-想在 CI 里跑一下，都得把自己的账号交出去——没有中间层可以既给出去又不失控。
+**第二，最真实的问题不是没有额度，而是额度配错人。** 免费额度是**人均一份、大致等量**的，
+但消耗极不均——重度用户早就用干、轻度用户月底看着额度作废。真正稀缺的不是额度本身，
+而是额度在人与人之间的重新分配。这件事个人做不到：额度绑在个人账号上，没有可以中转的中间层。
 
-**第三，多一个人用就多一份风险。** 直接把 Key 发给别人，意味着没有限额、没有日志、
-没有吊销手段，出事只能改密码。
+**第三，不分享才更危险。** 有人额度用不完，有人不够用，现实里的解法往往是“把账号借你用”
+——直接交出 Key，意味着没有限额、没有日志、没有吊销手段，出事只能改密码。
 
-FreeRouter 是在这三者之间加的一层：**下面接手上游额度，上面按人和 Key 发出去**，
-中间做模型抽象、策略路由、额度计量与审计。
+FreeRouter 就是在额度与人之间加的一层：**下面反向代理各大厂 Agent 的官方免费额度，
+上面按人和 Key 发出去**，中间做模型抽象、策略路由、额度计量与审计。
+
+共享免费额度是**初衷与主干**；中转站该有的其他能力（多协议、抽象模型、配额、审计）
+是在这条主干上顺手补齐的配套，不是目的本身。
 
 ---
 
@@ -63,6 +71,15 @@ FreeRouter 是在这三者之间加的一层：**下面接手上游额度，上�
 
 ## 特性
 
+**额度池（主干）**
+
+- **反代各大厂 Agent 的免费额度**：接的是官方客户端协议（不是买来的 API 额度），入站协议与官方一致
+- **池化**：一份额度不再千人一份各自作废——用不完的余额可以被池子里的人用掉
+- **耗尽感知**：按时长、按剩余量、按冷却状态排序，快过期的先花，子已干的不再派
+- **额度可查**：每个上游账号的余额、到期、签到状态一目了然
+
+> 下面几组能力都是为了让这份共享额度能被安全、稳定地发出去，属于**配套**而非目的。
+
 **接入侧**
 
 - 多协议入站：OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Gemini generateContent
@@ -72,8 +89,8 @@ FreeRouter 是在这三者之间加的一层：**下面接手上游额度，上�
 **路由侧**
 
 - 抽象模型的能力声明取候选的**保守下界**（宁可少声称，也不要中途失败）
-- 策略链：`expiry-first`（默认）/ `cheapest` / `fastest` / `weighted` / `round-robin` / `quality-tier` / `quota-aware`
-- 候选**串行尝试**而非并发竞速——并发会在多个上游同时产生真实计费
+- 策略链：`expiry-first`（默认，免费额度场景的核心策略）/ `quota-aware` / `fastest` / `weighted` / `round-robin` / `quality-tier`
+- 候选**串行尝试**而非并发竞速——并发会在多个上游同时产生真实额度消耗
 - 候选切换只发生在**尚未吐出任何可见内容**之前；内容审核拒绝**绝不**换候选
 
 **模型治理**
@@ -124,7 +141,8 @@ FreeRouter 是在这三者之间加的一层：**下面接手上游额度，上�
 - **L1** 只做准入，不碰模型语义。
 - **L2** 是唯一知道「抽象模型 → 真实模型」映射的地方，也是唯一做协议转换的地方。
 - **L3** 把「上游」抽象成统一的 `Upstream` 记录——供应商账号与普通 API Key 在这里**地位完全等价**，
-  差别只体现在「怎么取凭据」与「怎么查额度」两个函数里。
+  差别只体现在「怎么取凭据」与「怎么查额度」两个函数里。绝大多数上游是**各大厂 Agent 官方
+  免费额度的反代**：先按官方登录流拿到账号凭据，再用它向官方端点发请求。
 
 进程形态：**Go 主服务 + Node sidecar**。sidecar 内嵌
 [dsh-providers-hub](https://github.com/iJetLi/dsh-providers-hub)，复用它对 17 家供应商的登录流与凭据续期；
@@ -137,7 +155,7 @@ FreeRouter 是在这三者之间加的一层：**下面接手上游额度，上�
 | 项目 | 关系 |
 |---|---|
 | [Tingly Box](https://github.com/tingly-dev/tingly-box) | **同类参考**。它是一个功能更全的 AI 网关（自带智能应用接入向导、团队共享端点、IM 远程控制）。FreeRouter 有意**不做**这三块，换来更简单的权限模型与更窄的攻击面 |
-| [dsh-providers-hub](https://github.com/iJetLi/dsh-providers-hub) | **上游额度来源**。它管着「额度从哪来」（多账号池、静默续期、积分领取），FreeRouter 管「额度怎么发出去」（抽象模型、策略路由、租户配额、审计） |
+| dsh-providers-hub | **上游额度来源**。它管着「免费额度从哪来」（多账号池、静默续期、积分领取/签到、临期排序），FreeRouter 管「额度怎么发出去」（抽象模型、策略路由、租户配额、审计） |
 
 ---
 
@@ -175,11 +193,11 @@ FreeRouter 是在这三者之间加的一层：**下面接手上游额度，上�
 ## 关于名字
 
 `FreeRouter` 里的 `Free` 同时是**自由**与**免费**：
-
 - **自由路由** —— 路由策略是你写的，模型池是你攒的，用户看到什么、能用什么由你决定。
   不把控制权交给任何一个供应商。
-- **免费路由** —— 你已经在为这些订阅付钱了。FreeRouter 让它变成可被复用、被分享、
-  被计量的资源，而不是一个个锁在账号里的孤岛。
+- **免费路由** —— 上游是各大厂 Agent 免费送给每个用户的额度，不花一分钱；
+  FreeRouter 把这份“人均一份”的额度变成可被复用、被分享、被计量的共享资源，
+  而不是一个个锁在账号里的孤岛。
 
 中文社区里两个读法都成立，这也是我们把它写成「自由路由 / 免费路由」的原因。
 
@@ -187,9 +205,9 @@ FreeRouter 是在这三者之间加的一层：**下面接手上游额度，上�
 
 ## 免责声明
 
-FreeRouter 把上游账号的额度转发给其他人使用时，**可能违反部分供应商的服务条款**。
-请在使用前自行确认你的使用方式是否符合各供应商的约定——本项目只提供技术手段，
-不提供合规判断。
+FreeRouter 的核心用法是把各大厂 Agent 的个人免费额度**共享**给别人用，
+这**可能违反部分供应商的服务条款**，也可能触发风控。请在使用前自行确认
+你的使用方式是否符合各供应商的约定——本项目只提供技术手段，不提供合规判断。
 
 ---
 
