@@ -192,7 +192,7 @@ FR_SECURITY_TRUSTED_PROXIES=172.16.0.0/12,10.0.0.0/8
 FR_STORE_MASTER_KEY_FILE=/run/secrets/freerouter-master.key
 FR_UPSTREAM_DSH_GATEWAY_BASE_URL=http://127.0.0.1:8326
 FR_SIDECAR_HUB_PATH=/opt/dsh/profiles/web/node_modules/dsh-providers-hub
-FR_DSH_HOME=/home/ylxc/.local/share/dsh
+FR_DSH_HOME=$HOME/.local/share/dsh
 ```
 
 **主密钥生成**（首次）：
@@ -246,7 +246,7 @@ services:
       - freerouter-data:/var/lib/freerouter
       - freerouter-run:/run/freerouter
       # 上游 key 与 DSH 数据（只读）
-      - /home/ylxc/.local/share/dsh:/dsh:ro
+      - $HOME/.local/share/dsh:/dsh:ro
       # sidecar 代码与 providers-hub
       - /opt/freerouter/sidecar:/opt/freerouter/sidecar:ro
     environment:
