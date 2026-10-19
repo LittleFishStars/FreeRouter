@@ -75,7 +75,8 @@ CREATE TABLE account_merges (
     source_id        INTEGER NOT NULL REFERENCES accounts(id),
     target_id        INTEGER NOT NULL REFERENCES accounts(id),
     merged_at        INTEGER NOT NULL,
-    reversible_until INTEGER NOT NULL,
+    reversible_until INTEGER NOT NULL,          -- merged_at + 7 天
+    undone_at        INTEGER,                  -- NULL = 未撤销；撤销只写这里，不删行
     CHECK (source_id <> target_id)
 );
 CREATE INDEX ix_account_merges_source ON account_merges(source_id);
@@ -494,6 +495,23 @@ GROUP BY uc.id;
 - **为什么成本可接受**：`ix_requests_credential_ts` 的前导列正是 `(credential_id, ts)`，按凭据分组走索引；日均请求量在万级、贡献者数在百级，聚合是毫秒级；贡献页也不在转发热路径上，没有延迟预算的压力。
 - **日后量级**：若 `requests` 的 90 天明细涨到聚合明显变慢（千万行级），再升级为**物化视图 / 定时汇总表**（按 `credential_id + day` 预聚合，与 `usage_daily` 同构）——届时仍以 `requests` 为准，汇总表只当缓存。现在不预建，因为提前落表就是提前背上上面那条一致性负担。
 
+**那为什么 `usage_daily` 这个汇总表可以有**（总纲第 10 章与本节看似矛盾，实际上不）：
+
+| | 贡献统计 | `usage_daily` |
+|---|---|---|
+| 读者 | 贡献者自己看 | 管理员看板 + 租户用量页 |
+| 查询频率 | 低（进页才查） | **高**（每次打开看板都扫多天 × 多 Key） |
+| 保留时长 | 同 `requests`（90 天） | **永久**（`requests` 清后它是唯一依据） |
+| 不留表会怎样 | 直接查 `requests` 就行，毫秒级 | `requests` 被清后数据**永久丢失** |
+
+决定性区别是**保留时长**：一旦 `requests` 按 90 天清理，`usage_daily` 就成了唯一的
+长期事实，它必须落表；而贡献统计的期间与 `requests` 完全重叠，多存一份只得到
+一份可能不一致的副本。
+
+> **待定**：`usage_daily` 目前按 `key_id` 聚合（看板视角）；若贡献统计日后也需要
+> 长期保留（例如贡献者服务了两年想看向历史总量），要么给它加 `credential_id` 维度，
+> 要么单独建表。目前按「不建」处理，因为贡献统计的定位是**当下可用性反馈**。
+
 ---
 
 ## 4. 索引策略
@@ -733,13 +751,26 @@ UPDATE group_quota_pools
 |---|---|---|
 | `requests` | 90 天明细 | 排障窗口；更久靠 `usage_daily` |
 | `usage_daily` | 永久 | 体积极小（每天 × key × 模型 的行数），是对账的长尾依据 |
-| `audit_log` | ≥ 1 年，理想永久 | 安全审计的追溯要求 |
+| `audit_log` | **默认永久**（`audit_retain_days = 0`）；若设定则 ≥ 1 年 | 安全审计的追溯要求；删除必须走归档通道，见下 |
 | `sessions` | 过期即清（后台任务） | 纯垃圾 |
 | `upstream_credentials`（`disabled`） | 保留 | 归因历史需要 |
 
-> **待定**：`audit_log` 的 append-only 触发器与保留期清理冲突（不能 `DELETE`）。
-> 可选方案：① 导出到归档后**整库重建**该表；② 用按月分表 + 丢整表；③ 放宽为"允许
-> 保留期外的删除，但记一条删除审计"。三者都改变了 append-only 的强度，需要拍板。
+**审计保留与 append-only 的冲突处理（已定案）**：两个触发器保留不动——`UPDATE` 永远禁止，
+`DELETE` 也不开放给任何业务代码；保留期清理走一条**独立的受控通道**：
+
+1. 默认 `store.audit_retain_days = 0`（**永久保留**）。append-only 的默认语义与安全审计的
+   追溯需求一致，删数据应当是需要显式打开的动作，而不是出厂默认。
+2. 管理员显式设定 `> 0` 时，清理任务必须按以下顺序执行，缺一步不得删除：
+   **导出**目标区间的行到 NDJSON 归档文件 → **回读校验**行数与首尾 `id` 与源库一致 →
+   `DROP TRIGGER trg_audit_log_no_delete` → 单事务内 `DELETE ... WHERE ts < :cutoff` →
+   **重建**触发器 → 写一条 `system.audit_pruned` 审计（`account_id = NULL`，带归档文件名
+   与删除行数）。
+3. 任一步失败则回滚并保留原数据，任务下次重试。
+
+**为什么不改成“允许删除但记一条审计”**：那条删除审计本身也会被下一次清理删掉，
+“谁删了审计”这个问题最终无解。归档文件在数据库之外，才是不被同一条链路消灭的证据。
+
+> 因此 `ops/02-deploy.md` 的出厂默认已同步改为 `0`，与本节一致。
 
 ---
 

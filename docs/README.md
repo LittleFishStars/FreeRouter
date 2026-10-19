@@ -11,16 +11,19 @@
 
 | 分册 | 文件 | 内容 | 状态 |
 |---|---|---|---|
-| **总纲** | [PLAN.md](PLAN.md) | 定位、范围边界、需求映射、里程碑、验收 | v4 已定 |
-| | [architecture/01-overview.md](architecture/01-overview.md) | 分层、进程模型、部署形态 | ✅ 348 行 |
+| **总纲** | [PLAN.md](PLAN.md) | 定位、范围边界、需求映射、里程碑、验收 | v4 已定（1050 行） |
+| **决策复核** | [DECISIONS-REVIEW.md](DECISIONS-REVIEW.md) | 写入者自行拍板、用户未表态的全部设计选择，交用户逐条复核 | 471 行 |
+| **待定汇总** | [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md) | 按 A/B/C 分级的未决项清单 | 340 行 |
+| **上游查证** | [RESEARCH-UPSTREAM-REUSE.md](RESEARCH-UPSTREAM-REUSE.md) | `dsh-providers-hub` 三层复用边界的实测记录 | 111 行 |
+| | [architecture/01-overview.md](architecture/01-overview.md) | 分层、进程模型、部署形态 | ✅ 357 行 |
 | | [architecture/02-ir.md](architecture/02-ir.md) | IR 与四协议转换 | ✅ 554 行 |
-| | [architecture/03-upstream.md](architecture/03-upstream.md) | 上游适配：dshgateway / contributed | ✅ 433 行 |
+| | [architecture/03-upstream.md](architecture/03-upstream.md) | 上游适配：dshgateway / contributed | ✅ 451 行 |
 | | [architecture/04-sidecar.md](architecture/04-sidecar.md) | Node sidecar 的 IPC 契约 | ✅ 394 行 |
-| | [architecture/05-storage.md](architecture/05-storage.md) | 数据模型、迁移、索引 | ✅ 776 行 |
-| | [architecture/06-runtime.md](architecture/06-runtime.md) | 并发、连接池、流式、超时、错误处理 | ✅ 404 行 |
-| **权限与安全** | [security/01-accounts.md](security/01-accounts.md) | 账户与权限类模型 | ✅ 279 行 |
-| | [security/02-authn.md](security/02-authn.md) | 登录、会话、提权、OAuth 登录 | ✅ 384 行 |
-| | [security/03-groups.md](security/03-groups.md) | 组、合并语义、组级共享池 | ✅ 441 行 |
+| | [architecture/05-storage.md](architecture/05-storage.md) | 数据模型、迁移、索引 | ✅ 807 行 |
+| | [architecture/06-runtime.md](architecture/06-runtime.md) | 并发、连接池、流式、超时、错误处理 | ✅ 405 行 |
+| **权限与安全** | [security/01-accounts.md](security/01-accounts.md) | 账户与权限类模型 | ✅ 307 行 |
+| | [security/02-authn.md](security/02-authn.md) | 登录、会话、提权、OAuth 登录 | ✅ 406 行 |
+| | [security/03-groups.md](security/03-groups.md) | 组、合并语义、组级共享池 | ✅ 454 行 |
 | | [security/04-authz.md](security/04-authz.md) | 授权判定链（决策表） | ✅ 235 行 |
 | | [security/05-keys.md](security/05-keys.md) | API Key 与密钥管理 | ✅ 230 行 |
 | | [security/06-audit.md](security/06-audit.md) | 审计与可观测 | ✅ 312 行 |
@@ -40,9 +43,9 @@
 | **API 契约** | [api/01-inbound.md](api/01-inbound.md) | 入站 API（OpenAI / Anthropic） | ✅ 445 行 |
 | | [api/02-admin.md](api/02-admin.md) | 管理 API | ✅ 466 行 |
 | | [api/03-errors.md](api/03-errors.md) | 错误码与响应头 | ✅ 310 行 |
-| **运维** | [ops/01-security.md](ops/01-security.md) | 公网安全基线清单 | ✅ 276 行 |
-| | [ops/02-deploy.md](ops/02-deploy.md) | 部署、配置项、备份 | ✅ 483 行 |
-| | [ops/03-milestones.md](ops/03-milestones.md) | 里程碑拆解与验收清单 | ✅ 462 行 |
+| **运维** | [ops/01-security.md](ops/01-security.md) | 公网安全基线清单 | ✅ 292 行 |
+| | [ops/02-deploy.md](ops/02-deploy.md) | 部署、配置项、备份 | ✅ 499 行 |
+| | [ops/03-milestones.md](ops/03-milestones.md) | 里程碑拆解与验收清单 | ✅ 468 行 |
 
 ---
 

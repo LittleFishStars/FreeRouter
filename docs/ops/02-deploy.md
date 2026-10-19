@@ -19,7 +19,7 @@
 │  ├─ SQLite（WAL）                            │
 │  └─ sidecar 客户端 ──┐                       │
 └──────────────────────┼───────────────────────┘
-                       │ Unix socket
+                       │ stdio + NDJSON
 ┌──────────────────────▼───────────────────────┐
 │  freerouter-sidecar（Node，子进程）           │
 │  加载 dsh-providers-hub 的 auth/adapter 模块  │
@@ -34,14 +34,16 @@
 模块会与 DSH 进程内的模块状态耦合（实测直接 `import()` 在有 DSH 运行时存在冲突）。
 子进程隔离让两边的模块状态互不干扰，也让 sidecar 崩了不会带走主进程。
 
-**为什么走 Unix socket 而不是 TCP**：sidecar 只服务本机主进程，Unix socket
-没有端口占用问题、没有网络暴露面、权限靠文件系统控制。
+**为什么走 stdio + NDJSON 而不是 Unix socket / TCP**：进程边界与通道边界
+重合，sidecar 一死管道立刻 EOF，主进程第一时间知道，不需要额外的存活探测；
+Unix socket 会留下**孤儿监听**（文件还在，进程已死），TCP 则多一个可被本机其它
+进程误连的端口。详情见 [../architecture/04-sidecar.md](../architecture/04-sidecar.md) 2.1。
 
 ### 1.2 三种部署形态
 
 | 形态 | 适用 | TLS | 复杂度 |
 |---|---|---|---|
-| **A. 本地直连（默认）** | 先本地跑通、单机自用 | 默认 `tls.mode=off`（明文）；需要时内置 `files` / `acme` | 低 |
+| **A. 本地直连（默认）** | 先本地跑通、单机自用 | 默认 `tls.mode=off`（明文）；需要时内置 `files` | 低 |
 | **B. Docker Compose** | 生产形态 | 同上，可选内置 | 中 |
 | **C. 反代前置（可选）**（Caddy / Nginx / Traefik） | 已有反代、多站点共用 443 | 反代终止 | 中 |
 
@@ -103,21 +105,18 @@ ip+端口访问」，且部署位置是「先本地跑」。文档的默认路�
 
 | 键 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `tls.mode` | enum | **`off`** | `off`（默认，明文直连）/ `files`（自备证书）/ `acme`（自动签发） |
+| `tls.mode` | enum | **`off`** | `off`（默认，明文直连）/ `files`（自备证书）；`acme` **本版不支持**，配置校验直接拒绝 |
 | `tls.cert_file` | string | — | `files` 模式 |
 | `tls.key_file` | string | — | `files` 模式 |
-| `tls.acme_domains` | []string | — | `acme` 模式；需要真实域名（见下） |
-| `tls.acme_email` | string | — | ACME 注册邮箱 |
-| `tls.acme_cache_dir` | string | `/var/lib/freerouter/acme` | 证书缓存 |
 
 **默认不启用 TLS**（`tls.mode=off`），即默认明文直连。要加密传输有两条**互斥**的路：
-`tls.mode=files` / `acme`（本进程自己终止 TLS，**不需要反代**），或在前面加一层反代
+`tls.mode=files`（本进程自己终止 TLS，**不需要反代**），或在前面加一层反代
 由它终止 TLS（**仅形态 C**，同时设 `server.behind_proxy: true`）。
 `server.insecure_public_listen` 与 `server.behind_proxy` 两个键定义在 §2.1。
 
 > **待定**：对外域名。用户 2026-10-19 拍板「域名仍未定」（总纲第 15 章第 7 项）。
-> 在域名确定前 `tls.mode=acme` 无法启用（ACME 必须针对一个真实域名签发），
-> `server.public_url` 只能填 `http://<ip>:<port>` 这样的字面地址。
+> 本版**不支持** `tls.mode=acme`（配置校验阶段直接拒绝并说明原因），今后若引入
+> 自动签发再重新评估；`server.public_url` 只能填 `http://<ip>:<port>` 这样的字面地址。
 > `tls.mode=files` 不受影响：自签或已有证书都可以直接给路径。
 
 **为什么 `server.insecure_public_listen` 默认是 `warn` 而不是 `deny`**：用户明确要求
@@ -139,7 +138,7 @@ ip+端口访问」，且部署位置是「先本地跑」。文档的默认路�
 
 | 键 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `security.trusted_proxies` | []string | `[]` | CIDR 列表。**为空则忽略 `X-Forwarded-For`** |
+| `security.trusted_proxies` | []string | `[]` | CIDR 列表，**同时支持 IPv4 与 IPv6 网段**（如 `127.0.0.1/32`、`::1/128`）。**为空则忽略 `X-Forwarded-For`**；IP 归一规则见 [../security/02-authn.md](../security/02-authn.md) 10.1 |
 | `security.password_min_length` | int | `12` | |
 | `security.session_ttl` | duration | `12h` | |
 | `security.elevation_ttl` | duration | `15m` | 提权有效期 |
@@ -166,10 +165,22 @@ ip+端口访问」，且部署位置是「先本地跑」。文档的默认路�
 | `limits.default_keys_per_account` | int | `10` | |
 | `limits.global_daily_tokens` | int | `0` | 全局熔断阈值，0 = 不熔断 |
 | `limits.global_rpm` | int | `0` | |
+| `limits.global_concurrency` | int | `200` | 全局并发信号量容量；取不到则排队，超 `queue_timeout` 返回 503 |
+| `limits.queue_timeout` | duration | `5s` | 排队上限（见 [06-runtime.md](../architecture/06-runtime.md) 2.3） |
 
 **为什么默认额度是 0 而不是某个正整数**：任何非零默认值都会在没有人工
 授权的情况下产生消耗。0 让「新建 Key 不能用」成为默认行为，
 把授权动作显式化——这是 §1.2「默认拒绝」的具体落地。
+
+**为什么 `default_tpm = 0` 是「不限制」、而 `default_daily_tokens = 0` 是「不可用」**：两者
+用了 0 却含义相反，因为它们是两类东西。token 额度是**授权**（没授权就是零消耗），
+TPM 是**速率**（不设速率上限不是不供给）。把这两行写在同一个表里容易误读，所以刻意
+分列说明；实现时用两个不同的字段名（`*_tokens` 与 `*_rpm/_tpm`）而不是靠语义猜。
+
+> **全局熔断默认 0（不熔断）与上线检查第 9 项「全局熔断生效」不矛盾**：默认值取
+> 「不熔断」是因为没人知道自己的正常用量是多少，盲目设阈值会直接把站停掉；
+> 上线检查要求在**测试环境把阈值调低**验证机制能触发，那条上线后应改回实际值。
+> 两者一个是出厂默认、一个是运维动作。
 
 ### 2.5 upstream
 
@@ -195,7 +206,7 @@ ip+端口访问」，且部署位置是「先本地跑」。文档的默认路�
 | `sidecar.enabled` | bool | `true` | 关闭则不能贡献供应商账号 |
 | `sidecar.node_path` | string | `node` | Node 可执行文件 |
 | `sidecar.entry` | string | `/opt/freerouter/sidecar/index.mjs` | sidecar 入口 |
-| `sidecar.socket` | string | `/run/freerouter/sidecar.sock` | |
+| `sidecar.ipc` | string | `stdio` | 固定 stdio + NDJSON；不提供 socket/tcp 选项（见 [../architecture/04-sidecar.md](../architecture/04-sidecar.md) 2.1） |
 | `sidecar.hub_path` | string | — | `dsh-providers-hub` 安装路径 |
 | `sidecar.startup_timeout` | duration | `20s` | 超时则标记「贡献功能不可用」 |
 
@@ -210,7 +221,7 @@ ip+端口访问」，且部署位置是「先本地跑」。文档的默认路�
 | `store.master_key_file` | string | — | `0600`，**与库分开存放** |
 | `store.busy_timeout` | duration | `5s` | |
 | `store.backup_dir` | string | `/var/lib/freerouter/backups` | |
-| `store.audit_retain_days` | int | `180` | |
+| `store.audit_retain_days` | int | `0` | **0 = 永久保留**；非 0 时删除必须走归档通道（见 [05-storage.md](../architecture/05-storage.md) 8.3） |
 | `store.request_log_retain_days` | int | `30` | |
 
 ---
@@ -239,9 +250,7 @@ FR_SERVER_INSECURE_PUBLIC_LISTEN=warn
 # FR_TLS_MODE=files
 # FR_TLS_CERT_FILE=/etc/freerouter/tls/fullchain.pem
 # FR_TLS_KEY_FILE=/etc/freerouter/tls/privkey.pem
-# 或 FR_TLS_MODE=acme（需要真实域名，域名待定，见 §2.2）：
-# FR_TLS_ACME_DOMAINS=fr.example.com
-# FR_TLS_ACME_EMAIL=ops@example.com
+# 本版不支持 FR_TLS_MODE=acme（无域名，配置校验直接拒绝）
 
 # 只有形态 C（自己加反代）才需要下面两行：
 # FR_SERVER_BEHIND_PROXY=true
@@ -304,7 +313,6 @@ services:
     volumes:
       - /etc/freerouter/config.yaml:/etc/freerouter/config.yaml:ro
       - freerouter-data:/var/lib/freerouter
-      - freerouter-run:/run/freerouter
       # 上游 key 与 DSH 数据（只读）
       - $HOME/.local/share/dsh:/dsh:ro
       # sidecar 代码与 providers-hub
@@ -325,12 +333,14 @@ secrets:
 
 volumes:
   freerouter-data:
-  freerouter-run:
 ```
 
-**为什么 `read_only: true` + 单独的 `freerouter-run` 卷**：
-sidecar 的 Unix socket 与 PID 文件需要写权限，但根文件系统不需要。
-把「必须可写」的范围压到最小，容器被拿下时能改的东西就少。
+**为什么 `read_only: true`**：进程只需写数据库目录与 `/tmp`，根文件系统
+完全没有写的理由。把「必须可写」的范围压到最小，容器被拿下时能改的东西就少。
+
+> 早先因为 sidecar 走 Unix socket 而多挂了一个 `freerouter-run` 卷；改用
+> **stdio + NDJSON** 后管道由父子进程继承，不再需要在文件系统上留 socket
+> 文件，该卷已删除。
 
 **为什么不用 `ports:`**：`network_mode: host` 下端口直接由应用监听，
 写 `ports:` 会被忽略并可能造成误解。
@@ -444,7 +454,7 @@ go test ./internal/upstream/dshgateway/... -run TestContract
 
 | 现象 | 可能原因 | 检查 |
 |---|---|---|
-| 启动日志有「明文对外」警告 | 绑了非回环地址 + `tls.mode=off`（默认行为） | 要消除：配内置 TLS（`files` / `acme`）或加反代；要把明文变成硬错误：`server.insecure_public_listen=deny` |
+| 启动日志有「明文对外」警告 | 绑了非回环地址 + `tls.mode=off`（默认行为） | 要消除：配内置 TLS（`files`）或加反代；要把明文变成硬错误：`server.insecure_public_listen=deny` |
 | `/readyz` 红但 `/healthz` 绿 | DSH 没跑 / 8326 不通 | `curl 127.0.0.1:8326/v1/models` 带 Bearer |
 | 请求随机失败、日志见 `http=000` | 上游偶发连接失败 | 看重试次数；检查连接池空闲上限 |
 | 流式输出变成一次性吐出 | 反代缓冲 | 反代加 `flush_interval -1` |
@@ -461,11 +471,17 @@ go test ./internal/upstream/dshgateway/... -run TestContract
 |---|---|---|---|---|
 | 自用 | ≤5 | 256 MiB | 1 核 | 200 MiB |
 | 小组 | ≤50 | 512 MiB | 2 核 | 1 GiB |
-| 多租户 | ≤200 | 1 GiB | 4 核 | 5 GiB |
+| 多租户 | ≤200 | 4 GiB | 4 核 | 5 GiB |
 
 **为什么内存与并发不是线性**：主要内存消耗是**流式响应的缓冲**与**请求体**，
 两者都由 `max_body_bytes` 与并发数共同决定；而 token 的计数与路由是轻量的。
 把 `max_body_bytes` 调大会显著抬高内存估算。
+
+**为什么「≤200 并发 / 1 GiB」站不住（已修正为 4 GiB）**：上游是**流式**的，
+每个在途请求同时占着：入站请求体（最多 `max_body_bytes` = 32 MiB）+ 解码后的
+IR + 上游响应缓冲。按最坏情况 200 × 32 MiB = **6.4 GiB**——原表的 1 GiB 只够
+算流式缓冲，没算请求体。修正后的 4 GiB 是“峰值并发不是全部同时传大图”的
+实际估计；**若确定会有客户端每轮全量回传大截图（Codex 类），应按 8 GiB 准备**。
 
 > **待定**：是否内置 Prometheus `/metrics` 端点（总纲未列）。
 > 若部署环境已有监控体系，建议加；否则先只做日志与 `/readyz`。

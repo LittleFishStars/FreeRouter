@@ -194,7 +194,7 @@ data: [DONE]
 ### 4.3 流内的错误事件
 
 ```
-data: {"error":{"message":"当前没有可用资源，请稍后重试","type":"service_unavailable","code":"no_candidate"},"request_id":"req_01J8..."}
+data: {"error":{"message":"当前没有可用资源，请稍后重试","type":"service_unavailable_error","param":null,"code":"no_candidate"},"request_id":"req_01J8..."}
 
 data: [DONE]
 ```

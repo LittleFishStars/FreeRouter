@@ -595,7 +595,7 @@ providers-hub 的 `package.json` 只导出 `.` 与 `./client`，深路径 import
 **方案：进程级 Node sidecar**（不是 import）：
 
 - 独立 Node 子进程加载 providers-hub 的 auth / adapter 模块；
-- FreeRouter 通过**本机 IPC / Unix socket**调用它；
+- FreeRouter 通过**子进程的 stdin/stdout（stdio + NDJSON）**调用它；
 - 三条红线：**① 只读凭据**（不改 Jet Hub 状态）；**② 不碰**
   `$DSH_HOME/jet-hub/state.json`；**③ 上游永走 `127.0.0.1`**。
 
@@ -635,7 +635,7 @@ providers-hub 的 `package.json` 只导出 `.` 与 `./client`，深路径 import
         ┌──────────────────────┐  ┌──────────────────────┐
         │  dsh-providers-hub   │  │  Node sidecar        │
         │  :8326               │  │  供应商 OAuth / 续期  │
-        │  20 前缀 · 116 模型   │  │  （IPC / Unix socket）│
+        │  20 前缀 · 116 模型   │  │  （stdio + NDJSON）  │
         │  账号池 · 积分 · 续期  │  └──────────────────────┘
         └──────────────────────┘
                       ▼
@@ -663,9 +663,9 @@ providers-hub 的 `package.json` 只导出 `.` 与 `./client`，深路径 import
 | 存储 | `modernc.org/sqlite`（纯 Go，CGO-free）+ WAL | 交叉编译无忧 |
 | 迁移 | 自写（`embed` SQL + `schema_migrations`） | 30 行够用 |
 | 日志 | 标准库 `log/slog` | JSON 结构化，零依赖 |
-| 限速 | `golang.org/x/time/rate` | 令牌桶 |
-| 密码哈希 | `golang.org/x/crypto/argon2` | 账户 |
-| 加密 | `crypto/aes` GCM | 上游 secret 落库 |
+| 限速 | `golang.org/x/time/rate` | 需要**三维**（全局 / 按 Key / 按 IP）令牌桶，且要能在 Key 配置变更后重建桶；`rate.Limiter` 可 `SetLimit` 原地调参，不必丢弃历史令牌计数；自写桶的并发正确性收益不抵风险 |
+| 密码哈希 | `golang.org/x/crypto/argon2` | 唯一同时满足**可调内存硬度**（argon2id 的 `memory` 参数）与**无 CGO** 的内存硬密码哈希；bcrypt 的 cost 只能调迭代不能调内存，防 GPU 能力弱 |
+| 加密 | `crypto/aes` GCM | 上游 secret 落库需要**认证加密**（改一个比特就要解不开，而不是解出垃圾）；GCM 是标准库自带、无需第三方依赖的 AEAD |
 | TLS | 内置可选：标准库 `crypto/tls` 加载 cert/key（不依赖反代） | 默认关闭；由于暂无域名，不引入 `autocert` |
 | 前端 | **Vite + React 19 + TypeScript + Tailwind + shadcn/ui**，产物用 `go:embed` 打进二进制 | 见 7.1 |
 | 前端数据层 | TanStack Query（缓存与失效）+ React Router | 管理台表单密集，手写 fetch 会重复实现缓存 |
@@ -757,14 +757,15 @@ FreeRouter/
 **贡献**
 - [ ] 贡献页：供应商 OAuth 贡献 + API Key 贡献（未登录也可）
 - [ ] `contributor` 类授予、恢复码 / OAuth 找回
-- [ ] **模型鉴定 L0 + L1**（`verified` / `suspect` / `unverified` 三态，冷门默认放行）
+- [ ] **模型鉴定 L0 + L1**（`verified` / `suspect` / `unverified` / `trusted` **四态**，冷门默认放行）
 
 **Key 与观测**
 - [ ] API Key：归属账户（需 `tenant` 类），创建 / 禁用 / 过期 / 额度 / RPM·TPM /
      模型白名单；数量与额度受组约束
 - [ ] 请求日志：端点、抽象模型、**真实落点（仅管理端）**、状态、TTFT、耗时、token、错误码
 - [ ] 控制台：公共页（登录 / 注册 / 待审核 / 贡献）+ 管理端 + 租户端 + 贡献者端
-- [ ] 安全基线（第 9 章全部，公网形态不可裁剪）
+- [ ] 安全基线（第 9 章）——**默认回环监听下，公网专属项可延到 M10，但不得删**；
+      具体哪些项可延、哪些无论如何必须有，见 [ops/01-security.md](ops/01-security.md) 第 8 节
 - [ ] 部署：本地直连（默认）+ systemd unit + Docker Compose（反代模板可选）
 
 ### P1
@@ -856,7 +857,7 @@ SQLite（WAL），编号 SQL 迁移，启动时自动执行。
 |---|---|---|
 | `accounts` | id, display_name, username, password_hash, status, recovery_code_hash, created_at, last_login_at, note | status: `pending` / `active` / `disabled` / `rejected` / `merged`；**无上级归属** |
 | `account_classes` | account_id, class | `admin` / `tenant` / `contributor`，一个账户可多行 |
-| `account_merges` | source_id, target_id, merged_at, reversible_until | 合并留痕（类取并集） |
+| `account_merges` | source_id, target_id, merged_at, reversible_until, undone_at | 合并留痕（类取并集）；撤销窗口 **7 天**，撤销不删行、只写 `undone_at` |
 | `sessions` | id, account_id, token_hash, created_at, expires_at, elevated_until, ip, ua | 改密 / 禁用即吊销；`elevated_until` 支撑提权 |
 | `groups` | id, name, description, is_default, created_at | 组 = 一组策略 + 一批成员 |
 | `group_members` | group_id, account_id | 多对多 |
@@ -925,24 +926,36 @@ SQLite（WAL），编号 SQL 迁移，启动时自动执行。
 
 ## 12. 里程碑
 
-| 阶段 | 内容 | 产出 | 估时 |
+| 阶段 | 内容 | 产出 | 工日 |
 |---|---|---|---|
-| M0 | 骨架：go.mod、chi 起服务、SQLite 迁移、配置、`/healthz` | `go run ./cmd/freerouter` 能起 | 0.5 天 |
-| M1 | OpenAI Chat 入站 + dshgateway 上游（连接池 / 重试）+ 单 Key 鉴权 + SSE | Cherry Studio 跑通一轮对话 | 1 天 |
-| M2 | Anthropic Messages 入站（含 `tool_use` / `thinking`） | Claude Code 接得进来 | 1 天 |
-| M3 | **账户与权限类**：初始化向导、注册→审核、导入、会话、类级提权 | 能把账户发给人用 | 1.5 天 |
-| M4 | **抽象模型 + 策略引擎 + 弃用替代链** | 对外只有抽象模型 | 2 天 |
-| M5 | **组** + API Key + 三维限速 + 额度护栏 + 请求日志 | 可发给一组人 | 1.5 天 |
-| M6 | **贡献与凭据**：贡献页、`contributor` 类、Node sidecar、凭据入池 | 别人能贡献 | 2 天 |
-| M7 | **模型鉴定 L0+L1** + 复检队列 | 假模型进不来 | 1.5 天 |
-| M8 | 公网安全基线（可选 TLS / 禁用联动 / 审计 / 安全头）+ 部署产物 | 可安全暴露公网 | 1 天 |
-| M9 | 控制台（管理端 + 租户端 + 贡献者端） | 可运维 | 2 天 |
-| M10 | 健康探测 + 契约测试 + 压测 | 可长期跑 | 1 天 |
+| M0 | 骨架与契约锁定：go.mod、chi 起服务、SQLite 迁移、配置、`/healthz`、**8326 契约测试** | `go run ./cmd/freerouter` 能起 | 1 |
+| M1 | 上游接入与配额探测：连接池 / 重试、`/v1/models` 摄入、余额查询 | 116 个模型入目录 | 1.5 |
+| M2 | 模型目录与鉴定 L0+L1 + 复检队列 | 假模型进不来 | 1.5 |
+| M3 | **账户与权限类**：初始化向导、注册→审核、导入、会话、类级提权 | 能把账户发给人用 | 1.5 |
+| M4 | 额度与限速：7 维配额、三维限速、额度护栏、请求日志 | 可发给人用不烧穿 | 1.5 |
+| M5 | API 出口：`/v1/chat/completions`、`/v1/responses`、**`/v1/messages`**、`/v1/models`、SSE、失败切换 | 客户端接得进来 | 2 |
+| M6 | **抽象模型 + 策略引擎 + 弃用替代链** | 对外只有抽象模型 | 2.5 |
+| M7 | **组**与授权（含组级共享池） | 可发给一组人 | 1.5 |
+| M8 | **贡献与凭据**：贡献页、`contributor` 类、Node sidecar、凭据入池 | 别人能贡献 | 2.0 |
+| M9 | 界面完善（管理端 + 租户端 + 贡献者端） | 可运维 | 2.5 |
+| M10 | 加固与上线：安全基线、健康探测、契约测试、压测 | 可长期跑 | 1.5 |
 
-约 **15 天**。M1 结束即有实用价值；**M3+M4 结束就能对外提供抽象模型**；
-M6+M7 结束众包供给才闭环。
+共 **19.0 工日**，关键路径（M0→M1→M3→M4→M5→M6→M10）约 **14 天**。
+M1 结束即有实用价值；**M6 结束就能对外提供抽象模型**；
+M2 与 M8 可并行；M7 必须在 M6 之后（组的授权对象是抽象模型）。
 
-**M8 不可跳过**——公网形态下没有安全基线等于把账号送出去。
+> 本章与 [ops/03-milestones.md](ops/03-milestones.md) 第 1 节**同一切分**（M0–M10、工日、
+> 依赖图）。运维分册是权威执行清单，本节只给总纲视角；两者若再出现不一致，
+> 以运维分册为准并回头修本节。
+
+**M8 为何由 2.5 下调到 2.0**：贡献者无偿（4.5）后取消了「回报」这一整块——
+没有额度折算、没有优先使用权的发放与对账、没有升级凭据的判定，只剩一个
+只读的贡献统计视图（[architecture/05-storage.md](architecture/05-storage.md) 3.10）。
+M8 不在关键路径上，所以 14 天不变。
+
+**为什么不再写「M8 不可跳过」**：这句话在「先本地跑、默认只监听 `127.0.0.1`」
+的定案下**前提不成立**（用户 2026-10-19 拍板）。安全基线仍需做，但它排在
+M10 而非插在关键路径中间；真要暴露公网时 M10 必须完成。
 
 ---
 
@@ -1025,5 +1038,13 @@ M6+M7 结束众包供给才闭环。
 3. ~~前端选型~~ —— **已定案：Vite + React + `go:embed` 单二进制**（见 7.1）。否掉纯 Go 模板 / 前后端分离 / Next 静态导出三条路线的理由在同一节。
 4. ~~组级共享额度池~~ —— **已定案：两种都做**（每人上限 + 组级共享池，可单独用也可同时用，见 2.6）。
 5. ~~是否预置抽象模型名~~ —— **已定案：不预置**，全部由管理员手建（见 3.7）。
-6. **平台自有凭据**用 `owner_account_id = NULL` 表达（**默认采纳**，如无异议按此执行）。
+6. ~~平台自有凭据~~ —— **已定案：用 `owner_account_id = NULL` 表达**（已在 4、10、11 章作为既定事实使用）。
 7. ~~部署位置~~ **先本地跑**；~~反代方案~~ **不用反代，默认 IP + 端口，需要时自行配置**；~~管理面限来源 IP~~ **不限**。**域名仍未定**。
+
+**本章现状**：七项中六项已定案，只剩「域名」一个未定项（不阻塞 M0–M10，
+默认形态用 `http://<ip>:<port>`）。原本列在本章的「待拍板」实质已清空，
+因此标题仍用「待你拍板」只为保持各分册穿插引用不断裂。
+
+> **还有一项需要你复核**：全库中**由写入者自行拍板、你从未明确表态**的设计选择
+> 已全部归集到 [DECISIONS-REVIEW.md](DECISIONS-REVIEW.md)（约 500 条，按影响面
+> 分 10 章，每条带 `文件:行号` 与理由）。你只需指出**第几节 / 哪几条不接受**。

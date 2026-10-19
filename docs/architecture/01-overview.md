@@ -177,7 +177,7 @@ IR、上游、sidecar、存储、运行时的细节分别在 [02-ir.md](02-ir.md
 │ FreeRouter 主进程（Go）                      │
 │  HTTP 服务 · L1/L2 · SQLite · 上游客户端      │
 └───────────────┬────────────────────────────┘
-                │ Unix socket（0600，仅同用户可达）
+                │ stdio + NDJSON（一行一帧，0600 管道）
 ┌───────────────▼────────────────────────────┐
 │ Node sidecar（子进程）                       │
 │  providers-hub 的 auth / oauth 模块          │
@@ -190,7 +190,7 @@ IR、上游、sidecar、存储、运行时的细节分别在 [02-ir.md](02-ir.md
 | 决策 | 选择 | 理由 |
 |---|---|---|
 | 登录/续期复用方式 | **进程级 sidecar**，不 import | providers-hub 的 `package.json` 只导出 `.` 与 `./client`，深路径 import 随版本漂；且直接 import 会与 DSH 进程内模块状态冲突（PLAN 5.5） |
-| 传输 | Unix domain socket | 文件系统权限天然隔离其他本机用户；不占端口，避免与 8326 冲突；比 TCP 回环少一层可被误连的面 |
+| 传输 | **stdio + NDJSON** | 进程边界与通道边界重合：sidecar 一死管道立刻 EOF，主进程第一时间知道，不需额外存活探测。Unix socket 会留下**孤儿监听**——sidecar 崩溃后 socket 文件还在，重连会连到不存在的进程或僵尸 fd。详见 [04-sidecar.md](04-sidecar.md) 2.1 |
 | sidecar 是否有状态 | **无状态**（凭据经 IPC 回传给 Go，由 Go 加密落库） | 有状态就必须给 sidecar 一份存储，等于再造一个凭据库；无状态让"授权一次、Go 侧一份密文"成立 |
 | sidecar 失败时 | 主服务照常转发，仅贡献与续期不可用 | 转发不依赖 sidecar，若因 sidecar 崩溃就整体 503，等于用一个可选组件拖垮核心功能 |
 
@@ -218,7 +218,7 @@ IR、上游、sidecar、存储、运行时的细节分别在 [02-ir.md](02-ir.md
 1. `/readyz` 立即变红（让反代先摘流量）；
 2. 关闭 listener（不再接新连接）；
 3. 等在飞请求完成，上限 30s（见 [06-runtime.md](06-runtime.md)）；
-4. 关闭 sidecar（先 `shutdown` 通知，超时强杀）；
+4. 关闭 sidecar（拒新 IPC 等 5s → 发 `shutdown` 等 3s → SIGTERM 等 2s → SIGKILL）；超时细节以 [04-sidecar.md](04-sidecar.md) 5.4 为准；
 5. 关闭数据库（WAL checkpoint）。
 
 **为什么先关 listener 再等**：只"等"不"关"，新的连接会持续进来，drain 永远结束不了。
@@ -231,13 +231,23 @@ IR、上游、sidecar、存储、运行时的细节分别在 [02-ir.md](02-ir.md
 
 | 形态 | 入口 | 适用 |
 |---|---|---|
-| 裸机 + systemd | `freerouter serve -c /etc/freerouter/config.yaml` | 开发、单机自托管 |
-| Docker Compose | 主容器 + 反代容器（Caddy） | 推荐生产 |
-| 反代终止 TLS | 主进程只监听 `127.0.0.1:8080`，Caddy 持证书 | 已有反代体系 |
+| A 本地直连（**默认**） | 默认监听 `127.0.0.1:8080`，明文 HTTP | 开发、先本地跑通 |
+| B Docker Compose | 主容器，`network_mode: host` | 生产/单机自托管 |
+| C 反代前置（**可选**） | 主进程监听回环，由 Caddy/Nginx 持证书 | 已有反代体系 |
 
-**为什么主进程自己不强制内置 ACME**：autocert 需要独占 80/443 与可写证书缓存，而多数生产
-环境由反代统一管理证书。把两者做成二选一（`tls.mode: acme | reverse-proxy`），避免"两处都想
-持证书"导致启动时端口冲突。配置校验对 `mode: reverse-proxy` 强制要求监听地址是回环。
+三种形态只影响「谁在监听、谁终止 TLS」，不影响进程拓扑（永远是 Go 主进程 + Node
+sidecar 两进程）。**默认形态不需要反代**，这是刻意选的：反代作为前置条件会把「先本地
+跑通」挡在门外，也让单机自用部署凭空多一个组件与故障点（详见
+[../ops/02-deploy.md](../ops/02-deploy.md) 4.2）。
+
+**TLS 只有一个终止点**：要么本进程内置（`tls.mode: files`，加载自备 cert/key），
+要么由前置反代终止（此时本进程明文监听回环）。两者**不同时使用**——同时终止时外层与
+内层证书会不一致（HSTS、Secure Cookie、重定向 URL 都可能指错），「到底谁在终止」会
+成为排障长期歧义。`tls.mode` 默认 **`off`**（默认形态 A 是明文直连 IP+端口）。
+
+> **暂不支持 `tls.mode: acme`**：ACME 必须针对真实域名签发，而对外域名仍未定
+> （PLAN 15 章）。等域名确定后再评估是否引入 `autocert`；在那之前配 `acme` 会在
+> 配置校验阶段被拒绝并提示原因。
 
 ### 7.2 数据目录
 
@@ -246,7 +256,6 @@ $FR_DATA_DIR/
 ├── freerouter.db              SQLite 主库
 ├── freerouter.db-wal          WAL
 ├── freerouter.db-shm
-├── sidecar.sock               Unix socket（0600，运行期）
 ├── master.key                 主密钥（0600，可选改用环境变量）
 └── backups/
 ```

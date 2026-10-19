@@ -98,7 +98,7 @@ llm.resolveModelInfo / llm.registerConfigurableProviders / llm.registerAdapter
 
 ```
 FreeRouter 主服务（Go）          租户 / Key / 配额 / 鉴权 / 协议转换 / 路由 / 日志
-        │ Unix socket
+        │ stdio + NDJSON（一行一帧）
 Node sidecar                    渠道登录流 / 凭据加密托管 / 定时续期 / 余额签到 / 模型目录
         │ HTTPS
 各供应商官方端点

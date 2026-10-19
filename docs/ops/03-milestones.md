@@ -101,7 +101,7 @@ make contract        # 必须全绿，且能检测到上游偶发连接失败
 - [ ] `internal/upstream`：`Upstream` / `Credential` / `Quota` 抽象（见 [../architecture/03-upstream.md](../architecture/03-upstream.md)）
 - [ ] 连接池：`idle_timeout ≤ 120s`、连接数上限、健康标记
 - [ ] **重试**：仅对未吐内容的请求；指数退避；记录 `http=000` 类连接失败
-- [ ] 拉取 `/v1/models` 并落 `upstream_models`（含 `last_seen_at`）
+- [ ] 拉取 `/v1/models` 并落 `real_models`（含 `last_seen_at`）
 - [ ] 探测上游配额（余额 / 到期时间，能拿到多少拿多少）
 - [ ] `GET /admin/api/upstreams/{id}/health` 返回健康状态与延迟
 - [ ] 结构化日志：请求 ID、上游、耗时、状态码
@@ -112,7 +112,7 @@ make contract        # 必须全绿，且能检测到上游偶发连接失败
 # 上游健康
 curl -s localhost:8080/admin/api/upstreams -H "Cookie: $ADMIN_COOKIE" | jq
 # 模型目录已落库
-sqlite3 data/freerouter.db "SELECT count(*) FROM upstream_models;"
+sqlite3 data/freerouter.db "SELECT count(*) FROM real_models;"
 # 重试生效：断开 DSH 后请求应重试并记录失败原因
 ```
 
@@ -199,7 +199,7 @@ curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/admin/api/accounts  # �
 - [ ] 组级策略合并（放开取并集、限制取最严）
 - [ ] 超限 → `429` + `Retry-After`
 - [ ] 全局预算熔断 + 告警
-- [ ] 用量记账：`usage_records`（按 Key / 租户 / 模型 / 时间）
+- [ ] 用量记账：`requests`（明细，按 `account_id` / `api_key_id` / `abstract_model_id` / `ts`）+ `usage_daily`（日聚合看板）
 - [ ] 异常用量检测（突增告警）
 
 ### 验收
@@ -230,6 +230,7 @@ sqlite3 ... "UPDATE settings SET value='100' WHERE key='limits.global_daily_toke
 
 - [ ] `POST /v1/chat/completions`（流式 + 非流式）
 - [ ] `POST /v1/responses`（OpenAI Responses API）
+- [ ] **`POST /v1/messages`（Anthropic Messages 入站）**：内容块映射、`tool_use` / `tool_result`、扩展思考（`thinking`）、具名事件 SSE（`message_start` / `content_block_delta` / `message_stop`）、`event: error` 错误帧——验收命令见下
 - [ ] `GET /v1/models`（只列**抽象模型**）
 - [ ] Key 鉴权中间件（SHA-256 查表 + 常量时间比较 + 账户状态实时校验）
 - [ ] SSE 透传（**不在中间缓冲**）+ TTFT 记录
@@ -253,6 +254,11 @@ curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/v1/chat/completions \
 
 # 无候选 → 503（与「模型不存在」的 404 区分）
 curl -s -o /dev/null -w "%{http_code}\n" ... --data '{"model":"全渠道耗尽"}'
+
+# Anthropic Messages 入站：期待具名事件流（GPT 客户端不适用，用 Claude 格式验）
+curl -N -s localhost:8080/v1/messages -H "x-api-key: $KEY" -H "anthropic-version: 2023-06-01" \
+  --data '{"model":"<抽象模型>","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"stream":true}' \
+  | head -5   # 期望：event: message_start / content_block_delta / message_stop 具名事件
 ```
 
 **关键验收点**：**切换只发生在未吐内容时**。构造一个「第一个候选返回 200 后
@@ -329,7 +335,7 @@ curl -s localhost:8080/api/group/members -H "Cookie: $TENANT_COOKIE"  # 期望 4
 
 ### 任务
 
-- [ ] `freerouter-sidecar`（Node 子进程）：Unix socket + JSON-RPC
+- [ ] `freerouter-sidecar`（Node 子进程）：**stdio + NDJSON**（不提供 socket / TCP 选项）
 - [ ] 复用 `dsh-providers-hub` 模块：`listProviders` / 各渠道 OAuth 登录流 / 额度查询
 - [ ] 贡献页：选渠道 → 一次性贡献会话 → OAuth/设备码/扫码/短信
 - [ ] 凭据 AES-GCM 加密入库（主密钥独立于库）

@@ -320,14 +320,15 @@ w 可能不再是原始类型，类型断言会静默失败——表现为「流
  2. 把 /readyz 置为不就绪
  3. 等待进行中的请求完成，最多 shutdown_grace（默认 30s）
  4. 取消根 ctx（中断仍在跑的流）
- 5. 关闭 sidecar（发 shutdown，等 5s，超时 SIGKILL）
+ 5. 关闭 sidecar（拒新 IPC 等 5s → 发 shutdown 等 3s → SIGTERM 等 2s → SIGKILL）
  6. 关闭数据库（checkpoint WAL）
  7. 退出
 ```
 
 **为什么先置 `/readyz` 不就绪再等待**：负载均衡需要时间感知。
 如果直接停，仍然会被导流过来。先摘流、再 drain，是标准的两步。
-
+第 5 步的四级超时（5s / 3s / 2s / SIGKILL）以
+[04-sidecar.md](04-sidecar.md) 第 5.4 节为权威，本节只记总体顺序。
 **为什么第 4 步要强制取消而不是无限等待**：流式请求可能持续很久
 （长回答、客户端挂着不读）。无限等待会让部署卡死，
 也会让 Kubernetes 在 `terminationGracePeriodSeconds` 超时后 SIGKILL，
