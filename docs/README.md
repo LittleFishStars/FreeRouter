@@ -1,0 +1,121 @@
+# FreeRouter 设计文档
+
+> 本目录是 FreeRouter 的设计文档集。**[PLAN.md](PLAN.md) 是总纲**，
+> 其余按主题分册。分册只做**细化**，不改变总纲里已定的决策。
+>
+> **冲突时的优先级**：用户最新指令 > `PLAN.md` > 分册。
+
+---
+
+## 文档地图
+
+| 分册 | 文件 | 内容 | 状态 |
+|---|---|---|---|
+| **总纲** | [PLAN.md](PLAN.md) | 定位、范围边界、需求映射、里程碑、验收 | v4 已定 |
+| **架构** | [architecture/01-overview.md](architecture/01-overview.md) | 分层、进程模型、部署形态 | ✅ 345 行 |
+| | [architecture/02-ir.md](architecture/02-ir.md) | IR 与四协议转换 | ✅ 554 行 |
+| | [architecture/03-upstream.md](architecture/03-upstream.md) | 上游适配：dshgateway / contributed | ✅ 433 行 |
+| | [architecture/04-sidecar.md](architecture/04-sidecar.md) | Node sidecar 的 IPC 契约 | ✅ 394 行 |
+| | [architecture/05-storage.md](architecture/05-storage.md) | 数据模型、迁移、索引 | ✅ 624 行 |
+| | [architecture/06-runtime.md](architecture/06-runtime.md) | 并发、连接池、流式、超时、错误处理 | ✅ 395 行 |
+| **权限与安全** | [security/01-accounts.md](security/01-accounts.md) | 账户与权限类模型 | ✅ 271 行 |
+| | [security/02-authn.md](security/02-authn.md) | 登录、会话、提权、OAuth 登录 | ✅ 384 行 |
+| | [security/03-groups.md](security/03-groups.md) | 组与合并语义 | ✅ 270 行 |
+| | [security/04-authz.md](security/04-authz.md) | 授权判定链（决策表） | ✅ 235 行 |
+| | [security/05-keys.md](security/05-keys.md) | API Key 与密钥管理 | ✅ 230 行 |
+| | [security/06-audit.md](security/06-audit.md) | 审计与可观测 | ✅ 312 行 |
+| **模型体系** | [models/01-catalog.md](models/01-catalog.md) | 真实模型目录与健康 | ✅ 266 行 |
+| | [models/02-abstract.md](models/02-abstract.md) | 抽象模型定义与能力声明 | ✅ 287 行 |
+| | [models/03-strategy.md](models/03-strategy.md) | 策略引擎：过滤 / 排序 / 切换 | ✅ 265 行 |
+| | [models/04-deprecation.md](models/04-deprecation.md) | 弃用与替代链 | ✅ 265 行 |
+| | [models/05-verification.md](models/05-verification.md) | 模型鉴定流水线 | ✅ 266 行 |
+| **贡献与凭据** | [contributions/01-flow.md](contributions/01-flow.md) | 贡献流程（匿名 / 已登录） | ✅ 191 行 |
+| | [contributions/02-credentials.md](contributions/02-credentials.md) | 凭据归属、加密、生命周期、回报 | ✅ 302 行 |
+| **界面规划** | [ui/01-ia.md](ui/01-ia.md) | 信息架构与导航 | ✅ 272 行 |
+| | [ui/02-public.md](ui/02-public.md) | 公共页：登录 / 注册 / 待审 / 贡献 | ✅ 282 行 |
+| | [ui/03-admin.md](ui/03-admin.md) | 管理端页面 | ✅ 465 行 |
+| | [ui/04-tenant.md](ui/04-tenant.md) | 租户端页面 | ✅ 231 行 |
+| | [ui/05-contributor.md](ui/05-contributor.md) | 贡献者端页面 | ✅ 176 行 |
+| | [ui/06-design.md](ui/06-design.md) | 交互约定与组件 | ✅ 233 行 |
+| **API 契约** | [api/01-inbound.md](api/01-inbound.md) | 入站 API（OpenAI / Anthropic） | ✅ 445 行 |
+| | [api/02-admin.md](api/02-admin.md) | 管理 API | ✅ 466 行 |
+| | [api/03-errors.md](api/03-errors.md) | 错误码与响应头 | ✅ 307 行 |
+| **运维** | [ops/01-security.md](ops/01-security.md) | 公网安全基线清单 | ✅ 208 行 |
+| | [ops/02-deploy.md](ops/02-deploy.md) | 部署、配置项、备份 | ✅ 410 行 |
+| | [ops/03-milestones.md](ops/03-milestones.md) | 里程碑拆解与验收清单 | ✅ 460 行 |
+
+---
+
+## 术语表
+
+**以下定义是全文唯一口径。** 分册里不得另起炉灶使用同义词。
+
+| 术语 | 英文 / 标识 | 定义 |
+|---|---|---|
+| **账户** | `account` | 一个人的登录身份。由**显示名 + 账户 ID + 权限类集合**组成 |
+| **权限类** | `class` | 能力标签：`admin` / `tenant` / `contributor`。**一个账户可同时拥有多个** |
+| **管理员类** | `admin` | 只能做管理。**不提供任何模型调用能力** |
+| **租户类** | `tenant` | 只能调模型、建 Key、看自己的用量。**不提供凭据能力** |
+| **贡献者类** | `contributor` | 只能贡献与查看自己的贡献。**不提供模型调用能力** |
+| **隔离** | isolation | **权限类之间**的能力不互授、资源分表归属、审计分账。**不是**"人不能有多个类" |
+| **组** | `group` | 管理员定义的**批量控制单元** = 一组策略 + 一批成员。**不是**组织实体 |
+| **合并语义** | merge semantics | 一个账户属于多个组时：**放开类取并集，限制类取最严**，布尔开关 deny 优先 |
+| **真实模型** | `real_model` | 上游池子里的模型（`dsh:deepseek-official/deepseek-flash`）。**只有管理员可见** |
+| **抽象模型** | `abstract_model` | 管理员定义的对外模型（`smart` / `fast`）。**只有租户可见** |
+| **候选** | `candidate` | 抽象模型的一个候选来源：真实模型 × 渠道范围 × 约束。**声明式，不绑凭据** |
+| **策略引擎** | strategy | 三段式：**过滤 → 排序 → 切换**。排序默认 `expiry-first` |
+| **弃用** | `deprecated` | **仍然接受请求**，内部解析到替代模型并附弃用信号。**不是关闭** |
+| **替代链** | replacement chain | `old → mid → new`，可多跳。配置时允许、运行时跟随，上限 5 跳 |
+| **禁用** | `disabled` | 不接受请求（404 / 410 Gone） |
+| **凭据** | `credential` | 上游访问凭据（供应商账号 OAuth 或 API Key）。**只归属带 `contributor` 类的账户** |
+| **平台自有凭据** | `owner_account_id = NULL` | 我们自己配的凭据，不属于任何账户，与贡献凭据同构但来源不同 |
+| **API Key** | `api_key` | 租户调模型用的站点密钥。**只归属带 `tenant` 类的账户** |
+| **提权** | step-up | 进入管理面前**当场再验一次**的机制。有效期 15 分钟 |
+| **鉴定** | verification | 检验"贡献的凭据声称的模型是否真的匹配"。判定见下 |
+
+**鉴定判定四态**：
+
+| 判定 | 含义 | 是否入池 |
+|---|---|---|
+| `verified` | 库中有参考指纹且达标 | ✅ |
+| `suspect` | 有指纹但不达标 | ❌ 拒绝并给证据 |
+| `unverified` | **库中无参考指纹**（冷门模型） | ✅ 放行，标「未鉴定」，进复检队列 |
+| `trusted` | 官方域名 | ✅ 免检 |
+
+---
+
+## 文档约定
+
+1. **文件开头**写一行归属信息：
+   `> 分册：架构 · 依赖：[architecture/02-ir.md](architecture/02-ir.md) · 对应总纲：PLAN.md 第 6 章`
+2. **章节编号**从 `## 1.` 起，二级标题带编号，三级不带。
+3. **待定项**统一写成引用块，不得自行拍板：
+   > **待定**：<问题描述>
+4. **交叉引用**用相对路径 + 锚点，如 `../security/04-authz.md#判定链`。
+5. **每个设计决策必须写"为什么"**，不能只写"是什么"。只写结论的条目视为未完成。
+6. **不引入新概念**。需要新概念时，先写进本文档的术语表，再在分册里用。
+7. **表格优先于长段落**；流程用编号列表；数据结构用代码块。
+8. **不写实现代码**（除数据结构与接口签名）。这是设计文档，不是源码。
+
+---
+
+## 阅读路径
+
+| 你是 | 从哪开始 |
+|---|---|
+| 想了解这个项目 | [PLAN.md](PLAN.md) → [architecture/01-overview.md](architecture/01-overview.md) |
+| 要写后端代码 | [architecture/](architecture/) 全部 → [security/](security/) 全部 → [api/](api/) |
+| 要做界面 | [ui/01-ia.md](ui/01-ia.md) → [security/04-authz.md](security/04-authz.md)（决定谁看到什么） |
+| 关心模型路由 | [models/](models/) 全部 |
+| 关心贡献侧 | [contributions/](contributions/) |
+| 要部署 | [ops/01-security.md](ops/01-security.md) → [ops/02-deploy.md](ops/02-deploy.md) |
+
+---
+
+## 事实源优先级
+
+1. **用户的最新指令** —— 最高
+2. **[PLAN.md](PLAN.md)** —— 已定决策与需求映射，分册不得违背
+3. **分册** —— 细化实现细节
+
+发现分册与总纲冲突时：**以总纲为准**，并在分册里标注冲突点。
