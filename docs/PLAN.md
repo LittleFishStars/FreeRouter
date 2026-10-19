@@ -71,7 +71,7 @@ v3 曾把治理层整个砍掉（"只有一堆 Key，没有人的概念"），v4
 |---|---|---|
 | 团队 / 租户 | `tenants` 表、成员归属、团队级汇总 | 删表。改为扁平的 `accounts`（**无上级归属、无邀请**） |
 | 计费 | `cost` 字段（金额） | 删。**订阅额度没有单价**，算不出真钱；只记 token 消耗量 |
-| 前端重量 | —— | 见第 7 章：Next.js 是否过重待定 |
+| 前端重量 | Vite + React + embed | 已定案（第 7 章）：与 Tingly Box 的 Web UI 同级，不额外引入部署单元 |
 
 ### 1.4 v3 的「路由退一层」作废
 
@@ -667,12 +667,37 @@ providers-hub 的 `package.json` 只导出 `.` 与 `./client`，深路径 import
 | 密码哈希 | `golang.org/x/crypto/argon2` | 账户 |
 | 加密 | `crypto/aes` GCM | 上游 secret 落库 |
 | TLS | 内置可选：标准库 `crypto/tls` 加载 cert/key（不依赖反代） | 默认关闭；由于暂无域名，不引入 `autocert` |
-| 前端 | **待定**：Next.js + `embed.FS`，或 Go `html/template` + htmx | 见下 |
+| 前端 | **Vite + React 19 + TypeScript + Tailwind + shadcn/ui**，产物用 `go:embed` 打进二进制 | 见 7.1 |
+| 前端数据层 | TanStack Query（缓存与失效）+ React Router | 管理台表单密集，手写 fetch 会重复实现缓存 |
 | 依赖代理 | **必须设 `GOPROXY=https://goproxy.cn,direct`** | 本机实测 `proxy.golang.org` 不通 |
 
-> **前端选型待定**：Next.js 对六个控制台页面可能过重；替代方案是 Go 模板 + htmx
-> （零 Node 依赖，但交互受限）。**等全部需求确定后再定**。
-
+> **前端选型（2026-10-19 定案：Vite + React，`go:embed` 单二进制）**
+>
+> 四条候选路线：A 纯 Go 模板 + htmx / **B Vite + React + embed（选它）** / C 前后端分离 / D Next.js 静态导出。
+>
+> **为什么选 B**：
+> 1. **管理台的真实复杂度不支持极简前端**。抽象模型候选集编辑（多行、排序、权重）、
+>    策略编排、弃用替代链预览、审计检索分页、鉴定队列逐条展开——这不是“十几个简单表单”。
+>    轻量方案省下的构建成本会在实现阶段加倍还回来。
+> 2. **部署形态与 A 完全一致**：一个二进制 + 一个配置 + 一个数据目录。
+> 3. **A 想省掉的 Node 在生产环境根本省不掉**：sidecar 必须跑 Node（17 家供应商的
+>    OAuth 与续期只有 `dsh-providers-hub` 的实现能复用，用 Go 重写是另一个量级的工程）。
+>    A 的价值只剩“省掉构建期 Node”这一半。
+>
+> **为什么不是 C（前后端分离）**：部署单元从 1 个变 2 个，与“先本地跑、直接 IP+端口”
+> 的决策正面冲突；Cookie 认证跨域要配 `SameSite=None; Secure`，而当前默认是明文 HTTP，
+> 这套组合在明文下走不通；且它强制先解决域名（当前未提供）。
+>
+> **为什么不是 D（Next.js 静态导出）**：`output: 'export'` 下 `_next/` 资源路径、
+> `basePath`/`assetPrefix`、`public/` 与字体都要走 embed 映射，动态路由受限；
+> 而它换来的 SSR 能力对一个内网管理台用不上。
+>
+> **为什么不是 A（纯 Go 模板 + htmx）**：见上面第 1 条。如果将来管理台确实简化到
+> 只剩简单表单，可重新评估。
+>
+> **连带约定**：Vite 产物（`dist/`）用 `go:embed` 嵌入，SPA fallback 由 Go 侧处理
+> （非 `/api` 与 `/v1` 前缀的 404 回退到 `index.html`）；开发期用 Vite dev server
+> 反代到 Go，或 Go 侧代理到 Vite（二者任选，见 `ops/02-deploy.md`）。
 ### 7.1 目录结构
 
 ```
@@ -692,9 +717,12 @@ FreeRouter/
 │   ├── verify/                   # 模型鉴定流水线
 │   ├── httpapi/                  # 入站：鉴权、限速、配额、SSE
 │   ├── admin/                    # 管理面 API
+│   ├── webui/                    # SPA fallback + 静态资源缓存头（embed 由 web 包提供）
 │   └── security/                 # 密钥、限速器、审计、安全头、提权
 ├── sidecar/                      # Node 子进程（读 providers-hub auth）
-├── web/                          # 控制台
+├── web/                          # 控制台源码（Vite + React + TS），pnpm build 产出 dist/
+│   ├── dist/                     # 构建产物，由同目录 embed.go 的 go:embed 引用
+│   └── embed.go                  # package web：//go:embed dist（go:embed 不能跨目录）
 ├── migrations/
 ├── deploy/                       # Dockerfile / compose / Caddyfile / systemd
 └── docs/PLAN.md
@@ -994,7 +1022,7 @@ M6+M7 结束众包供给才闭环。
 
 1. ~~账户模型选 A 还是 B~~ —— **已定案：采用方案 A**（见 2.5）。M3 已解锁。
 2. ~~贡献者回报机制~~ —— **已定案：贡献者无偿**（见 4.5），只保留贡献统计。
-3. **前端选型**：Next.js + embed 还是 Go 模板 + htmx（第 7 章）。
+3. ~~前端选型~~ —— **已定案：Vite + React + `go:embed` 单二进制**（见 7.1）。否掉纯 Go 模板 / 前后端分离 / Next 静态导出三条路线的理由在同一节。
 4. ~~组级共享额度池~~ —— **已定案：两种都做**（每人上限 + 组级共享池，可单独用也可同时用，见 2.6）。
 5. ~~是否预置抽象模型名~~ —— **已定案：不预置**，全部由管理员手建（见 3.7）。
 6. **平台自有凭据**用 `owner_account_id = NULL` 表达（**默认采纳**，如无异议按此执行）。

@@ -12,7 +12,7 @@
 | 分册 | 文件 | 内容 | 状态 |
 |---|---|---|---|
 | **总纲** | [PLAN.md](PLAN.md) | 定位、范围边界、需求映射、里程碑、验收 | v4 已定 |
-| **架构** | [architecture/01-overview.md](architecture/01-overview.md) | 分层、进程模型、部署形态 | ✅ 345 行 |
+| | [architecture/01-overview.md](architecture/01-overview.md) | 分层、进程模型、部署形态 | ✅ 348 行 |
 | | [architecture/02-ir.md](architecture/02-ir.md) | IR 与四协议转换 | ✅ 554 行 |
 | | [architecture/03-upstream.md](architecture/03-upstream.md) | 上游适配：dshgateway / contributed | ✅ 433 行 |
 | | [architecture/04-sidecar.md](architecture/04-sidecar.md) | Node sidecar 的 IPC 契约 | ✅ 394 行 |
@@ -36,7 +36,7 @@
 | | [ui/03-admin.md](ui/03-admin.md) | 管理端页面 | ✅ 506 行 |
 | | [ui/04-tenant.md](ui/04-tenant.md) | 租户端页面 | ✅ 231 行 |
 | | [ui/05-contributor.md](ui/05-contributor.md) | 贡献者端页面 | ✅ 184 行 |
-| | [ui/06-design.md](ui/06-design.md) | 交互约定与组件 | ✅ 233 行 |
+| | [ui/06-design.md](ui/06-design.md) | 交互约定与组件 | ✅ 245 行 |
 | **API 契约** | [api/01-inbound.md](api/01-inbound.md) | 入站 API（OpenAI / Anthropic） | ✅ 445 行 |
 | | [api/02-admin.md](api/02-admin.md) | 管理 API | ✅ 466 行 |
 | | [api/03-errors.md](api/03-errors.md) | 错误码与响应头 | ✅ 310 行 |

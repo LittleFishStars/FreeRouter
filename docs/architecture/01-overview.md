@@ -331,8 +331,11 @@ $FR_DATA_DIR/
 
 ## 11. 待定项
 
-> **待定**：前端形态（Next.js + `embed.FS` 还是 Go 模板 + htmx）会影响 L1 是否要挂静态资源
-> 中间件，以及构建产物是否包含 Node 工具链。总纲第 7 章与第 15 章均列为待拍板，本册不预设。
+**已定（2026-10-19）**：前端形态定为 Vite + React + `go:embed` 单二进制。对 L1 的三条结论：
+
+1. **L1 要挂静态资源中间件**：`/api` 与 `/v1` 前缀之外先查嵌入的 `dist/`，未命中则回退 `index.html`（SPA fallback）；`dist/` 未嵌入时（本地开发）回退到 Vite dev server 或直接 404。
+2. **构建期需要 Node，运行期不需要**：`pnpm build` 产出 `dist/`，`go build` 时嵌入；发布产物仍是单二进制。
+3. **静态资源不走鉴权中间件**，但要带 `Cache-Control: public, max-age=31536000, immutable`（文件名带 hash）与 `X-Content-Type-Options: nosniff`；`index.html` 必须 `no-cache`，否则前端发版后用户拿到旧壳。
 
 > **待定**：P2 多节点时，SQLite → Postgres 会改变事务边界（[05-storage.md](05-storage.md)）；
 > 同时限速与配额要从进程内状态迁到共享设施。多节点下的 sidecar 是"每节点一个"还是
