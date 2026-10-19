@@ -422,6 +422,34 @@ CREATE TABLE schema_migrations (
 **为什么 `settings` 与业务表分开**：它是运维可改的运行时开关（横幅文案、探测间隔等），
 与业务数据生命周期不同，混在一起会让"备份业务数据"与"备份配置"无法分开。
 
+### 3.10 贡献统计（不建表）
+
+贡献者侧**没有任何回报**：不折算额度、不给优先使用权、不给升级凭据（PLAN 4.5）。因此不存在"回报表 / 回报率 / 结算流水"，也不给它们留字段。要展示的只有**贡献统计**：贡献量、被调用次数、消耗 token、健康度——它们全部是已有事实的聚合。
+
+```sql
+-- 贡献统计：纯读取视图，不落表
+CREATE VIEW v_contributor_stats AS
+SELECT uc.owner_account_id            AS account_id,
+       uc.id                          AS credential_id,
+       uc.provider,
+       uc.status,                     -- 凭据状态
+       uc.verify_status,              -- 健康度（鉴定结果）
+       COUNT(r.id)                    AS request_count,
+       COALESCE(SUM(r.in_tokens), 0)  AS in_tokens,
+       COALESCE(SUM(r.out_tokens), 0) AS out_tokens,
+       MAX(r.ts)                      AS last_request_at
+FROM upstream_credentials uc
+LEFT JOIN requests r ON r.resolved_credential_id = uc.id
+GROUP BY uc.id;
+```
+
+贡献量 = 该账户在 `upstream_credentials` 里的行数（视图按凭据分组，外层 `COUNT(*)` 即得）；其余三项按 `requests` 归该凭据聚合。
+
+- **为什么统计不单独建表**：统计是**纯读取**，读的是已落库的 `requests` 与 `upstream_credentials`，没有写路径，也就没有理由维护一份副本。
+- **为什么这一点比"省一张表"重要**：一旦落成汇总表，就必须在请求落库的**同一事务**里维护它（见 7.2、7.3——热路径上多一次写就多一份代价），而任何一处漏更新都会让"贡献者看到的数字"与"实际请求"永久分叉，事后无法判断该信谁。视图的答案永远与事实表同源，这个风险直接消失。
+- **为什么成本可接受**：`ix_requests_credential_ts` 的前导列正是 `(credential_id, ts)`，按凭据分组走索引；日均请求量在万级、贡献者数在百级，聚合是毫秒级；贡献页也不在转发热路径上，没有延迟预算的压力。
+- **日后量级**：若 `requests` 的 90 天明细涨到聚合明显变慢（千万行级），再升级为**物化视图 / 定时汇总表**（按 `credential_id + day` 预聚合，与 `usage_daily` 同构）——届时仍以 `requests` 为准，汇总表只当缓存。现在不预建，因为提前落表就是提前背上上面那条一致性负担。
+
 ---
 
 ## 4. 索引策略
@@ -620,5 +648,3 @@ checkpoint。这是"长报表查询把 `-wal` 撑大"这类问题的根治手段
 > **待定**：`group_policies` 的 `policy_key` 是否需要一张"策略定义"元数据表来约束取值形状。
 > 当前靠应用层校验。
 
-> **待定**：是否需要给"贡献者回报"相关的数据单独建表（PLAN 15 把贡献者回报列为待拍板项）。
-> 当前设计里没有回报率的持久化位置，只有 `requests.resolved_credential_id` 可供事后统计。

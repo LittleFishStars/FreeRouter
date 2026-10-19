@@ -16,33 +16,33 @@
 | | [architecture/02-ir.md](architecture/02-ir.md) | IR 与四协议转换 | ✅ 554 行 |
 | | [architecture/03-upstream.md](architecture/03-upstream.md) | 上游适配：dshgateway / contributed | ✅ 433 行 |
 | | [architecture/04-sidecar.md](architecture/04-sidecar.md) | Node sidecar 的 IPC 契约 | ✅ 394 行 |
-| | [architecture/05-storage.md](architecture/05-storage.md) | 数据模型、迁移、索引 | ✅ 624 行 |
-| | [architecture/06-runtime.md](architecture/06-runtime.md) | 并发、连接池、流式、超时、错误处理 | ✅ 395 行 |
-| **权限与安全** | [security/01-accounts.md](security/01-accounts.md) | 账户与权限类模型 | ✅ 271 行 |
+| | [architecture/05-storage.md](architecture/05-storage.md) | 数据模型、迁移、索引 | ✅ 650 行 |
+| | [architecture/06-runtime.md](architecture/06-runtime.md) | 并发、连接池、流式、超时、错误处理 | ✅ 394 行 |
+| **权限与安全** | [security/01-accounts.md](security/01-accounts.md) | 账户与权限类模型 | ✅ 279 行 |
 | | [security/02-authn.md](security/02-authn.md) | 登录、会话、提权、OAuth 登录 | ✅ 384 行 |
 | | [security/03-groups.md](security/03-groups.md) | 组与合并语义 | ✅ 270 行 |
 | | [security/04-authz.md](security/04-authz.md) | 授权判定链（决策表） | ✅ 235 行 |
 | | [security/05-keys.md](security/05-keys.md) | API Key 与密钥管理 | ✅ 230 行 |
 | | [security/06-audit.md](security/06-audit.md) | 审计与可观测 | ✅ 312 行 |
-| **模型体系** | [models/01-catalog.md](models/01-catalog.md) | 真实模型目录与健康 | ✅ 266 行 |
+| **模型体系** | [models/01-catalog.md](models/01-catalog.md) | 真实模型目录与健康 | ✅ 272 行 |
 | | [models/02-abstract.md](models/02-abstract.md) | 抽象模型定义与能力声明 | ✅ 287 行 |
-| | [models/03-strategy.md](models/03-strategy.md) | 策略引擎：过滤 / 排序 / 切换 | ✅ 265 行 |
+| | [models/03-strategy.md](models/03-strategy.md) | 策略引擎：过滤 / 排序 / 切换 | ✅ 268 行 |
 | | [models/04-deprecation.md](models/04-deprecation.md) | 弃用与替代链 | ✅ 265 行 |
 | | [models/05-verification.md](models/05-verification.md) | 模型鉴定流水线 | ✅ 266 行 |
 | **贡献与凭据** | [contributions/01-flow.md](contributions/01-flow.md) | 贡献流程（匿名 / 已登录） | ✅ 191 行 |
-| | [contributions/02-credentials.md](contributions/02-credentials.md) | 凭据归属、加密、生命周期、回报 | ✅ 302 行 |
+| | [contributions/02-credentials.md](contributions/02-credentials.md) | 凭据归属、加密、生命周期、无偿与贡献统计 | ✅ 344 行 |
 | **界面规划** | [ui/01-ia.md](ui/01-ia.md) | 信息架构与导航 | ✅ 272 行 |
 | | [ui/02-public.md](ui/02-public.md) | 公共页：登录 / 注册 / 待审 / 贡献 | ✅ 282 行 |
 | | [ui/03-admin.md](ui/03-admin.md) | 管理端页面 | ✅ 465 行 |
 | | [ui/04-tenant.md](ui/04-tenant.md) | 租户端页面 | ✅ 231 行 |
-| | [ui/05-contributor.md](ui/05-contributor.md) | 贡献者端页面 | ✅ 176 行 |
+| | [ui/05-contributor.md](ui/05-contributor.md) | 贡献者端页面 | ✅ 184 行 |
 | | [ui/06-design.md](ui/06-design.md) | 交互约定与组件 | ✅ 233 行 |
 | **API 契约** | [api/01-inbound.md](api/01-inbound.md) | 入站 API（OpenAI / Anthropic） | ✅ 445 行 |
 | | [api/02-admin.md](api/02-admin.md) | 管理 API | ✅ 466 行 |
 | | [api/03-errors.md](api/03-errors.md) | 错误码与响应头 | ✅ 307 行 |
-| **运维** | [ops/01-security.md](ops/01-security.md) | 公网安全基线清单 | ✅ 208 行 |
-| | [ops/02-deploy.md](ops/02-deploy.md) | 部署、配置项、备份 | ✅ 410 行 |
-| | [ops/03-milestones.md](ops/03-milestones.md) | 里程碑拆解与验收清单 | ✅ 460 行 |
+| **运维** | [ops/01-security.md](ops/01-security.md) | 公网安全基线清单 | ✅ 207 行 |
+| | [ops/02-deploy.md](ops/02-deploy.md) | 部署、配置项、备份 | ✅ 409 行 |
+| | [ops/03-milestones.md](ops/03-milestones.md) | 里程碑拆解与验收清单 | ✅ 461 行 |
 
 ---
 
@@ -71,6 +71,8 @@
 | **平台自有凭据** | `owner_account_id = NULL` | 我们自己配的凭据，不属于任何账户，与贡献凭据同构但来源不同 |
 | **API Key** | `api_key` | 租户调模型用的站点密钥。**只归属带 `tenant` 类的账户** |
 | **提权** | step-up | 进入管理面前**当场再验一次**的机制。有效期 15 分钟 |
+| **贡献统计** | contributor stats | 贡献者的只读观测面：贡献量 / 被调用次数 / token / 健康度。**不含任何回报**，也不参与分配 |
+| **贡献者无偿** | no recompense | 贡献**不折算额度、不给优先使用权、不给升级凭据**，也不拿它换任何审批特权。贡献页必须**阻断式声明**这一点，见 [contributions/02-credentials.md](contributions/02-credentials.md) 第 7 节 |
 | **鉴定** | verification | 检验"贡献的凭据声称的模型是否真的匹配"。判定见下 |
 
 **鉴定判定四态**：
