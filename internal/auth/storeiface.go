@@ -39,6 +39,13 @@ type AccountRepository interface {
 	// TouchLastLogin 记录最近登录时刻。失败不应阻断登录：
 	// 它是留痕字段，不是安全判定依据。
 	TouchLastLogin(ctx context.Context, accountID string, at time.Time) error
+
+	// UpdatePasswordHash 写入新的 argon2id 自描述串（改密 / 重置 / 登录时重算写回）。
+	//
+	// 为什么单独一个方法而不是 SetAccount 全字段覆盖：本层只应持有「改密码哈希」
+	// 这一条写能力；全字段覆盖会让鉴权层拥有改额度、改状态的能力，而那些属于
+	// 管理面（AccountService）的写域，混在一处就没法按方法粒度审计与限制了。
+	UpdatePasswordHash(ctx context.Context, accountID, argonHash string) error
 }
 
 // SessionRepository 是会话的读写接口。
@@ -89,6 +96,15 @@ type KeyRepository interface {
 	// 两步之间进程崩溃会留下"旧 Key 已废、新 Key 未生效"的状态，
 	// 用户被锁在门外且无凭据可用。
 	RotateKey(ctx context.Context, oldKeyID string, newKey *APIKey) error
+
+	// SetKeyAllowlist 整表替换一把 Key 的模型白名单（key_model_allow）。
+	// 调用方（KeyManager.SetAllowlist）负责「只能收窄 ⊆ 组授权」的校验；
+	// 存储层不做策略判断，只做写入。
+	SetKeyAllowlist(ctx context.Context, keyID string, abstractModelIDs []string) error
+
+	// KeyAllowlist 读取一把 Key 的白名单（未设置返回空切片，不是 nil 语义上的「缺省」：
+	// 默认拒绝要求「空」与「未初始化」在判定上同形）。
+	KeyAllowlist(ctx context.Context, keyID string) ([]string, error)
 }
 
 // GroupPolicy 是一个组的策略快照（storage 把 group_models / group_policies /
