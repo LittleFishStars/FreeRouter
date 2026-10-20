@@ -29,11 +29,11 @@ func newHarness() *harness {
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	clk := func() time.Time { return now }
 	h := &harness{
-		f:      newFakeStore(),
+		f:       newFakeStore(),
 		clock:   &now,
 		nowFn:   clk,
 		advance: func(d time.Duration) { now = now.Add(d) },
-		hasher: NewPasswordHasher(12),
+		hasher:  NewPasswordHasher(12),
 	}
 	h.sess = NewSessionManager(SessionPolicy{TTL: 24 * time.Hour}, h.f.stores()).WithClock(clk)
 	h.guard = NewLoginGuard(LoginPolicy{}).WithClock(clk)
@@ -522,11 +522,11 @@ func TestContractAuthzCapabilityMatrix(t *testing.T) {
 	ctx := context.Background()
 
 	cases := []struct {
-		name    string
-		sub     Subject
-		op      Op
-		res     Resource
-		wantOK  bool
+		name     string
+		sub      Subject
+		op       Op
+		res      Resource
+		wantOK   bool
 		wantCode Code
 	}{
 		{"tenant 调模型", Subject{"acc-t", ClassTenant}, OpCallModel, Resource{ResAbstractModel, "fast"}, true, ""},
@@ -644,24 +644,24 @@ func TestContractEffectiveModelsIsIntersection(t *testing.T) {
 func TestContractMergeUnionAndStrictest(t *testing.T) {
 	unlimited := -1
 	gA := GroupPolicy{
-		Group:         Group{ID: "ga"},
-		Models:        []string{"fast", "smart"},
-		CanCreateKey:  boolp(true),
-		MaxKeys:       intp(3),
-		Quotas:        map[QuotaKey]int64{{Unit: "token", Period: "day"}: 100, {Unit: "credit", Period: "month"}: 60},
-		RPMLimit:      intp(60),
-		TPMLimit:      func() *int64 { v := int64(unlimited); return &v }(), // -1 = 显式不限
+		Group:          Group{ID: "ga"},
+		Models:         []string{"fast", "smart"},
+		CanCreateKey:   boolp(true),
+		MaxKeys:        intp(3),
+		Quotas:         map[QuotaKey]int64{{Unit: "token", Period: "day"}: 100, {Unit: "credit", Period: "month"}: 60},
+		RPMLimit:       intp(60),
+		TPMLimit:       func() *int64 { v := int64(unlimited); return &v }(), // -1 = 显式不限
 		MaxConcurrency: intp(2),
-		Pools:         []PoolRef{{GroupID: "ga", Unit: "token", Period: "day", Limit: 500}, {GroupID: "gb", Unit: "credit", Period: "month", Limit: 80}},
+		Pools:          []PoolRef{{GroupID: "ga", Unit: "token", Period: "day", Limit: 500}, {GroupID: "gb", Unit: "credit", Period: "month", Limit: 80}},
 	}
 	gB := GroupPolicy{
-		Group:         Group{ID: "gb"},
-		Models:        []string{"eco", "smart"},
-		CanCreateKey:  boolp(false),
-		MaxKeys:       intp(10),
-		Quotas:        map[QuotaKey]int64{{Unit: "token", Period: "day"}: 200},
-		ModelQuotas:   map[ModelQuotaKey]int64{{Model: "smart", Unit: "request", Period: "day"}: 50},
-		RPMLimit:      nil, // 未设：不参与
+		Group:          Group{ID: "gb"},
+		Models:         []string{"eco", "smart"},
+		CanCreateKey:   boolp(false),
+		MaxKeys:        intp(10),
+		Quotas:         map[QuotaKey]int64{{Unit: "token", Period: "day"}: 200},
+		ModelQuotas:    map[ModelQuotaKey]int64{{Model: "smart", Unit: "request", Period: "day"}: 50},
+		RPMLimit:       nil, // 未设：不参与
 		MaxConcurrency: intp(5),
 	}
 	eff := MergeGroupPolicies([]GroupPolicy{gA, gB})

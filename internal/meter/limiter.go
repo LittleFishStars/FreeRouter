@@ -274,15 +274,15 @@ func (l *Limiter) AcquireConcurrency(ctx context.Context, accountID string, lim 
 	st := l.state(accountID)
 
 	// 账户槽位。
-	if err := l.acquireOne(ctx, st, func() bool {
+	if err := l.acquireSlot(ctx, func() (bool, <-chan struct{}) {
 		st.mu.Lock()
 		defer st.mu.Unlock()
 		if lim.MaxConcurrency < 0 || st.inflight < lim.MaxConcurrency { // -1 = 不限
 			st.inflight++
-			return true
+			return true, nil
 		}
-		return false
-	}, func() <-chan struct{} { return st.wake }, "concurrency"); err != nil {
+		return false, st.wake
+	}, "concurrency"); err != nil {
 		return nil, err
 	}
 
@@ -302,20 +302,23 @@ func (l *Limiter) AcquireConcurrency(ctx context.Context, accountID string, lim 
 	}, nil
 }
 
-// acquireOne 用"条件重查 + 广播唤醒"实现无固定容量信号量的获取。
+// acquireSlot 用"条件重查 + 广播唤醒"实现无固定容量信号量的获取。
 //
 // 为什么不用固定容量的 buffered channel 当信号量：上限会在运行期被管理员
 // 调高/调低（账户级速率是管理面可改的），固定容量 chan 无法原地改大小，
 // 只能重建——而重建时已排队的等待者会挂在旧 channel 上永久阻塞。
-func (l *Limiter) acquireOne(ctx context.Context, st *acctState, try func() bool, wake func() <-chan struct{}, dimension string) error {
+//
+// attempt 必须在**同一次锁持内**完成"判条件；不满足则取当前广播 channel"：
+// 分成两次锁持会留下丢唤醒窗口（判完到读 wake 之间有人释放并替换了 channel）；
+// 而完全锁外读 st.wake 是 data race（-race 实测抓出，releaseAcct 在锁内替换它）。
+// 被替换后旧 channel 仍会收到本次 close，所以等待者不会挂死在旧 channel 上。
+func (l *Limiter) acquireSlot(ctx context.Context, attempt func() (acquired bool, wake <-chan struct{}), dimension string) error {
 	deadline := l.now().Add(l.queueTimeout())
 	for {
-		if try() {
+		ok, ch := attempt()
+		if ok {
 			return nil
 		}
-		// 取当前广播 channel 必须在重试条件之后、等待之前读取，
-		// 否则可能错过"刚释放"的那次广播并多等一个超时周期。
-		ch := wake()
 		if err := l.wait(ctx, ch, deadline); err != nil {
 			return l.queueError(ctx, dimension)
 		}
@@ -323,20 +326,15 @@ func (l *Limiter) acquireOne(ctx context.Context, st *acctState, try func() bool
 }
 
 func (l *Limiter) acquireGlobal(ctx context.Context) error {
-	deadline := l.now().Add(l.queueTimeout())
-	for {
+	return l.acquireSlot(ctx, func() (bool, <-chan struct{}) {
 		l.mu.Lock()
+		defer l.mu.Unlock()
 		if l.cfg.GlobalConcurrency <= 0 || l.globalIn < l.cfg.GlobalConcurrency {
 			l.globalIn++
-			l.mu.Unlock()
-			return nil
+			return true, nil
 		}
-		ch := l.globalWake
-		l.mu.Unlock()
-		if err := l.wait(ctx, ch, deadline); err != nil {
-			return l.queueError(ctx, "concurrency(global)")
-		}
-	}
+		return false, l.globalWake
+	}, "concurrency(global)")
 }
 
 func (l *Limiter) queueError(ctx context.Context, dimension string) error {
