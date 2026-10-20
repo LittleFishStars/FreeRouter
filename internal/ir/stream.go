@@ -40,11 +40,17 @@ type Event struct {
 	Call  *ToolCallPart
 	Usage *Usage
 	Err   *Error
+	// Signature 只在 EvThinkingDelta 上有意义：Text 为空、Signature 非空时是
+	// "思考块收尾携带签名"的终帧（Anthropic 的 signature_delta 在块 stop 时才齐）。
+	// 为什么用"空 Text + 非空 Signature"而不是新事件类型：§5.1 的事件集合是封闭的，
+	// 新类型会迫使四个编码器都加防御分支；而签名本质是 thinking 的附属元信息，
+	// 挂在同一事件上最接近它的生成时机。这是对 §5.1 的追加（§10 允许只加不改）。
+	Signature string
 	// Stop 只在 EvDone 上有意义：它把结束原因带过解码→编码边界。
 	// 为什么需要它：§5.1 的事件联合体里没有 stop 事件，而 OpenAI 的 finish_reason 与
 	// Anthropic 的 stop_reason 都是流末帧的必填字段。若不在 EvDone 上携带，编码器就只能猜
-	// （“有工具调用就是 tool_use”），会把“模型说完了”与“被长度截断”混为一谈。
-	// 这是对 §5.1 的**追加**（§10 允许只加不改），已在回报中作为规格缺口提出。
+	// （"有工具调用就是 tool_use"），会把"模型说完了"与"被长度截断"混为一谈。
+	// 这也是对 §5.1 的**追加**（§10 允许只加不改），已在回报中作为规格缺口提出。
 	Stop StopReason
 }
 
@@ -58,7 +64,14 @@ type Event struct {
 // 无法切换，这条待真实上游行为确认（§5.3 的待定项）。
 func (e Event) Visible() bool {
 	switch e.Type {
-	case EvThinkingDelta, EvTextDelta, EvToolCallStart, EvToolCallDelta, EvToolCallEnd:
+	case EvThinkingDelta:
+		// 纯签名终帧（Text 为空）不算可见内容：它不渲染任何东西，丢了也只是签名缺席，
+		// 不值得为此把候选锁死；真正的思考文本增量才是可见的。
+		if e.Text == "" && e.Signature != "" {
+			return false
+		}
+		return true
+	case EvTextDelta, EvToolCallStart, EvToolCallDelta, EvToolCallEnd:
 		return true
 	}
 	return false
