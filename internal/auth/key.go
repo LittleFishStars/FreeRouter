@@ -165,9 +165,14 @@ func (m *KeyManager) Create(ctx context.Context, s Subject, name string) (*Creat
 		return nil, Errorf(CodeForbidden, nil, "账户状态 %s 不允许创建 API Key", acct.Status)
 	}
 
-	limit, err := m.maxKeysFor(ctx, acct.ID)
+	// 组策略三段校验（05-keys.md §1）：tenant 类✓（上）→ 允许建 Key → 数量未超上限。
+	// 两个放开类键来自**同一次** GroupsForAccount 读取，不各读一遍。
+	canCreate, limit, err := m.keyCreationPolicy(ctx, acct.ID)
 	if err != nil {
 		return nil, err
+	}
+	if !canCreate {
+		return nil, Errorf(CodeForbidden, nil, "所属组策略禁止创建 API Key")
 	}
 
 	existing, err := m.stores.Keys.ListKeysByAccount(ctx, acct.ID)
@@ -206,17 +211,28 @@ func (m *KeyManager) Create(ctx context.Context, s Subject, name string) (*Creat
 // 多组取**最大值**，而不是取最严。为什么它不能归限制类：
 // 该约束管的是"创建能力"，与额度、速率这类共享资源不是一回事；
 // 取 min 会让"被加进一个额度更小的组"顺带把 Key 数量压掉，只制造意外不产生护栏。
-func (m *KeyManager) maxKeysFor(ctx context.Context, accountID string) (int, error) {
+// keyCreationPolicy 一次读组，返回（能否建 Key，Key 数量上限）。
+//
+// 合并规则（03-groups.md §3/§4）：
+//   - CanCreateKey 是放开类布尔：deny 优先——任一所属组显式 false 即禁；
+//     未设（nil）不参与，全未设 = 允许（默认组兜底“至少一组有策略”的不变式）。
+//   - MaxKeys 是放开类数值：取**最大值**（定案），非 min；无组设置时
+//     落配置默认 DefaultMaxKeysPerAccount。
+func (m *KeyManager) keyCreationPolicy(ctx context.Context, accountID string) (bool, int, error) {
 	if m.stores.Policies == nil {
-		return m.policy.DefaultMaxKeysPerAccount, nil
+		return true, m.policy.DefaultMaxKeysPerAccount, nil
 	}
 	groups, err := m.stores.Policies.GroupsForAccount(ctx, accountID)
 	if err != nil {
-		return 0, err
+		return false, 0, err
 	}
+	canCreate := true
 	best := 0
 	seen := false
 	for _, g := range groups {
+		if g.CanCreateKey != nil && !*g.CanCreateKey {
+			canCreate = false
+		}
 		if g.MaxKeys != nil {
 			seen = true
 			if *g.MaxKeys > best {
@@ -225,9 +241,9 @@ func (m *KeyManager) maxKeysFor(ctx context.Context, accountID string) (int, err
 		}
 	}
 	if !seen {
-		return m.policy.DefaultMaxKeysPerAccount, nil
+		return canCreate, m.policy.DefaultMaxKeysPerAccount, nil
 	}
-	return best, nil
+	return canCreate, best, nil
 }
 
 // countAgainstKeyQuota 统计占配额的数量。
