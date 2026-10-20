@@ -353,7 +353,9 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 	c.callMu.Lock()
 	defer c.callMu.Unlock()
 
-	if st := c.availability(); !st.Available {
+	// 门禁只拦「明确不可用」：stateUnknown 必须放行——否则 Start 的 health 握手
+	// 自己就被自己拦死（握手时还没有任何成功记录，状态永远是 unknown）。
+	if st := c.availability(); !st.Available && c.stateIsDown() {
 		return nil, errDown(method, st.Reason)
 	}
 	if ctx == nil {
@@ -598,6 +600,18 @@ func (c *Client) stateIsReady() bool {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	return c.state == stateReady
+}
+
+// stateIsDown 区分「明确不可用」与「尚未握手（unknown）」：Call 的门禁只拦前者。
+// 为什么必须区分：health 握手自己就是一个 Call，握手时状态还是 unknown——
+// 若门禁把 unknown 也拦下，Start 永远无法把状态从 unknown 推到 ready（实测踩过）。
+func (c *Client) stateIsDown() bool {
+	if c == nil {
+		return true
+	}
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.state == stateDown
 }
 
 // waitError 安全地取子进程退出错误。

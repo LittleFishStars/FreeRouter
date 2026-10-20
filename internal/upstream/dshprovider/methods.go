@@ -70,7 +70,7 @@ func IsForbiddenMethod(method string) (code string, forbidden bool) {
 // sidecar 会自行增加字段；本结构只声明我们**承诺使用**的那些，
 // 未知字段由 encoding/json 默认忽略（契约 §3：未知返回字段必须被忽略）。
 type Health struct {
-	Version string       `json:"version"`
+	Version string `json:"version"`
 	// Providers 是已装载的 provider id。主进程据此判断「能不能用」，而不是靠试调用。
 	Providers []string     `json:"providers"`
 	Deps      []Dependency `json:"deps"`
@@ -224,12 +224,12 @@ func (c *Client) CredentialsDescribe(ctx context.Context, credentialRef string) 
 
 // LoginSession 对应 login.start 的返回。
 type LoginSession struct {
-	SessionID    string `json:"sessionId"`
-	Kind         string `json:"kind"`
-	Instructions string `json:"instructions"`    // 给用户看的一句话（中文）
+	SessionID       string `json:"sessionId"`
+	Kind            string `json:"kind"`
+	Instructions    string `json:"instructions"`    // 给用户看的一句话（中文）
 	VerificationURL string `json:"verificationUrl"` // 设备码：用户要访问的地址
-	UserCode     string `json:"userCode"`        // 设备码：用户要输入的码
-	QRData       string `json:"qrData"`          // 扫码：二维码内容（由前端渲染）
+	UserCode        string `json:"userCode"`        // 设备码：用户要输入的码
+	QRData          string `json:"qrData"`          // 扫码：二维码内容（由前端渲染）
 	// CallbackPort 是浏览器回调的本地监听端口；0/NULL 表示不是回调类。
 	CallbackPort *int   `json:"callbackPort"`
 	ExpiresAt    string `json:"expiresAt"`
