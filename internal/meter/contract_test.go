@@ -346,6 +346,45 @@ func TestContractPoolsAllAndAndAtomicCharge(t *testing.T) {
 // 7. 全局日预算熔断：0=不熔断 / 终态累加 / 解除前一直拒
 // ---------------------------------------------------------------------------
 
+// TestContractConcurrencyGlobalGateIs503 锁定 lead 仲裁①（2026-10-20）：
+// 两层闸两个码——账户槽位满 → 429 rate_limited（"你越限"）；
+// 进程 global_concurrency 排队超时 → 503 overloaded（"服务过载"）。
+// 客户端动作不同（找管理员 vs 退避重试）必须可区分（D11 三态原则）。
+func TestContractConcurrencyGlobalGateIs503(t *testing.T) {
+	clk, _ := movingClock(base)
+	l := NewLimiter(Config{QueueTimeout: 80 * time.Millisecond, GlobalConcurrency: 1}).WithClock(clk)
+	lim := AccountLimits{RPM: -1, TPM: -1, MaxConcurrency: -1} // 账户层不限
+	ctx := context.Background()
+
+	r1, err := l.AcquireConcurrency(ctx, "acc-g1", lim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r1()
+	// 另一账户来抢全局槽位：账户层放行、全局层排队 → 超时 503。
+	_, err = l.AcquireConcurrency(ctx, "acc-g2", lim)
+	errCode(t, err, auth.CodeOverloaded)
+	if !errors.Is(err, auth.ErrOverloaded) {
+		t.Fatalf("全局闸超时必须命中 ErrOverloaded 哨兵: %v", err)
+	}
+	if ra := auth.RetryAfterOf(err); ra <= 0 {
+		t.Fatal("503 overloaded 同样必须带 Retry-After（退避重试是正解）")
+	}
+	// 对照：账户层满仍是 429，不得串码。
+	l2 := NewLimiter(Config{QueueTimeout: 80 * time.Millisecond, GlobalConcurrency: -1}).WithClock(clk)
+	lim2 := AccountLimits{RPM: -1, TPM: -1, MaxConcurrency: 1}
+	rel, err := l2.AcquireConcurrency(ctx, "acc-a1", lim2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	_, err = l2.AcquireConcurrency(ctx, "acc-a1", lim2)
+	errCode(t, err, auth.CodeRateLimited)
+	if errors.Is(err, auth.ErrOverloaded) {
+		t.Fatal("账户级并发超限不得误报 503")
+	}
+}
+
 func TestContractGlobalFuse(t *testing.T) {
 	clk, advance := movingClock(base)
 	l := NewLimiter(Config{GlobalDailyTokens: 1000}).WithClock(clk)
