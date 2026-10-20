@@ -19,7 +19,7 @@
 | | [architecture/01-overview.md](architecture/01-overview.md) | 分层、进程模型、部署形态 | ✅ 359 行 |
 | | [architecture/02-ir.md](architecture/02-ir.md) | IR 与四协议转换 | ✅ 554 行 |
 | | [architecture/03-upstream.md](architecture/03-upstream.md) | 上游适配：relay / vendor / selfhosted | ✅ 558 行 |
-| | [architecture/04-sidecar.md](architecture/04-sidecar.md) | Node sidecar 的 IPC 契约 | ✅ 395 行 |
+| | [architecture/04-sidecar.md](architecture/04-sidecar.md) | Node sidecar 的 IPC 契约、重写为 Go 的成本评估 | ✅ 469 行 |
 | | [architecture/05-storage.md](architecture/05-storage.md) | 数据模型、迁移、索引 | ✅ 809 行 |
 | | [architecture/06-runtime.md](architecture/06-runtime.md) | 并发、连接池、流式、超时、错误处理 | ✅ 405 行 |
 | **权限与安全** | [security/01-accounts.md](security/01-accounts.md) | 账户与权限类模型 | ✅ 355 行 |

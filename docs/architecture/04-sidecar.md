@@ -374,7 +374,81 @@ trae / zcode）、设备码 2 家（cline / minimax 系，含 minimaxintl）、�
 
 ---
 
-## 7. 待定项
+## 7. 将来重写为 Go 的成本评估
+
+> **预留决策**：sidecar 当前用 Node 实现。将来若重写为 Go，走**逐 provider 迁移**：
+> 契约不变、Go 侧零改动，允许「混合 sidecar」（部分 provider 永久留在 Node）作为长期终态。
+> 本节把实测数据留档，避免届时重新摸底。
+
+### 7.1 为什么成本上界由契约决定
+
+重写工作量不看 providers-hub 有多少行，看第 2 节那道契约有多宽。契约是 10 个方法 + 一条流事件，
+且第 3 节强制 provider-agnostic（参数里只有 `provider` 与 `credentialRef`，没有业务概念）——
+这是将来能低成本换实现的**唯一原因**，所以那条约束不能破。
+
+### 7.2 代码量实测
+
+对象：`dsh-providers-hub` 的 `lib/`（199 个文件，105,766 行）。
+
+| 职责分块 | 文件 | 行数 | 占比 | 是否在范围内 |
+| --- | ---: | ---: | ---: | --- |
+| provider adapter（协议本体） | 18 | 24,888 | 23.5% | **是**（扣掉框架文件后 ≈19,341） |
+| 账号 / 凭据 / 额度 / 刷新 | 33 | 19,731 | 18.7% | 部分（登录流要，账本不要） |
+| OpenAI 兼容网关 | 2 | 1,785 | 1.7% | 否（红线③） |
+| 浏览器 / 验证码 / 签到 / 增长 | 18 | 15,338 | 14.5% | 基本不要 |
+| 其他（含 6,265 行 `jet-hub-rpc.js` 自有 RPC） | 128 | 44,024 | 41.6% | 否 |
+
+「provider adapter」减掉三个框架文件（`llm-adapter.js` 2,372 行基类、`aggregate-adapter.js` 2,213、
+`auto-adapter.js` 961）后，**15 家的真实协议逻辑 ≈19,341 行，平均每家 1,290 行**：
+buddy 4,184 / trae 1,989 / zcode 1,840 / accio 1,792 / lobsterai 1,678 / qoder 1,295 /
+cline 1,129 / minimax 941 / loomy 799 / raccoon 698 / gemini 677 / opencode 637 /
+officeace 605 / modelscope 595 / autoclaw 482。
+
+### 7.3 为什么不是「照着抄一遍」
+
+| 卡点 | 说明 |
+| --- | --- |
+| 不是模板填空 | 15 家不是「OpenAI 兼容 + 换个 `base_url`」——那部分只有 `openai-compat.js` 1,408 行。每家有自己的请求整形、响应解析、错误与限流语义，有的连 SSE 都不标准 |
+| 基类要重设计 | adapter 继承 2,372 行的 `LlmAdapter`，带 `providerRetryPolicy` / `imageRequestPricing` / `imageRequestTarget` / `resolveModelInfo` 等钩子；Go 里得当接口 + 共享 helper 重新设计，这是设计题不是翻译题 |
+| 登录流是有状态的 | 9 家 OAuth 回调（要本地回调监听 + 拉起浏览器）、2 家设备码 + PKCE、2 家扫码（loomy 走微信）、1 家短信、1 家粘贴、1 家只刷新；各家 cookie / token 轮换与重试语义都不同 |
+| zcode 无法「纯」Go | 需拉起无头 Chromium 产阿里云 captcha（`zcode-captcha.js` 989 行 + `chromium-session.js` 1,186 行，源码 133 处 captcha 引用）；Go 里要么内嵌 CDP、要么永远保留一个浏览器 |
+| 隐性知识不在代码里 | 源码注释大量是逆向厂商行为换来的结论（如「captcha 是**按需**索要的，索要时**不能复用**」）。翻译不会把这些带过去，必须对着真实厂商端点重新踩——**这才是主要耗时** |
+
+### 7.4 迁移难度分档
+
+| 档次 | 家数 | provider | 单家估时 |
+| --- | ---: | --- | ---: |
+| 易（纯 HTTP，无浏览器） | 4 | opencode（粘贴）、modelscope（只刷新）、minimax、cline（设备码） | 1–2 天 |
+| 中（OAuth 回调 + 本地监听） | 9 | accio、autoclaw、buddy、workbuddy、lobsterai、qoder、qodercn、trae、codearts | 2–5 天 |
+| 难（浏览器 / 扫码 / 短信） | 3 | loomy（微信扫码）、raccoon（扫码 + 短信）、zcode（captcha） | 5–15 天 |
+
+### 7.5 估算
+
+Go 重写 HTTP / JSON / SSE 类代码，行数通常是 JS 的 1.2–1.6 倍：
+
+- 19K 行协议逻辑 → 约 23K–31K 行 Go
+- 共享基础设施（SSE 解析、重试、token 存储、adapter 注册）→ 3K–5K 行
+- 合计 **约 26K–36K 行 Go**，测试另算
+
+时间（熟手）：
+
+| 范围 | 工期 |
+| --- | ---: |
+| 全量对齐 15 家 | 2–4 个月 |
+| 仅 4 家「易」档 | 约 3 周 |
+| 不做 | 0（Node sidecar 是正当的长期方案） |
+
+时间的主要构成不是编码，是**逐家对着活账号验证**。
+
+### 7.6 三条结论
+
+1. **现在不重写**。真正的资产是第 2 节那道契约，不是实现语言。
+2. **要重写就逐家迁移**：Node 与 Go 双跑对比，一家一家切，随时可回退；Go 侧（路由、账户、额度、计量、管理 API）一行都不用改。
+3. **允许混合 sidecar**：`zcode`（以及大概率的 `loomy` / `raccoon`）永久留在 Node 是合理终态，不必强行纯 Go。
+
+---
+
+## 8. 待定项
 
 > **待定**：`codearts` 的登录实现位置。`lib/` 下只有 `codearts-credits.js`（余额查询），
 > 没有 oauth/login 模块。可能实现位于 lib 之外或另一个包。在确认前该 provider 的

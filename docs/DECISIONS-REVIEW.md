@@ -108,6 +108,7 @@
 | 1.75 | **主密钥不随备份走**：只有库的备份恢复后所有上游凭据不可解密 | `05-storage.md:713-728` |
 | 1.76 | 保留策略：`requests` **90 天** / `usage_daily` **永久** / `audit_log` **≥1 年** / `sessions` 过期即清 / `disabled` 凭据保留 | `05-storage.md:730-738` |
 | 1.77 | 健康计数与目录缓存**不进 DB**，只留进程内存 | `05-storage.md:23-28` |
+| 1.78 | sidecar 将来若重写为 Go，走**逐 provider 迁移**（契约不变、Go 侧零改动）；**允许混合 sidecar**（部分 provider 永久留在 Node）作为长期终态；重写成本评估已留档 | `04-sidecar.md:377-450` |
 
 ---
 
