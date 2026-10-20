@@ -1,0 +1,71 @@
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "thinking_delta",
+    "text": "用户想知道天气"
+  },
+  {
+    "type": "thinking_delta",
+    "signature": "sigXYZ"
+  },
+  {
+    "type": "text_delta",
+    "index": 1,
+    "text": "我查"
+  },
+  {
+    "type": "tool_call_start",
+    "index": 2,
+    "call": {
+      "id": "toolu_abc",
+      "name": "get_weather",
+      "arguments": "",
+      "partial": true
+    }
+  },
+  {
+    "type": "tool_call_delta",
+    "index": 2,
+    "text": "{\"city\"",
+    "call": {
+      "id": "toolu_abc",
+      "name": "get_weather",
+      "arguments": "{\"city\"",
+      "partial": true
+    }
+  },
+  {
+    "type": "tool_call_delta",
+    "index": 2,
+    "text": ":\"北京\"}",
+    "call": {
+      "id": "toolu_abc",
+      "name": "get_weather",
+      "arguments": ":\"北京\"}",
+      "partial": true
+    }
+  },
+  {
+    "type": "tool_call_end",
+    "index": 2,
+    "call": {
+      "id": "toolu_abc",
+      "name": "get_weather",
+      "arguments": "{\"city\":\"北京\"}"
+    }
+  },
+  {
+    "type": "usage",
+    "usage": {
+      "input": 128,
+      "output": 37,
+      "source": "upstream"
+    }
+  },
+  {
+    "type": "done",
+    "stop": "tool_use"
+  }
+]

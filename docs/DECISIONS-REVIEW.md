@@ -93,7 +93,7 @@
 | 1.60 | `sessions.token_hash` / `api_keys.key_hash` 用 **BLOB** 而非十六进制 TEXT | `05-storage.md:95-111` |
 | 1.61 | 默认组用**部分唯一索引** `ON groups(is_default) WHERE is_default = 1` | `05-storage.md:117-161` |
 | 1.62 | `group_policies` 用 `(group_id, policy_key)` + `policy_value TEXT JSON` 键值形状 | `05-storage.md:141-146` |
-| 1.63 | 共享池**另开一表** `group_quota_pools`（主键 `(group_id, dimension, period)`）；「不设池」= **没有这一行**；**不加** `CHECK(pool_used<=pool_limit)` | `05-storage.md:149-198` |
+| 1.63 | 共享池**另开一表** `group_quota_pools`（主键 `(group_id, dimension, period)`；**2026-10-20 随定案改为 `(group_id, abstract_model_id, unit, period)`，`dimension` 枚举扩至三值**）；「不设池」= **没有这一行**；**不加** `CHECK(pool_used<=pool_limit)` | `05-storage.md` 3.3 |
 | 1.64 | 池扣减用**单条条件 UPDATE**（判定即扣减）；重置用**惰性重置**而非定时任务 | `05-storage.md:636-699` |
 | 1.65 | 替代链成环校验**放应用层**（DB 只有 `CHECK(replacement_model_id <> id)` 防自环） | `05-storage.md:217,254-256` |
 | 1.66 | 额度上限列可空：`NULL`=不限，`0`=额度为零（全拒）；用量列同样可空（与 IR 三态对齐） | `05-storage.md:354,409` |
@@ -131,10 +131,10 @@
 | 2.13 | 审计形态**两层**：一次导入 = 一条批次事件 + 每个成功账户一条创建事件 | `02-authn.md:90`、`06-audit.md:89-90` |
 | 2.14 | 生成密码 / Key / 恢复码统一「**只展示一次、不落库明文**」 | `02-authn.md:88`、`05-keys.md:65` |
 | 2.15 | 审计 `action` 定为**闭集合 11 类** | `06-audit.md:54-159` |
-| 2.16 | 组策略键**闭集合 10 键**，预先分类：放开类 5（`visible_models`/`can_create_key`/`max_keys`/`key_allowlist_widen`/`model_class_allow`）、限制类 5（`daily_token_cap`/`monthly_token_cap`/`rpm_limit`/`tpm_limit`/`max_concurrency`）；共享池**不进**策略 | `03-groups.md:345-362` |
+| 2.16 | ~~闭集合 10 键~~ → **2026-10-20 额度行化定案后改**：放开类 5 不变；限制类额度键由 `daily/monthly_token_cap` 两键改为逐 `(unit, period)` 的 6 键（`quota_{request,token,credit}_{day,month}`）+ 速率 3 键；**每人按模型上限另走声明表 `group_model_quota_caps`**（不塞键值策略）；共享池**不进**策略 | `03-groups.md` 第 3 / 4.5 / 9 节 |
 | 2.17 | 合并公式：可见模型 = ∪ 组模型；token/RPM/TPM/并发 = **min(各组)**；布尔 = **任一 deny 即 deny**；最终可用 = (∪组模型) ∩ Key 白名单 | `03-groups.md:96-114`、`04-authz.md:37` |
 | 2.18 | 池判定排在**个人额度之后**（纯性能选择） | `03-groups.md:187` |
-| 2.19 | 池参数三元组 `(dimension, limit, period)`；`period` ∈ {day, month} **必填无默认**；界面初值 day | `03-groups.md:139-153` |
+| 2.19 | 池参数三元组 `(dimension, limit, period)`（**2026-10-20 已改四元组 + 列名 `unit`，含 `credit` 与模型维**）；`period` ∈ {day, month} **必填无默认**；界面初值 day | `03-groups.md` 第 4 节 |
 | 2.20 | 池**禁止「保留配置但停用」**：删行 = 不设池是唯一表达 | `03-groups.md:203-211` |
 | 2.21 | 池耗尽 = **429 + `pool_exhausted` + type `rate_limit_error`**，`Retry-After` 指向下个周期锚点；文案明说「组级限制，重试无效」；**错误体不指明是哪个组** | `03-groups.md:235-241` |
 | 2.22 | Key 配额 **7 维**（总额度 / 日 token / 月 token / RPM / TPM / 并发 / 三维令牌桶 + 全局熔断）；**维度独立，任一触顶即拒** | `05-keys.md:69-87` |
