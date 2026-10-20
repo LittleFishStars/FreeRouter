@@ -143,14 +143,28 @@ const REDLINE_GUARDS = {
 const sessions = new Map();
 let sessionSeq = 0;
 
+// 会话默认寿命：5 分钟。
+// 出处依据（04-sidecar.md 5.3）：单次 Call 的超时（login.* 10s）只决定「主进程等多久」，
+// 会话寿命归 sidecar 自管——用户输码/扫码/浏览器回调远慢于任何一次 RPC，
+// 所以 TTL 必须 ≫ 10s；5 分钟与 login.start 应答里的 expiresAt 字段同源，
+// 避免出现「帧里的过期时间还没到、会话已被回收」的自相矛盾。
+// FR_LOGIN_SESSION_TTL_SEC 可覆盖（秒），非法值或 ≤0 回落默认——仅供测试与特殊部署。
+const SESSION_TTL_MS = (() => {
+  const v = Number(process.env.FR_LOGIN_SESSION_TTL_SEC || 300);
+  return Number.isFinite(v) && v > 0 ? v * 1000 : 300_000;
+})();
+
 function newSession(provider) {
   const id = `s${Date.now().toString(36)}-${++sessionSeq}`;
-  const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
   sessions.set(id, { id, provider, status: 'pending', expiresAt, created: Date.now() });
   return sessions.get(id);
 }
 
 // 惰性回收：轮询/取消时顺带扫一遍过期会话（会话数量级是「同时几个」，不值得定时器）。
+// 终态取舍：status=ok/failed/expired 的会话也一并删——E_LOGIN_TIMEOUT 的既定恢复路径是
+// 「重新 login.start」（2.4），不存在对旧终态的二次确认需求；若未来 Go 侧需要终态审计，
+// 从删除前的 stderr 审计行里找，而不是指望这里保留（内存里的会话簿记不是账本）。
 function reapExpired() {
   const now = Date.now();
   for (const [id, s] of sessions) {
