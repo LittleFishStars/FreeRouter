@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -159,6 +160,30 @@ func (e *InvalidRequestError) Error() string {
 
 // Code 返回与 HTTP 错误码表一致的字符串。
 func (e *InvalidRequestError) Code() string { return "invalid_request" }
+
+// UpstreamProtocolError 是"上游给的流/响应违反协议不变式"（如 index 跨块复用、
+// 非法分片顺序）。为什么不能复用 InvalidRequestError：那会被映射成客户端 400，
+// 把上游的错算到客户端头上；它应对齐 docs/api/03-errors.md 的 upstream_error（502、
+// 可重试）——归属与重试策略都相反，必须分开建模。
+type UpstreamProtocolError struct {
+	Detail string
+}
+
+func (e *UpstreamProtocolError) Error() string {
+	return "upstream_error: 上游流违反协议不变式: " + e.Detail
+}
+
+// Code 返回与 HTTP 错误码表一致的字符串。
+func (e *UpstreamProtocolError) Code() string { return "upstream_error" }
+
+// AsUpstreamProtocol 把任意 error 规约为 *UpstreamProtocolError。
+func AsUpstreamProtocol(err error) (*UpstreamProtocolError, bool) {
+	var ue *UpstreamProtocolError
+	if errors.As(err, &ue) {
+		return ue, true
+	}
+	return nil, false
+}
 
 // Warning 是一条"忽略但有记录"的告警。
 //

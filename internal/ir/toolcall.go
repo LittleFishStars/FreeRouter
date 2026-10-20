@@ -192,6 +192,10 @@ func (r *ToolCallReassembler) FlushExpired() []Event {
 	var events []Event
 	for _, idx := range r.order {
 		b := r.bufs[idx]
+		if b == nil {
+			// 已 close 的 index 仍在 order 里（保序需要），跳过——否则 nil 解引用 panic。
+			continue
+		}
 		if b.Started {
 			continue
 		}
@@ -222,6 +226,9 @@ func (r *ToolCallReassembler) CloseAll() []Event {
 	var events []Event
 	for _, idx := range r.order {
 		b := r.bufs[idx]
+		if b == nil {
+			continue // 同上：close 后只留序号不留缓冲
+		}
 		if b.ID == "" {
 			b.ID = r.syntheticID(idx)
 		}

@@ -124,8 +124,9 @@ func (s *EncoderState) Accept(e Event) bool {
 		return false
 	}
 	if e.Type == EvUsage && s.usage {
-		// I4：usage 至多一次——上游给多次时取最后一次，因此允许覆盖但要求编码器去重。
-		return true
+		// I4：usage 至多一次——重复的 usage 拒绝（编码器丢弃并继续），而不是另建一层
+		// seenUsage 记账：两处实现只会漂移，接口把规则收敛到这一处才是目的。
+		return false
 	}
 	return true
 }

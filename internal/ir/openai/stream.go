@@ -27,7 +27,6 @@ type streamWriter struct {
 	closed    bool
 	stop      ir.StopReason
 	startedID string // 首个 chunk 生成的响应 id，后续 chunk 复用
-	seenUsage bool   // 是否已吐过 usage 帧（收尾时决定是否补一帧）
 }
 
 // NewStreamWriter 构造流式编码器。
@@ -86,7 +85,10 @@ func (s *streamWriter) Write(ev ir.Event) error {
 			return &ir.InvalidRequestError{Param: "event.call", Detail: "tool_call_delta 缺少 call"}
 		}
 		if ev.Index != s.openTool {
-			return &ir.InvalidRequestError{Param: "event.index",
+			// 上游复用/跳 index 是 I3 违规：用 UpstreamProtocolError（对齐 03-errors.md 的
+			// upstream_error，502、可重试），而不是 InvalidRequestError——后者会被
+			// HTTP 层映射成客户端 400，把上游的错算到客户端头上。
+			return &ir.UpstreamProtocolError{
 				Detail: fmt.Sprintf("工具调用 delta 的 index=%d 与已打开的 index=%d 不一致", ev.Index, s.openTool)}
 		}
 		tc := deltaToolCall{Index: ir.Ptr(ev.Index),
@@ -102,7 +104,8 @@ func (s *streamWriter) Write(ev ir.Event) error {
 		if ev.Usage == nil {
 			return nil
 		}
-		s.seenUsage = true
+		// 去重已由 EncoderState.Accept 的 I4 分支实现（重复 usage 直接不进这里），
+		// 不再自建 seenUsage 记账——两处实现只会漂移。
 		// usage 必须独占一帧（OpenAI 的约定：include_usage 时最后一帧只有 usage、choices 为空）。
 		return s.writeFrame(chunk{
 			ID:      s.chunkID(),
@@ -205,6 +208,14 @@ func chunkToEvent(c chunk) ir.Event {
 func (s *streamWriter) closeWithStop(stop ir.StopReason) error {
 	if stop == ir.StopUnspecified {
 		stop = s.stop
+	}
+	if stop == ir.StopUnspecified {
+		// 最后兜底用 EncodeOptions.Stop：路由层发起上游请求时已知本次生成的结束原因
+		//（如客户端取消、超长截断），事件流未带 EvDone.Stop 时它是唯一信息源。
+		stop = s.opt.Stop
+	}
+	if stop == ir.StopUnspecified {
+		stop = ir.StopEndTurn
 	}
 	reason := stopToFinishReason(stop)
 	if err := s.writeChunk(delta{}, &reason); err != nil {
