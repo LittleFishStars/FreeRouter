@@ -47,7 +47,7 @@ limits:
   default_daily_tokens: 0
   default_monthly_tokens: 0
   default_rpm: 60
-  default_tpm: 0 # 0 表示不限制 token 速率
+  default_tpm: -1 # -1 表示不限制 token 速率（2026-10-20 定案：-1 = 不限、0 = 全拒）
   default_max_concurrency: 2
   default_keys_per_account: 10
   global_daily_tokens: 0 # 0 表示不做全局预算熔断

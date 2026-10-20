@@ -59,6 +59,10 @@ var errorTypes = map[string]errorType{
 	// 把 param 填成方法名 / Content-Type。
 	"not_ready":     typeServiceUnavail,
 	"shutting_down": typeServiceUnavail,
+	// overloaded：进程级并发闸门排队超时（2026-10-21 定案，§3.1）。
+	// 注：M5 装配时本表与 ir.CodeToErrorType 归并为唯一映射源（裁决已定），
+	// 在那之前两处同码不得漂：新增码必须同时加进 ir 表并跑 TestContractErrorTypeMapping。
+	"overloaded": typeServiceUnavail,
 }
 
 // errorBody 是 §2.1 的 OpenAI 兼容错误体。

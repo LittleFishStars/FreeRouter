@@ -1,0 +1,38 @@
+{
+  "model": "gpt-test",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a router."
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "你好"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": "你好！"
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "再见"
+        }
+      ]
+    }
+  ],
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "max_tokens": 100,
+  "stop": [
+    "END"
+  ],
+  "seed": 42
+}

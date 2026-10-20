@@ -56,20 +56,30 @@ func (c *Config) Validate() error {
 	}
 
 	nonNegative := map[string]int64{
-		"limits.default_daily_tokens":    c.Limits.DefaultDailyTokens,
-		"limits.default_monthly_tokens":  c.Limits.DefaultMonthlyTokens,
-		"limits.default_rpm":             int64(c.Limits.DefaultRPM),
-		"limits.default_tpm":             c.Limits.DefaultTPM,
-		"limits.default_max_concurrency": int64(c.Limits.DefaultMaxConcurrency),
+		"limits.default_daily_tokens":     c.Limits.DefaultDailyTokens,
+		"limits.default_monthly_tokens":   c.Limits.DefaultMonthlyTokens,
 		"limits.default_keys_per_account": int64(c.Limits.DefaultKeysPerAccount),
-		"limits.global_daily_tokens":     c.Limits.GlobalDailyTokens,
-		"limits.global_rpm":              int64(c.Limits.GlobalRPM),
-		"limits.global_concurrency":      int64(c.Limits.GlobalConcurrency),
-		"server.max_body_bytes":          c.Server.MaxBodyBytes,
+		"limits.global_daily_tokens":      c.Limits.GlobalDailyTokens,
+		"limits.global_rpm":               int64(c.Limits.GlobalRPM),
+		"limits.global_concurrency":       int64(c.Limits.GlobalConcurrency),
+		"server.max_body_bytes":           c.Server.MaxBodyBytes,
 	}
 	for key, val := range nonNegative {
 		if val < 0 {
 			errs = append(errs, fmt.Sprintf("%s 不得为负数（当前 %d）", key, val))
+		}
+	}
+
+	// 账户速率默认值允许 -1 哨兵（= 不限，2026-10-20 定案，与 accounts 速率列同口径）；
+	// 除此之外不得为负。为什么不并入上面的 map：那会让 -1 这个合法值被拒。
+	sentinelOK := map[string]int64{
+		"limits.default_rpm":             int64(c.Limits.DefaultRPM),
+		"limits.default_tpm":             c.Limits.DefaultTPM,
+		"limits.default_max_concurrency": int64(c.Limits.DefaultMaxConcurrency),
+	}
+	for key, val := range sentinelOK {
+		if val < -1 {
+			errs = append(errs, fmt.Sprintf("%s 只能是 ≥ -1（-1 = 不限，0 = 全拒；当前 %d）", key, val))
 		}
 	}
 
