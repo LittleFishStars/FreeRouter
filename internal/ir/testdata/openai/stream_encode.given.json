@@ -1,0 +1,10 @@
+[
+  {"type":"start"},
+  {"type":"text_delta","text":"你"},
+  {"type":"tool_call_start","call":{"id":"call_1","name":"get_weather","arguments":"{\"ci"}},
+  {"type":"tool_call_delta","index":0,"call":{"id":"call_1","name":"get_weather","arguments":"ty\":\"北京\"}"}},
+  {"type":"tool_call_end","index":0},
+  {"type":"text_delta","text":"好了"},
+  {"type":"usage","usage":{"input":9,"output":4,"source":"upstream"}},
+  {"type":"done","stop":"tool_use"}
+]

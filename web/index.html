@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FreeRouter 控制台</title>
+    <!--
+      为什么不在这里写任何 favicon/静态资源引用：
+      产物必须能被相对路径服务（base: './'）。任何以 '/' 开头的引用
+      在「被挂在子路径」或「被 http.FileServer 直接服务」时都会 404。
+    -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

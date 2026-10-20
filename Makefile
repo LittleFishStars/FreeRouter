@@ -23,7 +23,7 @@ LDFLAGS := -X $(PKG)/internal/version.Version=$(VERSION) \
            -X $(PKG)/internal/version.Commit=$(COMMIT) \
            -X $(PKG)/internal/version.BuildTime=$(BUILD_TIME)
 
-.PHONY: all build test test-race vet fmt tidy run print-config check-config contract clean web help
+.PHONY: all build test test-race vet fmt tidy run print-config check-config contract clean web help docs-baseline docs-check docs-brief
 
 all: build
 
@@ -77,7 +77,19 @@ web:
 		echo "web/ 尚未就绪，跳过"; \
 	fi
 
-## clean: 清理构建产物与缓存
+## docs-baseline: 记录设计文档基线（用户改动文档后重记）
+docs-baseline:
+	python3 scripts/docs_fingerprint.py baseline
+
+## docs-check: 检查设计文档是否变更；有变更时退出非零（合并前必跑）
+docs-check:
+	@python3 scripts/docs_fingerprint.py check
+
+## docs-brief: 输出可直接贴给队友的文档变更提醒
+docs-brief:
+	@python3 scripts/docs_fingerprint.py check --brief
+
+
 clean:
 	rm -rf bin dist
 	rm -rf .cache
