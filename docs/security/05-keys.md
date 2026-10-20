@@ -74,7 +74,7 @@
 `api_keys` 表**保留**：`id, account_id, key_hash, prefix, name, status, expires_at, created_at, last_used_at`
 `api_keys` 表**没有**：`quota_limit`、`quota_used`、`rpm_limit`、`tpm_limit`、`daily_token_cap`、`max_concurrency`
 
-账户级额度字段见 [01-accounts.md](01-accounts.md#额度在账户级不在-key-上)：`quota_limit` / `quota_used` / `quota_unit` / `rpm_limit` / `tpm_limit` / `max_concurrency`。
+账户级额度见 [01-accounts.md](01-accounts.md#额度在账户级不在-key-上)：周期额度行化存 `account_quotas`（合计行 + 按模型限额行），速率与并发是 `accounts` 上的 `rpm_limit` / `tpm_limit` / `max_concurrency` 单列（**-1 = 不限**，2026-10-20 定案）。
 
 **Key 只剩三件事**：
 
@@ -88,11 +88,11 @@
 
 1. **多开 Key 就是额度翻倍。** 若每把 Key 有自己的 `quota_limit`，用户建 10 把 Key 就得到 10 份额度，账户级上限形同虚设——而建 Key 是用户自己能做的动作（只要组策略允许），这条绕过路径不需要任何越权。
 2. **额度是"一个人能用多少"的问题，不是"一个客户端能用多少"的问题。** 同一个人同时用编辑器、CI 和手机访问，他的总消耗才是需要被约束的量；按 Key 计额度，等于把同一个人的总消耗拆成互不知情的几份，任何一份超限都不会让总量收敛。
-3. **它让审计与对账多一层无意义的维度。** 账户级额度只需要在 `accounts` 上维护一行；按 Key 维护则要么有 N 份账、要么每次判定都跨 Key 求和——后者让每个请求的鉴权成本随该账户的 Key 数量增长。
+3. **它让审计与对账多一层无意义的维度。** 账户级额度只需要在 `account_quotas` 上按 (unit, period)（及按模型行）维护；按 Key 维护则要么有 N 份账、要么每次判定都跨 Key 求和——后者让每个请求的鉴权成本随该账户的 Key 数量增长。
 
-**额度判定落在哪里**：判定链第 6 步（[04-authz.md](04-authz.md#4-运行时鉴权顺序入站模型请求)），读的是 `accounts` 那一行，与本次请求用的是哪把 Key 无关。
+**额度判定落在哪里**：判定链第 6 步（[04-authz.md](04-authz.md#4-运行时鉴权顺序入站模型请求)），读的是 `account_quotas` 的当期行（合计行必查；请求命中的抽象模型另有按模型行时再查一行），与本次请求用的是哪把 Key 无关。**按模型限额的闸也在这里**：它是账户行上的另一道交集闸（组侧声明见 03-groups 第 4.5 节），不是 Key 属性。
 
-**三种计量维度**（`quota_unit`）：
+**三种计量维度**（`account_quotas.unit`，逐行一个维度）：
 
 | 维度 | 单位 | 怎么算 | 为什么需要 |
 |---|---|---|---|
@@ -109,17 +109,17 @@
 | RPM | `rpm_limit` | **429 + 有值 `Retry-After`** | "稍后就能用"，客户端必须知道多久后重试（PLAN 9.5、验收 4） |
 | TPM | `tpm_limit` | 同上 | 同上 |
 | 并发 | `max_concurrency` | 同上 | 同上 |
-| 额度耗尽 | `quota_limit` / `quota_unit` | 拒绝 + 日志留痕 | "今天没戏"，重试没有意义（状态码见 [04-authz.md](04-authz.md#9-待定)） |
+| 额度耗尽 | `account_quotas` 合计行或按模型行 | 429 `quota_exceeded` + 日志留痕 | "今天没戏"，重试没有意义；按模型行命中时错误体带 `model`，提示可换其他可用模型（见 [../api/03-errors.md](../api/03-errors.md)） |
 | 全站 | 三维令牌桶（全局 / 按账户 / 按 IP） | 429 + `Retry-After` | 兜底 |
 | 全站预算 | 全局预算熔断 | 拒绝 + 告警（PLAN 9.1） | 全站级事件 |
 
-**为什么必须保留"全局默认兜底"**：新建账户的 `quota_limit` 默认为 0（PLAN 9.1：默认拒绝），但 `rpm_limit` / `tpm_limit` / `max_concurrency` 若允许留空，就出现一种"额度为 0 却能高频打无效请求"的形态——额度虽拒，速率仍然可以打满上游连接与本地 CPU。因此这三项必须由全局默认值兜底，**不得理解为无限制**。
+**为什么速率/并发用 -1 而不是留空或 NULL**：新建账户的合计额度默认拒绝（审批时未填即落 `quota_limit = 0` 行，PLAN 9.1：默认拒绝），但 `rpm_limit` / `tpm_limit` / `max_concurrency` 必须有一个确定的列值：留空或 NULL 会让"额度为 0 却能高频打无效请求"变成隐式状态。三列 NOT NULL DEFAULT -1：-1 是显式"不限"哨兵（与未设限制类键同一套语义，参与 min 时跳过），0 是"全拒"——两个边界值都必须写得出来，NULL 则把三态带回运行期（见 03-groups 第 3 节定案）。
 
-**为什么用 `usage_daily` 而不是实时扫 `requests` 算日用量**：额度要在每一个请求前判定。实时聚合全表会让鉴权成本随历史请求量增长，而 `usage_daily(day, account_id, abstract_model_id, real_model_id, ...)` 正好是这一维度的预聚合（PLAN 第 10 章）。
+**为什么额度计数器直接落在 `account_quotas.quota_used`，而不是每次从 `usage_daily` 现算**：额度要在每一个请求前判定。实时聚合会让鉴权成本随历史请求量增长；`quota_used` 是当期计数器（惰性重置，同池的 `period_anchor` 机制），`usage_daily(day, account_id, …)` 是它的报表口径投影，两者同事务写入（PLAN 第 10 章）。
 
-> **待定**：`quota_limit` 与"日额度 / 月额度"的关系——当前按"`quota_limit` 是账户总额度，日 / 月 token 上限由组策略给上界"撰写，但总纲同时出现了两种表述，需确认是否存在三层（总额度 / 周期额度 / 组池）叠加。
+> **已定（2026-10-20）**：额度行化落定——合计额度与日/月周期额度统一为 `account_quotas` 的行（逐 `(unit, period)`，含按模型行），不存在"总额度与周期额度两层叠加"的歧义；叠加关系（合计 × 按模型 × 组池交集）见 [03-groups.md](03-groups.md) 第 4.5 节与 [01-accounts.md](01-accounts.md) 第 1 节三层表。
 
-> **待定**：`quota_unit` 是账户上一个单值，还是允许同时启用多个维度（若允许，`quota_limit` 需要按维度分行存储）。
+> **已定（2026-10-20）**：允许多维度同时启用，且**已经按维度分行存储**（主键含 `(unit, period[, abstract_model_id])`），单值 `quota_unit` 字段随账户额度行化一并废除。
 
 > **待定**：账户级 `rpm_limit` / `tpm_limit` / `max_concurrency` 的全局默认兜底值。
 

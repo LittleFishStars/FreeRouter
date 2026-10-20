@@ -412,7 +412,7 @@
 | 7.19 | 会话 `session_ttl = 12h` | `02-deploy.md:144` `[无理由]` |
 | 7.20 | 登录 `max_failures = 5` / `lockout = 15m` | `02-deploy.md:146-147` `[无理由]` |
 | 7.21 | 注册两个独立开关 `registration_enabled` 与 `registration_requires_approval` | `02-deploy.md:148-149` |
-| 7.22 | 默认值：`rpm = 60` / `tpm = 0` / `max_concurrency = 2` / `keys_per_account = 10` / `daily_tokens = 0` / `monthly_tokens = 0`；**`0` 有两种语义**：`default_daily/monthly_tokens = 0` 表示「**不可用**」（需显式授权），`default_tpm = 0` / `global_daily_tokens = 0` / `global_rpm = 0` 表示「**不限制**」 | `02-deploy.md:161-166`（两种语义已在同节写明，是刻意的，不是笔误） |
+| 7.22 | ~~`0` 有两种语义~~ → **已被 2026-10-20 用户定案推翻**：额度类 `0` = 不可用；速率类改哨兵 **-1 = 不限、0 = 全拒**（`default_tpm` 出厂默认 -1）；仅全局熔断保留「0 = 不熔断」（全站开关不是账户限流） | `02-deploy.md` §2.4、`security/03-groups.md` 第 3 节 |
 | 7.23 | `idle_timeout = 120s`；`read_header_timeout = 10s`；`shutdown_grace = 30s` | `02-deploy.md:93-94` |
 | 7.24 | 上游默认：`timeout = 300s` / `connect_timeout = 5s` / `max_retries = 2` / `model_refresh_interval = 10m` / `aggregate_excluded = true` | `02-deploy.md:181-185` |
 | 7.25 | sidecar 五项默认（`enabled`/`node_path`/`entry`/`socket`/`startup_timeout = 20s`） | `02-deploy.md:195-200` |

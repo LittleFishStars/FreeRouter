@@ -278,7 +278,7 @@ w 可能不再是原始类型，类型断言会静默失败——表现为「流
 | `no_candidate` | 503 | 抽象模型存在但当前无可用候选 |
 | `upstream_unavailable` | 502 | 上游整体不可达 |
 | `upstream_timeout` | 504 | 超时 |
-| `quota_exceeded` | 429 | 账户/Key/全局配额用完 |
+| `quota_exceeded` | 429 | 账户级额度（合计行或按模型限额行）打满（Key 无额度） |
 | `pool_exhausted` | 429 | 所属组的共享额度池耗尽 |
 | `rate_limited` | 429 | 触发限速 |
 | `capability_unsupported` | 400 | 请求的能力候选不支持（且无法过滤出候选） |
