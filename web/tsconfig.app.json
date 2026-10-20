@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    // 增量构建信息落在 node_modules 内：它是构建缓存不是源码，
+    // 放在根目录会污染 git status，也容易被误提交。
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    // bundler 解析：源码里的 `import './x'` 可以不带扩展名，
+    // 由 Vite/Rolldown 决定最终产物形态。
+    "moduleResolution": "bundler",
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    // 类型检查与产物生成分离：产物由 vite build 生成，
+    // tsc 只做检查，避免把 TS 输出当成最终 JS。
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "types": []
+  },
+  "include": ["src"]
+}

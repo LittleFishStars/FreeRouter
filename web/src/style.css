@@ -1,0 +1,24 @@
+/* 骨架阶段的最小布局样式（三段式：顶栏 / 导航+内容 / 页脚）。
+   不是设计规范产物——06-design.md 的视觉 token 在接入组件库时统一替换。 */
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; color: #1a1a1a; }
+.app-shell { display: flex; flex-direction: column; min-height: 100vh; }
+.topbar { display: flex; align-items: center; gap: 1rem; padding: .5rem 1rem; border-bottom: 1px solid #ddd; }
+.topbar .site-name { font-weight: 700; }
+.topbar .account-menu { margin-left: auto; color: #666; font-size: .9rem; }
+.main-row { display: flex; flex: 1; }
+.sidenav { width: 220px; border-right: 1px solid #ddd; padding: 1rem .5rem; }
+.sidenav h2 { font-size: .8rem; text-transform: none; color: #888; margin: .8rem .5rem .3rem; }
+.sidenav ul { list-style: none; margin: 0; padding: 0; }
+.sidenav a { display: block; padding: .3rem .5rem; border-radius: 4px; text-decoration: none; color: #333; font-size: .9rem; }
+.sidenav a:hover, .sidenav a.active { background: #eef3fa; }
+.content { flex: 1; padding: 1.5rem 2rem; max-width: 960px; }
+.breadcrumb { color: #888; font-size: .85rem; margin-bottom: .5rem; }
+.page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; }
+.page-header h1 { margin: 0 0 .25rem; font-size: 1.4rem; }
+.page-summary { margin: 0; color: #666; }
+.placeholder-note { background: #f7f7f7; border: 1px dashed #ccc; padding: 1rem; border-radius: 6px; color: #555; }
+.login-page { max-width: 360px; margin: 3rem auto; }
+.login-card { display: flex; flex-direction: column; gap: .4rem; border: 1px solid #ddd; border-radius: 8px; padding: 1.5rem; }
+.login-card input { padding: .4rem; }
+.pagefoot { border-top: 1px solid #ddd; padding: .5rem 1rem; color: #888; font-size: .8rem; }

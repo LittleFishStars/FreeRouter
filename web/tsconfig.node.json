@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    // vite.config.ts 里用了 node:url / node:path，需要 Node 的类型声明。
+    // 只在这一份配置里给类型，不污染浏览器侧的 tsconfig.app.json。
+    "types": ["node"]
+  },
+  "include": ["vite.config.ts"]
+}

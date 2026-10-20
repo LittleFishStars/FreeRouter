@@ -1,0 +1,9 @@
+{
+  // 只做「引用转发」：应用代码与构建脚本的编译约束不同
+  // （前者是 DOM 环境，后者是 Node 环境），拆成两个 project 才不会互相污染类型。
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" }
+  ]
+}
