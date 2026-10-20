@@ -1,0 +1,578 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+)
+
+// ModelStatus 是 abstract_models.status 的取值。
+type ModelStatus string
+
+const (
+	ModelActive     ModelStatus = "active"
+	ModelDeprecated ModelStatus = "deprecated"
+	ModelDisabled   ModelStatus = "disabled"
+)
+
+// RealModelStatus 是 real_models.status 的取值。
+//
+// 注意 missing 与 disabled 的区别：missing 是"上游目录里没有它了"（客观事实，
+// 探测得出），disabled 是"管理员关掉了它"（主观策略）。两者运维动作完全不同。
+type RealModelStatus string
+
+const (
+	RealModelActive   RealModelStatus = "active"
+	RealModelMissing  RealModelStatus = "missing"
+	RealModelDisabled RealModelStatus = "disabled"
+)
+
+// AbstractModel 是对外暴露的抽象模型。
+type AbstractModel struct {
+	ID                 int64
+	Name               string
+	DisplayName        string
+	Strategy           string
+	CapabilityMode     string
+	Status             ModelStatus
+	ReplacementModelID *int64
+	DeprecatedAt       *int64
+	SunsetAt           *int64
+	Note               *string
+}
+
+// RealModel 是上游池子里的真实模型（只有管理员可见）。
+type RealModel struct {
+	ID                     int64
+	UpstreamID             int64
+	UpstreamModelID        string
+	DisplayName            string
+	GroupName              *string
+	ContextWindow          *int64
+	Modalities             *string // JSON 数组原文
+	Efforts                *string // JSON 数组原文
+	Status                 RealModelStatus
+	Hidden                 bool
+	ExcludedFromCandidates bool
+	SortOrder              int64
+	Source                 string
+	LastSeenAt             *int64
+	MissingSince           *int64
+}
+
+// Candidate 是抽象模型的一个候选。
+type Candidate struct {
+	AbstractModelID int64
+	RealModelID     int64
+	ConstraintJSON  *string
+	Weight          int64
+}
+
+// ModelRepo 是模型目录（抽象模型、候选、真实模型）的仓储。
+type ModelRepo struct{ base }
+
+// CreateAbstractModel 新建抽象模型，返回 id。
+func (r *ModelRepo) CreateAbstractModel(ctx context.Context, m AbstractModel) (int64, error) {
+	if m.Name == "" {
+		return 0, errors.New("store: 抽象模型名不得为空")
+	}
+	if m.DisplayName == "" {
+		// 展示名留空会让控制台出现一行没有标题的模型，运维无法判断它是哪个。
+		return 0, errors.New("store: 抽象模型必须有 display_name")
+	}
+	status := m.Status
+	if status == "" {
+		status = ModelActive
+	}
+	if !status.valid() {
+		return 0, fmt.Errorf("store: 非法抽象模型状态 %q", status)
+	}
+	mode := m.CapabilityMode
+	if mode == "" {
+		mode = "strict"
+	}
+	strategy := m.Strategy
+	if strategy == "" {
+		strategy = "expiry-first"
+	}
+
+	res, err := r.db.ExecContext(ctx,
+		`INSERT INTO abstract_models(name, display_name, strategy, capability_mode, status,
+		                            replacement_model_id, deprecated_at, sunset_at, note)
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
+		m.Name, m.DisplayName, strategy, mode, string(status),
+		m.ReplacementModelID, m.DeprecatedAt, m.SunsetAt, m.Note)
+	if err != nil {
+		return 0, fmt.Errorf("store: 创建抽象模型失败: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("store: 读取新抽象模型 id 失败: %w", err)
+	}
+	return id, nil
+}
+
+const abstractModelColumns = `id, name, display_name, strategy, capability_mode, status,
+                              replacement_model_id, deprecated_at, sunset_at, note`
+
+func scanAbstractModel(sc interface{ Scan(...any) error }) (*AbstractModel, error) {
+	var m AbstractModel
+	var status string
+	if err := sc.Scan(&m.ID, &m.Name, &m.DisplayName, &m.Strategy, &m.CapabilityMode,
+		&status, &m.ReplacementModelID, &m.DeprecatedAt, &m.SunsetAt, &m.Note); err != nil {
+		return nil, err
+	}
+	m.Status = ModelStatus(status)
+	return &m, nil
+}
+
+// GetAbstractModel 按 id 读抽象模型。
+func (r *ModelRepo) GetAbstractModel(ctx context.Context, id int64) (*AbstractModel, error) {
+	row := r.db.QueryRowContext(ctx,
+		`SELECT `+abstractModelColumns+` FROM abstract_models WHERE id = ?`, id)
+	m, err := scanAbstractModel(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("store: 读取抽象模型 %d 失败: %w", id, err)
+	}
+	return m, nil
+}
+
+// GetAbstractModelByName 按对外名读抽象模型（GET /v1/models 与转发解析使用）。
+func (r *ModelRepo) GetAbstractModelByName(ctx context.Context, name string) (*AbstractModel, error) {
+	row := r.db.QueryRowContext(ctx,
+		`SELECT `+abstractModelColumns+` FROM abstract_models WHERE name = ?`, name)
+	m, err := scanAbstractModel(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("store: 按名读取抽象模型失败: %w", err)
+	}
+	return m, nil
+}
+
+// ListAbstractModels 列出抽象模型。
+//
+// includeDisabled=false 时只返回 active 与 deprecated：对外（租户）只应看到可用的，
+// 而 deprecated 必须可见——它的存在本身就是"请迁移"的通知。
+func (r *ModelRepo) ListAbstractModels(ctx context.Context, includeDisabled bool) ([]AbstractModel, error) {
+	q := `SELECT ` + abstractModelColumns + ` FROM abstract_models`
+	if !includeDisabled {
+		q += ` WHERE status <> 'disabled'`
+	}
+	q += ` ORDER BY id`
+
+	rows, err := r.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列出抽象模型失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []AbstractModel
+	for rows.Next() {
+		m, err := scanAbstractModel(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: 扫描抽象模型失败: %w", err)
+		}
+		out = append(out, *m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历抽象模型失败: %w", err)
+	}
+	return out, nil
+}
+
+// DeprecateAbstractModel 把抽象模型标记为弃用并指向替代者。
+//
+// 两条业务规则在这里（以及调用方的事务里）成立：
+//  1. 弃用只能指向此刻 status = active 的抽象模型；
+//  2. 弃用了就不能再改回 active。
+//
+// 这两条把替代关系变成一条只出不进的有向路径，因此多跳环无法形成——
+// 环需要某一步回到 active，而回到 active 是被禁止的。
+// 05-storage.md 3.4 还要求调用方在同一个事务里做一次 visited 游走作为兜底（防并发写入
+// 绕过规则）；那一步需要读取整条链，属于业务层，这里只提供单跳的写入。
+func (r *ModelRepo) DeprecateAbstractModel(ctx context.Context, id int64, replacementID *int64, deprecatedAt, sunsetAt int64) error {
+	cur, err := r.GetAbstractModel(ctx, id)
+	if err != nil {
+		return err
+	}
+	if cur.Status == ModelDeprecated {
+		return fmt.Errorf("store: 抽象模型 %d 已经是弃用状态", id)
+	}
+	if cur.Status == ModelDisabled {
+		return fmt.Errorf("store: 抽象模型 %d 已禁用，不能改为弃用", id)
+	}
+
+	if replacementID != nil {
+		if *replacementID == id {
+			// DB 的 CHECK 也挡这个，但在应用层先拒绝能给出可读的错误。
+			return errors.New("store: 替代者不能是自己")
+		}
+		rep, err := r.GetAbstractModel(ctx, *replacementID)
+		if err != nil {
+			return err
+		}
+		if rep.Status != ModelActive {
+			return fmt.Errorf(
+				"store: 替代者 %d 的状态是 %s，弃用只能指向此刻 active 的抽象模型",
+				*replacementID, rep.Status)
+		}
+	}
+
+	if deprecatedAt == 0 {
+		deprecatedAt = now()
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE abstract_models
+		    SET status = 'deprecated', replacement_model_id = ?, deprecated_at = ?, sunset_at = ?
+		  WHERE id = ? AND status IN ('active')`,
+		replacementID, deprecatedAt, sunsetAt, id)
+	if err != nil {
+		return fmt.Errorf("store: 标记弃用失败: %w", err)
+	}
+	return requireAffected(res, "抽象模型", id)
+}
+
+// SetAbstractModelStatus 改抽象模型状态（禁用/启用）。
+//
+// 明确禁止 deprecated → active：这是上面第 2 条规则的落实点。允许改回去的话，
+// 替代链就会重新可以成环，而环会让"沿替代链解析最终模型"变成死循环。
+func (r *ModelRepo) SetAbstractModelStatus(ctx context.Context, id int64, status ModelStatus) error {
+	if !status.valid() {
+		return fmt.Errorf("store: 非法抽象模型状态 %q", status)
+	}
+	cur, err := r.GetAbstractModel(ctx, id)
+	if err != nil {
+		return err
+	}
+	if cur.Status == ModelDeprecated && status == ModelActive {
+		return fmt.Errorf(
+			"store: 抽象模型 %d 已弃用，不能改回 active——"+
+				"否则替代链可以成环（05-storage.md 3.4）", id)
+	}
+
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE abstract_models SET status = ? WHERE id = ?`, string(status), id)
+	if err != nil {
+		return fmt.Errorf("store: 更新抽象模型状态失败: %w", err)
+	}
+	return requireAffected(res, "抽象模型", id)
+}
+
+// SetCandidates 覆盖式设置抽象模型的候选集。
+//
+// 整体覆盖的理由同 Key 白名单：候选是一个集合，增量 API 在并发下会丢更新。
+// 覆盖必须在事务里完成，否则 DELETE 成功而 INSERT 失败会留下一个"没有任何候选"
+// 的抽象模型——表现为该模型 100% 不可用。
+func (r *ModelRepo) SetCandidates(ctx context.Context, abstractModelID int64, cands []Candidate) error {
+	if r.s != nil && r.s.tx == nil {
+		return r.s.WithTx(ctx, func(tx *Repos) error {
+			return tx.Models.SetCandidates(ctx, abstractModelID, cands)
+		})
+	}
+
+	if _, err := r.db.ExecContext(ctx,
+		`DELETE FROM abstract_candidates WHERE abstract_model_id = ?`, abstractModelID); err != nil {
+		return fmt.Errorf("store: 清空候选失败: %w", err)
+	}
+	for _, c := range cands {
+		if _, err := r.db.ExecContext(ctx,
+			`INSERT INTO abstract_candidates(abstract_model_id, real_model_id, constraint_json, weight)
+			 VALUES(?,?,?,?)`,
+			abstractModelID, c.RealModelID, c.ConstraintJSON, c.Weight); err != nil {
+			return fmt.Errorf("store: 写候选失败: %w", err)
+		}
+	}
+	return nil
+}
+
+// ListCandidates 列出抽象模型的候选（按 weight 降序，同权重按 id）。
+func (r *ModelRepo) ListCandidates(ctx context.Context, abstractModelID int64) ([]Candidate, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT abstract_model_id, real_model_id, constraint_json, weight
+		   FROM abstract_candidates
+		  WHERE abstract_model_id = ?
+		  ORDER BY weight DESC, real_model_id`, abstractModelID)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列出候选失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Candidate
+	for rows.Next() {
+		var c Candidate
+		if err := rows.Scan(&c.AbstractModelID, &c.RealModelID, &c.ConstraintJSON, &c.Weight); err != nil {
+			return nil, fmt.Errorf("store: 扫描候选失败: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历候选失败: %w", err)
+	}
+	return out, nil
+}
+
+const realModelColumns = `id, upstream_id, upstream_model_id, display_name, group_name,
+                          context_window, modalities, efforts, status, hidden,
+                          excluded_from_candidates, sort_order, source,
+                          last_seen_at, missing_since`
+
+func scanRealModel(sc interface{ Scan(...any) error }) (*RealModel, error) {
+	var m RealModel
+	var status string
+	var hidden, excluded int
+	if err := sc.Scan(&m.ID, &m.UpstreamID, &m.UpstreamModelID, &m.DisplayName, &m.GroupName,
+		&m.ContextWindow, &m.Modalities, &m.Efforts, &status, &hidden,
+		&excluded, &m.SortOrder, &m.Source, &m.LastSeenAt, &m.MissingSince); err != nil {
+		return nil, err
+	}
+	m.Status = RealModelStatus(status)
+	m.Hidden = hidden != 0
+	m.ExcludedFromCandidates = excluded != 0
+	return &m, nil
+}
+
+// UpsertRealModel 按 (upstream_id, upstream_model_id) 同步一条真实模型。
+//
+// 为什么用 ON CONFLICT 而不是"先查再插/改"：目录同步是每个刷新周期一次的全量比对，
+// 读-改-写会让"两个并发刷新"互相覆盖。upsert 由 DB 保证原子，且只走唯一索引。
+//
+// 关键约束（PLAN 11.1）：管理员改过的行 source=override，刷新不覆盖它。
+// 落实方式是 DO UPDATE 里带 `WHERE real_models.source = 'auto'`——
+// 被管理员接管过的行在冲突时什么都不做，从而同时保住 status/hidden/sort_order
+// 等全部人工字段，而不是逐列判断。
+func (r *ModelRepo) UpsertRealModel(ctx context.Context, m RealModel) (int64, error) {
+	if m.UpstreamID == 0 {
+		return 0, errors.New("store: 真实模型必须归属某个上游")
+	}
+	if m.UpstreamModelID == "" {
+		return 0, errors.New("store: upstream_model_id 不得为空")
+	}
+	status := m.Status
+	if status == "" {
+		status = RealModelActive
+	}
+	source := m.Source
+	if source == "" {
+		source = "auto"
+	}
+	seenAt := m.LastSeenAt
+	if seenAt == nil {
+		ts := now()
+		seenAt = &ts
+	}
+
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO real_models(upstream_id, upstream_model_id, display_name, group_name,
+		                         context_window, modalities, efforts, status, hidden,
+		                         excluded_from_candidates, sort_order, source,
+		                         last_seen_at, missing_since)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(upstream_id, upstream_model_id) DO UPDATE SET
+		     display_name   = excluded.display_name,
+		     group_name     = excluded.group_name,
+		     context_window = excluded.context_window,
+		     modalities     = excluded.modalities,
+		     efforts        = excluded.efforts,
+		     status         = excluded.status,
+		     last_seen_at   = excluded.last_seen_at,
+		     missing_since  = NULL
+		   WHERE real_models.source = 'auto'`,
+		m.UpstreamID, m.UpstreamModelID, m.DisplayName, m.GroupName,
+		m.ContextWindow, m.Modalities, m.Efforts, string(status),
+		boolInt(m.Hidden), boolInt(m.ExcludedFromCandidates), m.SortOrder, source,
+		seenAt, m.MissingSince)
+	if err != nil {
+		return 0, fmt.Errorf("store: 同步真实模型 %s 失败: %w", m.UpstreamModelID, err)
+	}
+
+	// 冲突且被 override 保护时上面不会写入；这里再读一次拿准确 id。
+	var id int64
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT id FROM real_models WHERE upstream_id = ? AND upstream_model_id = ?`,
+		m.UpstreamID, m.UpstreamModelID).Scan(&id); err != nil {
+		return 0, fmt.Errorf("store: 回读真实模型 id 失败: %w", err)
+	}
+	return id, nil
+}
+
+// MarkMissingRealModels 把某上游下、不在 keepIDs 里的模型标记为 missing。
+//
+// 为什么用"标记"而不是删除：删除会连带删掉 abstract_candidates（ON DELETE CASCADE），
+// 于是一次上游抖动就会永久摧毁管理员配置好的候选集。missing 保留行，上游恢复时
+// UpsertRealModel 会自动把 status 写回 active 并清空 missing_since。
+//
+// keepIDs 为空时返回错误：那意味着"这次刷新一个模型都没拿到"，几乎必然是
+// 上游故障或认证失效，此时把全部模型标 missing 是一次自伤。
+func (r *ModelRepo) MarkMissingRealModels(ctx context.Context, upstreamID int64, keepIDs []int64) (int64, error) {
+	if len(keepIDs) == 0 {
+		return 0, errors.New(
+			"store: keepIDs 为空，拒绝把整个上游的模型标记为 missing（这通常是拉取失败而非真的全没了）")
+	}
+
+	// 用临时条件拼 NOT IN。参数个数随模型数增长（上限几百），SQLite 的变量上限是 32766，
+	// 足够；这里只做数量上的防御。
+	if len(keepIDs) > 5000 {
+		return 0, fmt.Errorf("store: keepIDs 过多（%d），拒绝构造该查询", len(keepIDs))
+	}
+
+	// 构造与 keepIDs 等长的占位符串，并按 SQL 里的出现顺序装配参数：
+	// missing_since 的时间戳 → upstream_id → NOT IN 的那一串 id。
+	// 顺序必须与占位符严格一致，写反了不会报错，只会静默地拿错误的值去比较。
+	placeholders := make([]byte, 0, len(keepIDs)*2)
+	args := make([]any, 0, len(keepIDs)+2)
+	args = append(args, now(), upstreamID)
+	for i, id := range keepIDs {
+		if i > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, '?')
+		args = append(args, id)
+	}
+
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE real_models
+		    SET status = 'missing', missing_since = COALESCE(missing_since, ?)
+		  WHERE upstream_id = ? AND id NOT IN (`+string(placeholders)+`)
+		    AND status <> 'missing'`,
+		args...)
+	if err != nil {
+		return 0, fmt.Errorf("store: 标记 missing 失败: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: 读取标记行数失败: %w", err)
+	}
+	return n, nil
+}
+
+// GetRealModel 按 id 读真实模型。
+func (r *ModelRepo) GetRealModel(ctx context.Context, id int64) (*RealModel, error) {
+	row := r.db.QueryRowContext(ctx,
+		`SELECT `+realModelColumns+` FROM real_models WHERE id = ?`, id)
+	m, err := scanRealModel(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("store: 读取真实模型 %d 失败: %w", id, err)
+	}
+	return m, nil
+}
+
+// ListRealModelsByUpstream 列出某上游的真实模型（管理面）。
+func (r *ModelRepo) ListRealModelsByUpstream(ctx context.Context, upstreamID int64) ([]RealModel, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+realModelColumns+` FROM real_models
+		  WHERE upstream_id = ? ORDER BY sort_order, upstream_model_id`, upstreamID)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列出真实模型失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []RealModel
+	for rows.Next() {
+		m, err := scanRealModel(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: 扫描真实模型失败: %w", err)
+		}
+		out = append(out, *m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历真实模型失败: %w", err)
+	}
+	return out, nil
+}
+
+// UpsertUpstream 同步一条上游配置，返回 id（按 kind+name 唯一）。
+func (r *ModelRepo) UpsertUpstream(ctx context.Context, kind, name, baseURL string, ownerAccountID *int64, enabled bool) (int64, error) {
+	if kind != "relay" && kind != "vendor" && kind != "selfhosted" {
+		return 0, fmt.Errorf("store: 非法上游类型 %q（kind 只能是 relay/vendor/selfhosted）", kind)
+	}
+	if name == "" || baseURL == "" {
+		return 0, errors.New("store: 上游的 name 与 base_url 都不得为空")
+	}
+
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO upstreams(kind, name, base_url, owner_account_id, enabled, last_seen_at)
+		 VALUES(?,?,?,?,?,?)
+		 ON CONFLICT(kind, name) DO UPDATE SET
+		     base_url         = excluded.base_url,
+		     owner_account_id = excluded.owner_account_id,
+		     enabled          = excluded.enabled,
+		     last_seen_at     = excluded.last_seen_at`,
+		kind, name, baseURL, ownerAccountID, boolInt(enabled), now())
+	if err != nil {
+		return 0, fmt.Errorf("store: 同步上游失败: %w", err)
+	}
+
+	var id int64
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT id FROM upstreams WHERE kind = ? AND name = ?`, kind, name).Scan(&id); err != nil {
+		return 0, fmt.Errorf("store: 回读上游 id 失败: %w", err)
+	}
+	return id, nil
+}
+
+// ListUpstreams 列出全部上游（含 base_url 与启用状态）。
+//
+// 返回的模型里不含任何密文：upstream_secrets 是独立表，解密需要主密钥，
+// 由调用方在真正发起上游请求时按需取用。
+func (r *ModelRepo) ListUpstreams(ctx context.Context) ([]Upstream, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, kind, name, base_url, secret_id, owner_account_id, enabled, last_seen_at
+		   FROM upstreams ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列出上游失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Upstream
+	for rows.Next() {
+		var u Upstream
+		var enabled int
+		if err := rows.Scan(&u.ID, &u.Kind, &u.Name, &u.BaseURL, &u.SecretID,
+			&u.OwnerAccountID, &enabled, &u.LastSeenAt); err != nil {
+			return nil, fmt.Errorf("store: 扫描上游失败: %w", err)
+		}
+		u.Enabled = enabled != 0
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历上游失败: %w", err)
+	}
+	return out, nil
+}
+
+// Upstream 是上游的读模型。
+type Upstream struct {
+	ID             int64
+	Kind           string
+	Name           string
+	BaseURL        string
+	SecretID       *int64
+	OwnerAccountID *int64
+	Enabled        bool
+	LastSeenAt     *int64
+}
+
+// boolInt 把布尔转成 SQLite 的 0/1。集中一处，避免各处写法不一导致 CHECK 失败。
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func (s ModelStatus) valid() bool {
+	switch s {
+	case ModelActive, ModelDeprecated, ModelDisabled:
+		return true
+	}
+	return false
+}
