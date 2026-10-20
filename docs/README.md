@@ -15,6 +15,7 @@
 | **决策复核** | [DECISIONS-REVIEW.md](DECISIONS-REVIEW.md) | 写入者自行拍板、用户未表态的全部设计选择，交用户逐条复核 | 471 行 |
 | **待定汇总** | [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md) | 按 A/B/C 分级的未决项清单 | 340 行 |
 | **上游查证** | [RESEARCH-UPSTREAM-REUSE.md](RESEARCH-UPSTREAM-REUSE.md) | `dsh-providers-hub` 三层复用边界的实测记录 | 111 行 |
+| | [architecture/00-diagrams.md](architecture/00-diagrams.md) | 两张总图：模型调用层级图、权限架构图（mermaid） | ✅ 175 行 |
 | | [architecture/01-overview.md](architecture/01-overview.md) | 分层、进程模型、部署形态 | ✅ 357 行 |
 | | [architecture/02-ir.md](architecture/02-ir.md) | IR 与四协议转换 | ✅ 554 行 |
 | | [architecture/03-upstream.md](architecture/03-upstream.md) | 上游适配：dshgateway / contributed | ✅ 451 行 |
@@ -117,6 +118,7 @@
 | 关心模型路由 | [models/](models/) 全部 |
 | 关心贡献侧 | [contributions/](contributions/) |
 | 要部署 | [ops/01-security.md](ops/01-security.md) → [ops/02-deploy.md](ops/02-deploy.md) |
+| 只想看图 | [architecture/00-diagrams.md](architecture/00-diagrams.md) |
 
 ---
 
