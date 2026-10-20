@@ -78,7 +78,7 @@
 | 审核批准 / 拒绝 | 批准必须记录**选中的组与账户级额度**（PLAN 2.7） |
 | 禁用 / 恢复 | 转 `disabled` 必须记录联动失效的 Key 数量 |
 | 权限类授予 / 撤销 | 单独成条（`account_classes` 的增删）；撤销 `admin` 类必须记录联动的会话吊销数 |
-| **账户级额度 / 速率变更** | 记录 `quota_limit`、`quota_unit`、`rpm_limit`、`tpm_limit`、`max_concurrency` 各自的旧值 / 新值 |
+| **账户级额度 / 速率变更** | 记录 `account_quotas` 各行的增/删/改（含按模型限额行，`model`/`unit`/`period`/旧值/新值）与 `rpm_limit` / `tpm_limit` / `max_concurrency` 的旧值 / 新值；未设/删行记为 -1（不限） |
 | 账户合并 | 记录 source / target；见 [01-accounts.md](01-accounts.md#4-账户合并) |
 | 管理员导入（批次） | 一条批次事件：操作者、行数、成功 / 失败数 |
 | 管理员导入（单体） | 每个成功账户一条创建事件（见 [02-authn.md](02-authn.md#3-管理员导入账密)） |
