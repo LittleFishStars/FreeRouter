@@ -135,7 +135,7 @@ func (r *QuotaRepo) setQuota(ctx context.Context, table, ownerCol, limitCol, use
 		         ON CONFLICT(%s, abstract_model_id, unit, period) DO UPDATE SET
 		             %s = excluded.%s,
 		             updated_at = excluded.updated_at`,
-			table, ownerCol, limitCol, usedCol, ownerCol, usedCol, usedCol),
+			table, ownerCol, limitCol, usedCol, ownerCol, limitCol, limitCol),
 		ownerID, abstractModelID, string(unit), string(period), limit, anchor, now())
 	if err != nil {
 		return fmt.Errorf("store: 设置额度失败(%s): %w", table, err)
