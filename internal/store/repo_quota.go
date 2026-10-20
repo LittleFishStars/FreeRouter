@@ -46,18 +46,63 @@ func (p QuotaPeriod) valid() bool {
 // TotalScope 是"合计哨兵"：account_quotas / group_quota_pools 里 abstract_model_id = 0
 // 的行代表全模型合计（即原「账户总额度」「组合计池」）。
 // 0 不是合法模型 id（abstract_models.id 从 1 起），因此哨兵不会与真实模型碰撞。
+//
+// 与 API 形状的对应（api/02-admin.md 2026-10-21 三数组定案）：组策略 JSON 的
+// pool[] 项里 "model": null 就是这一维——管理 API 收到 model:null 时以
+// abstractModelID = TotalScope(0) 调 SetPool，收到 "model":"smart" 时先按名解析出
+// 模型 id 再调 SetPool(ctx, groupID, modelID, …)。**"null → 0" 的翻译只发生在
+// API 边界一次**，仓储以下全部用 int64 行键，不再有第三种"未设"表示。
+// account_quotas[] / model_quota_caps[] 两个数组同理（合计行 vs 按模型行）。
 const TotalScope int64 = 0
 
 // ErrQuotaExhausted 表示额度不足（条件 UPDATE 影响 0 行且该行存在）。
 // 独立类型而不是 ErrNotFound 的包装：上层据此返回 429 而不是 404。
+//
+// 携带**打满行的完整标识**（api/03-errors.md 2026-10-21 定案）：
+//   - quota{unit, period, model?} 机器可读对象：AbstractModelID = 0（TotalScope）时
+//     合计行、无 model；> 0 时是按模型限额行，调用方按 id 解析出模型名填进 model，
+//     客户端据此决定"换模型"还是"等重置"。错误里没有模型名是刻意的——持久层不知道
+//     名字，把"按 id 查名"塞进 Error() 会让 429 热路径依赖另一张表的读取。
+//   - PeriodAnchor：命中行的周期锚点，Retry-After = 锚点 + period 粒度 - now。
+//     没有它调用方只能猜重置时刻；文档把 Retry-After 定为"指向命中行的重置时刻"。
+//   - Used/Limit：组装 message（"已用 X / 上限 Y"）用，避免上层再回查一次同一条行。
 type ErrQuotaExhausted struct {
-	Scope  string // account | pool
-	Unit   QuotaUnit
-	Period QuotaPeriod
+	Scope           string // account | pool
+	Unit            QuotaUnit
+	Period          QuotaPeriod
+	AbstractModelID int64  // 0 = 合计行；> 0 = 按模型限额行
+	PeriodAnchor    string // 'YYYY-MM-DD'，该行 pool/quota_used 所属周期起点
+	Used            int64
+	Limit           int64
+}
+
+// ResetAt 返回命中行的周期重置时刻（UTC）。Retry-After = ResetAt - now 由调用方计算。
+//
+// 为什么公式是 锚点+粒度 而不是"下一次整日/整月"（05-storage.md 7.4 / security/03-groups 第 4 节）：
+// 行只在被惰性重置时归零，锚点记录的是"这个数字属于哪个周期"；如果按墙钟推断，
+// 一个几天没流量的账户会得到"明天 0 点重置"的错误承诺，而它的行还挂着上期锚点，
+// 下一次写入才真正归零。承诺必须与归零的实际机制同源。
+// 锚点解析失败（脏数据）返回 ok=false：调用方宁可不发 Retry-After，
+// 也不能发一个错误的时刻让客户端定时重试。
+func (e ErrQuotaExhausted) ResetAt() (time.Time, bool) {
+	anchor, err := time.Parse("2006-01-02", e.PeriodAnchor)
+	if err != nil {
+		return time.Time{}, false
+	}
+	switch e.Period {
+	case PeriodMonth:
+		return anchor.AddDate(0, 1, 0), true
+	default:
+		return anchor.AddDate(0, 0, 1), true
+	}
 }
 
 func (e ErrQuotaExhausted) Error() string {
-	return fmt.Sprintf("store: %s 额度不足（%s/%s）", e.Scope, e.Unit, e.Period)
+	if e.AbstractModelID != TotalScope {
+		return fmt.Sprintf("store: %s 额度不足（%s/%s，模型行 %d）",
+			e.Scope, e.Unit, e.Period, e.AbstractModelID)
+	}
+	return fmt.Sprintf("store: %s 额度不足（%s/%s，合计）", e.Scope, e.Unit, e.Period)
 }
 
 // QuotaRepo 是额度域仓储：账户级周期额度、组级共享池、组侧按模型上限声明。
@@ -242,10 +287,11 @@ func (r *QuotaRepo) listQuota(ctx context.Context, table, ownerCol, limitCol, us
 // used < limit 然后各自扣减成功，额度被超发且超发量随并发度线性增长；更坑的是它在低并发
 // 的开发环境永远不出现。条件 UPDATE 把窗口从根上消掉——这不是性能优化，是正确性要求。
 //
-// 返回 nil 表示扣减成功；返回 ErrQuotaExhausted 表示额度不足（应拒绝该请求）；
-// 返回 nil 且未扣减的情况只有一个：没有这一行（= 该维度不限）。为此在扣减前先判定
-// 行的存在性吗？不——"0 行"有两种成因，用一条 COUNT 区分，代价是一次索引探测，
-// 而它只在慢路径（0 行）上发生。
+// 返回 nil 表示扣减成功；返回 ErrQuotaExhausted 表示额度不足（应拒绝该请求），
+// 错误值携带打满行的 (abstract_model_id, period_anchor, used, limit) 供上层组装
+// quota 对象与 Retry-After；返回 nil 且未扣减的情况只有一个：没有这一行（= 该维度
+// 不限）。"0 行"的两种成因在慢路径（0 行）上用一次整行读取区分——快路径（扣减成功）
+// 不多付任何读取。
 //
 // 为什么必须先惰性重置再扣减：分开到不同事务会出现"已跨周期但尚未归零"的窗口，
 // 窗口内的请求会拿上期的 used 去比本期的 limit。本方法把两步放在同一个调用里，
@@ -299,14 +345,25 @@ func (r *QuotaRepo) tryDebit(ctx context.Context, table, ownerCol, limitCol, use
 		return fmt.Errorf("store: 读取扣减行数失败: %w", err)
 	}
 	if n == 0 {
-		exists, err := r.exists(ctx, table, ownerCol, ownerID, abstractModelID, unit, period)
+		// 0 行有两种成因：无行（= 不设限，放行）或有行但打满（= 拒绝）。
+		// 慢路径整行取回：一次 getQuota 同时回答"存在吗"与错误体需要的
+		// anchor/used/limit——比 COUNT+再查一遍少一次往返，且拒绝路径的
+		// 信息必须是**判定瞬间**的行值，分两次查会读到别的写事务改过的值。
+		q, err := r.getQuota(ctx, table, ownerCol, limitCol, usedCol,
+			ownerID, abstractModelID, unit, period)
+		if errors.Is(err, ErrNotFound) {
+			return nil // 无行 = 不设限（05-storage.md 3.3）
+		}
 		if err != nil {
 			return err
 		}
-		if !exists {
-			return nil // 无行 = 不设限（05-storage.md 3.3）
+		return ErrQuotaExhausted{
+			Scope: scope, Unit: unit, Period: period,
+			AbstractModelID: abstractModelID,
+			PeriodAnchor:    q.PeriodAnchor,
+			Used:            q.Used,
+			Limit:           q.Limit,
 		}
-		return ErrQuotaExhausted{Scope: scope, Unit: unit, Period: period}
 	}
 	return nil
 }
@@ -372,18 +429,6 @@ func (r *QuotaRepo) credit(ctx context.Context, table, ownerCol, usedCol string,
 		return fmt.Errorf("store: 额度记账失败(%s): %w", table, err)
 	}
 	return nil
-}
-
-func (r *QuotaRepo) exists(ctx context.Context, table, ownerCol string, ownerID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod) (bool, error) {
-	var n int
-	err := r.db.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT COUNT(1) FROM %s WHERE %s = ? AND abstract_model_id = ? AND unit = ? AND period = ?`,
-			table, ownerCol),
-		ownerID, abstractModelID, string(unit), string(period)).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("store: 判定额度行是否存在失败: %w", err)
-	}
-	return n > 0, nil
 }
 
 // ---------------------------------------------------------------- 组侧按模型上限声明

@@ -420,11 +420,20 @@ func TestContractPruneOnlyDeletesExpired(t *testing.T) {
 	}
 }
 
-// isQuotaExhausted 判定额度不足。ErrQuotaExhausted 是值类型，
+// isQuotaExhausted 判定额度不足并取回错误值。ErrQuotaExhausted 是值类型，
 // errors.As 的目标必须是指向它的指针的指针，抽成函数避免每处都写对。
-func isQuotaExhausted(err error) bool {
+// 返回的值就是 api/03-errors.md quota{unit,period,model?} 与 Retry-After 的原料。
+func isQuotaExhausted(err error) (ErrQuotaExhausted, bool) {
 	var e ErrQuotaExhausted
-	return errors.As(err, &e)
+	if errors.As(err, &e) {
+		return e, true
+	}
+	return ErrQuotaExhausted{}, false
+}
+
+func quotaExhausted(err error) bool {
+	_, ok := isQuotaExhausted(err)
+	return ok
 }
 
 func countRows(t *testing.T, s *Store, table string) int {
@@ -531,12 +540,14 @@ func TestContractQuotaConditionalDebit(t *testing.T) {
 		t.Fatalf("设额度失败: %v", err)
 	}
 	var ok, exhausted int
+	var lastErr error
 	for i := 0; i < 4; i++ {
 		err := r.Quotas.TryDebitAccountQuota(ctx, acctID, TotalScope, UnitRequest, PeriodDay, 1)
+		lastErr = err
 		switch {
 		case err == nil:
 			ok++
-		case isQuotaExhausted(err):
+		case quotaExhausted(err):
 			exhausted++
 		default:
 			t.Fatalf("扣减出现意外错误: %v", err)
@@ -545,12 +556,56 @@ func TestContractQuotaConditionalDebit(t *testing.T) {
 	if ok != 3 || exhausted != 1 {
 		t.Errorf("扣减结果 成功=%d 不足=%d，期望 成功=3 不足=1（超发）", ok, exhausted)
 	}
+
+	// 错误必须携带打满行的完整标识（api/03-errors.md 2026-10-21 定案：
+	// quota{unit,period,model?} 机器可读对象 + Retry-After 指向命中行重置时刻）。
+	e, isEx := isQuotaExhausted(lastErr)
+	if !isEx {
+		t.Fatal("最后一次扣减应当是 ErrQuotaExhausted")
+	}
+	if e.Scope != "account" || e.Unit != UnitRequest || e.Period != PeriodDay {
+		t.Errorf("错误行标识 = %+v，期望 account/request/day", e)
+	}
+	if e.AbstractModelID != TotalScope {
+		t.Errorf("合计行 AbstractModelID = %d，期望 0（合计错误体不带 model）", e.AbstractModelID)
+	}
+	if e.Used != 3 || e.Limit != 3 {
+		t.Errorf("错误携带 Used/Limit = %d/%d，期望 3/3（message 组装原料）", e.Used, e.Limit)
+	}
+	reset, valid := e.ResetAt()
+	if !valid {
+		t.Fatal("ResetAt 解析 period_anchor 失败")
+	}
+	if secs := time.Until(reset); secs < 0 || secs > 24*time.Hour+time.Minute {
+		t.Errorf("Retry-After 原料异常：距重置 %v，应在 0..24h(+时钟余量) 内", secs)
+	}
 	st, err := r.Quotas.AccountQuota(ctx, acctID, TotalScope, UnitRequest, PeriodDay)
 	if err != nil {
 		t.Fatalf("读额度失败: %v", err)
 	}
 	if st.Used != 3 {
 		t.Errorf("quota_used = %d，期望 3", st.Used)
+	}
+
+	// ①b 按模型限额行打满：AbstractModelID 必须带出模型行 id（错误体 quota.model
+	// 由此解析），且与合计行互不取代（交集语义，03-groups 4.5）。
+	if err := r.Quotas.SetAccountQuota(ctx, acctID, 42, UnitRequest, PeriodDay, 1); err != nil {
+		t.Fatalf("设按模型额度失败: %v", err)
+	}
+	if err := r.Quotas.TryDebitAccountQuota(ctx, acctID, 42, UnitRequest, PeriodDay, 1); err != nil {
+		t.Fatalf("按模型行首次扣减应成功: %v", err)
+	}
+	e2, ok2 := isQuotaExhausted(r.Quotas.TryDebitAccountQuota(ctx, acctID, 42, UnitRequest, PeriodDay, 1))
+	if !ok2 {
+		t.Fatal("按模型行第二次扣减应当 ErrQuotaExhausted")
+	}
+	if e2.AbstractModelID != 42 {
+		t.Errorf("按模型行错误 AbstractModelID = %d，期望 42（quota.model 的原料）", e2.AbstractModelID)
+	}
+	// 合计行此时已打满：两闸独立判定由行键不同天然保证（各行的条件 UPDATE 只看自己），
+	// 这里再确认合计闸不受按模型行新增的影响——仍然拒绝。
+	if err := r.Quotas.TryDebitAccountQuota(ctx, acctID, TotalScope, UnitRequest, PeriodDay, 1); !quotaExhausted(err) {
+		t.Errorf("合计行打满后应继续拒绝，实际 err = %v", err)
 	}
 
 	// ② 无行 = 不限：没设过 credit/month 的维度必须一路放行且不报错。
