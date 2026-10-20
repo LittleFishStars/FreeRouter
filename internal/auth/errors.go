@@ -32,6 +32,12 @@ const (
 	//   quota_exceeded    → 等额度重置或请管理员调高，重试无意义
 	//   pool_exhausted    → 组级共享池耗尽，换 Key / 改参数全都无效
 	//   too_many_attempts → 登录/提交类防爆破退避生效，换用户名无效
+	//
+	// 契约（docs/api/03-errors.md §5.2，评审点名）：这三个码构造时**必须**带
+	// Retry-After（用 WithRetryAfter）：rate_limited / too_many_attempts 必有；
+	// quota_exceeded / pool_exhausted 在能算出重置时刻时给，全局熔断算不出
+	// 就留空（编造数字是误导）。映射层据此校验：Code 是这三个而 RetryAfterOf==0
+	// 且非全局熔断路径，就是构造点漏了 WithRetryAfter。
 	CodeRateLimited     Code = "rate_limited"
 	CodeQuotaExceeded   Code = "quota_exceeded"
 	CodePoolExhausted   Code = "pool_exhausted"

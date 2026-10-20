@@ -118,6 +118,12 @@ type GroupPolicy struct {
 	Group  Group
 	Models []string // group_models：可访问的抽象模型（放开类，并集）
 
+	// ModelQuotas 是「每人按模型额度上限」（限制类，03-groups.md §3 新增行）：
+	// 逐 (model, unit, period) 键取 min；无键 = 不限。
+	// 为什么单独一张表而不并进 Quotas：作用域多一维（模型），目的是拦住
+	// 「把一个贵模型刷穿」而不必关掉整个账户。
+	ModelQuotas map[ModelQuotaKey]int64
+
 	// 放开类布尔开关：nil = 该组未设置（不参与合并）。
 	CanCreateKey      *bool
 	KeyAllowlistWiden *bool
@@ -149,6 +155,25 @@ type QuotaKey struct {
 
 // String 返回稳定可比较的键文本（用于日志、错误细节与 map 键的展示）。
 func (q QuotaKey) String() string { return q.Unit + "/" + q.Period }
+
+// ModelQuotaKey 是「抽象模型 × 计量维度 × 周期」的键（每人按模型额度上限，
+// 03-groups.md §3 限制类新增行）：逐键取 min，无键 = 不限。
+// 为什么作用域要多一维：目的是拦住「把一个贵模型刷穿」而不必关掉整个账户。
+type ModelQuotaKey struct {
+	Model  string
+	Unit   string
+	Period string
+}
+
+// String 返回稳定可比较的键文本。
+func (k ModelQuotaKey) String() string {
+	return k.Model + "|" + k.Unit + "/" + k.Period
+}
+
+// Unlimited 是「不构成闸」的哨兵值（03-groups.md §3 已定 2026-10-20）：
+// 未设键 = -1 = 无限制，不参与取最严；**0 是「零额度全拒」，与 -1 完全相反**，
+// 任何把 0 当「未设置」的处理都是把默认拒绝读成了默认放行。
+const Unlimited int64 = -1
 
 // PolicyRepository 提供"按账户拿到他全部所属组的策略"这一条读取路径。
 //
