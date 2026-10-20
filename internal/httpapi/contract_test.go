@@ -254,7 +254,8 @@ func TestContractErrorCodeTypeMappingMatchesDocs(t *testing.T) {
 		"too_many_attempts":      "rate_limit_error",
 		"upstream_unavailable":   "service_unavailable_error",
 		"upstream_timeout":       "service_unavailable_error",
-		"no_candidate":           "service_unavailable_error",
+		"no_candidate":          "service_unavailable_error",
+		"overloaded":            "service_unavailable_error",
 		"internal_error":         "internal_error",
 	}
 	for code, want := range cases {

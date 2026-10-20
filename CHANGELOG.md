@@ -34,6 +34,12 @@
   新增 `credit` 维度与 `abstract_model_id` 维。首次启动将按新迁移建表。
 - `quota_exceeded` 错误体新增机器可读 `quota{unit, period, model?}` 对象，
   `Retry-After` 指向命中行的重置时刻（锚点脏数据时宁缺勿错）。
+- **全局并发闸排队超时改用 503 `overloaded`**（2026-10-21 定案）：旧行为归入
+  429 `rate_limited`，与账户/Key 限速同码；新行为拆开——`rate_limited`（429）
+  归因“你超了上限”，`overloaded`（503 + `Retry-After: <queue_timeout>`）归因
+  “服务容量饱和，与你是谁无关”，避免按码运营的告警被容量问题污染。
+  `ErrGloballyFused`（全局预算熔断）仍为 429 `quota_exceeded`（与分册 §3.1 一致）。
+  `Retry-After` 指向命中行的重置时刻（锚点脏数据时宁缺勿错）。
 
 ### 废弃
 
