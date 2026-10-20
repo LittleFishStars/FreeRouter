@@ -119,7 +119,7 @@ L2 的定位是**抽检与复核**：随机抽一部分升级为 `verified`，�
 
 - **"库里没有"不等于"可疑"**。参考库来自上游项目的知识库与我们的自建采样，它覆盖的是**热门**模型。冷门模型（尤其国产新模型与平台自建模型）天然不在库里。若"不在库"即拒绝，我们等于宣布"只接受热门模型"，而众包贡献的价值恰恰在于**长尾供给**。
 - **误杀成本高于误放**。判 `suspect` 是**拒绝入池**——对一个正常贡献者来说，他做了一件对我们有利的事却被打回，且理由是他无法理解的技术细节（"你的模型不在我们的指纹库里"）。这种体验会让贡献者直接流失。
-- **有兜底**：`unverified` 的方案是"入池 + 标记 + 复检队列"，而不是"入池就当没事"。落到路由上是 [03-strategy.md](03-strategy.md) 的 `quality-tier`——`unverified` 天然排在 `verified` / `trusted` 后面，等复检通过再升档。
+- **有兜底**：`unverified` 的方案是"入池 + 标记 + 复检队列"，而不是"入池就当没事"。落到路由上是健康降权：`unverified` 凭据在 [01-catalog.md](01-catalog.md) 7.2 的健康取位上不会被当作 `healthy`，而排序里由 `speed`（读滚动延迟/失败率）自然排后——注意**不能靠过滤掉它来实现降权**，那样它永远拿不到流量，复检也就永远没有输入（[01-catalog.md](01-catalog.md) 7.3）。
 
 **这条设计的前提是"回滚容易"**：一个 `unverified` 的假模型进池后，靠运行时健康（[01-catalog.md](01-catalog.md) 第 7 节）与定时复检（第 7 节）把它赶出去，代价是有限的流量损失；而误杀一个真贡献者的代价是**供给端的长期损失**。
 
@@ -196,7 +196,7 @@ L2 的定位是**抽检与复核**：随机抽一部分升级为 `verified`，�
 | 结果 | 动作 |
 |---|---|
 | 持续达标 | 保持或升级判定；`unverified` → `verified` |
-| 得分下滑 | 告警 + 提高频率 + **降权**（[03-strategy.md](03-strategy.md) `quality-tier`） |
+| 得分下滑 | 告警 + 提高频率 + **降权**（[03-strategy.md](03-strategy.md) `speed` 键变差、健康降至 `degraded`，不剔除） |
 | 不达标 | 判 `suspect`，凭据**移出候选**（不删除，保留证据与归因） |
 
 **为什么下滑先降权而不是直接移出**：降权是**可逆**的，移出不是。一个得分下滑的凭据可能只是上游临时降级了某个模型（比如高峰期把 `pro` 路由到了 `flash`），几小时后会恢复。先降权既保护了用户（它排在后面），又保住了供给。
@@ -227,7 +227,7 @@ L2 的定位是**抽检与复核**：随机抽一部分升级为 `verified`，�
 | [../contributions/01-flow.md](../contributions/01-flow.md) | 贡献流程把凭据交给 L0 / L1，拿回判定与证据 |
 | [../contributions/02-credentials.md](../contributions/02-credentials.md) | 写回 `verify_status` / `verify_detail`；复检失败 → 移出候选 |
 | [01-catalog.md](01-catalog.md) | L1 / L2 的能力探针结果回填真实模型能力（`context_window` 等） |
-| [03-strategy.md](03-strategy.md) | `quality-tier` 读判定；复检降权 |
+| [03-strategy.md](03-strategy.md) | 判定影响健康与 `speed` 排序键；复检降权（不剔除，保留流量以继续采信） |
 | [../architecture/03-upstream.md](../architecture/03-upstream.md) | 探针走同一套上游客户端（超时、重试、`http=000` 处理） |
 | [../security/06-audit.md](../security/06-audit.md) | 判定、复检、移出全部进审计 |
 

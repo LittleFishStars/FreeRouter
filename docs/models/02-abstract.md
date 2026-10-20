@@ -54,7 +54,7 @@ abstract_candidate {
   abstract_model_id,
   real_model_id,         -- 指向 01-catalog.md 的真实模型
   constraint_json,       -- 约束（渠道范围 / 凭据范围 / 模态 / 档位），见第 3 节
-  weight                 -- 相对权重，供 cheapest / weighted 使用
+  weight                 -- 相对权重（历史字段）。内置四种排序策略已不读它，见 03-strategy 3.3.2
 }
 ```
 
@@ -93,7 +93,7 @@ candidate = {
     min_context:        <int>,
     require_efforts:    ["high", "max", ...]     -- 思考档位要求（可选）
   },
-  weight
+  weight                 -- 同上：不参与排序，见 03-strategy 3.3.2
 }
 ```
 

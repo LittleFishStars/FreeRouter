@@ -155,22 +155,31 @@ account {
 不需要切换账户。OAuth 登录靠 `UNIQUE(provider, external_id)` 定位账户，
 命中后直接看它有哪些类。
 
-### 2.5 类级提权（step-up）
+### 2.5 不做类级提权
 
-`admin` 类是整个系统最高权限，而管理面是**公网暴露**的。因此：
+**已定案（2026-10-20）：取消类级提权。**
 
-- 登录后会话默认停在**低权限上下文**；
-- 要进管理面或改配置时**当场再验一次**（TOTP 或重输密码）；
-- 提权有效期 15 分钟，空闲即失效；
-- **危险操作**（删账户、改组、改抽象模型、改弃用）要求**每次**重新验证；
-  这**恰好四项**、**硬编码**、不接受配置扩展（用户 2026-10-20 拍板）；
-  其余危险写（重置密码、封禁凭据、人工改判、改危险设置）只需提权窗口 + 界面二次确认；
-- 审计里带 `elevated=true`，与普通操作分得开。
+登录一次即获得该账户所有权限类的全部权限，进管理面不再二次验证。
 
-> **已定案（2026-10-19）：采用方案 A。** 判断依据是管理员就是站长本人，
-> 不需要为了委托管理权而做独立身份的物理隔离；方案 A 唯一的缺口——三类身份
-> 的认证强度无法分档——由上面的类级提权补上。
->
+- 会话有效期默认 **24 小时**（`session_ttl = 24h`，可配）；
+- 管理面与调用面共用同一次登录，不存在「再验一次」的中间态；
+- 界面上仍保留危险操作的 AlertDialog 二次确认——那不是认证，是防误点。
+
+**为什么取消**：管理员就是站长本人（方案 A 的前提），且这个站点本身是「给模型套
+一层统一出口」的工具，不是承载敏感数据的业务系统。提权带来的日常摩擦（每次进
+管理页都要再验一遍）大于它挡住的风险。
+
+**代价必须写清楚**：「管理面被盗 = 全站失守」的抵抗力现在全部落在**登录本身**上。
+因此三件事从「次要」升级为「必须认真定」：
+
+1. argon2id 参数（内存 ≥ 64 MiB、迭代 ≥ 3）；
+2. 登录失败退避曲线与锁定阈值（5 次失败锁 15 分钟）；
+3. 会话 24 小时过期 + 改密或禁用账户立即吊销该账户全部会话。
+
+> **已定案（2026-10-19）：采用方案 A（单账户 + 权限类集合）。**
+> 判断依据是管理员就是站长本人，不需要为了委托管理权而做独立身份的物理隔离。
+> 方案 A 原有的缺口（三类身份的认证强度无法分档）在取消提权后不再由提权弥补，
+> 而是整体接受——见上面的「代价」段。
 > 若将来出现第二个管理员、或需要把管理权交给别人保管，再回头评估方案 B
 > （主体 + 多账户，管理身份有完全独立的密码与会话）。
 
@@ -272,13 +281,25 @@ abstract_model {
 ```
 ① 过滤  能力匹配 · 上下文够长 · 额度充足 · 渠道未禁用 · 健康 · 不在冷却
    ↓
-② 排序  expiry-first（默认）· cheapest · fastest · weighted · round-robin
-        · quality-tier · quota-aware    ← 可组合成排序链
+② 排序  expiry-first / balance / speed / price    ← 可组合成排序链
    ↓
 ③ 切换  候选失败换下一个 —— 仅在「还没吐出任何可见内容」时
 ```
 
-- **`expiry-first` 是默认**：最快作废的额度优先用（复用 providers-hub 的到期逻辑）。
+**内置四种排序策略**，可组合成排序链：
+
+| 策略 | 按什么排 | 数据来源 |
+|---|---|---|
+| `expiry-first` | 最快作废的额度先用 | 各渠道到期时间探测（复用 providers-hub） |
+| `balance` | 余额最少的先用 | 余额查询 |
+| `speed` | 最近延迟最低的先用 | 滚动统计（TTFT / 总耗时） |
+| `price` | Credits 折算最便宜的先用 | 内置价格乘数表 |
+
+- **默认链 `[expiry-first, balance]`**：先按到期时间排，同到期时间再按余额排。
+- `round-robin` 保留为**可选**的平局决胜（放链末尾）。同一渠道多账号常共享同一
+  到期时间与余额，纯按前两个策略会永远打同一个账号直到被限流打爆。
+- 已删掉的策略：`cheapest`（由 `price` 取代）、`fastest`（由 `speed` 取代）、
+  `weighted`、`quality-tier`、`quota-aware`。
 - **③ 的约束不可放松**：一旦已经向客户端吐出可见内容（文本 / 工具调用），
   就**不能**再换候选——流式串话是 providers-hub 已经踩过的坑。
 
@@ -328,15 +349,18 @@ old → mid → new        （old 的配置一个字没改，自动延伸）
 
 已有客户端不用改配置，`old` 自己会跟到底。
 
-**两条硬约束**：
+**两条硬约束（2026-10-20 定案：不设跳数上限）**：
 
-1. **环检测**：配置时即时校验（A→B 时若 B 的链上已有 A 则拒绝），运行时用
-   visited 集合兜底。
-2. **深度上限 5 跳**。
+1. **弃用只能指向「可用」的模型**——目标必须存在且状态为 `active`，不能指向
+   另一个 `deprecated`，也不能指向 `disabled`。
+2. **弃用后不能重新启用**——`deprecated` 是单向的；要恢复只能新建一个同名的
+   active 模型。
 
-超限或检出环 → **降级为"无替代"**：照样接受请求、照样回显旧名，只是不跟随，
-**绝不报错**。深度 >2 跳时告警管理员「迁移链过长，建议收敛」。
+这两条合起来的后果：替代链的每一步都指向一个比当前「更新」的节点，而节点只能从
+active 走向 deprecated，**不可能形成环**，也不需要跳数上限。
 
+**保留的防御**：运行时仍用 visited 集合兜底（正常配置下永远触发不了）；万检出环
+→ **降级为「无替代」**：照样接受请求、照样回显旧名，只是不跟随，**绝不报错**。
 **对外暴露链的终点**：
 
 - 响应 `model` 仍回显 `old`（不变）；
@@ -352,7 +376,8 @@ old → mid → new        （old 的配置一个字没改，自动延伸）
 **实现**：`abstract_models.replacement_model_id` 自引用，纯图遍历；**链不压缩**
 （保留"第几手替代"的追溯），运行时缓存解析结果、链变更时失效。
 
-管理面：编辑弃用配置时**实时预览整条链**与最终落点；自环 / 环 / 超深当场报错。
+管理面：编辑弃用配置时**实时预览整条链**与最终落点；自环 / 指向非 active 模型
+当场报错。
 
 ### 3.6 真实模型目录（池内管理）
 
@@ -426,7 +451,9 @@ upstream_credentials(
 既能密码登录，也能用自己贡献过的账号 OAuth 登录。
 
 **安全红线**：上游账号当密码，等于把站内账户的安全性绑在第三方共享号的下限上。
-因此**用 OAuth 登录的会话默认只给低权限上下文**，要进管理面必须另外提权。
+因此**用 OAuth 登录建立的会话与密码登录的会话权限完全相同**（均有 24h 有效期），
+但登录后可以立即在账户设置里补设站内密码；一旦设了密码，登录方式就以密码为准，
+OAuth 仅作为辅助找回手段。
 
 ### 4.4 模型鉴定（防假模型）
 
@@ -534,18 +561,33 @@ TypeScript，MIT，DSH 插件，本机 `0.2.1-rc.2`（profile `web`，link 安�
 3. **凭据静默续期**、**积分体系**（余额 / 签到 / 领取 / 临期排序）。
 4. **聚合路由** `aggregate/*`（我们不作为候选来源，见 1.4）。
 
-5. **本机 OpenAI 兼容网关** `127.0.0.1:8326`：
+5. **本机 OpenAI 兼容网关** `127.0.0.1:8326`（**我们不走它**，见下）：
 
    | 端点 | 说明 |
    |---|---|
-   | `GET /v1/models` | 模型目录（含 `name` / `input` / `reasoning.efforts` / `openai_efforts`） |
+   | `GET /v1/models` | 模型目录 |
    | `GET /v1/reasoning-efforts` | 思考档位 |
    | `POST /v1/chat/completions` | OpenAI Chat Completions |
    | `POST /v1/responses` | OpenAI Responses API |
 
-   Bearer 鉴权，key 在 `$DSH_HOME/openai-gateway/api-key`（43 字符）。
-   `~/.dsh` 只是 `~/.local/share/dsh` 的软链，**不是两个路径**。
+   > **已定案（2026-10-20）：不经过这个网关。**
+   >
+   > 它只占 `lib/` 总代码量的 4%（4420 / 105567 行），是个协议转换壳；真正的供应商
+   > 请求逻辑在 `lib/*-adapter.js` 里（15 个，共 96% 的代码量）。
+   >
+   > 关键是 adapter **不碰 `ctx`**：构造函数签名全部是 `constructor(options)`，实测
+   > `grep -c "this.ctx" lib/*-adapter.js` 在 cline / buddy / trae / qoder / loomy /
+   > lobsterai 里全是 **0**。所以 sidecar 可以绕过网关、直接调 adapter，把 providers-hub
+   > 的「模型处理」拿到手，而不必把整个 DSH 插件壳和它的 8326 网关一起搬过来。
+   >
+   > 代价（已实测）：`dsh-providers-hub` 的 `package.json` `exports` 只开了 `"."` /
+   > `"./client"` / `"./locale/*.json"` / `"./package.json"`，深导入 `lib/xxx.js` 会被封死；
+   > 而 `import 'dsh-providers-hub'` 会连带拉起整套插件壳（缺 `jose` / `undici`）。
+   > 因此 sidecar **必须 vendor 一份 `lib/`**，只做文件级导入。
 
+   旧网关行为仅供参考（已不使用）：Bearer 鉴权，key 在
+   `$DSH_HOME/openai-gateway/api-key`（43 字符）；`~/.dsh` 只是 `~/.local/share/dsh`
+   的软链，**不是两个路径**。
    样例条目：
 
    ```json
@@ -629,19 +671,21 @@ providers-hub 的 `package.json` 只导出 `.` 与 `./client`，深路径 import
                                 ▼
               ┌────────────────────────────────────┐
               │  L3 上游                            │
-              │  dshgateway → 127.0.0.1:8326        │
-              │  contributed → 贡献者凭据直连        │
+              │  dsh_provider → sidecar 直连 adapter │
+              │  contributed  → 贡献者凭据直连       │
+              │  compatible   → 本地/自建兼容端点    │
               │  连接池 · 重试 · 健康探测            │
               └───────┬────────────────────┬───────┘
                       ▼                    ▼
         ┌──────────────────────┐  ┌──────────────────────┐
-        │  dsh-providers-hub   │  │  Node sidecar        │
-        │  :8326               │  │  供应商 OAuth / 续期  │
-        │  20 前缀 · 116 模型   │  │  （stdio + NDJSON）  │
-        │  账号池 · 积分 · 续期  │  └──────────────────────┘
-        └──────────────────────┘
-                      ▼
-            CodeBuddy / CodeArts / TRAE / minimax / 第三方 key …
+        │  Node sidecar        │  │  直连官方 API        │
+        │  providers-hub lib/  │  │  （贡献者凭据）      │
+        │  15 个 adapter       │  │                      │
+        │  账号池 · 积分 · 续期 │  │                      │
+        │  （stdio + NDJSON）  │  │                      │
+        └──────────┬───────────┘  └──────────────────────┘
+                   ▼
+        CodeBuddy / CodeArts / TRAE / minimax / 各家官方 …
 ```
 
 ### 6.1 IR 设计要点
@@ -713,14 +757,14 @@ FreeRouter/
 │   ├── catalog/                  # 真实模型目录与健康
 │   ├── meter/                    # token / 延迟 / 归因打标
 │   ├── store/                    # SQLite + 迁移 + DAO
-│   ├── upstream/dshgateway/      # 8326 客户端（连接池 / 重试 / 契约测试）
+│   ├── upstream/dsh_provider/    # sidecar IPC 客户端（连接池 / 重试 / 契约测试）
 │   ├── upstream/contributed/     # 贡献凭据直连
 │   ├── sidecar/                  # Node sidecar 客户端（IPC）
 │   ├── verify/                   # 模型鉴定流水线
 │   ├── httpapi/                  # 入站：鉴权、限速、配额、SSE
 │   ├── admin/                    # 管理面 API
 │   ├── webui/                    # SPA fallback + 静态资源缓存头（embed 由 web 包提供）
-│   └── security/                 # 密钥、限速器、审计、安全头、提权
+│   └── security/                 # 密钥、限速器、审计、安全头
 ├── sidecar/                      # Node 子进程（读 providers-hub auth）
 ├── web/                          # 控制台源码（Vite + React + TS），pnpm build 产出 dist/
 │   ├── dist/                     # 构建产物，由同目录 embed.go 的 go:embed 引用
@@ -741,20 +785,20 @@ FreeRouter/
 - [ ] 账户 = 显示名 + ID + 权限类集合（`admin` / `tenant` / `contributor`）
 - [ ] 注册（`pending`）→ 审核（选组 + 配额）→ 登录；管理员导入账密（单个 / CSV）
 - [ ] 会话：HttpOnly、登录限速、登出、自助改密、管理员重置、改密/禁用即吊销
-- [ ] **类级提权**：进管理面当场再验，15 分钟有效
+- [ ] **登录强度**：argon2id 参数、失败退避与锁定阈值、会话 24h 过期
 - [ ] 组：成员管理、模型授权、限额（**每人上限 + 组级共享池，可单用可并用**）、合并语义（并集 / 最严 / deny 优先）、默认组
 
 **模型体系**
 - [ ] 抽象模型：CRUD、候选集声明、能力声明（保守下界）
-- [ ] 策略引擎三段式：过滤 → 排序（`expiry-first` 默认）→ 切换（未吐内容前）
-- [ ] 弃用：三态、替代链、环检测、深度上限、RFC 9745/8594 响应头、管理面链预览
+- [ ] 策略引擎三段式：过滤 → 排序（内置 `expiry-first` / `balance` / `speed` / `price`，默认链 `[expiry-first, balance]`）→ 切换（未吐内容前）
+- [ ] 弃用：三态、替代链（**不设跳数上限**，靠「只能指向 active」+「弃用不可逆」两条规则杜绝环）、RFC 9745/8594 响应头、管理面链预览
 - [ ] 真实模型目录：自动发现、分组、置顶、改名、隐藏、`missing` 巡检
 - [ ] `/v1/models` 按 Key 可见性过滤（只出抽象模型）
 
 **协议与上游**
 - [ ] 入站 `POST /v1/chat/completions`（流式 + 非流式 + tool_calls + 图片）
 - [ ] 入站 `POST /v1/messages`（Anthropic，含 `tool_use` / `thinking` / SSE 事件名对齐）
-- [ ] 上游 `dshgateway`：key 自举、目录发现与缓存、连接池、重试、离线降级
+- [ ] 上游 `dsh_provider`：sidecar 直连 adapter、目录发现与缓存、连接池、重试、离线降级、**模型变动即时通知**
 
 **贡献**
 - [ ] 贡献页：供应商 OAuth 贡献 + API Key 贡献（未登录也可）
@@ -762,8 +806,11 @@ FreeRouter/
 - [ ] **模型鉴定 L0 + L1**（`verified` / `suspect` / `unverified` / `trusted` **四态**，冷门默认放行）
 
 **Key 与观测**
-- [ ] API Key：归属账户（需 `tenant` 类），创建 / 禁用 / 过期 / 额度 / RPM·TPM /
-     模型白名单；数量与额度受组约束
+- [ ] API Key：归属账户（需 `tenant` 类），创建 / 禁用 / 过期 / 模型白名单；
+     **无自身额度**（额度全在账户级，多个 Key 共享），数量上限受组约束
+- [ ] **账户级额度**：三种计量维度（`request` / `token` / `credit`）+ RPM/TPM/并发
+- [ ] **Credits 价格乘数表**：内置常见模型价格，表里没有的默认 1，管理员可手动调
+- [ ] **待处理事项页** `/admin/inbox`：注册申请 / 模型变动 / 故障通知 / 池与熔断告警；登录时顶部显示未读计数
 - [ ] 请求日志：端点、抽象模型、**真实落点（仅管理端）**、状态、TTFT、耗时、token、错误码
 - [ ] 控制台：公共页（登录 / 注册 / 待审核 / 贡献）+ 管理端 + 租户端 + 贡献者端
 - [ ] 安全基线（第 9 章）——**默认回环监听下，公网专属项可延到 M10，但不得删**；
@@ -820,11 +867,11 @@ FreeRouter/
 - **密码策略** ≥12 字符，argon2id。
 - **防枚举**：注册与登录的"已存在 / 不存在"响应时间恒定、文案一致。
 - **登录防爆破**：失败计数 + 指数退避 + 锁定，失败记录含 IP / UA 进审计。
-- **类级提权**：见 2.5；四项危险操作每次重验（恰好四项，硬编码）。
+- **登录强度**：见 2.5；argon2id 参数 + 失败退避与锁定 + 会话 24h 过期三件事是唯一防线。
 - **禁用联动**：账户转 `disabled` → 名下所有 Key **立即** 401
   （鉴权层实时查账户状态，不依赖可能有延迟的缓存）。
 - **不提供**管理面 IP 允许列表（2026-10-19 定案）。公网形态下管理员 IP 会变，
-  白名单是最容易把自己锁在门外的配置；补偿手段是类级提权 + 登录退避 + 审计。
+  白名单是最容易把自己锁在门外的配置；补偿手段是会话 24h 过期 + 登录退避 + 审计。
 - **OAuth 登录的会话默认低权限**（见 4.3）。
 
 ### 9.4 密钥
@@ -838,9 +885,9 @@ FreeRouter/
 ### 9.5 限速与审计
 
 - **三维令牌桶**：全局 / 按 Key / 按 IP。超限 `429` + `Retry-After`。
-- 审计日志 append-only：管理操作、鉴权失败、额度熔断、上游错误、**提权事件**、
+- 审计日志 append-only：管理操作、鉴权失败、额度熔断、上游错误、**账户合并**、
   **组的变更**、**凭据的增删**。
-- 每条审计带 `account_id + acting_class (+ elevated)`。
+- 每条审计带 `account_id + acting_class`。
 - **默认不记录请求正文**；排查时开脱敏模式（保留结构、抹掉文本）并在 UI 明示。
 
 ### 9.6 运行态加固
@@ -857,26 +904,28 @@ SQLite（WAL），编号 SQL 迁移，启动时自动执行。
 
 | 表 | 关键字段 | 说明 |
 |---|---|---|
-| `accounts` | id, display_name, username, password_hash, status, recovery_code_hash, created_at, last_login_at, note | status: `pending` / `active` / `disabled` / `rejected` / `merged`；**无上级归属** |
+| `accounts` | id, display_name, username, password_hash, status, recovery_code_hash, quota_limit, quota_used, quota_unit, rpm_limit, tpm_limit, max_concurrency, created_at, last_login_at, note | status: `pending` / `active` / `disabled` / `rejected` / `merged`；**无上级归属**；**额度与速率全在账户级**，`quota_unit` 取 `request` / `token` / `credit` |
 | `account_classes` | account_id, class | `admin` / `tenant` / `contributor`，一个账户可多行 |
 | `account_merges` | source_id, target_id, merged_at, reversible_until, undone_at | 合并留痕（类取并集）；撤销窗口 **7 天**，撤销不删行、只写 `undone_at` |
-| `sessions` | id, account_id, token_hash, created_at, expires_at, elevated_until, ip, ua | 改密 / 禁用即吊销；`elevated_until` 支撑提权 |
+| `sessions` | id, account_id, token_hash, created_at, expires_at, ip, ua | 改密 / 禁用即吊销；默认 24h 过期 |
 | `groups` | id, name, description, is_default, created_at | 组 = 一组策略 + 一批成员 |
 | `group_members` | group_id, account_id | 多对多 |
 | `group_models` | group_id, abstract_model_id | 组可访问的抽象模型 |
 | `group_policies` | group_id, policy_key, policy_value | 放开类取并集 / 限制类取最严 |
-| `group_quota_pool` | group_id, unit, limit, used, resets_at | 组级**共享额度池**的当前周期计数；全库**唯一带可变状态的组表** |
+| `group_quota_pool` | group_id, unit, period, period_anchor, pool_limit, pool_used | 组级**共享额度池**；`unit` 取 `request` / `token` / `credit`；**不设池 = 没有这一行**（不是 NULL）；全库**唯一带可变状态的组表** |
 | `abstract_models` | id, name, display_name, strategy, capability_mode, status, replacement_model_id, deprecated_at, sunset_at, note | `status`: `active` / `deprecated` / `disabled`；自引用替代链 |
 | `abstract_candidates` | abstract_model_id, real_model_id, constraint_json, weight | 候选集（声明式，不绑凭据） |
 | `real_models` | id, upstream_id, upstream_model_id, display_name, group_name, context_window, modalities, efforts, status, hidden, sort_order, source, last_seen_at, missing_since | source: `auto` / `override`；status 含 `missing` |
-| `upstreams` | id, kind, name, base_url, secret_id, owner_account_id, enabled, last_seen_at | kind: `dshgateway` / `contributed`；**`owner_account_id = NULL` 表示平台自有** |
+| `upstreams` | id, kind, name, base_url, secret_id, owner_account_id, enabled, last_seen_at | kind: `dsh_provider` / `contributed` / `compatible`；**`owner_account_id = NULL` 表示平台自有** |
 | `upstream_secrets` | id, upstream_id, ciphertext, nonce | AES-GCM，主密钥不入库 |
 | `upstream_credentials` | id, owner_account_id, provider, external_id, external_label, secret_ref, status, login_enabled, verify_status, verify_detail, created_at, last_used_at, **UNIQUE(provider, external_id)** | 归属 `contributor` 类账户 |
-| `api_keys` | id, account_id, key_hash, prefix, name, status, expires_at, quota_limit, quota_used, rpm_limit, tpm_limit, daily_token_cap, max_concurrency | **必须归属有 `tenant` 类的账户**；只存 hash |
+| `api_keys` | id, account_id, key_hash, prefix, name, status, expires_at, created_at, last_used_at | **必须归属有 `tenant` 类的账户**；只存 hash；**无自身额度**（额度在账户级） |
 | `key_model_allow` | key_id, abstract_model_id | Key 白名单（在组之外再收窄） |
 | `requests` | id, ts, key_id, account_id, endpoint, virtual_model_id, resolved_real_model_id, resolved_credential_id, status, http_status, error_code, ttft_ms, total_ms, in_tokens, out_tokens | **无 cost**；含抽象→真实的解析链，用于贡献者归因 |
 | `usage_daily` | day, key_id, abstract_model_id, real_model_id, requests, in_tokens, out_tokens | 看板聚合 |
-| `audit_log` | id, ts, account_id, acting_class, elevated, action, target, ip, ua, result, detail | append-only |
+| `audit_log` | id, ts, account_id, acting_class, action, target, ip, ua, result, detail | append-only |
+| `admin_inbox` | id, kind, severity, title, detail_json, related_id, created_at, read_at, read_by | 待处理事项：注册待审核 / 模型变动 / 故障通知 / 池与熔断告警 |
+| `model_multipliers` | real_model_id, in_multiplier, out_multiplier, updated_by, updated_at | Credits 价格乘数；表里没有的默认 **1** |
 | `settings` | key, value | 全局配置 |
 
 对比 v3：`perm_groups` / `perm_group_models` 并入 `groups` / `group_models`；
@@ -884,19 +933,29 @@ SQLite（WAL），编号 SQL 迁移，启动时自动执行。
 `abstract_candidates` / `upstream_credentials` / `account_merges`。
 `tenants` 始终没有复活。
 
+**2026-10-20 对齐后的变化**：`api_keys` 去掉全部额度/速率字段（搬到 `accounts`）；
+`sessions` 去掉 `elevated_until`；`audit_log` 去掉 `elevated`；
+新增 `admin_inbox` 与 `model_multipliers`；`upstreams.kind` 三值化。
+
 ---
 
 ## 11. 与 dsh-providers-hub 的接线
 
 ### 11.1 启动自举
 
-1. 读 `$DSH_HOME/openai-gateway/api-key` → AES-GCM 加密存库，标记 `auto`，
-   `owner_account_id = NULL`（平台自有）。
-2. `GET /v1/models` 拉目录 → 写 `real_models`（`source=auto`；
-   管理员改过的记 `override`，刷新不覆盖）。
-3. 端口不通**不阻塞启动**：控制台顶部挂「上游离线，检查 DSH 是否在跑」横幅，
-   每 30s 重试。
-4. `/healthz` 只反映进程，`/readyz` 反映上游连通性。
+**不走 8326 网关**（见 5.1 第 5 条的定案）。Node sidecar 直接加载 vendored 的
+`lib/*-adapter.js`，FreeRouter 通过 **stdio + NDJSON** 与它通信。
+
+1. sidecar 启动 → 读取 `$DSH_HOME/jet-hub/state.json` 的账号元数据（**只读**），
+   逐个 provider 建 adapter 实例（注入 `resolveCredential` / `refresh` /
+   `accountPool` / `fetchImpl` / `logger` 等，均为可注入项）。
+2. 调各 adapter 的 `listModels()` 拉目录 → 写 `real_models`（`source=auto`；
+   管理员改过的记 `override`，刷新不覆盖）。`context_window` / `max_tokens` 从
+   `resolveModelInfo()` 取——**`listModels()` 里没有这两个字段**（实测 117 条全空）。
+3. sidecar 起不来**不阻塞启动**：控制台顶部挂「sidecar 离线」横幅，指数退避重试
+   （1s → 2s → 4s → … 封顶 30s）。
+4. `/healthz` 只反映进程，`/readyz` 反映 sidecar 与上游连通性。
+5. 目录发生变动（新增 / 消失 / 属性变化）→ 写 `admin_inbox` 通知管理员。
 
 ### 11.2 真实模型命名（仅管理端可见）
 
@@ -920,9 +979,18 @@ SQLite（WAL），编号 SQL 迁移，启动时自动执行。
 
 ### 11.5 契约测试（防漂移）
 
-对 8326 的 4 个端点各写一组契约测试，锁住：状态码、鉴权失败形态、`/v1/models`
-条目字段、SSE 帧形状、413 行为。**外加一条**：连接偶发失败的复现（`http=000`）
-与重试是否成功。providers-hub 升级后先跑契约测试，红了再适配。
+对 sidecar 的 IPC 协议与各 adapter 的公开方法写一组契约测试，锁住：
+`listModels()` 的条目字段并集、`resolveModelInfo()` 的返回形状、
+`stream(GenerateOptions)` 的 `StreamChunk` 判别联合（`block-start` / `text-delta` /
+`reasoning-delta` / `tool-call-delta` / `block-end` / `usage` / `finish`）、
+以及 `TokenUsage` 的**计数互斥**语义（`inputTokens` 只含未缓存输入）。
+
+**外加两条**：① IPC 帧格式（一行一 JSON）与 sidecar 崩溃时的 EOF 行为；
+② adapter 的 `constructor(options)` 依赖键清单——providers-hub 升级时若新增必需
+注入项，测试要红。
+
+providers-hub 升级后先跑契约测试，红了再适配。**vendor 的 `lib/` 要记版本号**，
+便于判断上游何时漂移。
 
 ---
 
@@ -930,19 +998,24 @@ SQLite（WAL），编号 SQL 迁移，启动时自动执行。
 
 | 阶段 | 内容 | 产出 | 工日 |
 |---|---|---|---|
-| M0 | 骨架与契约锁定：go.mod、chi 起服务、SQLite 迁移、配置、`/healthz`、**8326 契约测试** | `go run ./cmd/freerouter` 能起 | 1 |
+| M0 | 骨架与契约锁定：go.mod、chi 起服务、SQLite 迁移、配置、`/healthz`、**sidecar IPC 契约测试** | `go run ./cmd/freerouter` 能起 | 1 |
 | M1 | 上游接入与配额探测：连接池 / 重试、`/v1/models` 摄入、余额查询 | 116 个模型入目录 | 1.5 |
 | M2 | 模型目录与鉴定 L0+L1 + 复检队列 | 假模型进不来 | 1.5 |
-| M3 | **账户与权限类**：初始化向导、注册→审核、导入、会话、类级提权 | 能把账户发给人用 | 1.5 |
-| M4 | 额度与限速：7 维配额、三维限速、额度护栏、请求日志 | 可发给人用不烧穿 | 1.5 |
+| M3 | **账户与权限类**：初始化向导、注册→审核、导入、会话、**登录强度**（argon2id / 退避 / 锁定） | 能把账户发给人用 | 1.5 |
+| M4 | 额度与限速：**账户级额度**（request/token/credit 三维）、三维限速、额度护栏、**价格乘数表**、请求日志 | 可发给人用不烧穿 | 2.0 |
 | M5 | API 出口：`/v1/chat/completions`、`/v1/responses`、**`/v1/messages`**、`/v1/models`、SSE、失败切换 | 客户端接得进来 | 2 |
-| M6 | **抽象模型 + 策略引擎 + 弃用替代链** | 对外只有抽象模型 | 2.5 |
+| M6 | **抽象模型 + 策略引擎（四种排序）+ 弃用替代链（不设跳数上限）** | 对外只有抽象模型 | 2.0 |
 | M7 | **组**与授权（含组级共享池） | 可发给一组人 | 1.5 |
 | M8 | **贡献与凭据**：贡献页、`contributor` 类、Node sidecar、凭据入池 | 别人能贡献 | 2.0 |
-| M9 | 界面完善（管理端 + 租户端 + 贡献者端） | 可运维 | 2.5 |
+| M9 | 界面完善（管理端 + 租户端 + 贡献者端 + **待处理事项页**） | 可运维 | 3.0 |
 | M10 | 加固与上线：安全基线、健康探测、契约测试、压测 | 可长期跑 | 1.5 |
 
-共 **19.0 工日**，关键路径（M0→M1→M3→M4→M5→M6→M10）约 **14 天**。
+共 **19.5 工日**，关键路径（M0→M1→M3→M4→M5→M6→M10）约 **14 天**。
+
+**2026-10-20 对齐后的工时变化**：M4 1.5→2.0（新增价格乘数表，且额度从 Key 级移到账户级并支持
+三种计量维度）；M6 2.5→2.0（排序策略七种减到四种，弃用链删掉跳数上限/深度告警/超限降级三套分支
+——少写的是分支不是能力）；M9 2.5→3.0（新增待处理事项页）；M3 1.5 不变（删提权 −0.5，
+加登录强度三项定值 +0.5，抵消）。关键路径不变：M4 与 M6 在关键路径上互相抵消，M9 的增量与 M7 可并行。
 M1 结束即有实用价值；**M6 结束就能对外提供抽象模型**；
 M2 与 M8 可并行；M7 必须在 M6 之后（组的授权对象是抽象模型）。
 
@@ -970,18 +1043,18 @@ M10 而非插在关键路径中间；真要暴露公网时 M10 必须完成。
 | **贡献的凭据被上游封禁** | 该候选失败 | 候选级熔断 + 冷却 + 自动降权；连续失败暂停并通知贡献者 |
 | **贡献者凭据被盗用（我们泄露）** | 极其严重 | 凭据 AES-GCM 落库、明文永不回显、主密钥不入库、最小可见 |
 | **抽象模型策略配错 → 全站不可用** | 服务中断 | 保存前**干跑**（用历史请求回放验证候选可达）；无候选时返回 503 + 明确错误码而非 500 |
-| **弃用替代链配成环** | 请求死循环 | 配置时环检测 + 运行时 visited 兜底 + 深度上限 5；超限降级为"无替代" |
+| **弃用替代链配成环** | 请求死循环 | 规则上两处堵死（弃用只能指向 active 模型；弃用不可逆）+ 运行时 visited 兜底；检出环降级为"无替代"、绝不报错 |
 | **替代模型能力低于原模型** | 客户端中途失败 | 保存时逐项校验能力 ≥，不满足直接拒绝保存 |
 | 上游偶发连接失败（实测 `http=000`） | 请求随机失败 | 连接池 + 幂等重试 + 健康探测；计入 `requests` 便于观察频率 |
-| providers-hub 升级接口漂移 | 上游断 | 只依赖 4 个 HTTP 端点 + 契约测试锁字段 |
-| Node sidecar 与 DSH 抢状态 | 两边都坏 | 子进程隔离 + 只读凭据 + 不碰 `state.json` |
+| providers-hub 升级接口漂移 | 上游断 | **vendor 的 `lib/` 记版本号** + 契约测试锁 adapter 方法形状与注入键清单 |
+| Node sidecar 与 DSH 抢状态 | 两边都坏 | 子进程隔离 + **只读** `state.json` + 绝不写它 |
 | 上游拒绝通配 / 只绑回环 | 跨机不可用 | 唯一出口原则：上游永走 `127.0.0.1` |
 | 300 MiB body / 120s keep-alive | 413、连接重置 | 入站设更小上限并给明确错误；自管连接池 |
 | 各家思考档位 / 模态方言不一 | 静默降级或 400 | IR 保留「未知」第三态；缺能力明确报错 |
 | SSE 分片乱序 / tool_call id 重组 | 工具调用错乱 | 按 `index` 缓存 id 重组 |
 | 反代后 IP 被伪造 | 限速失效 | 反代是可选形态；配了才需 `TRUSTED_PROXIES`，未配则忽略 `X-Forwarded-For` |
-| **管理面被盗** | 全站失守 | argon2id + 会话 + 类级提权（四项危险操作每次重验）+ 登录退避锁定。**不提供 IP 白名单**（管理面不限来源 IP，见 2.5） |
-| **管理员账户同时是租户（`admin`+`tenant`）** | 日常账户被盗即失管理面 | 类级提权（四项危险操作每次重验）；已定案采用方案 A，如需彻底隔离再评估方案 B（2.5） |
+| **管理面被盗** | 全站失守 | **无提权这一层缓冲**（2.5 已定案取消），全靠登录本身：argon2id（内存 ≥64 MiB / 迭代 ≥3）+ 失败退避与锁定（5 次锁 15 分钟）+ 会话 24h 过期 + 改密/禁用即吊销。**不提供 IP 白名单**（管理面不限来源 IP） |
+| **管理员账户同时是租户（`admin`+`tenant`）** | 日常账户被盗即失管理面 | 已定案采用方案 A 并取消提权（2.5）——风险整体接受；管理账户请使用独立强密码与独立邮箱。如需彻底隔离再评估方案 B |
 | 开放注册被刷号 | 垃圾账户 | 默认需审核 + 注册限速；可选邀请码（P1） |
 | 审核积压无人处理 | 用户等不到批准 | 管理端审核队列置顶 + 待办计数；通知（P1） |
 | **贡献者无偿导致供给不足** | 没人愿意贡献 | 已定案为无偿（4.5）。缓解靠三件事：贡献页**阻断式声明**无回报（避免预期错位）、控制台给出可验证的贡献统计、平台自带渠道（5.5）保底供给 |
@@ -994,8 +1067,9 @@ M10 而非插在关键路径中间；真要暴露公网时 M10 必须完成。
 
 1. `curl` 用新 Key 打 `/v1/chat/completions`，`stream:true` 逐帧吐字，`[DONE]` 正常。
 2. Claude Code 设 `ANTHROPIC_BASE_URL` 指过来 + 填 Key，完成一次带工具调用的编码任务。
-3. 停掉 DSH（8326 关闭）：返回 `502 upstream_unavailable` 而非挂起，`/readyz` 变红。
-4. Key 打满 RPM → `429` + 有值 `Retry-After`；打满日额度 → 拒绝且日志留痕。
+3. 停掉 Node sidecar：返回 `502 upstream_unavailable` 而非挂起，`/readyz` 变红。
+4. 账户打满 RPM → `429` + 有值 `Retry-After`；打满日额度 → 拒绝且日志留痕
+   （注意是**账户级**：同一账户的另一把 Key 也一起被拦）。
 5. **新建 Key 不改任何配置时无法发起请求**（默认拒绝）。
 6. **注册**：新账户 `pending` 时登录被拒且提示待审核；管理员批准并选组后可登录。
 7. **导入**：粘贴 3 行 `用户名,密码` → 3 个账户立即可登录，审计里能看到这次导入。
@@ -1003,7 +1077,8 @@ M10 而非插在关键路径中间；真要暴露公网时 M10 必须完成。
 9. **防枚举**：注册"已存在的名字"与"全新的名字"，响应时间与文案无差异。
 10. **权限类隔离**：只有 `tenant` 类的账户**无法**创建 Key；
     只有 `contributor` 类的账户**看不到**「我的 Key」入口；
-    `admin` 类账户在未提权时**进不去**管理页。
+    `admin` 类账户登录后即可进管理页（无提权这一层）；
+    但会话超 24h 后必须重新登录。
 11. **抽象模型**：请求真实模型名 → 404；`/v1/models` 只出现抽象模型；
     请求抽象模型能在日志里看到管理端可见的真实落点。
 12. **策略生效**：把某候选渠道禁用 → 请求自动落到下一个候选，

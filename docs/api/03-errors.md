@@ -88,7 +88,7 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 | `request_too_large` | 413 | `invalid_request_error` | 请求体超过入站上限（默认 32 MiB） | 不重试，缩减请求 |
 | `model_not_found` | 404 | `not_found_error` | 抽象模型不存在 / 请求的是真实模型名 / 对当前 Key 不可见 | 不重试；先 `GET /v1/models` 对照 |
 | `model_retired` | 410 | `not_found_error` | 模型 `Sunset` 到期后已 `disabled` | 不重试；按迁移文档换名 |
-| `quota_exceeded` | 429 | `rate_limit_error` | 个人日 / 月 token 上限，或全局预算熔断 | 按 `Retry-After`（若有）等待，或等额度重置 |
+| `quota_exceeded` | 429 | `rate_limit_error` | **账户级**额度任一维度（`request` / `token` / `credit`）打满，或全局预算熔断 | 按 `Retry-After`（若有）等待，或等额度重置；**同一账户名下所有 Key 一起被拦** |
 | `pool_exhausted` | 429 | `rate_limit_error` | **所属组的共享额度池**已耗尽 | 管理员调池或等重置；改 Key / 换参数均无效 |
 | `rate_limited` | 429 | `rate_limit_error` | 超出 RPM / TPM / 并发上限 | **必须**按 `Retry-After` 退避重试 |
 | `upstream_unavailable` | 502 | `service_unavailable_error` | 上游网关不可达（如 DSH 未运行） | 可重试；退避 |
@@ -101,7 +101,7 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 
 **为什么新增 `model_retired` 而不是复用 `model_not_found`**： 总纲 3.5 定"`Sunset` 到期自动 `disabled` 返回 410"。 410 Gone 与 404 的语义差别正是"有过、现在没了"与"从来没有"—— 这个差别对客户端有实际价值（前者应引导用户迁移，后者应引导用户查文档）， 而它**不泄露池结构**，所以不违反上一条的理由。
 
-**为什么 `quota_exceeded` 与 `rate_limited` 都用 429**：两者都是 "你撞到了使用上限"，客户端的正确反应都是"等一下再来"。 区分它们的信息在 `code` 与 `Retry-After` 的有无里，不在状态码里。
+**为什么 `quota_exceeded` 与 `rate_limited` 都用 429**：两者都是 "你撞到了使用上限"，且都需要"等"，因此状态码层面不必分开。区分它们的信息在 `code` 里：`rate_limited` 是**瞬时**的（令牌桶几十秒内回填，带上 `Retry-After` 后重试是正解），`quota_exceeded` 是**周期性**的（等日 / 月重置，或请管理员调高额度）。**为什么仍然保留两个码而不合并**：客户端的动作不同——对 `rate_limited` 无脑退避重试是对的，对 `quota_exceeded` 无脑重试只是在浪费请求，正解是告知用户、走额度调整。这正是 3.4 第一条分界（动作不同就拆）。
 
 **为什么 `no_candidate` 用 503 而不是 404**：总纲 3.6 明确 "无候选可用返回 503 + 专用错误码（与「模型不存在」404 区分）"。 从客户端视角，"这个模型现在没资源"与"没有这个模型"会导致完全不同的动作： 前者重试，后者改代码。
 
@@ -111,7 +111,6 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 |---|---|---|---|
 | `invalid_credentials` | 401 | `authentication_error` | 登录时用户名或密码错误 |
 | `session_expired` | 401 | `authentication_error` | 会话不存在或已过期 |
-| `elevation_required` | 403 | `permission_error` | 有 `admin` 类但未提权、提权已过期，或四项逐次重验的请求缺 `X-FR-StepUp` / 该凭据已用过 |
 | `forbidden` | 403 | `permission_error` | 身份可接受但缺少对应权限类 |
 | `not_found` | 404 | `not_found_error` | 资源不存在 |
 | `conflict` | 409 | `conflict_error` | 唯一性冲突（如用户名已存在、`UNIQUE(provider, external_id)` 撞身份） |
@@ -119,13 +118,30 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 | `too_many_attempts` | 429 | `rate_limit_error` | 登录 / 提交类端点的防爆破退避生效 |
 | `internal_error` | 500 | `internal_error` | 未预期故障 |
 
-**为什么 `elevation_required` 必须是独立码而不是 `forbidden`**： 界面需要据此**引导用户去提权**，而不是显示"你没有权限"。 两者在 UI 上是完全不同的路径（见 [../ui/01-ia.md](../ui/01-ia.md) 第 7 节）。 把它合并进 `forbidden` 会让界面失去这个区分能力。
+**为什么没有"需要二次验证"这类码**：一次登录即该账户全部权限类的全部权限，有 `admin` 类即放行，因此不存在"你还得再验一次"这个状态，也就没有对应的码。**这让 403 的意义更干净**：它只表示"身份可以接受，但这个具体资源不属于你"，前端处理 403 时不需要判断"该不该引导用户去做某个额外验证"。
 
-**为什么"没有 `admin` 类"的请求连错误体都不返回**（[02-admin.md](02-admin.md) 2.2 的 404）： 这里要区分两个层次——**没有 `admin` 类**时返回 404 但**用 `not_found` 码**， 即不承认路径存在；**有 `admin` 类但未提权**时返回 403 + `elevation_required`。 前者不泄露路径存在性，后者必须明说，因为用户确实有这个能力。
+**为什么"没有 `admin` 类"的请求连错误体都不返回**（[02-admin.md](02-admin.md) 2.2 的 404）：管理面的路由结构本身就是信息（存在哪些页面、id 是什么形态）。对无 `admin` 类的账户统一返回 **404 + `not_found`**，不承认资源是否存在。**注意这与 `forbidden` 的分工**：`forbidden` 用于"身份可以接受、但某个具体资源不属于你"的场景（例如租户访问别人名下的 Key），而不是"整个管理面不属于你"。
 
 **为什么登录失败用 `invalid_credentials` 而不复用 `invalid_api_key`**： `invalid_api_key` 属于入站面，其契约是"Key 的问题"。 登录是密码的问题，两者的排障动作不同（查 Key 列表 vs 重置密码）。
 
-### 3.3 码的边界原则
+### 3.3 额度的归属：账户级，不是 Key 级
+
+**这一节是语义澄清，不新增任何错误码。**
+
+| 概念 | 归属 | 说明 |
+|---|---|---|
+| 额度上限与已用量（`quota_limit` / `quota_used` / `quota_unit`） | **账户** | 一个账户一行，按 `request` / `token` / `credit` 三种维度可只设一种或同时设多种 |
+| 速率上限（RPM / TPM / 并发） | **账户** | 同上，不随 Key 变化 |
+| Key 自身携带的额度 | **不存在** | `api_keys` 表里没有额度与速率字段 |
+| Key 自身携带的限制 | 只剩**模型白名单** | `key_model_allow`，且只能从账户可访问的抽象模型里**收窄**，不能放大 |
+
+**为什么这件事必须写在错误码分册里**：客户端拿到 `quota_exceeded` 时的第一反应是"换一把 Key 再试"。如果文档不把它写死，这个反应在错误的方向上会一直有效——用户会以为多建几把 Key 就能绕过额度，而实际行为是**换 Key 仍然被拦**，因为闸门挂在账户上。反过来，把这条写清楚之后，客户端的多 Key 策略就有明确边界：多 Key 能解决"并发隔离""按用途分账""快速吊销"这三件事，**不能**解决额度。
+
+**三种计量维度的错误信息要能区分**：同一个 `quota_exceeded` 必须能回答"是哪个维度打满的"。实现上放在错误消息里（`message` 指名维度与重置时刻），**不新增码**——因为三种维度下客户端的动作完全相同（等重置）。这也符合 3.4 的边界原则：**动作不同才拆码**。
+
+> **为什么 `pool_exhausted` 反而是独立的码**：组共享池与个人额度是**两个不同的资源**（前者全组共用、后者每人各自），且它们的可操作建议不同（个人额度打满可由管理员调高，池打满往往意味着全组的用量结构需要重新评估）。资源不同、建议不同，正是拆码的判据。
+
+### 3.4 码的边界原则
 
 三条分界，用于将来新增错误码时的判断：
 
@@ -141,22 +157,22 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 |---|---|---|
 | 400 | 请求格式或参数不对 | `invalid_request`、`capability_unsupported` |
 | 401 | 身份不可接受 | `invalid_api_key`、`invalid_credentials`、`session_expired` |
-| 403 | 权限不足 | `elevation_required`、`forbidden` |
+| 403 | 权限不足（可行动） | `forbidden` |
 | 404 | 目标不存在或不可见 | `model_not_found`、`not_found` |
 | 405 | 方法不允许 | `invalid_request`（`param` 为方法名） |
 | 409 | 状态冲突 | `conflict` |
 | 410 | 曾经存在，现已不可用 | `model_retired` |
 | 413 | 请求体过大 | `request_too_large` |
 | 415 | `Content-Type` 不支持 | `invalid_request` |
-| 429 | 速率或额度受限 | `rate_limited`、`quota_exceeded`、`pool_exhausted`、`too_many_attempts` |
+| 429 | 速率或额度受限 | `rate_limited`、`quota_exceeded`（账户级，三计量维度） 、`pool_exhausted`（组共享池）、`too_many_attempts` |
 | 500 | 服务端未预期故障 | `internal_error` |
 | 502 | 上游不可用或返回了坏响应 | `upstream_unavailable`、`upstream_error` |
 | 503 | 服务侧暂时无资源 | `no_candidate` |
 | 504 | 上游超时 | `upstream_timeout` |
 
-**为什么 405 与 415 复用 `invalid_request` 而不新增码**：客户端 对这两者的动作与 400 完全相同（改请求）。为它们新增码违反了 3.3 的第一条分界——动作相同时不该拆。
+**为什么 405 与 415 复用 `invalid_request` 而不新增码**：客户端 对这两者的动作与 400 完全相同（改请求）。为它们新增码违反了 3.4 的第一条分界——动作相同时不该拆。
 
-**为什么没有 402**：总纲 1.2（MVP 不做计费）与 [../ui/06-design.md](../ui/06-design.md) 6.2 的禁用词表都把 "费用金额"排除在界面之外。没有付费概念就没有 Payment Required。
+**为什么没有 402**：总纲 1.2（MVP 不做计费）与 [../ui/06-design.md](../ui/06-design.md) 6.2 的禁用词表都把 "费用金额"排除在界面之外。没有付费概念就没有 Payment Required。**注意 `credit` 不构成反例**：`credit` 是模型之间的相对价格单位，用来在同一份额度里横向比较消耗，它不是钱、不能充值、也不出现在任何对外响应里（[../ui/04-tenant.md](../ui/04-tenant.md) 第 4.2 节）。
 
 **为什么没有 418 / 451 之类的扩展码**：错误面越小越好。 每一个额外的状态码都需要客户端专门处理，否则会落到"未知错误"分支， 那比一个语义稍宽的 400 更糟。
 
@@ -188,15 +204,15 @@ Retry-After: 30
 | 情况 | `Retry-After` | 为什么 |
 |---|---|---|
 | `rate_limited` | **必有**，整数秒 | 验收第 4 条要求"429 + 有值 Retry-After" |
-| `quota_exceeded`（日 / 月上限） | 有值，指向额度重置时刻；无法计算时省略 | 额度重置时刻是可计算的 |
-| `pool_exhausted` | 有值，指向**池**的重置时刻（`period_anchor` + 1 日 / 1 月） | 与个人额度不同但同样可计算 |
+| `quota_exceeded`（账户额度，`request` / `token` / `credit` 任一维度） | 有值，指向该维度额度重置时刻；无法计算时省略 | 额度重置时刻是可计算的；`credit` 维度与 `token` 维度的重置时刻由各自的 `period` 决定 |
+| `pool_exhausted` | 有值，指向**池**的重置时刻（`period_anchor` + 1 日 / 1 月） | 与账户额度不同但同样可计算 |
 | `quota_exceeded`（全局预算熔断） | 省略 | 熔断解除依赖人工，给一个数字是误导 |
 | `no_candidate` | 可选 | 候选恢复时间不可预测 |
 | `upstream_unavailable` / `upstream_timeout` | 可选 | 上游恢复时间不可预测 |
 
 **为什么允许"有时没有 `Retry-After`"**：给一个编造的数字 会让守规矩的客户端在错误的时刻重试。宁可让它自行退避。
 
-**为什么 `upstream_unavailable` 也允许带 `Retry-After`**：上游是 本机网关（`127.0.0.1:8326`），它的恢复时间在"进程被重启"这类 场景下是可估计的。给得出就给。
+**为什么 `upstream_unavailable` 也允许带 `Retry-After`**：直连类上游（`dsh_provider` 走 Node sidecar、`compatible` 走自建端点）的恢复时间在"sidecar 进程被重启""上游服务滚动发布"这类场景下是可估计的。给得出就给。
 
 ### 5.3 弃用信号（RFC 9745 与 RFC 8594）
 
@@ -277,10 +293,10 @@ data: [DONE]
 
 | 分类 | 码 | 客户端做法 |
 |---|---|---|
-| 可重试（带退避） | `rate_limited`、`quota_exceeded`、`no_candidate`、`upstream_*`、`internal_error` | 指数退避；有 `Retry-After` 时以它为准 |
-| 不可重试（等重置） | `pool_exhausted` | 重试、换 Key、改参数均无效 |
+| 可重试（带退避） | `rate_limited`、`no_candidate`、`upstream_*`、`internal_error` | 指数退避；有 `Retry-After` 时以它为准。**注意 `rate_limited` 是速率、`quota_exceeded` 是额度**，两者虽然都是 429，但前者的正确反应是"慢一点"，后者是"等它重置" |
+| 不可重试（等重置或等管理员） | `pool_exhausted`、`quota_exceeded` | **换 Key 无效**（额度挂在账户上）；等重置或请管理员调高 |
 | 不可重试 | `invalid_api_key`、`invalid_request`、`capability_unsupported`、`request_too_large`、`model_not_found`、`model_retired` | 修改请求或配置后重新发起 |
-| 需人工介入 | `elevation_required`、`forbidden` | 去提权 / 申请权限类 |
+| 需人工介入 | `forbidden` | 去申请对应权限类（这是权限类的问题，不是认证的问题） |
 
 **为什么把"可重试 / 不可重试"写进文档**：这是唯一能阻止用户 对着 `model_not_found` 循环重试的东西。总纲第 13 章把 "上游故障→全站雪崩"列为风险，而这个雪崩的常见成因正是 所有客户端同时无退避重试。
 
@@ -303,8 +319,8 @@ data: [DONE]
 
 > **待定**：`Link` 头的迁移文档路径在部署中是否可配置？ 当前示例用 `/docs/models/<name>`，但站点未必托管这些文档。
 
-> **待定**：`quota_exceeded` 在"全局预算熔断"触发时， 是否需要与"个人额度耗尽"使用不同的码（两者当前共用一个码， 但对用户的可操作建议不同：前者只能等，后者可申请提额）。
+> **待定**：`quota_exceeded` 在"全局预算熔断"触发时， 是否需要与"账户额度耗尽"使用不同的码（两者当前共用一个码， 但对用户的可操作建议不同：前者只能等，后者可申请提额）。
 
 > **待定**：错误消息是否需要 i18n？当前假设单一语言， 与 [../ui/06-design.md](../ui/06-design.md) 第 10 节的 i18n 待定项相关。
 
-> **待定**：控制台面在"未提权"时返回 403 + `elevation_required`， 但页面面走 302 跳转到 `/elevate`（[../ui/01-ia.md](../ui/01-ia.md) 3.2）。 两种表达是否需要统一为"API 一律返回码、页面一律跳转"的显式规则？
+> **待定**：`quota_exceeded` 的 `message` 里如何表达"是哪个维度打满"—— 是用自然语言（"账户的 request 额度已用尽，60 秒后重置"）还是在错误体里加一个机器可读字段（如 `quota_unit`）。当前按前者撰写，但机器可读字段对客户端的自动降级更有用。

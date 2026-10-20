@@ -1,15 +1,17 @@
 > 分册：权限与安全 · 依赖：[01-accounts.md](01-accounts.md)、[03-groups.md](03-groups.md)、[04-authz.md](04-authz.md) · 对应总纲：PLAN.md 第 2.2 节、第 2.6 节、第 9.1 节、第 9.4 节、第 10 章
 
-# API Key 生命周期与配额
+# API Key 生命周期
 
-# API Key 生命周期与配额
 ## 1. 归属硬约束
+
 > **API Key 只能归属带 `tenant` 类的账户。**（PLAN 2.2、2.3、9.4）
+
 | 关系 | 约束 | 为什么 |
 |---|---|---|
 | Key → 账户 | 归属账户**必须**带 `tenant` 类 | Key 是"调用模型"的凭据；只有 `tenant` 类提供调用能力（见 [01-accounts.md](01-accounts.md#2-三个权限类)）。允许 `contributor` 或纯 `admin` 账户持有 Key，等于给没有调用能力的主体发调用凭证，判定链第 4 步就会拒掉它——发得出、用不了，是纯粹的状态污染 |
-| Key → 组 | **组不持有 Key**；组只约束 Key 的数量与额度上限 | 组一旦持有 Key 就等价于团队共享凭据，团队语义会从后门回来（见 [03-groups.md](03-groups.md#1-组是什么不是什么)） |
+| Key → 组 | **组不持有 Key**；组只约束 Key 的**数量** | 组一旦持有 Key 就等价于团队共享凭据，团队语义会从后门回来（见 [03-groups.md](03-groups.md#1-组是什么不是什么)） |
 | Key → 凭据 | **无任何关系** | 凭据不可自选（PLAN 2.3）：用哪条上游凭据由策略引擎决定，与调用方持哪把 Key 无关 |
+| Key → 额度 | **无关系**。额度全部在**账户级** | 见第 4 节 |
 
 **为什么"能建 Key"这件事由组策略决定**（PLAN 2.6 放开类）：新建 Key 是创建能力，管理员需要在组粒度上决定"这批人能不能自建"。`tenant` 类回答"你有没有调用能力"，组策略回答"你这一批人允不允许建"，两者是不同的问题。
 
@@ -32,14 +34,15 @@
 
 | 事件 | 触发者 | 联动 |
 |---|---|---|
-| 创建 | 账户本人（需组策略允许） | **明文只返回一次**；默认额度 0、白名单为空（PLAN 9.1） |
+| 创建 | 账户本人（需组策略允许） | **明文只返回一次**；白名单默认为空（PLAN 9.1） |
 | 改名 | 本人 | 仅影响可读性，不影响鉴权 |
 | 停用 / 恢复 | 本人 / 管理员 | 停用立即 401；恢复立即生效 |
 | 即时吊销 | 本人 / 管理员 | 立即 401，**不等过期**（PLAN 9.4） |
-| 配置调整（额度、限速、白名单） | 本人 | 只能收窄到组策略之内（见第 4、5 节） |
+| 配置调整（白名单） | 本人 | 只能收窄到组授权之内（见第 5 节） |
 | 账户 `disabled` | 管理员 | 名下**全部** Key 立即 401（见 [04-authz.md](04-authz.md#5-禁用联动)） |
 | 账户被撤销 `tenant` 类 | 管理员 | 同上 |
 | 账户被合并 | 管理员 | Key 改挂 target 账户后继续可用（见 [01-accounts.md](01-accounts.md#4-账户合并)） |
+| 账户额度耗尽 | 系统 | 名下**全部** Key 一起被拒（见第 4 节） |
 
 **为什么吊销要"立即"而不是"最多一个 TTL 后"**：吊销的语义是"从此刻起不可用"。如果实现层需要缓存，必须有失效机制（见 [04-authz.md](04-authz.md#5-禁用联动)）；把"稍后生效"写进设计，等于把泄露处置的窗口期写进设计。
 
@@ -64,31 +67,61 @@
 
 **为什么明文只返回一次**：与密码重置、CSV 导入生成的随机密码同一条原则（见 [02-authn.md](02-authn.md#3-管理员导入账密)）。可以被反复读取的 Key 等价于一个所有读过列表页的人共同持有的凭据，吊销粒度退化为"整账户"。
 
-## 4. 配额与限速维度
+## 4. Key 没有自己的额度
 
-| 维度 | 字段 / 来源 | 生效值 | 超限响应 |
+> **额度全部在账户级，一个账户的所有 Key 共享同一份额度。**（2026-10-20 定案）
+
+`api_keys` 表**保留**：`id, account_id, key_hash, prefix, name, status, expires_at, created_at, last_used_at`
+`api_keys` 表**没有**：`quota_limit`、`quota_used`、`rpm_limit`、`tpm_limit`、`daily_token_cap`、`max_concurrency`
+
+账户级额度字段见 [01-accounts.md](01-accounts.md#额度在账户级不在-key-上)：`quota_limit` / `quota_used` / `quota_unit` / `rpm_limit` / `tpm_limit` / `max_concurrency`。
+
+**Key 只剩三件事**：
+
+| 能力 | 说明 | 为什么留在 Key 上 |
+|---|---|---|
+| 认证 | 它是什么身份 | 这是 Key 存在的理由 |
+| 模型白名单 | `key_model_allow`，只能从账户可访问的抽象模型里**收窄** | "这把 Key 只做某一件事"是 Key 的属性，不是人的属性（见第 5 节） |
+| 生命周期 | 创建 / 禁用 / 过期 / 吊销 | 一把泄露的 Key 必须能被单独处置，而不牵连同账户的其它 Key |
+
+**为什么额度不能挂在 Key 上**：
+
+1. **多开 Key 就是额度翻倍。** 若每把 Key 有自己的 `quota_limit`，用户建 10 把 Key 就得到 10 份额度，账户级上限形同虚设——而建 Key 是用户自己能做的动作（只要组策略允许），这条绕过路径不需要任何越权。
+2. **额度是"一个人能用多少"的问题，不是"一个客户端能用多少"的问题。** 同一个人同时用编辑器、CI 和手机访问，他的总消耗才是需要被约束的量；按 Key 计额度，等于把同一个人的总消耗拆成互不知情的几份，任何一份超限都不会让总量收敛。
+3. **它让审计与对账多一层无意义的维度。** 账户级额度只需要在 `accounts` 上维护一行；按 Key 维护则要么有 N 份账、要么每次判定都跨 Key 求和——后者让每个请求的鉴权成本随该账户的 Key 数量增长。
+
+**额度判定落在哪里**：判定链第 6 步（[04-authz.md](04-authz.md#4-运行时鉴权顺序入站模型请求)），读的是 `accounts` 那一行，与本次请求用的是哪把 Key 无关。
+
+**三种计量维度**（`quota_unit`）：
+
+| 维度 | 单位 | 怎么算 | 为什么需要 |
 |---|---|---|---|
-| 总额度 | `quota_limit` / `quota_used` | 见待定 | 拒绝 + 日志留痕 |
-| 日 token | `daily_token_cap`（Key 字段） | **min(Key 值, 组策略)** | 拒绝 + 日志留痕 |
-| 月 token | 组策略 `monthly_token_cap` | 见待定（Key 表无对应字段） | 拒绝 + 日志留痕 |
-| RPM | `rpm_limit` | **min(Key 值, 组策略)** | **429 + 有值 `Retry-After`**（PLAN 9.5、验收 4） |
-| TPM | `tpm_limit` | **min(Key 值, 组策略)** | 同上 |
-| 并发 | `max_concurrency` | **min(Key 值, 组策略)** | 同上 |
-| 全站 | 三维令牌桶（全局 / 按 Key / 按 IP） | 全局默认兜底 | 429 + `Retry-After` |
-| 全站预算 | 全局预算熔断 | 管理员配置 | 拒绝 + 告警（PLAN 9.1） |
+| `request` | 次数 | 一次请求 = 1，与 token 无关 | 免费站点关心"请求数"；也让高频小请求的刷量有独立闸门 |
+| `token` | token 数 | `in_tokens + out_tokens` | 最直观的用量单位 |
+| `credit` | Credits | 按价格乘数折算，见 [01-accounts.md](01-accounts.md#额度在账户级不在-key-上) | `token` 把贵模型与便宜模型视为等价，改用最贵模型即可在同样 token 内烧掉几十倍成本 |
 
-三条硬规则：
+- 同时设多种时**各自独立判定，哪个先到算哪个**。为什么不做加权合并：三个维度拦的是三种不同形状的滥用（次数刷、长请求刷、贵模型刷），合成一个数会让某一类滥用失去约束。
 
-1. **每个 Key 强制有日 / 月 token 上限与并发上限**（PLAN 9.1）。Key 上没设时，必须由**全局默认兜底**填上，不能理解为"无限制"。
-   - 为什么：无上限的 Key 是唯一一种"一次泄露 = 无限损失"的资源形态。兜底是让"忘记配置"的后果有界。
-2. **Key 上的值只能 ≤ 组策略值**（收窄）。
-   - 为什么：与 [04-authz.md](04-authz.md#2-三层收敛) 同一逻辑。Key 是用户完全控制的资源，若 Key 上的额度能超过组上限，组上限就成了摆设——用户建一把新 Key 即可自我提权。
-3. **维度之间相互独立，任一触顶即拒绝**。
-   - 为什么：日额度、RPM、并发防的是三种不同的滥用形态（总量刷、瞬时刷、占用式刷）。用其中一个去兜另外两个，会让某一类滥用在另一个维度上完全没有约束。
+**速率与并发**（同样在账户级）：
 
-**为什么日额度与 RPM 的响应形态不同**：RPM 是"稍后就能用"，客户端需要 `Retry-After` 才能正确退避；日额度是"今天没戏"，重试没有意义（状态码是否复用 429 见 [04-authz.md](04-authz.md#9-待定)）。
+| 维度 | 字段 | 超限响应 | 为什么响应形态不同 |
+|---|---|---|---|
+| RPM | `rpm_limit` | **429 + 有值 `Retry-After`** | "稍后就能用"，客户端必须知道多久后重试（PLAN 9.5、验收 4） |
+| TPM | `tpm_limit` | 同上 | 同上 |
+| 并发 | `max_concurrency` | 同上 | 同上 |
+| 额度耗尽 | `quota_limit` / `quota_unit` | 拒绝 + 日志留痕 | "今天没戏"，重试没有意义（状态码见 [04-authz.md](04-authz.md#9-待定)） |
+| 全站 | 三维令牌桶（全局 / 按账户 / 按 IP） | 429 + `Retry-After` | 兜底 |
+| 全站预算 | 全局预算熔断 | 拒绝 + 告警（PLAN 9.1） | 全站级事件 |
 
-**为什么用 `usage_daily` 而不是实时扫 `requests` 算日用量**：日额度要在每一个请求前判定（判定链第 6 步）。实时聚合全表会让鉴权成本随历史请求量增长，而 `usage_daily(day, key_id, abstract_model_id, real_model_id, ...)` 正好是这一维度的预聚合（PLAN 第 10 章）。
+**为什么必须保留"全局默认兜底"**：新建账户的 `quota_limit` 默认为 0（PLAN 9.1：默认拒绝），但 `rpm_limit` / `tpm_limit` / `max_concurrency` 若允许留空，就出现一种"额度为 0 却能高频打无效请求"的形态——额度虽拒，速率仍然可以打满上游连接与本地 CPU。因此这三项必须由全局默认值兜底，**不得理解为无限制**。
+
+**为什么用 `usage_daily` 而不是实时扫 `requests` 算日用量**：额度要在每一个请求前判定。实时聚合全表会让鉴权成本随历史请求量增长，而 `usage_daily(day, account_id, abstract_model_id, real_model_id, ...)` 正好是这一维度的预聚合（PLAN 第 10 章）。
+
+> **待定**：`quota_limit` 与"日额度 / 月额度"的关系——当前按"`quota_limit` 是账户总额度，日 / 月 token 上限由组策略给上界"撰写，但总纲同时出现了两种表述，需确认是否存在三层（总额度 / 周期额度 / 组池）叠加。
+
+> **待定**：`quota_unit` 是账户上一个单值，还是允许同时启用多个维度（若允许，`quota_limit` 需要按维度分行存储）。
+
+> **待定**：账户级 `rpm_limit` / `tpm_limit` / `max_concurrency` 的全局默认兜底值。
 
 ## 5. 模型白名单
 
@@ -96,14 +129,14 @@
 |---|---|---|
 | 载体 | `key_model_allow(key_id, abstract_model_id)` | PLAN 第 10 章 |
 | 默认值 | **空**（新建即空，PLAN 9.1） | 默认拒绝：验收 5 要求"新建 Key 不改任何配置时无法发起请求" |
-| 方向 | **只能从"租户可访问集合"收窄**，即 ⊆ (∪ 所属组的抽象模型) | PLAN 2.6、11.3 |
+| 方向 | **只能从"账户可访问集合"收窄**，即 ⊆ (∪ 所属组的抽象模型) | PLAN 2.6、11.3 |
 | 元素 | 只能是**抽象模型** | 真实模型对租户不可见（PLAN 3.1）；白名单里出现真实模型名本身就是泄漏 |
 | 最终可用 | `(∪ 所属组的抽象模型) ∩ Key 白名单` | 见 [04-authz.md](04-authz.md#2-三层收敛) |
 | 组策略 | `Key 白名单能否放宽`（放开类） | 见 [03-groups.md](03-groups.md#3-组策略清单) 与其中的待定 |
 
 **为什么默认是空而不是"继承组授权"**：如果白名单默认等于组授权，那么"新建 Key"这个动作本身就等于把该账户的全部模型授权一次性发出去。默认空让每一次授权扩大都成为一次**显式动作**，也让"这把 Key 到底能干什么"在列表页上可读。
 
-**为什么白名单是 Key 级而不是账户级**：同一个账户常有多把 Key（一把给本地编辑器、一把给 CI、一把给手机）。收窄的动机通常是"这把 Key 只做某一件事"，这是 Key 的属性，不是人的属性。
+**为什么白名单是 Key 级而不是账户级**（这是 Key 上唯一保留的可配置项）：同一个账户常有多把 Key（一把给本地编辑器、一把给 CI、一把给手机）。收窄的动机通常是"这把 Key 只做某一件事"，这是 Key 的属性，不是人的属性。同时它与额度不同：白名单**只可能让能力变小**，多开 Key 不会放大任何能力，因此放在 Key 上不构成绕过。
 
 **账户被移出某个组后，Key 白名单怎么变**：白名单**不变**，但最终可用集合会因组授权收窄而自动收窄（交集变小）。
 
@@ -118,30 +151,36 @@
 | Key 过期 | 该 Key 立即 401 | `expires_at` |
 | 账户 `disabled` | 名下全部 Key 立即 401，**不依赖缓存** | PLAN 9.3、验收 8 |
 | 撤销账户 `tenant` 类 | 名下全部 Key 立即 401 | 见 [01-accounts.md](01-accounts.md#2-三个权限类) |
+| 账户额度耗尽 | 名下全部 Key 一起被拒（Key 本身仍 `active`） | 见第 4 节 |
 | 账户被合并 | source 名下 Key 改挂 target，随后以 target 的身份继续服务 | 见 [01-accounts.md](01-accounts.md#4-账户合并) |
 | 账户改密 | **不影响 Key** | 见下 |
 
 **为什么改密不吊销 Key**：Key 与密码是两条独立的凭据链（一个是机器凭据，一个是人的登录凭据），它们之间没有推导关系——密码泄露不会让攻击者拿到 Key，Key 泄露也不会让他登录控制台。把两者绑在一起，会让用户每次改密码都要重新配置所有客户端，逼出一个"从不改密码"的习惯。账户禁用则是另一回事：它表示"这个人整体不可信了"，因此**所有**凭据一起失效。
 
-**吊销后仍未结束的在途请求**：见待定。
+**为什么额度耗尽不改变 Key 的状态**：额度是按周期重置的临时条件，Key 的状态描述的是"这把凭据是否还有效"。把"用完了"写成 `disabled`，会让用户在额度重置后仍需要手动恢复 Key——而恢复动作本身才是真正的风险点（用户会开始批量恢复）。
+
+> **待定**：吊销一把正在被使用的 Key 时，已在途请求（已解析到上游、尚未返回）如何处理——立即中断、跑完但不再计费，还是跑完且计费。
+
+> **待定**：Key 的 `Retry-After` 取值规则（固定值、按令牌桶补充速率计算，还是按额度重置时间）。
 
 ## 7. Key 与账户 / 组的关系
 
 ```
 账户（必须带 tenant 类）
+  ├── 额度 / 速率 / 并发        → 账户级，全部 Key 共享一份
   └── API Key（1..n，数量受组策略上限约束）
         ├── key_model_allow     → 只能收窄组授权
-        ├── 额度 / 限速 / 并发   → 只能收窄组策略
-        └── (无) 与上游凭据的任何关系
+        └── (无) 与上游凭据、与额度的任何关系
 
 组（不持有 Key，只提供上限）
   ├── group_model      → 组授权（放开类，并集）
-  └── group_policies   → 额度 / 限速 / 并发上限（限制类，最严）
+  └── group_policies   → 每人额度 / 速率 / 并发上限（限制类，最严）
 ```
 
 | 问题 | 答案 | 为什么 |
 |---|---|---|
 | 一个账户能有几把 Key？ | 受组策略 `Key 数量上限` 约束（多组取**最大值**） | 该键归放开类（[03-groups.md](03-groups.md#3-组策略清单) 第 3 节定案） |
+| 多开 Key 能提高额度吗？ | **不能** | 额度在账户级，多开 Key 共享同一份（见第 4 节） |
 | 组能共用一把 Key 吗？ | **不能** | 组不持有 Key（PLAN 2.6） |
 | 别人的 Key 我能看到吗？ | 不能（404 或空集） | PLAN 2.3 资源分表归属 |
 | 管理员能看到我的 Key 吗？ | 能看到**前缀与元数据**（审计与处置需要），看不到明文 | PLAN 9.4：明文永不回显，连创建者本人之后也看不到 |
@@ -159,25 +198,23 @@ const (
     KeyExpired  KeyStatus = "expired"  // 由 expires_at 推导
 )
 
+// APIKey 只有身份、生命周期与白名单三件事。
+// 2026-10-20 定案：额度与速率全部移到 Account（见 01-accounts.md）。
 type APIKey struct {
-    ID         string
-    AccountID  string     // 必须带 tenant 类
-    KeyHash    []byte     // SHA-256；不存明文
-    Prefix     string     // 展示用：fr-xxxx…xxxx
-    Name       string     // 人读
-    Status     KeyStatus
-    ExpiresAt  *time.Time
-    QuotaLimit int64
-    QuotaUsed  int64
-    RPMLimit   *int
-    TPMLimit   *int
-    DailyCap   *int64
-    MaxConc    *int
+    ID        string
+    AccountID string     // 必须带 tenant 类
+    KeyHash   []byte     // SHA-256；不存明文
+    Prefix    string     // 展示用：fr-xxxx…xxxx
+    Name      string     // 人读
+    Status    KeyStatus
+    ExpiresAt *time.Time
+    CreatedAt time.Time
+    LastUsedAt *time.Time
 }
 
 type KeyService interface {
     // Create：归属账户必须带 tenant 类；组策略必须允许建 Key；数量未超上限。
-    // 返回值中的明文只在此刻出现一次。
+    // 返回值中的明文只在此刻出现一次。白名单建为空。
     Create(subject Subject, name string) (plaintext string, key *APIKey, err error)
 
     List(subject Subject) ([]APIKey, error)          // 只回前缀，不含明文
@@ -186,30 +223,16 @@ type KeyService interface {
     Revoke(subject Subject, keyID string) error      // 不可恢复
     Delete(subject Subject, keyID string) error      // 若支持删除，见待定
 
-    // SetLimits：只能收窄 —— 每个字段都必须 ≤ 组策略的对应值，否则拒绝。
-    SetLimits(subject Subject, keyID string, limits KeyLimits) error
-
     // SetAllowlist：白名单必须 ⊆ ∪ 所属组的抽象模型；元素必须是抽象模型。
+    // Key 上没有 SetLimits —— 额度在账户级，由 AccountService 管理。
     SetAllowlist(subject Subject, keyID string, abstractModelIDs []string) error
 
     // Usable 供判定链调用：Key 自身状态 + 归属账户实时状态（不依赖长 TTL 缓存）。
     Usable(rawKey string) (*APIKey, error)
 }
-
-type KeyLimits struct {
-    DailyCap   *int64
-    MonthlyCap *int64 // 见第 4 节待定
-    RPM        *int
-    TPM        *int
-    MaxConc    *int
-}
 ```
 
 ## 9. 待定
-
-> **待定**：`quota_limit` / `quota_used` 与 `daily_token_cap` 的关系——前者是总额度、是某种计费单位，还是与 `null` 相比的"总 token 上限"？总纲同时给了两个额度字段但未定义各自语义与优先级。
-
-> **待定**：月 token 上限在 Key 上是否也能收窄（`api_keys` 表没有对应字段，目前月额度只能来自组策略）。
 
 > **待定**：`disabled` 与 `revoked` 是否为两个独立状态（本册按两个撰写）。
 
@@ -217,13 +240,11 @@ type KeyLimits struct {
 
 > **待定**：Key 是否支持物理删除，还是只允许吊销 + 隐藏（涉及历史 `requests` 的归因链与外键）。
 
-> **待定**：吊销一把正在被使用的 Key 时，已在途请求（已解析到上游、尚未返回）如何处理——立即中断、跑完但不再计费，还是跑完且计费。
-
-> **待定**：Key 的 `Retry-After` 取值规则（固定值、按令牌桶补充速率计算，还是按日额度重置时间）。
+> **待定**：账户的 `rpm_limit` / `tpm_limit` / `max_concurrency` 与组策略的关系——组策略里的"每人 RPM 上限"若与账户字段同时存在，是"账户字段必须 ≤ 组策略"（收窄），还是"账户字段独立、由管理员同时负责两边一致"。
 
 ## 10. 相关分册
 
-- 账户、`tenant` 类的授予与撤销 → [01-accounts.md](01-accounts.md)
+- 账户、`tenant` 类的授予与撤销、账户级额度 → [01-accounts.md](01-accounts.md)
 - 组策略上限与"Key 白名单能否放宽" → [03-groups.md](03-groups.md)
 - 判定链、三层收敛、禁用联动 → [04-authz.md](04-authz.md)
 - Key 相关事件的审计留痕 → [06-audit.md](06-audit.md)

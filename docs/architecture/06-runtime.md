@@ -282,7 +282,7 @@ w 可能不再是原始类型，类型断言会静默失败——表现为「流
 | `pool_exhausted` | 429 | 所属组的共享额度池耗尽 |
 | `rate_limited` | 429 | 触发限速 |
 | `capability_unsupported` | 400 | 请求的能力候选不支持（且无法过滤出候选） |
-| `elevation_required` | 403 | 需要提权，或四项逐次重验的请求缺/复用 `X-FR-StepUp` |
+| `platform_forbidden` | 403 | 该操作只能由平台自身（非 API 客户端）触发，如界面上的人工审核 |
 | `invalid_api_key` | 401 | Key 无效或账户被禁用 |
 
 **为什么 `model_not_found` 不区分「不存在」与「无权访问」**：

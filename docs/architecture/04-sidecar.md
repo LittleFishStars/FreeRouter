@@ -204,19 +204,20 @@ credits.query({ provider: string, credentialRef: string }) -> {
 |---|---|---|---|
 | ① | **只读凭据** | 不提供 `set/unset/refresh` 方法；sidecar 内部只调用 `ctx.credentials.resolve` / `describe`；FreeRouter 侧不写 DSH 的凭据存储 | `E_CREDENTIAL_READONLY` + 审计告警 |
 | ② | **不碰 `$DSH_HOME/jet-hub/state.json`** | 不提供任何读写方法；sidecar 以只读方式装载 providers-hub 模块，且不调用会触及该文件的路径 | `E_STATE_FORBIDDEN` + 文件 mtime 监控（启动时记录 mtime，运行期变化即告警） |
-| ③ | **上游永走 `127.0.0.1`** | 推理上游由 Go 侧直接发起（[03-upstream.md](03-upstream.md) 第 9.3 节）；sidecar 不参与推理链路 | 代码审查 + 契约中不存在"代发模型请求"的方法 |
+| ③ | **推理经 sidecar 直连 adapter，不经任何本机 HTTP 网关** | sidecar 进程内 `import()` providers-hub 的 `lib/*-adapter.js`，由它向官方端点发起推理；FreeRouter 的 Go 侧不直接连接任何 LLM 端点 | 代码审查 + 契约中只有 `chunk` 流式帧、无 HTTP 代理方法 |
 
 ### 4.2 红线③的精确边界
 
-红线说的是**模型推理上游**，不是"sidecar 不许出公网"。登录流必须访问 OAuth 授权端点
-（`github.com` / `*.openai.com` / 各家自己的域名）、设备码端点、余额端点——这些都是公网出站，
-而且**必须**如此，否则登录根本无从完成。
+红线说的是**推理链路不经过任何本机 HTTP 网关**（没有 8326 那一跳，也没有我们自己的代理层），
+不是"sidecar 不许出公网"。事实上 sidecar 必须出公网：既要访问 OAuth 授权端点（`github.com` /
+`*.openai.com` / 各家自己的域名）、设备码端点、余额端点，也要承载模型推理本身。
 
-| 出站类型 | 允许 | 理由 |
-|---|---|---|
-| OAuth / 设备码 / 余额 / 目录端点（公网） | 允许 | 登录流本身 |
-| 本地回调监听 `127.0.0.1:<port>` | 允许（仅回环） | OAuth 回调标准做法；监听非回环地址被配置校验拒绝 |
-| 模型推理请求 | **只允许 Go 侧对 `127.0.0.1:8326`** | 唯一出口原则 |
+| 出站类型 | 由谁发起 | 允许 | 理由 |
+|---|---|---|---|
+| OAuth / 设备码 / 余额 / 目录端点（公网） | sidecar | 允许 | 登录与配额探测本身 |
+| 模型推理（公网，官方端点） | **sidecar 内的 adapter** | 允许 | adapter 是唯一知道各家请求形状的代码；搬到 Go 侧就等于把它重写一遍 |
+| 本地回调监听 `127.0.0.1:<port>` | sidecar | 允许（仅回环） | OAuth 回调标准做法；监听非回环地址被配置校验拒绝 |
+| 本机 HTTP 网关（如 8326） | —— | **禁止** | 多一层网关就多一份凭据副本与一个故障点；adapter 已经能直达官方端点 |
 
 ### 4.3 为什么红线是"三条"而不是"零信任"
 
@@ -239,13 +240,13 @@ credits.query({ provider: string, credentialRef: string }) -> {
 |---|---|---|
 | 1 | 加载配置，校验唯一出口（[03-upstream.md](03-upstream.md) 9.3） | **拒绝启动** |
 | 2 | 打开 SQLite，执行迁移 | 拒绝启动 |
-| 3 | 读 `$DSH_HOME/openai-gateway/api-key` → AES-GCM → 写 `upstreams` + `upstream_secrets` | 挂横幅，继续（不阻塞） |
+| 3 | 校验 `sidecar.hub_path`（vendored providers-hub）可读、Node 版本满足 | 挂横幅，继续（不阻塞） |
 | 4 | **拉起 sidecar 进程**，等待 `health` 应答（超时 **10s**） | 挂横幅，继续；contributed 全部视为不可用 |
 | 5 | 异步拉 `GET /v1/models` 写 `real_models` | 每 30s 重试 |
 | 6 | 启动健康探测循环（[03-upstream.md](03-upstream.md) 第 7 节） | —— |
 | 7 | 开始监听，`/readyz` 开始返回 | —— |
 
-**为什么步骤 4 失败**不阻塞启动**：`dshgateway` 是主供给（本机网关 + 116 个模型的额度池），
+**为什么步骤 4 失败**不阻塞启动**：`dsh_provider` 是主供给（providers-hub 账号池 + 上百个模型的额度），
 它不依赖 sidecar。sidecar 只影响 `contributed` 上游与"贡献/登录"这条支线。为了一个支线
 让整站起不来，是把 SLA 绑在了最不重要的一环上。
 
@@ -253,7 +254,7 @@ credits.query({ provider: string, credentialRef: string }) -> {
 10s 已经足够区分"慢"与"卡住"，而更长的等待会让启动看起来很卡（用户会以为进程挂了）。
 
 **为什么不把 sidecar 的 `health` 接进 `/readyz`**：见 [03-upstream.md](03-upstream.md) 7.3——
-`/readyz` 的语义是"能不能服务某个请求"，dshgateway 可用就够了。sidecar 的健康状况通过
+`/readyz` 的语义是"能不能服务某个请求"，`dsh_provider` 可用就够了。sidecar 的健康状况通过
 `/healthz` 的明细与横幅暴露。
 
 ### 5.2 运行期
@@ -262,7 +263,7 @@ credits.query({ provider: string, credentialRef: string }) -> {
 |---|---|
 | sidecar 退出（任意信号） | 主进程按退避重启：1s → 2s → 5s → 15s → 30s → 60s（上限） |
 | 连续 **5 次**启动失败 | 进入 `sidecar_degraded`：停止重启，横幅提示，contributed 全部冷却；**等管理员干预** |
-| 主进程有在途 IPC 调用时 sidecar 死 | 所有在途调用立即以 `E_UPSTREAM_…`（或 `E_PROTOCOL`）失败。若该请求尚未产出可见内容，按 [06-runtime.md](06-runtime.md) 的切换状态机换候选（通常是换到 dshgateway 的候选） |
+| 主进程有在途 IPC 调用时 sidecar 死 | 所有在途调用立即以 `E_UPSTREAM_…`（或 `E_PROTOCOL`）失败。若该请求尚未产出可见内容，按 [06-runtime.md](06-runtime.md) 的切换状态机换候选（通常是换到 `dsh_provider` 或 `compatible` 的候选） |
 | 单次调用超时 | 见 5.3；超时不代表 sidecar 死了，只记 `warn` |
 | 协议违规（`E_PROTOCOL`） | 记错误计数；**连续 3 次**视为 sidecar 失能，主动重启它 |
 

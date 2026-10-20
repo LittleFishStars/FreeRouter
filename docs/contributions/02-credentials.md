@@ -38,7 +38,7 @@ upstream_credentials(
 ## 2. 四张表的关系
 
 ```
-upstreams            可调用的通道：base_url + kind(dshgateway|contributed) + owner_account_id
+upstreams            可调用的通道：kind(dsh_provider|contributed|compatible) + owner_account_id
    │ 1
    │ n
 upstream_secrets     密钥材料：ciphertext + nonce（AES-GCM），主密钥不入库
@@ -116,7 +116,7 @@ abstract_candidates  抽象模型的候选集（声明式，不绑凭据）
 | 不同账户提交同一身份 | **合并或拒绝**，由规则决定，且必须在 UI 上说清 | 账号合并涉及"两个站内账户变一个"，是不可逆操作（虽有 `account_merges.reversible_until`，但用户感知上不可逆） |
 | 身份缺失（纯 Key 型） | 不参与本约束 | 纯 Key 型没有 `external_id`，无法撞身份——这也是它必须靠恢复码的原因 |
 
-**为什么"不得静默覆盖"**：静默覆盖意味着**直接把别人的凭据改写成了你的**。这既是数据丢失，也是一条提权路径（我提交一个别人的 `external_id`，就把那条凭据抢过来了）。
+**为什么"不得静默覆盖"**：静默覆盖意味着**直接把别人的凭据改写成了你的**。这既是数据丢失，也是一条越权路径（我提交一个别人的 `external_id`，就把那条凭据抢过来了）。
 
 ### 4.3 合并语义
 
@@ -294,7 +294,7 @@ AES-GCM 是认证加密（AEAD）：它同时给机密性与完整性。**完整
 
 ## 9. 审计与对账
 
-总纲 9.5：审计日志 append-only，**凭据的增删**在列；每条审计带 `account_id + acting_class (+ elevated)`。
+总纲 9.5：审计日志 append-only，**凭据的增删**在列；每条审计带 `account_id + acting_class + ip + ua + result`（已删 `elevated`：本版没有类级提权，ALIGN-SPEC A）。
 
 | 事件 | 是否审计 |
 |---|---|

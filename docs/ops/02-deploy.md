@@ -23,10 +23,12 @@
 ┌──────────────────────▼───────────────────────┐
 │  freerouter-sidecar（Node，子进程）           │
 │  加载 dsh-providers-hub 的 auth/adapter 模块  │
+│  ├─ 供应商 OAuth / 续期 / 额度查询             │
+│  └─ provider adapter：模型目录 + 流式推理      │
 └──────────────────────────────────────────────┘
-                       │ HTTP 127.0.0.1:8326
+                       │ HTTPS（直出官方端点，不经本机网关）
 ┌──────────────────────▼───────────────────────┐
-│  DSH（外部，已有）dsh-providers-hub 网关      │
+│  各家 provider 官方端点                       │
 └──────────────────────────────────────────────┘
 ```
 
@@ -65,17 +67,29 @@ ip+端口访问」，且部署位置是「先本地跑」。文档的默认路�
 
 ### 1.3 与 DSH 的部署关系
 
-**关键约束**：`dsh-providers-hub` 的网关**只绑 `127.0.0.1` 并显式拒绝 `0.0.0.0`**。
-所以 FreeRouter 必须与 DSH 在**同一网络命名空间**内：
+**关键约束**：`dsh_provider` 这条上游由 sidecar **在进程内直接调用 providers-hub 的
+provider adapter**（`lib/*-adapter.js`），**不再经过 `127.0.0.1:8326` 的 OpenAI 兼容网关**
+（2026-10-20 定案，ALIGN-SPEC H；细节见 [../architecture/03-upstream.md](../architecture/03-upstream.md) 第 3 节）。
+所以「必须同机」的理由不再是网络层，而是两条本地资源要求：
+
+| 要求 | 为什么 |
+|---|---|
+| `sidecar.hub_path` 指向的 providers-hub 安装目录必须**本机可读** | provider adapter 是被 `import()` 进 sidecar 进程的**代码**，不是一个网络端点——跨机没有可加载的文件 |
+| OAuth 回调端口（`127.0.0.1:<port>`）必须让**操作者浏览器**访问得到 | 浏览器回调类 provider 靠本地监听端口收回调；容器里监听回环而宿主浏览器够不到，登录就永远完不成 |
+
 
 | 情况 | 做法 |
 |---|---|
-| 裸机 | 直接可用（都在宿主） |
-| Docker | **必须 `network_mode: host`**，否则容器内 `127.0.0.1:8326` 是容器自己 |
-| 两台机器 | **不支持**——上游不接受跨机访问，这是它的设计而非配置遗漏 |
+| 裸机 | 直接可用（模块与 DSH 都在宿主） |
+| Docker | **必须 `network_mode: host`**：容器与宿主共用回环，回调端口与 `server.listen` 才都落在宿主网络栈上 |
+| 两台机器 | **不支持**——providers-hub 的模块与 DSH 登录态都在本机，跨机无处加载，也无法复用登录态 |
 
-**为什么不用 `host.docker.internal`**：桥接网络下容器访问宿主需经网关地址，
-但上游网关只监听回环接口，网关地址连不上。`network_mode: host` 是唯一可行解。
+**为什么 Docker 下是 `network_mode: host` 而不是「桥接 + 端口映射」**：旧理由是「容器
+要访问宿主的 `127.0.0.1:8326` 网关」，那条网关已经不在推理链路上了（理由换成上面两条）。
+真正卡住桥接形态的是 **OAuth 浏览器回调**——回调端口由 provider 自己决定
+（`trae` 固定用 18080，见 [../architecture/04-sidecar.md](../architecture/04-sidecar.md) 第 7 节），
+写不进一张事先固定的端口映射表；同时默认形态下 `server.listen` 也要直接落在宿主 IP 上。
+共用宿主网络栈一次解决这两件事，且不必维护一张会过期的映射表。
 
 ---
 
@@ -140,8 +154,7 @@ ip+端口访问」，且部署位置是「先本地跑」。文档的默认路�
 |---|---|---|---|
 | `security.trusted_proxies` | []string | `[]` | CIDR 列表，**同时支持 IPv4 与 IPv6 网段**（如 `127.0.0.1/32`、`::1/128`）。**为空则忽略 `X-Forwarded-For`**；IP 归一规则见 [../security/02-authn.md](../security/02-authn.md) 10.1 |
 | `security.password_min_length` | int | `12` | |
-| `security.session_ttl` | duration | `12h` | |
-| `security.elevation_ttl` | duration | `15m` | 提权有效期 |
+| `security.session_ttl` | duration | `24h` | 无类级提权后会话是唯一时效边界（见下文） |
 | `security.login_max_failures` | int | `5` | 触发退避 |
 | `security.login_lockout` | duration | `15m` | |
 | `security.registration_enabled` | bool | `true` | |
@@ -149,9 +162,11 @@ ip+端口访问」，且部署位置是「先本地跑」。文档的默认路�
 
 **管理面没有 IP 白名单配置项，这是有意为之**：用户 2026-10-19 拍板「管理面不限来源 IP」，
 因此**不提供** `admin_ip_allowlist` 这类功能，而不是「提供但默认空」。理由与补偿手段见
-[01-security.md](01-security.md#3-账户与认证)：管理面的真正门槛是**类级提权**
-（进管理面当场再验、15 分钟有效、四项危险操作每次重验）+ 强密码 + 登录退避锁定；
-按来源 IP 限制只会误锁从移动网络 / CGNAT 登录的管理员，却挡不住已拿到凭据的攻击者。
+[01-security.md](01-security.md#3-账户与认证)：**管理面的真正门槛是登录强度三项 + 24h 会话**
+（argon2id 参数定值、登录退避锁定、改密或禁用即吊销会话），**本版没有类级提权**
+——登录一次即得到该账户的全部权限，
+不再有「再验一次」这层缓冲（ALIGN-SPEC A）。按来源 IP 限制只会误锁从移动网络 /
+CGNAT 登录的管理员，却挡不住已拿到凭据的攻击者。
 
 ### 2.4 limits
 
@@ -186,18 +201,21 @@ TPM 是**速率**（不设速率上限不是不供给）。把这两行写在同
 
 | 键 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `upstream.dsh_gateway.enabled` | bool | `true` | |
-| `upstream.dsh_gateway.base_url` | string | `http://127.0.0.1:8326` | **不接受非回环地址** |
-| `upstream.dsh_gateway.api_key_file` | string | `$DSH_HOME/openai-gateway/api-key` | 自举用 |
-| `upstream.dsh_gateway.timeout` | duration | `300s` | 长回答需要 |
-| `upstream.dsh_gateway.connect_timeout` | duration | `5s` | |
-| `upstream.dsh_gateway.max_retries` | int | `2` | 幂等请求（未吐内容）才重试 |
-| `upstream.dsh_gateway.model_refresh_interval` | duration | `10m` | 目录刷新 |
-| `upstream.dsh_gateway.aggregate_excluded` | bool | `true` | 排除 `aggregate/*` 作候选 |
+| `upstream.dsh_provider.enabled` | bool | `true` | 是否启用 `dsh_provider` 这条上游 |
+| `upstream.dsh_provider.timeout` | duration | `300s` | 长回答需要；由 sidecar 透传给 adapter |
+| `upstream.dsh_provider.connect_timeout` | duration | `5s` | |
+| `upstream.dsh_provider.max_retries` | int | `2` | 幂等请求（未吐内容）才重试 |
+| `upstream.dsh_provider.model_refresh_interval` | duration | `10m` | 模型目录刷新 |
+| `upstream.dsh_provider.aggregate_excluded` | bool | `true` | 排除 `aggregate/*` 作候选 |
+| `upstream.dsh_provider.allowlist` | []string | `[]` | 只启用这些 provider id；空 = 全部 `lib/*-adapter.js` 都可用 |
 
-**为什么 `base_url` 只接受回环**：上游网关的设计假定自己只服务本机
-（它显式拒绝 `0.0.0.0`）。允许配成外网地址只会制造「配了但连不上」的困惑，
-不如在配置校验阶段直接拒绝并说明原因。
+**为什么这里不再有 `base_url` 与 `api_key_file`**：旧设计把 `dsh_provider` 当成
+`127.0.0.1:8326` 的 OpenAI 兼容网关，所以需要配端点地址和网关自身的 key。2026-10-20
+定案后这条上游由 sidecar **进程内 `import()` provider adapter 直接调用**（ALIGN-SPEC H），
+既没有可配的端点，也没有网关层自己的凭据——鉴权发生在 adapter 内部，用的是贡献者自己的
+供应商登录态（见 [../contributions/02-credentials.md](../contributions/02-credentials.md)）。
+保留 `base_url` 会直接违背后面 §2.7「上游地址不可配」的同一条理由：多一个能填错、
+填错后只能靠日志反推的旋钮，换不来任何能力。
 
 ### 2.6 sidecar
 
@@ -234,7 +252,7 @@ TPM 是**速率**（不设速率上限不是不供给）。把这两行写在同
 # 默认形态：只监听回环，不启 TLS（先本地跑）
 FR_SERVER_LISTEN=127.0.0.1:8080
 FR_STORE_MASTER_KEY_FILE=/etc/freerouter/master.key
-FR_UPSTREAM_DSH_GATEWAY_BASE_URL=http://127.0.0.1:8326
+FR_UPSTREAM_DSH_PROVIDER_ALLOWLIST=trae,iflow
 FR_SIDECAR_HUB_PATH=/opt/dsh/profiles/web/node_modules/dsh-providers-hub
 FR_DSH_HOME=$HOME/.local/share/dsh
 
@@ -279,8 +297,11 @@ chmod 600 /etc/freerouter/master.key
 3. 创建完成 → 写入 `settings.initialized = true` → 按 `server.listen` 监听。
    **默认仍留在 `127.0.0.1:8080`**：切到公网地址是一次**显式配置改动**
    （改 `server.listen`，或用 `FR_SERVER_LISTEN` 覆盖后重启），**不做自动探测**。
-4. 若 `upstream.dsh_gateway.api_key_file` 可读 → 自举上游凭据并拉模型目录。
-5. 若 sidecar 配置就绪 → 启动子进程；失败只记警告，贡献页显示不可用。
+4. 若 `sidecar` 就绪 → 启动子进程并让它在内部枚举 `lib/*-adapter.js`，把 adapter 报告的
+   模型目录写入本地缓存；枚举失败只记警告，不阻断启动。
+   （本版没有「上游自举凭据」这一步：`dsh_provider` 用的是贡献者自己的供应商登录态，
+   没有网关层的 key 需要从文件读入——见 §2.5 与 [../contributions/02-credentials.md](../contributions/02-credentials.md)。）
+5. 若 sidecar 起来了 → 贡献页可用；子进程崩溃只记警告并自动重拉，**不阻塞主进程**。
 
 **为什么切到公网是显式动作而不是自动探测**：自动探测（例如「发现公网网卡就绑它」）
 会让「我把服务暴露到了公网」变成一件管理员**没有做过的决定**。
@@ -313,13 +334,13 @@ services:
     volumes:
       - /etc/freerouter/config.yaml:/etc/freerouter/config.yaml:ro
       - freerouter-data:/var/lib/freerouter
-      # 上游 key 与 DSH 数据（只读）
+      # DSH 数据：provider 登录态与 providers-hub 安装目录（只读）
       - $HOME/.local/share/dsh:/dsh:ro
       # sidecar 代码与 providers-hub
       - /opt/freerouter/sidecar:/opt/freerouter/sidecar:ro
     environment:
       FR_DSH_HOME: /dsh
-      FR_UPSTREAM_DSH_GATEWAY_API_KEY_FILE: /dsh/openai-gateway/api-key
+      FR_UPSTREAM_DSH_PROVIDER_ALLOWLIST: trae,iflow
       FR_SIDECAR_HUB_PATH: /opt/freerouter/sidecar/node_modules/dsh-providers-hub
       FR_STORE_MASTER_KEY_FILE: /run/secrets/master.key
     secrets:
@@ -437,15 +458,15 @@ systemctl start freerouter
 
 # 5. 验证
 curl -s localhost:8080/readyz
-# 跑契约测试（锁 8326 的 4 个端点）
-go test ./internal/upstream/dshgateway/... -run TestContract
+# 跑契约测试（锁 sidecar 向主进程暴露的 IPC 方法集与事件帧形状）
+go test ./internal/upstream/dshprovider/... -run TestContract
 ```
 
 **迁移策略**：启动时自动执行，**迁移前自动备份一次**，迁移失败则回滚到
 上一版本并保留库不变。迁移只前进不回退（回退版本需手工恢复备份）。
 
-**为什么升级后必跑契约测试**：`dsh-providers-hub` 升级可能改变
-`/v1/models` 条目字段或 SSE 帧形状。契约测试把「上游变了」这件事
+**为什么升级后必跑契约测试**：`dsh-providers-hub` 升级可能改变 `lib/*-adapter.js`
+的导出形状、模型目录字段或流式事件帧。契约测试把「上游侧变了」这件事
 在升级窗口就暴露出来，而不是等用户报错。
 
 ---
@@ -455,7 +476,7 @@ go test ./internal/upstream/dshgateway/... -run TestContract
 | 现象 | 可能原因 | 检查 |
 |---|---|---|
 | 启动日志有「明文对外」警告 | 绑了非回环地址 + `tls.mode=off`（默认行为） | 要消除：配内置 TLS（`files`）或加反代；要把明文变成硬错误：`server.insecure_public_listen=deny` |
-| `/readyz` 红但 `/healthz` 绿 | DSH 没跑 / 8326 不通 | `curl 127.0.0.1:8326/v1/models` 带 Bearer |
+| `/readyz` 红但 `/healthz` 绿 | sidecar 没起或 adapter 枚举失败 | 看主进程日志里 `sidecar` 相关告警；手工跑 `node <sidecar.entry>` 看 stdout |
 | 请求随机失败、日志见 `http=000` | 上游偶发连接失败 | 看重试次数；检查连接池空闲上限 |
 | 流式输出变成一次性吐出 | 反代缓冲 | 反代加 `flush_interval -1` |
 | 429 但用户说没用多少 | 多租户共用 IP 且未配 `trusted_proxies` | 检查真实 IP 解析 |

@@ -49,8 +49,9 @@ IR、上游、sidecar、存储、运行时的细节分别在 [02-ir.md](02-ir.md
                      │
                      ▼
         L3 上游
-        ├── dshgateway   → 127.0.0.1:8326（providers-hub 的 OpenAI 兼容网关）
-        └── contributed  → 贡献者凭据直连
+        ├── dsh_provider → sidecar 直连 providers-hub adapter（官方额度池）
+        ├── contributed  → 贡献者凭据直连官方端点
+        └── compatible   → 标准 OpenAI / Anthropic 兼容端点（API Key）
 ```
 
 | 层 | 职责 | **明确不做** |
@@ -153,18 +154,19 @@ IR、上游、sidecar、存储、运行时的细节分别在 [02-ir.md](02-ir.md
 
 ## 5. L3：上游
 
-两类上游共用一套接口，差异只在"凭据从哪来、目标地址是什么"：
+三类上游共用一套接口，差异只在「凭据从哪来、目标地址是什么」：
 
 | kind | 目标 | 凭据来源 | 协议 |
 |---|---|---|---|
-| `dshgateway` | `127.0.0.1:8326` | `$DSH_HOME/openai-gateway/api-key`（平台自有，`owner_account_id = NULL`） | OpenAI Chat / Responses |
+| `dsh_provider` | **不经 HTTP 网关**——sidecar 进程内 `import()` providers-hub 的 provider adapter，直连官方端点 | 各 provider 的 OAuth 凭据（vendored `hub_path`） | adapter 原生（由 IR 映射） |
 | `contributed` | 贡献凭据自带的第三方端点 | `upstream_secrets`（AES-GCM）+ `upstream_credentials` | 视凭据而定，默认 OpenAI 兼容 |
+| `compatible` | 用户自建的 OpenAI / Anthropic 兼容端点 | `upstream_secrets`（API Key，`owner_account_id = NULL` 为平台自有） | OpenAI Chat / Anthropic Messages |
 
 细节见 [03-upstream.md](03-upstream.md)。这里只强调一条：
 
-> **唯一出口原则**：`dshgateway` 永远走 `127.0.0.1`，配置层拒绝任何通配或非回环地址。
-> 这条不是"建议"，是 providers-hub 的硬约束（它拒绝绑定 `0.0.0.0`），配置校验必须前置拒绝，
-> 否则失败会推迟到第一次真实请求，表现为令人误解的连接错误。
+> **凭据只出站不出户**：三种 kind 的凭据都只在服务端使用，永不下发给客户端；
+> `dsh_provider` 的凭据不经过任何 HTTP 中间层（没有本机网关这一跳），
+> 中间层越少，一份泄露的凭据能暴露的面越小。
 
 ---
 
@@ -206,7 +208,7 @@ IR、上游、sidecar、存储、运行时的细节分别在 [02-ir.md](02-ir.md
 6. 启动 HTTP 服务，`/healthz` 立刻可用，`/readyz` 视上游连通性。
 
 **为什么第 3 步要先于开公网**：初始化向导会给"第一个创建账户的人"`admin` 类。如果先开公网，
-从进程启动到管理员创建完成之间存在一个**无认证的提权窗口**，扫到端口的人可以直接成为管理员。
+从进程启动到管理员创建完成之间存在一个**无认证的管理员占用窗口**，扫到端口的人可以直接成为管理员。
 
 **为什么第 4 步失败不阻塞**：上游离线时管理面仍然必须可用——否则运营连"去检查 DSH"的
 告警横幅都看不到。第 4 步的重试是每 30s 一次的后台任务，不进入就绪判定之外的路径。

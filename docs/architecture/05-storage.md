@@ -99,7 +99,6 @@ CREATE TABLE sessions (
     token_hash     BLOB    NOT NULL,           -- SHA-256(token)，32 字节
     created_at     INTEGER NOT NULL,
     expires_at     INTEGER NOT NULL,
-    elevated_until INTEGER,                    -- 提权窗口（15 分钟，README 术语表）；只管非四项，四项每次抓 X-FR-StepUp
     ip             TEXT,
     ua             TEXT
 ) WITHOUT ROWID;
@@ -252,8 +251,11 @@ CREATE INDEX ix_real_models_upstream ON real_models(upstream_id);
 CREATE INDEX ix_real_models_status ON real_models(status);
 ```
 
-**`CHECK (replacement_model_id <> id)` 只能防自环**。多跳成环（A→B→C→A）需要在写入时做
-5 跳游走校验（替代链上限 5 跳，README 术语表），由应用层在同一个事务里完成。
+**`CHECK (replacement_model_id <> id)` 只能防自环**。多跳成环（A→B→C→A）不设跳数上限
+（2026-10-20 定案，旧的「5 跳」已废除），但两条业务规则让环无法形成：**弃用只能指向此刻
+`status = active` 的抽象模型**、**弃用了就不能再改回 active**。这两条把替代关系变成一条
+只出不进的有向路径，长度上限由「可用模型数量」天然封顶。
+写入时仍由应用层做一次 visited 游走作为**兜底**（防并发写入绕过规则），由它在同一个事务里完成。
 **为什么不在 DB 里用递归 CTE 触发器做**：SQLite 触发器里的递归查询代价高、调试难，
 而且"成环"是一个**业务判定**（要给出"哪一跳成环"的错误信息），DB 层给不出这个体验。
 
@@ -267,7 +269,7 @@ CREATE INDEX ix_real_models_status ON real_models(status);
 ```sql
 CREATE TABLE upstreams (
     id               INTEGER PRIMARY KEY,
-    kind             TEXT    NOT NULL CHECK (kind IN ('dshgateway','contributed')),
+    kind             TEXT    NOT NULL CHECK (kind IN ('dsh_provider','contributed','compatible')),
     name             TEXT    NOT NULL,
     base_url         TEXT    NOT NULL,
     secret_id        INTEGER REFERENCES upstream_secrets(id),
@@ -739,7 +741,7 @@ UPDATE group_quota_pools
 |---|---|---|
 | DB 快照 | 备份目录 | —— |
 | 主密钥 | 独立的密钥保管（不与备份同处） | 上游凭据全部作废，必须让贡献者重新提交 |
-| `$DSH_HOME/openai-gateway/api-key` | 本机 DSH | `dshgateway` 不可用，可重新引导 |
+| `sidecar.hub_path`（vendored providers-hub） | 部署包内 / npm 缓存 | `dsh_provider` 全部不可用，只能靠 `contributed` 与 `compatible` |
 
 **为什么值得接受"恢复更麻烦"**：反过来（主密钥随备份）意味着**任何拿到备份的人拿到全部
 凭据**，而备份会被复制到更多地方（异地、对象存储、开发机）。把两样东西分开放，

@@ -21,6 +21,10 @@ account {
   status,             -- pending / active / disabled / rejected / merged
   recovery_code_hash, -- contributor 无密码时的找回凭据
   created_at, last_login_at, note
+
+  -- 额度与速率（账户级，见第 1 节「额度在账户级」）：一个账户的所有 Key 共享同一份
+  quota_limit, quota_used, quota_unit,  -- unit ∈ { request, token, credit }
+  rpm_limit, tpm_limit, max_concurrency
 }
 
 account_class {
@@ -30,6 +34,43 @@ account_class {
 
 **为什么把类拆成独立表，而不是账户上的一个字段**：一个账户可同时挂多个类，单值字段只能表达"其中一个"；而且类的授予与撤销本身要单独进审计，独立行粒度最自然，也让"取并集"（见第 4 节）变成集合运算而不是字符串拼接。
 
+### 额度在账户级（不在 Key 上）
+
+额度与速率是**账户**的属性，不是 Key 的属性（2026-10-20 定案，见 [05-keys.md](05-keys.md#4-key-没有自己的额度)）。一个账户名下的所有 Key **共享同一份额度**。
+
+| 字段 | 计量维度 | 说明 |
+|---|---|---|
+| `quota_limit` / `quota_used` | `quota_unit` | 账户额度的上限与已用 |
+| `quota_unit` | — | **三种计量维度之一**：`request` / `token` / `credit` |
+| `rpm_limit` | 请求数 / 分钟 | 速率 |
+| `tpm_limit` | token / 分钟 | 速率 |
+| `max_concurrency` | 在途请求数 | 并发 |
+
+**三种计量维度**（可设一种，也可同时设多种；同时设则各自独立判定，哪个先到算哪个）：
+
+| 维度 | 单位 | 怎么算 |
+|---|---|---|
+| `request` | 次数 | 一次请求 = 1，与 token 无关 |
+| `token` | token 数 | `in_tokens + out_tokens` |
+| `credit` | Credits | 见下 |
+
+`credit` 以 `deepseek-flash` 为基准（乘数 = 1），其他模型按价格乘数放大：
+
+```
+credits = (in_tokens * in_multiplier + out_tokens * out_multiplier) / BASE
+```
+
+- 内置一份常见模型价格表，**表里没有的模型乘数默认 1**；管理员可在管理面手动调整任意模型的乘数，改动进审计。
+- 价格乘数表与「`price` 排序策略」共用同一份数据（见 [../models/03-strategy.md](../models/03-strategy.md)）。
+
+- **为什么额度落在账户而不是 Key**：否则"同一账户多开 10 把 Key"就等于额度翻 10 倍，账户级额度形同虚设。Key 只保留三件事：认证、模型白名单收窄、生命周期。
+- **为什么需要 `credit` 这一维**：`token` 维度把贵模型与便宜模型视为等价，一个用户改用最贵的模型，就能在同样的 token 额度内消耗掉几十倍的上游成本；`credit` 用价格乘数把"钱"折回来，让额度表达的是成本而不是字数。代价是维护一份价格表——而这份表本来就要为 `price` 排序策略准备，属于同一份数据。
+- **为什么维度可以多设且各自独立判定**：`request` 防高频小请求刷次数，`token` / `credit` 防单次超长请求，`max_concurrency` 防占用式刷——它们拦的是不同形状的滥用，用其中一个去兜另外两个，会让某一类滥用完全无约束。
+- **为什么额度字段允许为 0**：默认值必须是拒绝（PLAN 9.1）。
+
+> **待定**：`quota_limit` 与"日额度 / 月额度"的关系——本册按"`quota_limit` 是账户的总额度、日 / 月额度由组策略给上界"撰写，但总纲同时出现了这两种表述，需确认是否存在三层（总额度 / 周期额度 / Key 白名单）叠加。
+
+> **待定**：`BASE` 的取值（1 token 还是 1 万 token 为一个 credit），以及内置价格表的初始条目与更新来源。
 **不变式**（写入时校验）：
 
 1. `classes` **非空**。推导依据是总纲两条创建路径都至少给一类：注册默认给 `tenant`（PLAN 2.7），未登录贡献创建账户只给 `contributor`（PLAN 4.1）。零类账户没有意义，只会在判定链上留下空洞。
@@ -40,11 +81,11 @@ account_class {
 
 | 方案 | 形态 | 结论 |
 |---|---|---|
-| **A** | 单账户 + 权限类集合 + 类级提权 | **采用** |
+| **A** | 单账户 + 权限类集合 | **采用** |
 | B | 主体 + 多账户（按类各开一个账户，管理身份有完全独立的密码与会话） | 仅在出现第二个管理员时重评 |
 
 - **为什么选 A**：管理员就是**站长本人**，本站不存在"把管理权委托给第三方"的场景，因此不必用物理隔离（两个账户、两套密码）来约束管理员自己；一套身份、一条审计线、一次登录，实现面也更小。
-- **A 的唯一缺口与补法**：A 无法把三类的**认证强度**分档——同一套密码与会话同时守着管理面和调用面。这一缺口由**类级提权**补上：进管理面当场再验一次、有效期 15 分钟、四项危险操作每次重验（PLAN 2.5，见 [02-authn.md](02-authn.md) 第 6 节）。认证强度不再由"分开的账户"提供，而由"分开的验证动作"提供。
+- **A 的代价以及为什么可以接受**：A 无法把三类的**认证强度**分档——同一套密码与会话同时守着管理面和调用面。2026-10-20 定案**不再用类级提权去补这个缺口**：登录一次即持有该账户所有类的全部权限，没有"再验一次"的中间态。这个取舍的安全后果与替代手段见 [02-authn.md](02-authn.md#6-为什么不需要类级提权)——抵抗力全部落在**登录本身**（argon2id、退避与锁定）上，再叠加会话 24 小时过期 + 改密/禁用即吊销，以及危险操作的界面二次确认（后者防误点，不是认证）。
 - **何时重评 B**：若将来出现**第二个管理员**，或需要把管理权交出、交给别人保管，"管理员账户同时是租户"这个前提就不再成立，届时重评方案 B；重评时第 2 节推论 2（"`admin` 与 `tenant` 是两套账"）与第 3 节的隔离分析需要重做。
 
 ## 2. 三个权限类
@@ -53,7 +94,7 @@ account_class {
 
 | 权限类 | 管辖范围 | 需要它才能… | 它**不**提供什么 |
 |---|---|---|---|
-| `admin` | 全局配置、账户审批、组、抽象模型与弃用、上游目录与鉴定、审计 | 进管理后台（且需提权） | **不提供任何模型调用能力** |
+| `admin` | 全局配置、账户审批、组、抽象模型与弃用、上游目录与鉴定、审计 | 进管理后台 | **不提供任何模型调用能力** |
 | `tenant` | 自己名下的 API Key、额度、可访问模型、调用日志 | 调模型、建 Key | **不提供凭据能力** |
 | `contributor` | 自己名下的上游凭据、贡献记录、鉴定结果 | 贡献账号 / Key、看贡献与鉴定结果 | **不提供模型调用能力** |
 
@@ -72,7 +113,7 @@ account_class {
 |---|---|---|
 | `tenant` | 注册默认（PLAN 2.7）；审核通过时确认；管理员导入；管理员单独授予 | 名下 API Key 立即不可用（见 [05-keys.md](05-keys.md)） |
 | `contributor` | **贡献即得**，无需审核（PLAN 4.1）；未登录贡献时随账户创建 | 名下上游凭据不再满足"归属账户带 `contributor` 类"，必须处置（见 [../contributions/02-credentials.md](../contributions/02-credentials.md)） |
-| `admin` | 只能由现有 `admin` 类账户授予 | 会话的提权状态立即失效，管理端点不再可达 |
+| `admin` | 只能由现有 `admin` 类账户授予 | 该账户的会话全部吊销后管理端点不再可达（判定链实时读账户的类，见 [04-authz.md](04-authz.md#6-管理面鉴权顺序)） |
 
 **为什么 `contributor` 不需要审核而 `tenant` 需要**：`tenant` 是**取用**，消耗全站额度；`contributor` 是**供给**，供给越多池子越好。先收进来、再用鉴定与策略引擎筛（PLAN 4.4），比事前审核每一个贡献更划算，也避免审核队列成为供给瓶颈。
 
@@ -114,7 +155,7 @@ account_class {
 
 ### 维度四：审计分账
 
-- 每条记录带 `account_id + acting_class (+ elevated)`（PLAN 9.5、10）。
+- 每条记录带 `account_id + acting_class`（PLAN 9.5、10）。
 - 于是 "alice 以 `admin` 身份改配置" 与 "alice 以 `tenant` 身份调模型" 是两条永不混淆的线。
 - 为什么：这是隔离的**追责层**。隔离的价值只有在"出事时能说清是哪一重身份做的"时才成立；若审计只记 `account_id`，一个同时有 `admin` 与 `tenant` 的账户出问题，就无法判断是管理面失守还是 Key 泄露。
 
@@ -209,7 +250,7 @@ source.status                                →  merged
 | `pending` | `active` | 管理员批准 | **必须选组 + 配额**（PLAN 2.7） |
 | `pending` | `rejected` | 管理员拒绝 | 可填理由；理由进审计 |
 | `active` | `disabled` | 管理员 | 名下所有 Key **立即** 401（见 [04-authz.md](04-authz.md#5-禁用联动)）；吊销会话 |
-| `disabled` | `active` | 管理员 | 不自动恢复提权状态；恢复动作本身进审计 |
+| `disabled` | `active` | 管理员 | 名额恢复后名下 Key 重新可用；恢复动作本身进审计 |
 | `rejected` | `pending` | 管理员（允许复申时） | 需要显式动作，注册流程不自动复活 |
 | 任意（非 `merged`） | `merged` | 管理员 | 类取并集、资源改挂（见第 4 节） |
 
@@ -222,12 +263,12 @@ source.status                                →  merged
 | 实体 | 关系 | 约束来源 |
 |---|---|---|
 | `account_classes` | 一对多 | 一个账户可多类，集合非空 |
-| `sessions` | 一对多 | `elevated_until` 支撑类级提权（见 [02-authn.md](02-authn.md)） |
+| `sessions` | 一对多 | 会话默认 24 小时过期；改密 / 禁用即吊销（见 [02-authn.md](02-authn.md#5-会话管理)） |
 | `groups` / `group_members` | 多对多 | 组是批量控制单元，不是归属（见 [03-groups.md](03-groups.md)） |
 | `api_keys` | 一对多 | 归属账户必须带 `tenant` 类（见 [05-keys.md](05-keys.md)） |
 | `upstream_credentials` | 一对多 | 归属账户必须带 `contributor` 类，且 `UNIQUE(provider, external_id)` |
 | `requests` / `usage_daily` | 一对多 | 按 `account_id` 归属，含抽象 → 真实的解析链 |
-| `audit_log` | 一对多 | `account_id + acting_class + elevated` |
+| `audit_log` | 一对多 | `account_id + acting_class` |
 
 **账户之间没有任何边**（PLAN 14 反面验收）：没有上级、没有邀请、没有"团队成员"。
 
@@ -262,14 +303,21 @@ type Account struct {
     CreatedAt   time.Time
     LastLoginAt *time.Time
     Note        string
+    // 额度与速率（账户级）：一个账户的所有 Key 共享这份额度，见第 1 节。
+    QuotaLimit     int64
+    QuotaUsed      int64
+    QuotaUnit      string // request / token / credit
+    RPMLimit       *int
+    TPMLimit       *int
+    MaxConcurrency *int
 }
 
-// Subject 是判定链上的主体快照 = 账户 + 本次行为以哪个类进行 + 是否处于提权有效期。
-// 它不是一个新概念，就是 PLAN 第 10 章里 account_id + acting_class + elevated 的复合。
+// Subject 是判定链上的主体快照 = 账户 + 本次行为以哪个类进行。
+// 它不是一个新概念，就是 PLAN 第 10 章里 account_id + acting_class 的复合。
+// 2026-10-20 取消类级提权后，这里不再有"是否处于提权有效期"这一维。
 type Subject struct {
     AccountID   string
     ActingClass Class
-    Elevated    bool
 }
 
 type AccountService interface {
@@ -300,7 +348,7 @@ type AccountService interface {
 
 ## 9. 相关分册
 
-- 登录、会话、提权、OAuth 登录、恢复码 → [02-authn.md](02-authn.md)
+- 登录、会话、OAuth 登录、恢复码 → [02-authn.md](02-authn.md)
 - 组与合并语义 → [03-groups.md](03-groups.md)
 - 判定链与决策表 → [04-authz.md](04-authz.md)
 - Key 生命周期 → [05-keys.md](05-keys.md)
