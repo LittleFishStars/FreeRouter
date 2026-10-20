@@ -404,7 +404,7 @@ func (m *KeyManager) mustOwnKey(ctx context.Context, s Subject, keyID string) (*
 	return key, nil
 }
 
-// keyIDSequence 是进程内 ID 生成器的自增源。
+// newID 生成带类型前缀的随机 ID（key-xxxx / sess-xxxx）。
 //
 // 为什么 ID 不用数据库自增：本层不做持久化，而"先插库再回读 ID"会让
 // Create 变成两次往返。ID 只需要在库内唯一，不承担可读性。
@@ -415,4 +415,48 @@ func newID(kind string) string {
 		return fmt.Sprintf("%s-%d", kind, time.Now().UnixNano())
 	}
 	return kind + "-" + base62EncodeFixed(b[:])
+}
+
+// SetAllowlist 设置 Key 的模型白名单（只能收窄，不能放宽）。
+//
+// 规则链（05-keys.md §5 / 04-authz.md §2）：
+//  1. 白名单元素必须是**抽象模型**（真实模型名对租户不可见，出现在白名单里
+//     本身就是泄露；但本层拿不到真实模型目录——models 层的职责——
+//     所以只能校验「⊆ 组授权」：不在授权集里的名字无论是不是真实模型都会被拒，
+//     两个错误在判定上同形）；
+//  2. ⊆ (∪ 所属组的抽象模型)：放宽权是组策略（KeyAllowlistWiden）管的事，
+//     而它管的是「能否改自己白名单」的动作，不是「白名单可以超出组授权」；
+//     后者在数学上也无效果（最终可用 = 交集）；
+//  3. 写的是整表替换：收窄语义下「去掉一项」和「换成子集」是同一个动作，
+//     增量 add/remove 两个方法只会多两个错用面。
+func (m *KeyManager) SetAllowlist(ctx context.Context, s Subject, keyID string, abstractModelIDs []string) error {
+	if m.stores.Keys == nil || m.stores.Policies == nil {
+		return Errorf(CodeInternal, nil, "KeyManager 缺少存储/策略依赖")
+	}
+	if _, err := m.mustOwnKey(ctx, s, keyID); err != nil {
+		return err
+	}
+	groups, err := m.stores.Policies.GroupsForAccount(ctx, s.AccountID)
+	if err != nil {
+		return err
+	}
+	authorized := make(map[string]bool)
+	for _, g := range groups {
+		for _, mdl := range g.Models {
+			authorized[mdl] = true
+		}
+	}
+	seen := make(map[string]bool, len(abstractModelIDs))
+	for _, mdl := range abstractModelIDs {
+		if mdl == "" || seen[mdl] {
+			return Errorf(CodeInvalidRequest, nil, "白名单含空项或重复项")
+		}
+		seen[mdl] = true
+		if !authorized[mdl] {
+			// 与「模型不存在」同形的 403：白名单是本人动作，超集拒绝不需要
+			// 隐藏存在性（他本来就能通过 EffectiveModels 看到授权集）。
+			return Errorf(CodeForbidden, nil, "白名单只能收窄：模型 %q 不在组授权内", mdl)
+		}
+	}
+	return m.stores.Keys.SetKeyAllowlist(ctx, keyID, abstractModelIDs)
 }
