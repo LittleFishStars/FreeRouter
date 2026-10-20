@@ -1,0 +1,88 @@
+# FreeRouter 示例配置
+#
+# 用途：`make print-config` / `make check-config` / 本地启动的默认配置文件。
+# 每个键的完整语义见 docs/ops/02-deploy.md 第 2 节「配置项全表」——
+# 那份表是唯一事实源，本文件只是它的一个可用取值。
+#
+# 环境变量覆盖：`FR_` + 路径大写、`.` 换 `_`。
+# 例：FR_SERVER_LISTEN=0.0.0.0:8080 / FR_LOG_LEVEL=debug / FR_LIMITS_DEFAULT_RPM=120
+
+server:
+  # 默认只绑回环。要对外提供服务改成 "0.0.0.0:8080"，
+  # 并请先想清楚 server.insecure_public_listen 要 warn 还是 deny。
+  listen: "127.0.0.1:8080"
+  # 对外可达地址，用于生成回调链接与管理界面里的展示；留空表示「按请求 Host 推断」。
+  public_url: ""
+  # 非回环监听且未启用 TLS 时的策略：warn 只告警，deny 直接拒绝启动。
+  # 默认 warn，因为本项目默认部署形态就是「本机 IP + 端口明文直连」。
+  insecure_public_listen: "warn"
+  # 自己是否在反向代理之后。为 true 时才按 trusted_proxies 采信 X-Forwarded-For。
+  behind_proxy: false
+  read_header_timeout: "10s"
+  # 必须不大于上游的空闲超时，否则会出现「我们还在等、上游已经关连接」。
+  idle_timeout: "120s"
+  max_body_bytes: 33554432 # 32 MiB
+  shutdown_grace: "30s"
+
+tls:
+  # off | files。acme 本版不支持（对外域名未定），配置校验会直接拒绝。
+  mode: "off"
+  cert_file: ""
+  key_file: ""
+
+security:
+  # 只有直连对端落在这些网段内，才采信 X-Forwarded-For。
+  trusted_proxies: []
+  password_min_length: 12
+  # 取消类级提权后，登录一次即获得该账户全部权限类的权限，会话时长是唯一的时效边界。
+  session_ttl: "24h"
+  login_max_failures: 5
+  login_lockout: "15m"
+  registration_enabled: true
+  # 默认需要管理员批准：开放注册但由管理员放行，避免任何人自助拿到租户身份。
+  registration_requires_approval: true
+
+limits:
+  # 0 表示「不可用」——新建账户默认没有任何额度，必须由管理员显式授权。
+  default_daily_tokens: 0
+  default_monthly_tokens: 0
+  default_rpm: 60
+  default_tpm: 0 # 0 表示不限制 token 速率
+  default_max_concurrency: 2
+  default_keys_per_account: 10
+  global_daily_tokens: 0 # 0 表示不做全局预算熔断
+  global_rpm: 0
+  global_concurrency: 200
+  queue_timeout: "5s"
+
+upstream:
+  relay:
+    enabled: true
+    timeout: "300s"
+    connect_timeout: "5s"
+    max_retries: 2
+    model_refresh_interval: "10m"
+    aggregate_excluded: true
+    allowlist: []
+
+sidecar:
+  enabled: true
+  node_path: "node"
+  entry: "sidecar/index.mjs"
+  # 固定 stdio + NDJSON，不提供 socket / tcp 选项（docs/architecture/04-sidecar.md 2.1）。
+  ipc: "stdio"
+  hub_path: ""
+  startup_timeout: "20s"
+
+store:
+  path: "data/freerouter.db"
+  # 主密钥与库分开存放，权限 0600，且永不入库。
+  master_key_file: ""
+  busy_timeout: "5s"
+  backup_dir: "data/backups"
+  audit_retain_days: 0 # 0 表示永久保留
+  request_log_retain_days: 30
+
+log:
+  level: "info" # debug | info | warn | error
+  format: "text" # text | json

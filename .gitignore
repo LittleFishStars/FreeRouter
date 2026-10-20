@@ -9,3 +9,23 @@ data/
 .next/
 dist/
 tmp/
+
+# --- 构建产物 ---
+/bin/
+/dist/
+
+# --- Go 缓存：沙箱内 ~/go 只读，缓存必须落在工作区 ---
+/.cache/
+
+# --- git worktree：并行开发的工作目录，各自的检出不入库 ---
+/.worktrees/
+
+# --- 前端 ---
+/web/node_modules/
+/web/dist/
+
+# --- 编辑器 ---
+.idea/
+.vscode/
+*.swp
+*~
