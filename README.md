@@ -1,19 +1,9 @@
 # FreeRouter
 
-**自由路由** · **免费路由**
-
 > 把各大厂 AI Agent 自带的那份免费额度聚成一个池子，让用不完的人不再浪费、不够用的人有处可借。
 
 `Free` 是个双关：**自由**——路由策略自己定，额度怎么分、谁能用哪个模型由你决定，不被单一供应商锁定；
 **免费**——上游不花钱，接的是各大厂 Agent 官方免费额度的反代，而不是买 API 额度转卖。
-
-> **English** — FreeRouter pools the *free tiers* that major AI coding agents hand to every
-> user and routes them out as one shared endpoint. The problem is distribution, not access:
-> everyone gets the same free quota, yet consumption is wildly uneven — heavy users run dry
-> while light users watch their quota expire unused. *Free* as in **freedom** (you own the
-> routing and the quotas) and *free* as in **the upstream costs nothing** (reverse-proxying
-> official agent free tiers instead of buying credits). Being a full-featured relay is
-> secondary.
 
 ---
 
@@ -26,7 +16,6 @@
 - [与相邻项目的关系](#与相邻项目的关系)
 - [项目状态](#项目状态)
 - [文档](#文档)
-- [关于名字](#关于名字)
 - [许可证](#许可证)
 
 ---
@@ -190,19 +179,6 @@ FreeRouter 就是在额度与人之间加的一层：**下面反向代理各大�
 
 ---
 
-## 关于名字
-
-`FreeRouter` 里的 `Free` 同时是**自由**与**免费**：
-- **自由路由** —— 路由策略是你写的，模型池是你攒的，用户看到什么、能用什么由你决定。
-  不把控制权交给任何一个供应商。
-- **免费路由** —— 上游是各大厂 Agent 免费送给每个用户的额度，不花一分钱；
-  FreeRouter 把这份“人均一份”的额度变成可被复用、被分享、被计量的共享资源，
-  而不是一个个锁在账号里的孤岛。
-
-中文社区里两个读法都成立，这也是我们把它写成「自由路由 / 免费路由」的原因。
-
----
-
 ## 免责声明
 
 FreeRouter 的核心用法是把各大厂 Agent 的个人免费额度**共享**给别人用，
@@ -213,4 +189,4 @@ FreeRouter 的核心用法是把各大厂 Agent 的个人免费额度**共享**�
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 LittleFishStars
+[MIT](LICENSE)
