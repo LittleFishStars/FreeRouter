@@ -40,6 +40,18 @@ const (
 	CapReasoningEffort   Capability = "reasoning_effort"    // 支持思考档位
 	CapStreamUsage       Capability = "stream_usage"        // 流式响应里能给出 usage
 	CapSystemInMessages  Capability = "system_in_messages"  // 系统提示放在 messages 里
+
+	// 以下四项**故意不给 IR 提供表达位**：它们会改变生成行为，却没有跨协议的公共语义。
+	// 与其在 IR 里堆各家方言字段（§1.2「不做超集」），不如在入站解析时显式拒绝。
+	CapMultipleChoices  Capability = "multiple_choices" // n>1：一次要多条候选回复
+	CapPresencePenalty  Capability = "presence_penalty"
+	CapFrequencyPenalty Capability = "frequency_penalty"
+	CapLogprobs         Capability = "logprobs"
+
+	// CapImageOutput 与 CapImageToolResult 用于**响应方向**：模型产出图片、工具结果带图片。
+	// 请求方向的能力复核拦不住它们，必须在编码响应时再查一次。
+	CapImageOutput     Capability = "image_output"
+	CapImageToolResult Capability = "image_tool_result"
 )
 
 // Capabilities 是一个协议适配器的能力自省结果。

@@ -40,6 +40,12 @@ type Event struct {
 	Call  *ToolCallPart
 	Usage *Usage
 	Err   *Error
+	// Stop 只在 EvDone 上有意义：它把结束原因带过解码→编码边界。
+	// 为什么需要它：§5.1 的事件联合体里没有 stop 事件，而 OpenAI 的 finish_reason 与
+	// Anthropic 的 stop_reason 都是流末帧的必填字段。若不在 EvDone 上携带，编码器就只能猜
+	// （“有工具调用就是 tool_use”），会把“模型说完了”与“被长度截断”混为一谈。
+	// 这是对 §5.1 的**追加**（§10 允许只加不改），已在回报中作为规格缺口提出。
+	Stop StopReason
 }
 
 // Visible 判定该事件是否属于"已吐可见内容"。
