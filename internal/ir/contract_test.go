@@ -340,7 +340,8 @@ func TestContractOpenAIStreamEncodeGolden(t *testing.T) {
 	a := openai.Adapter()
 	given := unmarshalEvents(t, readGolden(t, "openai/stream_encode.given.json"))
 	var buf bytes.Buffer
-	w := a.NewStreamWriter(&buf, ir.EncodeOptions{UpstreamModel: "gpt-test", RequestID: "req_test"})
+	// CreatedAt 注入固定值：未注入时编码器兜底取当下，golden 会变成时间依赖而不可复现。
+	w := a.NewStreamWriter(&buf, ir.EncodeOptions{UpstreamModel: "gpt-test", RequestID: "req_test", CreatedAt: 1700000000})
 	for _, ev := range given {
 		if err := w.Write(ev); err != nil {
 			t.Fatalf("写事件 %s: %v", ev.Type, err)

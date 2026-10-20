@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
 )
@@ -38,8 +39,18 @@ func (adapter) NewStreamWriter(w io.Writer, opt ir.EncodeOptions) ir.StreamWrite
 		st:       &ir.EncoderState{},
 		openTool: -1,
 		model:    opt.UpstreamModel,
-		created:  opt.CreatedAt,
+		created:  orNow(opt.CreatedAt),
 	}
+}
+
+// orNow 把"路由层没注入时间戳"（CreatedAt==0）归一为当下：与非流式 EncodeResponse
+// 的兜底策略一致——同一个字段在两条路径上不能一个填 now 一个输出 0（0 会被
+// 客户端渲染成 1970）。测试注入固定值保 golden 稳定；真实调用由这里兜底。
+func orNow(created int64) int64 {
+	if created == 0 {
+		return time.Now().Unix()
+	}
+	return created
 }
 
 func (s *streamWriter) State() *ir.EncoderState { return s.st }
