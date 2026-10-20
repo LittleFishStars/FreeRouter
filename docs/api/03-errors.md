@@ -95,6 +95,7 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 | `upstream_timeout` | 504 | `service_unavailable_error` | 上游未在超时内响应 | 可重试；退避 |
 | `upstream_error` | 502 | `service_unavailable_error` | 上游返回了无法映射为上述码的失败 | 可重试；退避 |
 | `no_candidate` | 503 | `service_unavailable_error` | 策略引擎过滤后无候选可用 | 可重试；退避 |
+| `overloaded` | 503 | `service_unavailable_error` | 进程级并发闸门（`global_concurrency`）排队超 `queue_timeout`（2026-10-21 定案） | **必须**按 `Retry-After` 退避重试；服务侧过载不是用户越限，找管理员无用 |
 | `internal_error` | 500 | `internal_error` | 未预期故障 | 可重试一次；持续失败报请求 ID |
 
 **为什么 `model_not_found` 同时覆盖"不存在"与"请求了真实模型名"**： 总纲 3.1 明确"客户端直接请求真实模型名 → 404（不泄露池结构）"。 如果真实模型名返回一个不同的码（例如 `real_model_not_exposed`）， 这个码本身就确认了"这个名字存在，只是不给你"。同一个码让两种情况不可区分。
@@ -104,6 +105,8 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 **为什么 `quota_exceeded` 与 `rate_limited` 都用 429**：两者都是 "你撞到了使用上限"，且都需要"等"，因此状态码层面不必分开。区分它们的信息在 `code` 里：`rate_limited` 是**瞬时**的（令牌桶几十秒内回填，带上 `Retry-After` 后重试是正解），`quota_exceeded` 是**周期性**的（等日 / 月重置，或请管理员调高额度）。**为什么仍然保留两个码而不合并**：客户端的动作不同——对 `rate_limited` 无脑退避重试是对的，对 `quota_exceeded` 无脑重试只是在浪费请求，正解是告知用户、走额度调整。这正是 3.4 第一条分界（动作不同就拆）。
 
 **为什么 `no_candidate` 用 503 而不是 404**：总纲 3.6 明确 "无候选可用返回 503 + 专用错误码（与「模型不存在」404 区分）"。 从客户端视角，"这个模型现在没资源"与"没有这个模型"会导致完全不同的动作： 前者重试，后者改代码。
+
+**为什么全局闸排队超时新增 `overloaded` 而不是复用 429 `rate_limited`（2026-10-21 定案）**：两者归因不同——`rate_limited` 是"你（账户/Key）超了上限"，客户端动作是降速或请管理员调额；`overloaded` 是"进程级闸门饱和，与你是谁无关"，重试时机由服务端用 `Retry-After`（= queue_timeout）给出确定性承诺。混进 429 会让按码运营的告警（"rate_limited 上涨说明有人在刷"）被容量问题污染；混进 `no_candidate` 则抹掉"容量 vs 候选"的排障分界（PLAN D11 三态原则同源）。
 
 ### 3.2 控制台面与账户自助
 
@@ -167,7 +170,7 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 | 429 | 速率或额度受限 | `rate_limited`、`quota_exceeded`（账户级，三计量维度） 、`pool_exhausted`（组共享池）、`too_many_attempts` |
 | 500 | 服务端未预期故障 | `internal_error` |
 | 502 | 上游不可用或返回了坏响应 | `upstream_unavailable`、`upstream_error` |
-| 503 | 服务侧暂时无资源 | `no_candidate` |
+| 503 | 服务侧暂时无资源 | `no_candidate`、`overloaded` |
 | 504 | 上游超时 | `upstream_timeout` |
 
 **为什么 405 与 415 复用 `invalid_request` 而不新增码**：客户端 对这两者的动作与 400 完全相同（改请求）。为它们新增码违反了 3.4 的第一条分界——动作相同时不该拆。
@@ -208,6 +211,7 @@ Retry-After: 30
 | `pool_exhausted` | 有值，指向**池**的重置时刻（`period_anchor` + 1 日 / 1 月） | 与账户额度不同但同样可计算 |
 | `quota_exceeded`（全局预算熔断） | 省略 | 熔断解除依赖人工，给一个数字是误导 |
 | `no_candidate` | 可选 | 候选恢复时间不可预测 |
+| `overloaded` | **必有**，= `queue_timeout` 秒数 | 闸门排队超时的承诺时刻就是超时窗口本身，确定可算（2026-10-21 定案） |
 | `upstream_unavailable` / `upstream_timeout` | 可选 | 上游恢复时间不可预测 |
 
 **为什么允许"有时没有 `Retry-After`"**：给一个编造的数字 会让守规矩的客户端在错误的时刻重试。宁可让它自行退避。
@@ -293,7 +297,7 @@ data: [DONE]
 
 | 分类 | 码 | 客户端做法 |
 |---|---|---|
-| 可重试（带退避） | `rate_limited`、`no_candidate`、`upstream_*`、`internal_error` | 指数退避；有 `Retry-After` 时以它为准。**注意 `rate_limited` 是速率、`quota_exceeded` 是额度**，两者虽然都是 429，但前者的正确反应是"慢一点"，后者是"等它重置" |
+| 可重试（带退避） | `rate_limited`、`no_candidate`、`overloaded`、`upstream_*`、`internal_error` | 指数退避；有 `Retry-After` 时以它为准。**注意 `rate_limited` 是速率、`quota_exceeded` 是额度、`overloaded` 是服务容量**，三者动作各不同：慢一点 / 等重置 / 按承诺时刻重试 |
 | 不可重试（等重置或等管理员） | `pool_exhausted`、`quota_exceeded` | **换 Key 无效**（额度挂在账户上）；等重置或请管理员调高 |
 | 不可重试 | `invalid_api_key`、`invalid_request`、`capability_unsupported`、`request_too_large`、`model_not_found`、`model_retired` | 修改请求或配置后重新发起 |
 | 需人工介入 | `forbidden` | 去申请对应权限类（这是权限类的问题，不是认证的问题） |

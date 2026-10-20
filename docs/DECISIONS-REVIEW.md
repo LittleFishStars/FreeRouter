@@ -410,7 +410,7 @@
 | 7.17 | CORS 默认关闭、禁 `*` 与凭据同现 | `01-security.md:72-73` |
 | 7.18 | 服务器 banner 不泄露版本号 | `01-security.md:75` |
 | 7.19 | 会话 `session_ttl = 12h` | `02-deploy.md:144` `[无理由]` |
-| 7.20 | 登录 `max_failures = 5` / `lockout = 15m` | `02-deploy.md:146-147` `[无理由]` |
+| 7.20 | 登录锁定：账户窗口内连续 **5 次**失败 → 锁 **15 分钟**（2026-10-21 定案：与 `security.login_max_failures/lockout` 默认值统一，02-authn 旧值 10 废除；理由见 `security/02-authn.md` 锁定阈值表）；IP 维度 **50 次**（分册原则保留：显著高于账户维度，覆盖共享出口） | `02-deploy.md:146-147`、`security/02-authn.md` 锁定阈值表 |
 | 7.21 | 注册两个独立开关 `registration_enabled` 与 `registration_requires_approval` | `02-deploy.md:148-149` |
 | 7.22 | ~~`0` 有两种语义~~ → **已被 2026-10-20 用户定案推翻**：额度类 `0` = 不可用；速率类改哨兵 **-1 = 不限、0 = 全拒**（`default_tpm` 出厂默认 -1）；仅全局熔断保留「0 = 不熔断」（全站开关不是账户限流） | `02-deploy.md` §2.4、`security/03-groups.md` 第 3 节 |
 | 7.23 | `idle_timeout = 120s`；`read_header_timeout = 10s`；`shutdown_grace = 30s` | `02-deploy.md:93-94` |
