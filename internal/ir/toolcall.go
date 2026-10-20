@@ -157,20 +157,23 @@ func (r *ToolCallReassembler) Accept(f Fragment) ([]Event, error) {
 	var events []Event
 	if !b.Started && b.ID != "" && b.Name != "" {
 		b.Started = true
+		// start 必须携带已缓冲的参数片段（§6.2）：首片无 id 时参数先到了缓冲区，
+		// 若 start 不带，等拿到 id 后补发的 start 会让客户端丢掉前一段参数。
 		events = append(events, Event{Type: EvToolCallStart, Index: b.Index, Call: &ToolCallPart{
-			Idx: b.Index, ID: b.ID, Name: b.Name, Partial: true,
+			Idx: b.Index, ID: b.ID, Name: b.Name, Arguments: b.Arguments.String(), Partial: true,
 		}})
 	}
 
 	if f.Arguments != "" {
 		b.Bytes += len(f.Arguments)
+		// 参数始终进缓冲（started 前后都要）：end 事件要交付**完整**参数（golden 实测：
+		// 只在未开始时进缓冲，end 会拿到截断的 `{"ci`——下游把 end 当权威参数读的场景
+		// 会拿到坏 JSON）。start 交付的是前缀、delta 交付的是片段，end 交付的是全量。
+		b.Arguments.WriteString(f.Arguments)
 		if b.Started {
 			events = append(events, Event{Type: EvToolCallDelta, Index: b.Index, Text: f.Arguments, Call: &ToolCallPart{
 				Idx: b.Index, ID: b.ID, Name: b.Name, Arguments: f.Arguments, Partial: true,
 			}})
-		} else {
-			// 未发出 start 时也要把参数留在缓冲区，否则 flush 时参数会丢——那就是静默降级。
-			b.Arguments.WriteString(f.Arguments)
 		}
 	}
 

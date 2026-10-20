@@ -94,15 +94,18 @@ type tool struct {
 
 // response 是非流式响应体。
 type response struct {
-	ID           string         `json:"id"`
-	Type         string         `json:"type"`
-	Role         string         `json:"role"`
-	Model        string         `json:"model"`
-	Content      []contentBlock `json:"content"`
-	StopReason   string         `json:"stop_reason"`
-	StopSequence *string        `json:"stop_sequence"`
-	Usage        *usage         `json:"usage,omitempty"`
-	Error        *errorBody     `json:"error,omitempty"`
+	ID      string         `json:"id"`
+	Type    string         `json:"type"`
+	Role    string         `json:"role"`
+	Model   string         `json:"model"`
+	Content []contentBlock `json:"content"`
+	// stop_reason 对非流响应始终必填（入站客户端靠它判结束原因），但 message_start 壳帧里
+	// 它是 null（01-inbound.md §6.3 示例）；指针让两种形状共用一个结构：空字符串在协议里
+	// 是非法枚举值，null 才是合法的"尚未知道"。
+	StopReason   *string    `json:"stop_reason"`
+	StopSequence *string    `json:"stop_sequence"`
+	Usage        *usage     `json:"usage,omitempty"`
+	Error        *errorBody `json:"error,omitempty"`
 }
 
 type usage struct {
@@ -115,6 +118,9 @@ type usage struct {
 type errorBody struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+	// Code 是我们自己的细粒度标识（docs/api/03-errors.md §2.2：Anthropic 原生协议没有，
+	// 带上它两边才能共用同一套排障语言）；type 只填 §2.4 的八值粗枚举。
+	Code string `json:"code,omitempty"`
 }
 
 // stopReasonToStop 把 Anthropic 的 stop_reason 归一到 IR。

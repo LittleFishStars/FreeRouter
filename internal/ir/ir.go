@@ -303,6 +303,10 @@ type Response struct {
 	Parts []Part
 	Stop  StopReason
 	Usage Usage
+	// CreatedAt 是上游报告的生成时间（Unix 秒），0 = 上游没给。OpenAI 的 created
+	// 字段存在而 Anthropic 没有；解码读入、编码原样写出，跨协议转发时缺失就是 0
+	// （编码器省略而不是补 1970——那是虚报）。§10 追加。
+	CreatedAt int64
 }
 
 // UsageSource 标明用量数字的来源。

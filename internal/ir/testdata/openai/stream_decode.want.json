@@ -1,0 +1,53 @@
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "text_delta",
+    "text": "你"
+  },
+  {
+    "type": "text_delta",
+    "text": "好"
+  },
+  {
+    "type": "tool_call_start",
+    "call": {
+      "id": "call_1",
+      "name": "get_weather",
+      "arguments": "{\"ci",
+      "partial": true
+    }
+  },
+  {
+    "type": "tool_call_delta",
+    "text": "ty\":\"北京\"}",
+    "call": {
+      "id": "call_1",
+      "name": "get_weather",
+      "arguments": "ty\":\"北京\"}",
+      "partial": true
+    }
+  },
+  {
+    "type": "tool_call_end",
+    "call": {
+      "id": "call_1",
+      "name": "get_weather",
+      "arguments": "{\"city\":\"北京\"}",
+      "partial": true
+    }
+  },
+  {
+    "type": "usage",
+    "usage": {
+      "input": 9,
+      "output": 4,
+      "source": "upstream"
+    }
+  },
+  {
+    "type": "done",
+    "stop": "tool_use"
+  }
+]

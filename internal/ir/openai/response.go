@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
 )
@@ -17,7 +18,7 @@ func (adapter) DecodeResponse(body []byte) (*ir.Response, error) {
 		return nil, &ir.InvalidRequestError{Param: "choices", Detail: "响应里没有 choices"}
 	}
 	// n>1 在入站已被拒绝（IR 只表示单条）；这里若上游仍给了多条，取第一条并忠实告知。
-	resp := &ir.Response{ID: raw.ID, Model: raw.Model}
+	resp := &ir.Response{ID: raw.ID, Model: raw.Model, CreatedAt: raw.Created}
 	c := raw.Choices[0]
 	if c.Message != nil {
 		parts, err := decodeAssistantMessage(*c.Message)
@@ -112,8 +113,15 @@ func (adapter) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		ID:      resp.ID,
 		Object:  "chat.completion",
 		Model:   resp.Model,
+		Created: resp.CreatedAt,
 		Choices: []choice{{Index: 0, Message: &msg, FinishReason: &finish}},
 		Usage:   encodeUsage(resp.Usage),
+	}
+	if out.Created == 0 {
+		// 上游没报 created（或转发自 Anthropic——该协议无此字段）：填当下而不是留 0。
+		// SDK 把 created 当必填解析，缺字段直接报错、0 渲染成 1970，两种都不可用；
+		// "完成时刻"是我们确实知道的唯一诚实时间。
+		out.Created = time.Now().Unix()
 	}
 	if out.ID == "" {
 		out.ID = "chatcmpl-freerouter"

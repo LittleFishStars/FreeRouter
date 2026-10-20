@@ -14,7 +14,12 @@ func (adapter) DecodeResponse(body []byte) (*ir.Response, error) {
 	}
 	// Anthropic 用 200 + error 体外带内错的情况极少，但兼容层存在：先判 error 字段。
 	if raw.Error != nil {
-		return nil, &ir.Error{Code: raw.Error.Type, Message: raw.Error.Message}
+		// 同流式解码：细码优先，只有粗 type 时反查归一到细码域。
+		code := raw.Error.Code
+		if code == "" {
+			code = ir.ErrorTypeToCode(raw.Error.Type)
+		}
+		return nil, &ir.Error{Code: code, Message: raw.Error.Message}
 	}
 	resp := &ir.Response{ID: raw.ID, Model: raw.Model}
 	parts := make([]ir.Part, 0, len(raw.Content))
@@ -28,7 +33,13 @@ func (adapter) DecodeResponse(body []byte) (*ir.Response, error) {
 		}
 	}
 	resp.Parts = parts
-	stop, _ := stopReasonToStop(raw.StopReason)
+	// 指针 nil = 字段缺失（旧/异常上游）：按 StopUnspecified 走，与空字符串同归，
+	// 但保留"是否报过"的区分留给未来需求。
+	reason := ""
+	if raw.StopReason != nil {
+		reason = *raw.StopReason
+	}
+	stop, _ := stopReasonToStop(reason)
 	resp.Stop = stop
 	if raw.Usage != nil {
 		resp.Usage = decodeUsage(raw.Usage)
@@ -75,7 +86,7 @@ func (adapter) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		Role:       "assistant",
 		Model:      resp.Model,
 		Content:    blocks,
-		StopReason: stopToStopReason(resp.Stop),
+		StopReason: ir.Ptr(stopToStopReason(resp.Stop)),
 		Usage:      encodeUsage(resp.Usage),
 	}
 	if out.ID == "" {

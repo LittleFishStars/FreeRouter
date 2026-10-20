@@ -27,6 +27,10 @@ type EncodeOptions struct {
 	// 字段，而 IR 的事件联合体里没有 stop 事件（§5.1）。让编码器去猜（“有工具调用就是 tool_use”）
 	// 会把“模型真的说完了”与“被长度截断”混为一谈，而这两者在计费与重试决策上不同。
 	Stop StopReason
+	// CreatedAt 是本次生成的 Unix 秒时间戳，由路由层注入；0 时编码器自己取时钟。
+	// 为什么给注入点而不是直接 time.Now()：契约 golden 必须逐字节稳定，而时间戳
+	// 每跳都变；时钟属于运行时关注点，IR 层只消费不归因。
+	CreatedAt int64
 }
 
 // DecodeOptions 是解码上游响应时的上下文。

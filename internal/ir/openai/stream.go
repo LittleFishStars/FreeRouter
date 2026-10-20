@@ -27,6 +27,7 @@ type streamWriter struct {
 	closed    bool
 	stop      ir.StopReason
 	startedID string // 首个 chunk 生成的响应 id，后续 chunk 复用
+	created   int64  // 本次响应的生成时间，所有 chunk 共享（协议语义：同一次生成同一个 created）
 }
 
 // NewStreamWriter 构造流式编码器。
@@ -37,6 +38,7 @@ func (adapter) NewStreamWriter(w io.Writer, opt ir.EncodeOptions) ir.StreamWrite
 		st:       &ir.EncoderState{},
 		openTool: -1,
 		model:    opt.UpstreamModel,
+		created:  opt.CreatedAt,
 	}
 }
 
@@ -110,7 +112,7 @@ func (s *streamWriter) Write(ev ir.Event) error {
 		return s.writeFrame(chunk{
 			ID:      s.chunkID(),
 			Object:  "chat.completion.chunk",
-			Created: 0,
+			Created: s.created,
 			Model:   s.model,
 			Choices: []chunkChoice{},
 			Usage:   encodeUsage(*ev.Usage),
@@ -122,7 +124,9 @@ func (s *streamWriter) Write(ev ir.Event) error {
 		}
 		body := errorEnvelope{}
 		body.Error.Message = ev.Err.Message
-		body.Error.Type = ev.Err.Code
+		// type 必须是 §2.4 的八值粗枚举（SDK 按它分支），细码留在 code 字段——
+		// 把 capability_unsupported 之类塞进 type 会让所有 SDK 落到兜底分支。
+		body.Error.Type = ir.CodeToErrorType(ev.Err.Code)
 		body.Error.Code = ev.Err.Code
 		b, err := json.Marshal(body)
 		if err != nil {
@@ -162,6 +166,7 @@ func (s *streamWriter) writeChunk(d delta, finish *string) error {
 		ID:      s.chunkID(),
 		Object:  "chat.completion.chunk",
 		Model:   s.model,
+		Created: s.created,
 		Choices: []chunkChoice{{Index: 0, Delta: &d, FinishReason: finish}},
 	})
 }

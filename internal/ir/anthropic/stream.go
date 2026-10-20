@@ -39,7 +39,9 @@ type streamFrame struct {
 // 外加 message_delta 的 stop_reason。signature 与 thinking 同块出现
 // （Anthropic 用它回传思考签名），所以放同一结构。
 type streamDelta struct {
-	Type         string  `json:"type"`
+	// omitempty：content_block_delta 路径永远显式设 Type；message_delta 的 delta 里
+	// 协议没有 type 字段（01-inbound.md §6.3 示例），空串会编出非法形状。
+	Type         string  `json:"type,omitempty"`
 	Text         string  `json:"text,omitempty"`
 	Thinking     string  `json:"thinking,omitempty"`
 	Signature    string  `json:"signature,omitempty"`
@@ -194,7 +196,9 @@ func (s *streamWriter) Write(ev ir.Event) error {
 		if ev.Err == nil {
 			return nil
 		}
-		f := streamFrame{Type: string(evError), Error: &errorBody{Type: ev.Err.Code, Message: ev.Err.Message}}
+		// type 查表填 §2.4 粗枚举，细码走 code 扩展字段（与 openai 侧共用同一张表，不各自 switch）。
+		f := streamFrame{Type: string(evError), Error: &errorBody{
+			Type: ir.CodeToErrorType(ev.Err.Code), Code: ev.Err.Code, Message: ev.Err.Message}}
 		s.st.MarkWritten(ev)
 		return s.writeFrame(evError, f)
 
@@ -210,6 +214,8 @@ func (s *streamWriter) Write(ev ir.Event) error {
 func (s *streamWriter) writeMessageStart() error {
 	f := streamFrame{Type: string(evMessageStart), Message: &response{
 		ID: s.id(), Type: "message", Role: "assistant", Model: s.model,
+		// content 必须是空数组而不是 null：协议客户端按数组遍历，null 会直接崩。
+		Content: []contentBlock{},
 	}}
 	// I1：start 是协议壳、不算可见内容；MarkWritten 内部按 Visible() 区分。
 	s.st.MarkWritten(ir.Event{Type: ir.EvStart})
@@ -514,8 +520,13 @@ func (s *streamReader) Next() (ir.Event, error) {
 
 		case evError:
 			if f.Error != nil {
+				// 细码优先：我们自己的错误体带 code；上游原生的只有粗 type，反查归一。
+				code := f.Error.Code
+				if code == "" {
+					code = ir.ErrorTypeToCode(f.Error.Type)
+				}
 				s.pending = append(s.pending, ir.Event{Type: ir.EvError,
-					Err: &ir.Error{Code: f.Error.Type, Message: f.Error.Message}})
+					Err: &ir.Error{Code: code, Message: f.Error.Message}})
 				s.pending = append(s.pending, ir.Event{Type: ir.EvDone, Stop: ir.StopError})
 				s.finished = true
 			}

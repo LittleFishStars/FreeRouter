@@ -72,16 +72,27 @@ type toolCall struct {
 }
 
 type toolFunction struct {
+	Name string `json:"name"`
+	// Arguments 在 tool_calls 历史消息里必填（协议要求每条调用都带参数，哪怕是 ""）；
+	// 工具**定义**方向不用本结构——那里没有 arguments 字段，见 toolDefinition。
+	Arguments string          `json:"arguments"`
+	Strict    *bool           `json:"strict,omitempty"`
+	Params    json.RawMessage `json:"parameters,omitempty"`
+}
+
+// toolDefinition 是工具声明里的 function：没有 arguments。
+// 为什么拆而不共用 toolFunction：共用时定义方向会带出 "arguments":""，
+// 严格上游（部分 OpenAI 兼容层）直接拒整个请求；golden review 实测发现。
+type toolDefinition struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
-	Arguments   string          `json:"arguments"`
 	Strict      *bool           `json:"strict,omitempty"`
 	Params      json.RawMessage `json:"parameters,omitempty"`
 }
 
 type tool struct {
-	Type     string       `json:"type"`
-	Function toolFunction `json:"function"`
+	Type     string         `json:"type"`
+	Function toolDefinition `json:"function"`
 	// 顶层 strict 是较新的方言，部分上游放在 function 内，两处都读。
 	Strict *bool `json:"strict,omitempty"`
 }

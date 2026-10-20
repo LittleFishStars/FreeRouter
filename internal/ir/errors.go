@@ -161,6 +161,63 @@ func (e *InvalidRequestError) Error() string {
 // Code 返回与 HTTP 错误码表一致的字符串。
 func (e *InvalidRequestError) Code() string { return "invalid_request" }
 
+// 错误码 → type 粗枚举的映射（docs/api/03-errors.md §2.4/§3.1）。
+//
+// 为什么表驱动而不是各协议包各写一份 switch：两个协议的出站错误体都要填 type，
+// 各写一份迟早漂移（一份填细码一份填粗码就是评审抓到的那类事故）。
+// 为什么 fallback 是 internal_error：未登记的新细码按"未预期故障"处理，宁可让
+// SDK 走 500 分支重试一次，也不能伪装成 invalid_request 误导客户端去改参数。
+var errCodeToType = map[string]string{
+	"invalid_api_key":        "authentication_error",
+	"invalid_request":        "invalid_request_error",
+	"capability_unsupported": "invalid_request_error",
+	"request_too_large":      "invalid_request_error",
+	"model_not_found":        "not_found_error",
+	"model_retired":          "not_found_error",
+	"quota_exceeded":         "rate_limit_error",
+	"pool_exhausted":         "rate_limit_error",
+	"rate_limited":           "rate_limit_error",
+	"upstream_unavailable":   "service_unavailable_error",
+	"upstream_timeout":       "service_unavailable_error",
+	"upstream_error":         "service_unavailable_error",
+	"no_candidate":           "service_unavailable_error",
+	"internal_error":         "internal_error",
+}
+
+// CodeToErrorType 把细粒度错误码归约为 §2.4 的八值粗枚举。
+//
+// 出站错误体的 type 字段必须走这里：SDK 只按 type 分支，把细码塞进 type
+// 会让所有 SDK 落到兜底分支，用户看到的是 SDK 通用报错而不是我们的说明。
+func CodeToErrorType(code string) string {
+	if t, ok := errCodeToType[code]; ok {
+		return t
+	}
+	return "internal_error"
+}
+
+// errTypeToCode 是 errCodeToType 的反向表：解码上游错误体时把粗 type 归一成
+// 我们细码域的代表码（每个 type 挑 §3.1 里最代表的一个）。
+var errTypeToCode = map[string]string{
+	"invalid_request_error":     "invalid_request",
+	"authentication_error":      "invalid_api_key",
+	"permission_error":          "forbidden",
+	"not_found_error":           "model_not_found",
+	"conflict_error":            "conflict",
+	"rate_limit_error":          "rate_limited",
+	"service_unavailable_error": "upstream_error",
+	"internal_error":            "internal_error",
+}
+
+// ErrorTypeToCode 把上游错误体的粗 type 归一为细码域；查不到就原样返回——
+// 保底保留上游原词比编一个新词诚实。注意这只归一"表示"，不改变错误的归属：
+// 上游报的 invalid_request_error 对我们仍是上游故障，重试策略由上层按归属另判。
+func ErrorTypeToCode(t string) string {
+	if c, ok := errTypeToCode[t]; ok {
+		return c
+	}
+	return t
+}
+
 // UpstreamProtocolError 是"上游给的流/响应违反协议不变式"（如 index 跨块复用、
 // 非法分片顺序）。为什么不能复用 InvalidRequestError：那会被映射成客户端 400，
 // 把上游的错算到客户端头上；它应对齐 docs/api/03-errors.md 的 upstream_error（502、

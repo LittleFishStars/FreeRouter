@@ -1,0 +1,18 @@
+{
+  "model": "claude-test",
+  "max_tokens": 512,
+  "system": [{"type": "text", "text": "Use tools."}],
+  "tools": [{"name": "get_weather", "description": "查询天气", "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}],
+  "tool_choice": {"type": "auto"},
+  "thinking": {"type": "enabled", "budget_tokens": 2048},
+  "messages": [
+    {"role": "user", "content": "北京天气如何？"},
+    {"role": "assistant", "content": [
+      {"type": "thinking", "thinking": "需要调用工具", "signature": "sig_abc"},
+      {"type": "text", "text": "我查一下。"},
+      {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "北京"}}
+    ]},
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "18°C"}]},
+    {"role": "user", "content": [{"type": "text", "text": "谢谢"}]}
+  ]
+}

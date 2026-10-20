@@ -46,7 +46,7 @@ func (a adapter) EncodeRequest(req *ir.Request, opt ir.EncodeOptions) ([]byte, [
 		}
 		out.Tools = append(out.Tools, tool{
 			Type: "function",
-			Function: toolFunction{
+			Function: toolDefinition{
 				Name: t.Name, Description: t.Description, Params: params, Strict: strict,
 			},
 		})
