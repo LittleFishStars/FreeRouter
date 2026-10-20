@@ -1,0 +1,6 @@
+# pnpm 11+ 的构建脚本白名单在这里（package.json 的 pnpm 字段自 10 起失效）。
+# esbuild 的 postinstall 负责定位其平台二进制，是 vite 的硬依赖；pnpm 默认
+# 忽略依赖构建脚本并报 ERR_PNPM_IGNORED_BUILDS（退出码 1），CI 会把装依赖
+# 误判为失败，所以显式放行这一个包。
+allowBuilds:
+  esbuild: true

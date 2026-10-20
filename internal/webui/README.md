@@ -39,7 +39,7 @@
 ```bash
 # 1. 前端（产物直落 internal/webui/dist）
 cd web
-pnpm install --store-dir .pnpm-store   # store 落本地并被 web/.gitignore 忽略
+pnpm i        # = XDG_RUNTIME_DIR=/tmp pnpm install --store-dir .pnpm-store
 pnpm build
 
 # 2. Go：带 tag 才嵌前端；CI 发布二进制的标准姿势
@@ -59,3 +59,15 @@ Makefile / CI 里发布目标应使用 `-tags webui_dist`；裸 `go build ./...`
 SPA fallback**，纯静态服务即可。若 M9 切 BrowserRouter，index.html 回退与
 鉴权守卫（docs/ui/01-ia.md 第 7 节的三层守卫）归 httpapi 挂载层决定，
 本包继续只出静态字节。
+
+## 本机 pnpm 的两个坑（已固化进 `pnpm i` 脚本与 pnpm-workspace.yaml）
+
+1. **`/run/user/1000` 只读**：pnpm 把 store 操作锁建在 `$XDG_RUNTIME_DIR`
+   （上游 pnpm/pnpm#16390），本机该目录只读导致任何 `pnpm install` 直接以
+   `ERR_PNPM_STORE_DIR_OPEN_OPERATION_LOCK` 失败。`pnpm i` 脚本无条件把
+   `XDG_RUNTIME_DIR` 指到 `/tmp` 绕开；`--store-dir .pnpm-store` 保持任务约定
+   （store 落 web/ 内、被 `web/.gitignore` 忽略）。
+2. **构建脚本白名单**：pnpm 10+ 默认忽略依赖 postinstall 并报错退出，esbuild
+   的二进制定位必须放行，配置在 `web/pnpm-workspace.yaml` 的 `allowBuilds`。
+
+CI 环境若无只读 `/run/user` 问题，可直接用 `pnpm install --store-dir .pnpm-store`。
