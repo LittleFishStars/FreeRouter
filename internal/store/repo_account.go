@@ -40,14 +40,14 @@ const (
 // 认证路径需要 hash，但控制台列表不需要。分成 Account 与 AccountAuth 两个形状，
 // 可以让"把 hash 传到不该传的地方"变成编译期不可能。
 type Account struct {
-	ID           int64
-	DisplayName  string
-	Username     string
-	Status       AccountStatus
-	CreatedAt    int64
-	LastLoginAt  *int64
-	Note         *string
-	Classes      []Class
+	ID          int64
+	DisplayName string
+	Username    string
+	Status      AccountStatus
+	CreatedAt   int64
+	LastLoginAt *int64
+	Note        *string
+	Classes     []Class
 }
 
 // AccountAuth 是认证路径专用的形状：带 password_hash 与 recovery_code_hash。

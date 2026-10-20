@@ -18,25 +18,18 @@ const (
 
 // APIKey 是 Key 的读模型。
 //
-// 注意这里没有明文 key，也没有 quota_used 之外的敏感内容：明文只在创建时返回一次
-// （PLAN 9），库里只存 SHA-256。
-//
-// 上限字段全部用指针：nil = 不限，非 nil 且为 0 = 额度为零（全部拒绝）。
-// 这个区分是刻意的——把两个语义混成一个 "0" 会让"新建 Key 默认无法请求"与
-// "不限额度"变得无法区分（05-storage.md 3.6）。
+// 注意这里没有明文 key：明文只在创建时返回一次（PLAN 9），库里只存 SHA-256。
+// 2026-10-20 定案：Key 不持有任何额度/速率字段（旧版 quota_limit/quota_used/rpm_limit/
+// tpm_limit/daily_token_cap/max_concurrency 六列已删）——额度一律在 account_quotas
+// 按账户计，与本次请求用的是哪把 Key 无关；若每把 Key 自带额度，
+// 建 10 把 Key 就得到 10 份额度，账户级上限形同虚设（05-storage.md 3.6）。
 type APIKey struct {
-	ID             int64
-	AccountID      int64
-	Prefix         string
-	Name           *string
-	Status         KeyStatus
-	ExpiresAt      *int64
-	QuotaLimit     *int64
-	QuotaUsed      int64
-	RPMLimit       *int64
-	TPMLimit       *int64
-	DailyTokenCap  *int64
-	MaxConcurrency *int64
+	ID        int64
+	AccountID int64
+	Prefix    string
+	Name      *string
+	Status    KeyStatus
+	ExpiresAt *int64
 }
 
 // KeyRepo 是 API Key 的仓储。
@@ -65,13 +58,9 @@ func (r *KeyRepo) CreateKey(ctx context.Context, k APIKey, keyHash []byte) (int6
 	}
 
 	res, err := r.db.ExecContext(ctx,
-		`INSERT INTO api_keys(account_id, key_hash, prefix, name, status, expires_at,
-		                      quota_limit, quota_used, rpm_limit, tpm_limit,
-		                      daily_token_cap, max_concurrency)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		k.AccountID, keyHash, k.Prefix, k.Name, string(status), k.ExpiresAt,
-		k.QuotaLimit, k.QuotaUsed, k.RPMLimit, k.TPMLimit,
-		k.DailyTokenCap, k.MaxConcurrency)
+		`INSERT INTO api_keys(account_id, key_hash, prefix, name, status, expires_at)
+		 VALUES(?,?,?,?,?,?)`,
+		k.AccountID, keyHash, k.Prefix, k.Name, string(status), k.ExpiresAt)
 	if err != nil {
 		return 0, fmt.Errorf("store: 创建 Key 失败: %w", err)
 	}
@@ -84,16 +73,12 @@ func (r *KeyRepo) CreateKey(ctx context.Context, k APIKey, keyHash []byte) (int6
 
 // keyColumns 集中列定义，避免 scanKey 与 SELECT 的列顺序漂移。
 // 顺序一旦不一致，Scan 不会报错而是把值塞进错误的字段——这类 bug 极难发现。
-const keyColumns = `id, account_id, prefix, name, status, expires_at,
-                    quota_limit, quota_used, rpm_limit, tpm_limit,
-                    daily_token_cap, max_concurrency`
+const keyColumns = `id, account_id, prefix, name, status, expires_at`
 
 func scanKey(sc interface{ Scan(...any) error }) (*APIKey, error) {
 	var k APIKey
 	var status string
-	if err := sc.Scan(&k.ID, &k.AccountID, &k.Prefix, &k.Name, &status, &k.ExpiresAt,
-		&k.QuotaLimit, &k.QuotaUsed, &k.RPMLimit, &k.TPMLimit,
-		&k.DailyTokenCap, &k.MaxConcurrency); err != nil {
+	if err := sc.Scan(&k.ID, &k.AccountID, &k.Prefix, &k.Name, &status, &k.ExpiresAt); err != nil {
 		return nil, err
 	}
 	k.Status = KeyStatus(status)
@@ -170,22 +155,8 @@ func (r *KeyRepo) SetKeyStatus(ctx context.Context, id int64, status KeyStatus) 
 	return requireAffected(res, "Key", id)
 }
 
-// AddQuotaUsed 原子递增已用额度。
-//
-// 必须写成 quota_used = quota_used + ?
-// 读-改-写在并发下会丢更新：两个请求都读到 100，各自 +10 写回 110，实际应该是 120。
-// SQLite 的写锁会把这条 UPDATE 串行化，由 DB 保证不丢。
-func (r *KeyRepo) AddQuotaUsed(ctx context.Context, id int64, delta int64) error {
-	if delta == 0 {
-		return nil
-	}
-	res, err := r.db.ExecContext(ctx,
-		`UPDATE api_keys SET quota_used = quota_used + ? WHERE id = ?`, delta, id)
-	if err != nil {
-		return fmt.Errorf("store: 递增 quota_used 失败: %w", err)
-	}
-	return requireAffected(res, "Key", id)
-}
+// 2026-10-20：旧版 AddQuotaUsed（api_keys.quota_used 递增）已随六列删除而移除：
+// 额度计数在 account_quotas，由 UsageRepo 在同一结算事务里递增。
 
 // SetKeyModelAllow 覆盖式设置 Key 的模型白名单（在组授权之外再收窄）。
 //

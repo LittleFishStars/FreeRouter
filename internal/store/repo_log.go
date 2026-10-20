@@ -18,8 +18,8 @@ import (
 // AccountID 用指针：登录失败、Key 试探等事件发生在身份确定之前，
 // NULL 才是事实，硬塞一个 id 是伪造归因。
 type AuditEntry struct {
-	ID          int64  // 只读出用；写入时忽略
-	TS          int64  // 0 = 由仓储统一取 UTC now
+	ID          int64 // 只读出用；写入时忽略
+	TS          int64 // 0 = 由仓储统一取 UTC now
 	AccountID   *int64
 	ActingClass *string // 以哪个权限类身份操作（admin/tenant/contributor）
 	Elevated    bool
@@ -41,7 +41,6 @@ func (e *AuditEntry) detailJSON() (sql.NullString, error) {
 	}
 	return sql.NullString{String: string(b), Valid: true}, nil
 }
-
 
 // LogRepo 是日志仓储：audit_log 的追加与查询，以及审计保留期的归档清理通道。
 //

@@ -57,6 +57,25 @@ CREATE TABLE IF NOT EXISTS account_merges (
 CREATE INDEX IF NOT EXISTS ix_account_merges_source ON account_merges(source_id);
 CREATE INDEX IF NOT EXISTS ix_account_merges_target ON account_merges(target_id);
 
+-- 账户级周期额度（2026-10-20 定案：行化，不在 accounts 上开单列，取代旧三列设计）。
+-- 为什么不落在 accounts 列上：单列只能存一个周期与一个维度，而组侧限制类策略是逐
+-- (unit, period) 键取 min 的；行化后一个账户可以有 request/day + credit/month 两行，
+-- 与组策略键一一对应。
+-- 「不限」由没有这一行表达，不用 -1：quota_limit 允许 0（全拒），
+-- 0 与「不限」必须在类型层面互斥。
+-- abstract_model_id = 0 → 全模型合计（即原「账户总额度」）；> 0 → 只限该抽象模型。
+CREATE TABLE IF NOT EXISTS account_quotas (
+    account_id        INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    abstract_model_id INTEGER NOT NULL DEFAULT 0,   -- 0 = 合计哨兵（见 3.3 同形说明）
+    unit              TEXT    NOT NULL CHECK (unit IN ('request', 'token', 'credit')),
+    period            TEXT    NOT NULL CHECK (period IN ('day', 'month')),
+    quota_limit       INTEGER NOT NULL CHECK (quota_limit >= 0),
+    quota_used        INTEGER NOT NULL DEFAULT 0 CHECK (quota_used >= 0),
+    period_anchor     TEXT    NOT NULL,             -- 'YYYY-MM-DD'：quota_used 属于哪个周期
+    updated_at        INTEGER NOT NULL,
+    PRIMARY KEY (account_id, abstract_model_id, unit, period)
+) WITHOUT ROWID;
+
 -- ---------------------------------------------------------------- 3.2 会话
 
 -- token_hash 用 BLOB 而不是十六进制 TEXT：32 字节 vs 64 字符，索引体积减半且比较
@@ -118,22 +137,37 @@ CREATE TABLE IF NOT EXISTS group_policies (
 --   1) 它是状态不是策略：pool_used 每次请求都变，写频比策略高几个数量级，
 --      混在一张表里会让"改策略"与"扣额度"争同一个行的写锁。
 --   2) 它需要单条条件 UPDATE：JSON 列里的数字无法在 WHERE 里参与计算与比较。
---   3) 主键形态不同：一个组可以同时有 requests/day 与 tokens/day 两行。
+--   3) 主键形态不同：一个组可以同时有 request/day 合计池与 credit/month 合计池（外加按模型池）。
 -- pool_limit 用 NOT NULL CHECK (pool_limit > 0)："没设"用"没有这一行"表达。
 -- 为什么不允许 0：NULL 参与比较的结果是 UNKNOWN，而条件 UPDATE 的 WHERE 只接受"真"，
 -- 于是"有行但 limit 为 NULL"会让每次扣减都静默失败——表现与"池子已耗尽"一模一样。
 -- 不加 CHECK (pool_used <= pool_limit)：管理员把上限调小到低于已用量是合法且必要的
 -- 应急关闸手段，那条 CHECK 会让该操作直接写入失败。
 CREATE TABLE IF NOT EXISTS group_quota_pools (
-    group_id      INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    dimension     TEXT    NOT NULL CHECK (dimension IN ('requests', 'tokens')),
-    period        TEXT    NOT NULL CHECK (period IN ('day', 'month')),
-    pool_limit    INTEGER NOT NULL CHECK (pool_limit > 0),
-    pool_used     INTEGER NOT NULL DEFAULT 0 CHECK (pool_used >= 0),
-    period_anchor TEXT    NOT NULL,              -- 'YYYY-MM-DD'：pool_used 属于哪个周期的起点
-    updated_at    INTEGER NOT NULL,
-    PRIMARY KEY (group_id, dimension, period)
+    group_id          INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    abstract_model_id INTEGER NOT NULL DEFAULT 0,   -- 0 = 全模型合计；> 0 = 只限该抽象模型
+    unit              TEXT    NOT NULL CHECK (unit IN ('request', 'token', 'credit')),
+    period            TEXT    NOT NULL CHECK (period IN ('day', 'month')),
+    pool_limit        INTEGER NOT NULL CHECK (pool_limit > 0),
+    pool_used         INTEGER NOT NULL DEFAULT 0 CHECK (pool_used >= 0),
+    period_anchor     TEXT    NOT NULL,              -- 'YYYY-MM-DD'：pool_used 属于哪个周期的起点
+    updated_at        INTEGER NOT NULL,
+    PRIMARY KEY (group_id, abstract_model_id, unit, period)
 ) WITHOUT ROWID;
+
+-- 每人按模型上限：组侧的声明（2026-10-20 新增 3.3.1）。与池不同它不带计数器——
+-- cap 是策略（管理员设了什么，全组共享一行），消耗必须按人记账（记在 account_quotas）；
+-- 把计数器挂组行上会把「每人限额」错实现成「共享池再加一维」，两者是完全不同的闸。
+-- cap 用 CHECK (cap > 0)：与池同形，「每人不限」= 没有这一行。
+CREATE TABLE IF NOT EXISTS group_model_quota_caps (
+    group_id          INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    abstract_model_id INTEGER NOT NULL REFERENCES abstract_models(id) ON DELETE CASCADE,
+    unit              TEXT    NOT NULL CHECK (unit IN ('request', 'token', 'credit')),
+    period            TEXT    NOT NULL CHECK (period IN ('day', 'month')),
+    cap               INTEGER NOT NULL CHECK (cap > 0),
+    PRIMARY KEY (group_id, abstract_model_id, unit, period)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS ix_gmqc_model ON group_model_quota_caps(abstract_model_id);
 
 -- ---------------------------------------------------------------- 3.4 抽象模型与目录
 -- 注意建表顺序：abstract_models 先于 group_models 的引用目标，real_models 先于
@@ -253,8 +287,9 @@ CREATE INDEX IF NOT EXISTS ix_upstream_credentials_status ON upstream_credential
 -- ---------------------------------------------------------------- 3.6 API Key
 
 -- 只存 key_hash（BLOB，理由同 sessions.token_hash）；明文只在创建时返回一次。
--- 上限列可空：NULL 是"不限"，0 是"额度为零（全部拒绝）"，两者混淆会让
--- "新建 Key 默认无法请求"与"不限额度"变得无法区分。
+-- 2026-10-20 定案：Key 不持有任何额度/速率字段，旧版 quota_limit/quota_used/rpm_limit/
+-- tpm_limit/daily_token_cap/max_concurrency 六列已删：若每把 Key 有自己的额度，
+-- 建 10 把 Key 就得到 10 份额度，账户级上限形同虚设；额度一律在 account_quotas 按账户计。
 CREATE TABLE IF NOT EXISTS api_keys (
     id              INTEGER PRIMARY KEY,
     account_id      INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -263,13 +298,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     name            TEXT,
     status          TEXT    NOT NULL DEFAULT 'active'
                     CHECK (status IN ('active','disabled','expired')),
-    expires_at      INTEGER,
-    quota_limit     INTEGER,              -- NULL = 不限
-    quota_used      INTEGER NOT NULL DEFAULT 0,
-    rpm_limit       INTEGER,
-    tpm_limit       INTEGER,
-    daily_token_cap INTEGER,
-    max_concurrency INTEGER
+    expires_at      INTEGER
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_api_keys_key_hash ON api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS ix_api_keys_account ON api_keys(account_id);
@@ -319,18 +348,20 @@ CREATE INDEX IF NOT EXISTS ix_requests_error ON requests(error_code, ts);
 -- usage_daily 上的 NOT NULL DEFAULT 0 是聚合值：聚合时把 NULL 记为 0，并把"有未知"
 -- 通过 requests 表可回溯。这是唯一可接受的折中——聚合键必须非空。
 -- 它必须落表而不是现查：requests 按 90 天清理后，它就是唯一的长期事实。
+-- 2026-10-20 改定：按 account_id 聚合（额度判定目标就是账户，见 security/06-audit 第 1 节）；
+-- 旧版按 key_id 聚合会让「10 把 Key 平摊一份额度」的判定无从下笔，按 Key 的明细在 requests。
 CREATE TABLE IF NOT EXISTS usage_daily (
     day               TEXT    NOT NULL,        -- 'YYYY-MM-DD'（UTC）
-    key_id            INTEGER NOT NULL,
+    account_id        INTEGER NOT NULL,
     abstract_model_id INTEGER NOT NULL,
     real_model_id     INTEGER NOT NULL,
     requests          INTEGER NOT NULL DEFAULT 0,
     in_tokens         INTEGER NOT NULL DEFAULT 0,
     out_tokens        INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (day, key_id, abstract_model_id, real_model_id)
+    PRIMARY KEY (day, account_id, abstract_model_id, real_model_id)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS ix_usage_daily_day ON usage_daily(day);
-CREATE INDEX IF NOT EXISTS ix_usage_daily_key ON usage_daily(key_id, day);
+CREATE INDEX IF NOT EXISTS ix_usage_daily_account ON usage_daily(account_id, day);
 
 -- ---------------------------------------------------------------- 3.8 审计
 

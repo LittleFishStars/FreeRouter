@@ -80,6 +80,7 @@ type Repos struct {
 	Models   *ModelRepo
 	Usage    *UsageRepo
 	Logs     *LogRepo
+	Quotas   *QuotaRepo
 }
 
 // Open 打开主库：建目录 → 打开写池 → 设 PRAGMA → 迁移 → 打开读池 → 载入主密钥。
@@ -323,7 +324,8 @@ func newRepos(s *Store) *Repos {
 	r.Keys = &KeyRepo{db: conn, s: s}
 	r.Sessions = &SessionRepo{db: conn, s: s}
 	r.Models = &ModelRepo{db: conn, s: s}
-	r.Usage = &UsageRepo{db: conn, s: s}
+	r.Quotas = &QuotaRepo{db: conn, s: s}
+	r.Usage = &UsageRepo{db: conn, s: s, quotas: r.Quotas}
 	r.Logs = &LogRepo{db: conn, s: s}
 	return r
 }
