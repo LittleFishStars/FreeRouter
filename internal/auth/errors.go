@@ -123,6 +123,11 @@ var (
 	ErrNotFound = &Error{Code: CodeNotFound, Msg: "资源不存在"}
 
 	ErrConflict = &Error{Code: CodeConflict, Msg: "资源冲突"}
+
+	// ErrTooManyAttempts 是防爆破退避/锁定的统一出口（429 + Retry-After）。
+	// 为什么单独一个哨兵而不是复用 ErrForbidden：客户端动作不同——
+	// 前者等 Retry-After 后重试是正解，后者重试永远无意义。
+	ErrTooManyAttempts = &Error{Code: CodeTooManyAttempts, Msg: "尝试次数过多，请稍后再试"}
 )
 
 // Errorf 构造带底层原因的错误；底层原因会进日志但不应进响应体。
