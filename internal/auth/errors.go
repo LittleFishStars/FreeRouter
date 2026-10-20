@@ -74,6 +74,13 @@ type Error struct {
 	// 暴露它会泄露调用方在哪些组里。
 	GroupID string
 
+	// Quota 携带命中行的机器可读四元组（unit / period / model），供错误体
+	// `quota` 对象组装（docs/api/03-errors.md §6 双通道定案 2026-10-20：
+	// message 给人读、quota 给客户端自动降级用——合计行 Model 为空，
+	// 按模型限额行 Model 指名可换的模型）。仅 quota_exceeded 使用；
+	// 指针是为了区分"没带"与"带了空值"，映射层据此省略 JSON 字段。
+	Quota *QuotaDetail
+
 	// Wrapped 保留底层原因（store 的 not found、argon2 解码失败等）。
 	Wrapped error
 }
@@ -153,6 +160,23 @@ func (e *Error) WithDetail(dimension, groupID string) *Error {
 	clone := *e
 	clone.Dimension = dimension
 	clone.GroupID = groupID
+	return &clone
+}
+
+// QuotaDetail 是错误体机器可读 `quota` 对象的载荷（docs/api/03-errors.md §6 定案）。
+// Model 为空 = 命中的是合计行（abstract_model_id=0）；非空 = 按模型限额行，
+// 客户端据此知道“换一个模型还能继续”。
+type QuotaDetail struct {
+	Unit   string
+	Period string
+	Model  string
+}
+
+// WithQuota 返回携带额度四元组的副本（副本语义同 WithRetryAfter：
+// 哨兵是共享实例，原地写会污染所有后续命中）。
+func (e *Error) WithQuota(unit, period, model string) *Error {
+	clone := *e
+	clone.Quota = &QuotaDetail{Unit: unit, Period: period, Model: model}
 	return &clone
 }
 

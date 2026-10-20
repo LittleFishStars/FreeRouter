@@ -148,11 +148,11 @@ func CheckQuotaRow(row QuotaRow, cost int64, now time.Time) (time.Duration, erro
 		// 零额度全拒：连 cost=0 也拒——"额度 0 却能高频打无效请求"正是
 		// 05-keys.md §4 要求速率由全局默认兜底、额度由 0 兜底的分工。
 		return row.Period.ResetAt(now).Sub(now), ErrQuotaExceeded.
-			WithDetail(row.Unit, "")
+			WithQuota(row.Unit, string(row.Period), row.ModelID)
 	}
 	if row.Used+cost > row.Limit {
 		return row.Period.ResetAt(now).Sub(now), ErrQuotaExceeded.
-			WithDetail(row.Unit, "")
+			WithQuota(row.Unit, string(row.Period), row.ModelID)
 	}
 	return 0, nil
 }
