@@ -174,9 +174,9 @@ CGNAT 登录的管理员，却挡不住已拿到凭据的攻击者。
 |---|---|---|---|
 | `limits.default_daily_tokens` | int | `0` | **0 = 不可用**，显式授权才给 |
 | `limits.default_monthly_tokens` | int | `0` | 同上 |
-| `limits.default_rpm` | int | `60` | |
-| `limits.default_tpm` | int | `0` | 0 = 不限制 |
-| `limits.default_max_concurrency` | int | `2` | |
+| `limits.default_rpm` | int | `60` | 速率类哨兵（2026-10-20 定案，与 accounts 速率列同口径）：**-1 = 不限、0 = 全拒** |
+| `limits.default_tpm` | int | `-1` | 默认不限（旧 `0 = 不限制` 语义已废除：`0` 现在是全拒） |
+| `limits.default_max_concurrency` | int | `2` | 同上：-1 = 不限 |
 | `limits.default_keys_per_account` | int | `10` | |
 | `limits.global_daily_tokens` | int | `0` | 全局熔断阈值，0 = 不熔断 |
 | `limits.global_rpm` | int | `0` | |
