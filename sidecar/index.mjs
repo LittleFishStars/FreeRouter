@@ -9,6 +9,9 @@
 //      主进程对 sidecar 的全部容错设计（5.1「挂横幅继续」）都建立在「进程活着但会说 error」上；
 //   4. 守三条红线 —— METHODS 里**永远不出现** credentials.set/unset/refresh 与 state.*，
 //      触碰即返回守卫码 E_CREDENTIAL_READONLY / E_STATE_FORBIDDEN 并打审计行（2.4 设计说明）。
+//   5. （未来若开本地端口）只准绑 127.0.0.1、拒绝通配地址 —— OAuth 回调监听是登录流的
+//      既有需求（04-sidecar.md 4.2），但 `0.0.0.0`/空主机监听会把回环信任边界打破；
+//      新增监听前先重读红线③与 config 校验（validate.go 对非回环地址直接拒绝）。
 //
 // 关于 hub 的现实（实测 0.2.1-rc.2）：其根导出是 cordis 插件（依赖 @deepseek-ai/cordis、
 // cosmokit、dsh-credentials 等 B 层包），./client 导出是浏览器模块加载格式（要 window）。
