@@ -193,10 +193,6 @@ func (a *AuthzService) Check(ctx context.Context, s Subject, op Op, res Resource
 			return DecisionDeny, ErrNotFound
 		}
 	}
-	// "本人以 Key 身份改自己密码"的额外线：Key 主体没有会话，改密无对象可吊。
-	if op == OpSelfChangePassword && s.ActingClass == ClassTenant {
-		// 合法路径；协议层保证会话主体才能走到这里，本层不再重复判凭据种类。
-	}
 	return DecisionAllow, nil
 }
 
@@ -455,16 +451,13 @@ func (a *AuthzService) EffectivePolicyFor(ctx context.Context, accountID string)
 	return MergeGroupPolicies(groups), nil
 }
 
-// ModelCallPlan 是模型面运行时顺序（04-authz.md §8）中**auth 层能确定的部分**。
-//
-// RealModelID / CredentialID 由策略引擎填充（候选展开在第 8 步，属于 models 层）；
-// auth 层职责止于：Key 合规、账户实时可用、模型可见性（第 5 步）、
-// 以及给出"本次计入哪个额度维度"（QuotaUnit，来自账户级字段）。
 type ModelCallPlan struct {
 	AccountID       string
 	KeyID           string
 	AbstractModelID string // 对外呈现的抽象模型
-	QuotaUnit       string // request / token / credit —— 账户级，与 Key 无关
+	// 额度维度不在这里：2026-10-20 额度行化后，一次请求同时受
+	// account_quotas 多行闸（合计行 + 按模型行，各自 (unit, period)）约束，
+	// 不再有单一 QuotaUnit；预检在 meter 侧对行逐条判定。
 }
 
 // CheckModelCall 执行判定链第 2~6 步中与 auth 相关的部分（不含限速，限速在 meter）。
@@ -506,20 +499,5 @@ func (a *AuthzService) CheckModelCall(ctx context.Context, rawKey, requestedMode
 		AccountID:       acct.ID,
 		KeyID:           key.ID,
 		AbstractModelID: requestedModel,
-		QuotaUnit:       quotaUnit(acct),
 	}, nil
-}
-
-// quotaUnit 取账户的计量维度；未配置时按 request 解释。
-//
-// 为什么默认 request 而不是报错：01-accounts.md 规定新账户 quota_limit=0
-// （默认拒绝），维度字段留空不影响"0 不可用"的判定；对已有正额度的账户，
-// 按次数计是三种维度里最保守（不会因单位误解多放）的解释。
-func quotaUnit(acct *Account) string {
-	switch acct.QuotaUnit {
-	case "token", "credit", "request":
-		return acct.QuotaUnit
-	default:
-		return "request"
-	}
 }

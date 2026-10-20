@@ -150,14 +150,21 @@ type Account struct {
 	LastLoginAt *time.Time
 	Note        string
 
-	// 账户级额度与速率（一个账户的所有 Key 共享这一份）。
-	QuotaLimit int64  // 0 = 不可用（默认拒绝），不是"不限"
-	QuotaUsed  int64  // 当前周期已用
-	QuotaUnit  string // request / token / credit
-
-	RPMLimit       *int   // nil = 未在账户上单独设置（由组策略与全局默认兜底）
-	TPMLimit       *int64 // nil = 同上
-	MaxConcurrency *int   // nil = 同上
+	// 账户级速率与并发（一个账户的所有 Key 共享这一份；05-keys.md §4）。
+	//
+	// 哨兵语义（01-accounts.md 2026-10-20 定案，速率三列统一）：
+	//   **-1 = 不限；0 = 全拒**。两者意思完全相反且禁止 NULL——
+	//   “没配”必须写成 -1（不启用这道闸），写成 0 就是“一个请求都拒”。
+	//   旧注释里的“由全局默认兜底”已废：limits.default_* 只在审批/导入时
+	//   写初值，运行期合并不回退（03-groups.md §3.5）。
+	//
+	// 周期额度不在本 struct：额度已行化到 account_quotas 表
+	// ((account_id, abstract_model_id, unit, period) → limit/used/anchor；
+	// abstract_model_id=0 合计行、>0 按模型行)。“不限 = 没有这一行，
+	// 0 = 零额度全拒”。预检由 meter 对 store 读出的行判定。
+	RPMLimit       int   // 请求数/分钟；-1 不限；0 全拒
+	TPMLimit       int64 // token/分钟；同上
+	MaxConcurrency int   // 在途数；同上
 }
 
 // HasClass 报告账户是否持有某个类。
@@ -181,6 +188,11 @@ func (a *Account) Validate() error {
 	}
 	if err := a.Classes.Validate("account.classes"); err != nil {
 		return err
+	}
+	// 速率/并发哨兵范围校验（01-accounts.md 2026-10-20）：三列仅允许
+	// -1（不限）、0（全拒）或正数；其余负数无语义，写库前拒绝。
+	if a.RPMLimit < -1 || a.TPMLimit < -1 || a.MaxConcurrency < -1 {
+		return fmt.Errorf("账户速率/并发列非法 %d/%d/%d：仅允许 -1=不限、0=全拒或正数", a.RPMLimit, a.TPMLimit, a.MaxConcurrency)
 	}
 	switch a.Status {
 	case StatusPending, StatusActive, StatusDisabled, StatusRejected, StatusMerged:
