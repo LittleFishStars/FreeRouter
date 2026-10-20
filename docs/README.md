@@ -12,7 +12,7 @@
 | 分册 | 文件 | 内容 | 状态 |
 |---|---|---|---|
 | **总纲** | [PLAN.md](PLAN.md) | 定位、范围边界、需求映射、里程碑、验收 | v4 已定（1127 行） |
-| **决策复核** | [DECISIONS-REVIEW.md](DECISIONS-REVIEW.md) | 写入者自行拍板、用户未表态的全部设计选择，交用户逐条复核 | 471 行 |
+| **决策复核** | [DECISIONS-REVIEW.md](DECISIONS-REVIEW.md) | 写入者自行拍板、用户未表态的全部设计选择，交用户逐条复核 | 472 行 |
 | **待定汇总** | [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md) | 按 A/B/C 分级的未决项清单 | 340 行 |
 | **上游查证** | [RESEARCH-UPSTREAM-REUSE.md](RESEARCH-UPSTREAM-REUSE.md) | `dsh-providers-hub` 三层复用边界的实测记录 | 111 行 |
 | | [architecture/00-diagrams.md](architecture/00-diagrams.md) | 两张总图：模型调用层级图、权限架构图（mermaid） | ✅ 200 行 |
