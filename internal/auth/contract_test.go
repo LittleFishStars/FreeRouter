@@ -325,19 +325,20 @@ func TestContractBackoffCurve(t *testing.T) {
 func TestContractAccountLockIndependentFromIP(t *testing.T) {
 	h := newHarness()
 	aKey, iKey := accountKey("victim"), ipKey("203.0.113.9")
-	for i := 0; i < 9; i++ {
+	// 阈值 = config.security.login_max_failures 默认 5（lead 仲裁③）。
+	for i := 0; i < 4; i++ {
 		h.advance(61 * time.Second)
 		h.guard.RecordFailure(aKey)
 		h.guard.RecordFailure(iKey)
 	}
-	// 第 10 次：账户维度锁定 15 分钟（阈值定案 10）。
+	// 第 5 次：账户维度锁定 15 分钟。
 	h.advance(61 * time.Second)
 	h.guard.RecordFailure(aKey)
 	wait, locked := h.guard.Blocked(aKey)
 	if !locked || wait < 14*time.Minute {
 		t.Fatalf("账户应锁定 15min，实际 locked=%v wait=%v", locked, wait)
 	}
-	// IP 维度 9+1=10 次 << 50：不可能锁定；Blocked 至多是退避（≤ 60s）。
+	// IP 维度 5 次 << 50：不可能锁定；Blocked 至多是退避（≤ 60s）。
 	// 用等待时长区分两态：锁定会给出分钟级 Retry-After。
 	if waitIP, _ := h.guard.Blocked(iKey); waitIP > time.Minute {
 		t.Fatalf("IP 维度不得因账户锁定而连带（等待=%v），否则爆破=对整栋 NAT 的 DoS", waitIP)
@@ -348,7 +349,7 @@ func TestContractAccountLockIndependentFromIP(t *testing.T) {
 		t.Fatal("解锁后应可重试")
 	}
 	// 锁定期满自动解锁。
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 5; i++ {
 		h.advance(61 * time.Second)
 		h.guard.RecordFailure(aKey)
 	}
@@ -391,8 +392,10 @@ func TestContractLoginLockoutThenUnlockThenSuccess(t *testing.T) {
 	svc := h.loginService()
 	ctx := context.Background()
 
-	for i := 0; i < 10; i++ {
-		h.advance(61 * time.Second) // 退避封顶 60s，61s 间隔必可继续尝试；10 次共 10min < 15min 窗口
+	// 前 5 次失败对外都必须是凭据错误（锁定在下一次尝试才可见）；
+	// 间隔 61s 越过退避封顶 60s，保证每枪都真打。5 次共 5.1min < 15min 窗口。
+	for i := 0; i < 5; i++ {
+		h.advance(61 * time.Second)
 		if _, err := svc.Login(ctx, "ten", "bad-password-wrong", "5.6.7.8", "ua"); !errors.Is(err, ErrInvalidCredentials) {
 			t.Fatalf("第 %d 次失败应是凭据错误: %v", i+1, err)
 		}

@@ -27,9 +27,13 @@ type LoginPolicy struct {
 	// 仍能在一分钟内重试，而不是等十分钟。
 	MaxBackoffDelay time.Duration
 
-	// AccountLockAfter / IPLockAfter 是两个维度的锁定阈值（默认 10 / 50）。
-	// IP 阈值必须显著高于账户阈值：共享出口（校园、公司、NAT）下，
-	// 一个同事输错密码不能锁掉整栋楼；而账户维度要拦住"盯着一个账户硬猜"。
+	// AccountLockAfter / IPLockAfter 是两个维度的锁定阈值。
+	// **生产路径由 config.security.login_max_failures 注入**（lead 仲裁③：
+	// config 表口径 5 次/15m 优先于 02-authn 分册的 10/50；后者已转呈用户
+	// 裁决为文档待统一项）。这里的零值兜底与 config.Default() 对齐：
+	// 账户 5；IP 阈值 config 无对应键，保留分册的 50——它仍满足
+	// "IP 显著高于账户"（共享出口下一个同事输错不能锁掉整栋楼，
+	// 账户维度要拦住盯着一个账户硬猜）。
 	AccountLockAfter int
 	IPLockAfter      int
 
@@ -54,7 +58,7 @@ func (p LoginPolicy) withDefaults() LoginPolicy {
 		p.MaxBackoffDelay = 60 * time.Second
 	}
 	if p.AccountLockAfter <= 0 {
-		p.AccountLockAfter = 10
+		p.AccountLockAfter = 5 // = config.Default().Security.LoginMaxFailures（仲裁③）
 	}
 	if p.IPLockAfter <= 0 {
 		p.IPLockAfter = 50

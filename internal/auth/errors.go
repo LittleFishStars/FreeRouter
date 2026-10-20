@@ -43,6 +43,15 @@ const (
 	CodePoolExhausted   Code = "pool_exhausted"
 	CodeTooManyAttempts Code = "too_many_attempts"
 
+	// CodeOverloaded 是进程级并发闸门排队超时（HTTP 503，lead 仲裁 2026-10-20：
+	// 与账户级并发的 429 rate_limited 是**两层不同的闸**——
+	// 账户超上限 = 用户越限（429，找管理员调额度）；
+	// 进程闸门排队超时 = 服务侧过载（503，客户端退避重试，与 no_candidate 的
+	// 503 语义不同：那是候选耗尽、这是本地容量，按 D11 三态原则各给一码）。
+	// 归属：docs/api/03-errors.md 码表尚无此行，待 lead 同步分册；type 取
+	// service_unavailable_error。
+	CodeOverloaded Code = "overloaded"
+
 	// 入参不合法（HTTP 400）。
 	CodeInvalidRequest Code = "invalid_request"
 
@@ -141,6 +150,9 @@ var (
 	// 为什么单独一个哨兵而不是复用 ErrForbidden：客户端动作不同——
 	// 前者等 Retry-After 后重试是正解，后者重试永远无意义。
 	ErrTooManyAttempts = &Error{Code: CodeTooManyAttempts, Msg: "尝试次数过多，请稍后再试"}
+
+	// ErrOverloaded 是全局并发闸排队超时的出口（503 + Retry-After=queue_timeout）。
+	ErrOverloaded = &Error{Code: CodeOverloaded, Msg: "服务繁忙，请稍后重试"}
 )
 
 // Errorf 构造带底层原因的错误；底层原因会进日志但不应进响应体。

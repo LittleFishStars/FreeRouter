@@ -46,11 +46,11 @@ type Config struct {
 
 	// QueueTimeout 并发排队的等待上限。超时返回 ErrRateLimited（并发维度）。
 	//
-	// 口径冲突与取舍：06-runtime.md §2.3 写"队列超过 queue_timeout 返回 503"，
-	// 而 docs/api/03-errors.md 的 503 码表里只有 no_candidate（候选耗尽），
-	// 且 05-keys.md §4 明确"并发超限 → 429 + 有值 Retry-After"。
-	// 按"错误码分册为准 + 客户端动作一致（等一会儿再来）"取 429。
-	// 若有定案改为 503，只需改这一处（rateLimited 的 dimension 分支不变）。
+	// 定案（lead 仲裁①，2026-10-20）：两层闸两个码——
+	// 账户级 max_concurrency 超限/排队超时 → 429 rate_limited（05-keys §4）；
+	// 进程级 global_concurrency 排队超 queue_timeout → 503 overloaded
+	// （06-runtime §2.3 原文；服务侧过载不是用户越限，与 no_candidate 的
+	// 503 按 D11 各给一码）。
 	QueueTimeout time.Duration
 }
 
@@ -282,7 +282,7 @@ func (l *Limiter) AcquireConcurrency(ctx context.Context, accountID string, lim 
 			return true, nil
 		}
 		return false, st.wake
-	}, "concurrency"); err != nil {
+	}, "concurrency", func() error { return rateLimited("concurrency", l.queueTimeout()) }); err != nil {
 		return nil, err
 	}
 
@@ -312,7 +312,7 @@ func (l *Limiter) AcquireConcurrency(ctx context.Context, accountID string, lim 
 // 分成两次锁持会留下丢唤醒窗口（判完到读 wake 之间有人释放并替换了 channel）；
 // 而完全锁外读 st.wake 是 data race（-race 实测抓出，releaseAcct 在锁内替换它）。
 // 被替换后旧 channel 仍会收到本次 close，所以等待者不会挂死在旧 channel 上。
-func (l *Limiter) acquireSlot(ctx context.Context, attempt func() (acquired bool, wake <-chan struct{}), dimension string) error {
+func (l *Limiter) acquireSlot(ctx context.Context, attempt func() (acquired bool, wake <-chan struct{}), dimension string, timeoutErr func() error) error {
 	deadline := l.now().Add(l.queueTimeout())
 	for {
 		ok, ch := attempt()
@@ -320,11 +320,19 @@ func (l *Limiter) acquireSlot(ctx context.Context, attempt func() (acquired bool
 			return nil
 		}
 		if err := l.wait(ctx, ch, deadline); err != nil {
-			return l.queueError(ctx, dimension)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr // 客户端已走：原样上抛，不算任何一种拒绝
+			}
+			return timeoutErr()
 		}
 	}
 }
 
+// acquireGlobal 是**进程级**闸门（06-runtime.md §2.3）：排队超时返回
+// ErrOverloaded（503 + Retry-After=queue_timeout）而不是 429——
+// lead 仲裁①（2026-10-20）：账户级并发超限是"你越限"（429 rate_limited），
+// 进程闸门排队是"服务过载"（503 overloaded），客户端动作不同（退避重试
+// vs 找管理员），按 D11 三态原则各给一码。
 func (l *Limiter) acquireGlobal(ctx context.Context) error {
 	return l.acquireSlot(ctx, func() (bool, <-chan struct{}) {
 		l.mu.Lock()
@@ -334,14 +342,11 @@ func (l *Limiter) acquireGlobal(ctx context.Context) error {
 			return true, nil
 		}
 		return false, l.globalWake
-	}, "concurrency(global)")
-}
-
-func (l *Limiter) queueError(ctx context.Context, dimension string) error {
-	if err := ctx.Err(); err != nil {
-		return err // 客户端已走：把取消原样交回，由中间件当成不算鉴权失败
-	}
-	return rateLimited(dimension, l.queueTimeout())
+	}, "concurrency(global)", func() error {
+		return auth.ErrOverloaded.
+			WithDetail("concurrency(global)", "").
+			WithRetryAfter(l.queueTimeout())
+	})
 }
 
 func (l *Limiter) releaseAcct(st *acctState) {
