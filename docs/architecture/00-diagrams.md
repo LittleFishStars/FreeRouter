@@ -46,9 +46,9 @@ flowchart TB
 
     subgraph S["④ 上游层 —— 三类供给，地位等价"]
         direction LR
-        S1["直连 API key<br/>贡献者凭据 / 平台自有"]:::upfill
-        S2["dsh 账号池<br/>providers-hub adapter 直连"]:::upfill
-        S3["本地 / 自建端点"]:::upfill
+        S1["vendor 上游<br/>贡献者交的官方 API 凭据"]:::upfill
+        S2["relay 反代<br/>providers-hub 账号池经 adapter 直连"]:::upfill
+        S3["selfhosted 自建<br/>管理员填的兼容端点"]:::upfill
     end
 
     K1 --> A1

@@ -36,12 +36,12 @@
 | 1.3 | **两进程模型**：Go 主进程 + Node sidecar；不 import、不写 cordis 插件 | `01-overview.md:171-196` |
 | 1.4 | **IPC 用 stdio + NDJSON**（一行一帧），借用 JSON-RPC 2.0 字段名但不实现 batch/notification | `04-sidecar.md:37-53`（已全库统一，见第 8.1 条） |
 | 1.5 | sidecar **无状态、一问一答、不主动推送**，`id` 由主进程分配 | `04-sidecar.md:52-57` |
-| 1.6 | sidecar 三条红线（只读凭据 / 不碰 `state.json` / 推理上游永走回环），并做成真实错误码 `E_CREDENTIAL_READONLY`、`E_STATE_FORBIDDEN` 当守卫 | `04-sidecar.md:199-231` |
+| 1.6 | sidecar 三条红线（只读凭据 / 不碰 `state.json` / 推理不经本机 HTTP 网关），并做成真实错误码 `E_CREDENTIAL_READONLY`、`E_STATE_FORBIDDEN` 当守卫 | `04-sidecar.md:199-231` |
 | 1.7 | sidecar **不感知业务概念**（IPC 参数里不出现 `abstract_model`/`api_key`/`account_id`） | `04-sidecar.md:192-195` |
 | 1.8 | 控制面与数据面**同进程** | `01-overview.md:311` |
 | 1.9 | 中间件顺序**固定 11 步**：恢复/请求 ID → 安全头 → 可信代理由 → body 上限 → 鉴权 → 限速 → 配额 → 抽象模型解析 → 协议解析 → L2 → 响应编码 | `01-overview.md:80-104` |
 | 1.10 | 入站请求体上限 **32 MiB**（可配），超限 **413 且不读 body** | `01-overview.md:88`、`03-upstream.md:363-373` `[无理由]`（为何是 32） |
-| 1.11 | 上游 `dshgateway` body 上限 **300 MiB** → 413 `request_too_large` | `03-upstream.md:366` |
+| 1.11 | 上游请求体上限 **300 MiB** → 413 `request_too_large`（反代类尤其要注意：provider adapter 自己也限额） | `03-upstream.md:366` |
 | 1.12 | 限速三维令牌桶：**全局 / 按 Key / 按 IP** | `01-overview.md:90` `[无理由]` |
 | 1.13 | MVP 只做 `/v1/chat/completions` 与 `/v1/messages`；`/v1/responses` 与 Gemini 入站列 P1 | `01-overview.md:105-118` `[无理由]` |
 | 1.14 | IR 只有**三种 role**（system/user/assistant），不设 `RoleTool`；系统提示统一提升为一条 system 消息 | `02-ir.md:68-85` |
@@ -63,11 +63,11 @@
 | 1.30 | 重试退避表：连接重置 **50→150ms** ≤2 次、连接失败 **200→500ms** ≤2、TLS **200ms** ≤1、超时 ≤1、5xx **100→300ms** ≤2；**429/额度/鉴权/bad_request/protocol 一律 0 次重试** | `03-upstream.md:242-256` |
 | 1.31 | 重试总预算 **≤2 次/候选、≤4 次/请求** | `03-upstream.md:260` |
 | 1.32 | 健康状态机 4 态；`degraded` **降权不摘除**；冷却退避 **30s→1m→5m→15m**（上限 15m） | `03-upstream.md:286-322` |
-| 1.33 | 熔断粒度挂在 `upstreams.id`；`dshgateway` 用 `GET /v1/models` 探活、健康时 **30s** 一次 | `03-upstream.md:304-318` |
-| 1.34 | `/readyz` = dshgateway 成功 **且** 至少 1 个 contributed healthy | `03-upstream.md:324-332` |
+| 1.33 | 熔断粒度挂在 `upstreams.id`；反代类用 sidecar 的 `models.list` 探活、健康时 **30s** 一次 | `03-upstream.md:304-318` |
+| 1.34 | `/readyz` = sidecar 可用 **且** 至少 1 条反代/上游健康 | `03-upstream.md:324-332` |
 | 1.35 | 超时矩阵 8 项：入站读 body **30s** / TCP **5s**（公网贡献凭据放宽 10s）/ TLS **10s** / 首字节 **60s** / **流式事件间隔 120s** / 单请求总时长 **600s** / 空闲淘汰 **90s** / drain **30s** | `03-upstream.md:336-355` |
 | 1.36 | 契约测试 **K1–K7**（含复现 `http=000` 并验证重试）；K1 **不断言模型条目数** | `03-upstream.md:400-415` |
-| 1.37 | 启动顺序 7 步，**初始化向导先于开公网**；`dshgateway` 自举失败**不阻塞启动**、每 30s 重试 | `01-overview.md:197-213`、`04-sidecar.md:236-257` |
+| 1.37 | 启动顺序 7 步，**初始化向导先于开公网**；反代类自举失败**不阻塞启动**、指数退避到 30s 重试 | `01-overview.md:197-213`、`04-sidecar.md:236-257` |
 | 1.38 | sidecar 启动 `health` 超时 **10s**，失败挂横幅继续 | `04-sidecar.md:243-250` |
 | 1.39 | sidecar 重启退避 **1s→2s→5s→15s→30s→60s**；连续 **5 次**失败停止重启等人工；协议违规**连续 3 次**主动重启 | `04-sidecar.md:259-274` |
 | 1.40 | sidecar 单次 IPC 超时：`health`/`providers.list` **3s**、`credentials.resolve`/`describe` **5s**、`models.list`/`credits.query` **15s**、`login.*` **10s**、`login.cancel` **3s**；**超时不取消** sidecar 侧操作 | `04-sidecar.md:276-288` |
@@ -185,7 +185,7 @@
 | 3.8 | 三级鉴定流水线：L0 **几秒**（全部贡献无例外）→ L1 **约 1 分钟**（决定是否入池）→ L2 **分钟级**（抽检 + 可疑 + 定时复检） | `05-verification.md:71-85` |
 | 3.9 | 信号按伪造抵抗性三级：**强**（数值随机指纹、能力边界、logprobs、金丝雀）、**中**（知识边界、计费一致性）、**弱**（usage 差值、自报身份、回显 model、响应头、错误格式）；弱信号不能单独定案 | `05-verification.md:49-60` |
 | 3.10 | 请求级两道闸：Q1 个人额度 → **429 `quota_exceeded`**；Q2 组共享池 → **429 `pool_exhausted`**；在候选展开**之前**判一次 | `03-strategy.md:71-77` |
-| 3.11 | 候选声明字段：`channel_scope{mode, channels[]}`、`credential_scope{mode: any/platform_only/contributed_only}`、`require_modalities[]`、`min_context`、`require_efforts[]` | `02-abstract.md:82-97` `[无理由]` |
+| 3.11 | 候选声明字段：`channel_scope{mode, channels[]}`、`credential_scope{mode: any/platform_only/contributor_only}`、`require_modalities[]`、`min_context`、`require_efforts[]` | `02-abstract.md:82-97` `[无理由]` |
 | 3.12 | 候选保存校验 **6 条**（含 require_modalities 必须是子集、至少 1 个候选） | `02-abstract.md:125-130` |
 | 3.13 | `aggregate/*` **默认排除**：刷新时置 `excluded_from_candidates=true`；引用它保存**被拒**；仍可见（22 个） | `01-catalog.md:139-145` |
 | 3.14 | missing 判定：连续 **N 天**未出现（**建议 3–7 天**，未定值） | `01-catalog.md:152,158` |
@@ -279,7 +279,7 @@
 | 4.45 | `qualified_name` **不可写**；`aggregate/*` 默认排除落在数据层 | `02-admin.md:225-259` |
 | 4.46 | 抽象模型名创建后不可改；`capability_mode` 二值；干跑是保存路径的**强制步骤**且要求新鲜结果 | `02-admin.md:265-333` |
 | 4.47 | 弃用保存三条硬校验（环检测 / 深度 ≤5 / 能力逐项 ≥）；`migration_doc` 字段名与四项能力清单 | `02-admin.md:340-372` |
-| 4.48 | 上游/凭据端点：`ban` 与禁用上游**需二次确认但不逐次重验**；**无任何端点返回凭据明文**；`kind=dshgateway` 的 `base_url` 只能是 `127.0.0.1:8326`　**2026-10-20 修正**：原写「ban 每次重验」，与「恰好四项」冲突 | `02-admin.md:378-405` |
+| 4.48 | 上游/凭据端点：`ban` 与禁用上游**需二次确认但不逐次重验**；**无任何端点返回凭据明文**；`kind=relay`（反代）**根本没有 `base_url` 可填**——端点由 adapter 内部决定　**2026-10-20 修正**：原写「ban 每次重验」，与「恰好四项」冲突 | `02-admin.md:378-405` |
 | 4.49 | 审计查询参数固定 **7 个**，**无 DELETE** | `02-admin.md:435` |
 | 4.50 | 需**二次确认**的设置键 **4 个**（不含已撤销的 `admin_ip_allowlist`），设置项**不逐次重验**；额外提供 `POST /api/admin/settings/ip-check`；脱敏模式是**设置**而非会话级参数　**2026-10-20 修正**：原写「需逐次重验的设置键 5 个」——5 个里含已明确不提供的 `admin_ip_allowlist`，且设置项本就不属四项 | `02-admin.md:444-460` |
 

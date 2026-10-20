@@ -88,7 +88,7 @@ candidate = {
     channel_scope:      -- 渠道范围
       { mode: any | include | exclude, channels: [...] },
     credential_scope:   -- 凭据来源范围
-      { mode: any | platform_only | contributed_only },
+      { mode: any | platform_only | contributor_only },
     require_modalities: ["text" | "image" | ...],
     min_context:        <int>,
     require_efforts:    ["high", "max", ...]     -- 思考档位要求（可选）

@@ -583,7 +583,7 @@ TypeScript，MIT，DSH 插件，本机 `0.2.1-rc.2`（profile `web`，link 安�
    > 代价（已实测）：`dsh-providers-hub` 的 `package.json` `exports` 只开了 `"."` /
    > `"./client"` / `"./locale/*.json"` / `"./package.json"`，深导入 `lib/xxx.js` 会被封死；
    > 而 `import 'dsh-providers-hub'` 会连带拉起整套插件壳（缺 `jose` / `undici`）。
-   > 因此 sidecar **必须 vendor 一份 `lib/`**，只做文件级导入。
+   > 因此 sidecar **必须内置一份 `lib/` 副本**，只做文件级导入。
 
    旧网关行为仅供参考（已不使用）：Bearer 鉴权，key 在
    `$DSH_HOME/openai-gateway/api-key`（43 字符）；`~/.dsh` 只是 `~/.local/share/dsh`
@@ -614,7 +614,7 @@ TypeScript，MIT，DSH 插件，本机 `0.2.1-rc.2`（profile `web`，link 安�
 
 ### 5.3 上游硬约束（写进适配层）
 
-- 拒绝通配地址 → **唯一出口原则**：上游永走 `127.0.0.1`，对外只在 FreeRouter。
+- 拒绝通配地址 → 反代（`relay`）类上游只能活在本机 sidecar 进程内，对外**只有** FreeRouter 一个入口。
 - 请求体上限 **300 MiB**（超限 413 `request_too_large`）；入站设更小上限
   （默认 32 MiB）提前拒绝。
 - 空闲 keep-alive **120 秒**后服务端发 FIN → 自管连接池，不复用死连接。
@@ -641,7 +641,7 @@ providers-hub 的 `package.json` 只导出 `.` 与 `./client`，深路径 import
 - 独立 Node 子进程加载 providers-hub 的 auth / adapter 模块；
 - FreeRouter 通过**子进程的 stdin/stdout（stdio + NDJSON）**调用它；
 - 三条红线：**① 只读凭据**（不改 Jet Hub 状态）；**② 不碰**
-  `$DSH_HOME/jet-hub/state.json`；**③ 上游永走 `127.0.0.1`**。
+  `$DSH_HOME/jet-hub/state.json`；**③ 推理不经任何本机 HTTP 网关**（无 `:8326` 那一跳）。
 
 > 直接 import 会与 DSH 进程内的模块状态冲突，故走子进程隔离。
 
@@ -671,9 +671,9 @@ providers-hub 的 `package.json` 只导出 `.` 与 `./client`，深路径 import
                                 ▼
               ┌────────────────────────────────────┐
               │  L3 上游                            │
-              │  dsh_provider → sidecar 直连 adapter │
-              │  contributed  → 贡献者凭据直连       │
-              │  compatible   → 本地/自建兼容端点    │
+              │  relay → sidecar 直连 adapter │
+              │  vendor  → 贡献者凭据直连       │
+              │  selfhosted   → 本地/自建兼容端点    │
               │  连接池 · 重试 · 健康探测            │
               └───────┬────────────────────┬───────┘
                       ▼                    ▼
@@ -757,8 +757,8 @@ FreeRouter/
 │   ├── catalog/                  # 真实模型目录与健康
 │   ├── meter/                    # token / 延迟 / 归因打标
 │   ├── store/                    # SQLite + 迁移 + DAO
-│   ├── upstream/dsh_provider/    # sidecar IPC 客户端（连接池 / 重试 / 契约测试）
-│   ├── upstream/contributed/     # 贡献凭据直连
+│   ├── upstream/relay/    # sidecar IPC 客户端（连接池 / 重试 / 契约测试）
+│   ├── upstream/vendor/     # 贡献凭据直连
 │   ├── sidecar/                  # Node sidecar 客户端（IPC）
 │   ├── verify/                   # 模型鉴定流水线
 │   ├── httpapi/                  # 入站：鉴权、限速、配额、SSE
@@ -798,7 +798,7 @@ FreeRouter/
 **协议与上游**
 - [ ] 入站 `POST /v1/chat/completions`（流式 + 非流式 + tool_calls + 图片）
 - [ ] 入站 `POST /v1/messages`（Anthropic，含 `tool_use` / `thinking` / SSE 事件名对齐）
-- [ ] 上游 `dsh_provider`：sidecar 直连 adapter、目录发现与缓存、连接池、重试、离线降级、**模型变动即时通知**
+- [ ] 上游 `relay`：sidecar 直连 adapter、目录发现与缓存、连接池、重试、离线降级、**模型变动即时通知**
 
 **贡献**
 - [ ] 贡献页：供应商 OAuth 贡献 + API Key 贡献（未登录也可）
@@ -916,7 +916,7 @@ SQLite（WAL），编号 SQL 迁移，启动时自动执行。
 | `abstract_models` | id, name, display_name, strategy, capability_mode, status, replacement_model_id, deprecated_at, sunset_at, note | `status`: `active` / `deprecated` / `disabled`；自引用替代链 |
 | `abstract_candidates` | abstract_model_id, real_model_id, constraint_json, weight | 候选集（声明式，不绑凭据） |
 | `real_models` | id, upstream_id, upstream_model_id, display_name, group_name, context_window, modalities, efforts, status, hidden, sort_order, source, last_seen_at, missing_since | source: `auto` / `override`；status 含 `missing` |
-| `upstreams` | id, kind, name, base_url, secret_id, owner_account_id, enabled, last_seen_at | kind: `dsh_provider` / `contributed` / `compatible`；**`owner_account_id = NULL` 表示平台自有** |
+| `upstreams` | id, kind, name, base_url, secret_id, owner_account_id, enabled, last_seen_at | kind: `relay` / `vendor` / `selfhosted`；**`owner_account_id = NULL` 表示平台自有** |
 | `upstream_secrets` | id, upstream_id, ciphertext, nonce | AES-GCM，主密钥不入库 |
 | `upstream_credentials` | id, owner_account_id, provider, external_id, external_label, secret_ref, status, login_enabled, verify_status, verify_detail, created_at, last_used_at, **UNIQUE(provider, external_id)** | 归属 `contributor` 类账户 |
 | `api_keys` | id, account_id, key_hash, prefix, name, status, expires_at, created_at, last_used_at | **必须归属有 `tenant` 类的账户**；只存 hash；**无自身额度**（额度在账户级） |
@@ -943,7 +943,7 @@ SQLite（WAL），编号 SQL 迁移，启动时自动执行。
 
 ### 11.1 启动自举
 
-**不走 8326 网关**（见 5.1 第 5 条的定案）。Node sidecar 直接加载 vendored 的
+**不走 8326 网关**（见 5.1 第 5 条的定案）。Node sidecar 直接加载随包的
 `lib/*-adapter.js`，FreeRouter 通过 **stdio + NDJSON** 与它通信。
 
 1. sidecar 启动 → 读取 `$DSH_HOME/jet-hub/state.json` 的账号元数据（**只读**），
@@ -989,7 +989,7 @@ SQLite（WAL），编号 SQL 迁移，启动时自动执行。
 ② adapter 的 `constructor(options)` 依赖键清单——providers-hub 升级时若新增必需
 注入项，测试要红。
 
-providers-hub 升级后先跑契约测试，红了再适配。**vendor 的 `lib/` 要记版本号**，
+providers-hub 升级后先跑契约测试，红了再适配。**内置的 `lib/` 副本要记版本号**，
 便于判断上游何时漂移。
 
 ---
@@ -1046,9 +1046,9 @@ M10 而非插在关键路径中间；真要暴露公网时 M10 必须完成。
 | **弃用替代链配成环** | 请求死循环 | 规则上两处堵死（弃用只能指向 active 模型；弃用不可逆）+ 运行时 visited 兜底；检出环降级为"无替代"、绝不报错 |
 | **替代模型能力低于原模型** | 客户端中途失败 | 保存时逐项校验能力 ≥，不满足直接拒绝保存 |
 | 上游偶发连接失败（实测 `http=000`） | 请求随机失败 | 连接池 + 幂等重试 + 健康探测；计入 `requests` 便于观察频率 |
-| providers-hub 升级接口漂移 | 上游断 | **vendor 的 `lib/` 记版本号** + 契约测试锁 adapter 方法形状与注入键清单 |
+| providers-hub 升级接口漂移 | 上游断 | **内置 `lib/` 副本记版本号** + 契约测试锁 adapter 方法形状与注入键清单 |
 | Node sidecar 与 DSH 抢状态 | 两边都坏 | 子进程隔离 + **只读** `state.json` + 绝不写它 |
-| 上游拒绝通配 / 只绑回环 | 跨机不可用 | 唯一出口原则：上游永走 `127.0.0.1` |
+| 上游只为本机进程内可用 | 无法跨机 | 对外只有 FreeRouter 一个入口；跨机留给 P2 多节点方案 |
 | 300 MiB body / 120s keep-alive | 413、连接重置 | 入站设更小上限并给明确错误；自管连接池 |
 | 各家思考档位 / 模态方言不一 | 静默降级或 400 | IR 保留「未知」第三态；缺能力明确报错 |
 | SSE 分片乱序 / tool_call id 重组 | 工具调用错乱 | 按 `index` 缓存 id 重组 |

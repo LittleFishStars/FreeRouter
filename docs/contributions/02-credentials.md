@@ -38,7 +38,7 @@ upstream_credentials(
 ## 2. 四张表的关系
 
 ```
-upstreams            可调用的通道：kind(dsh_provider|contributed|compatible) + owner_account_id
+upstreams            可调用的通道：kind(relay|vendor|selfhosted) + owner_account_id
    │ 1
    │ n
 upstream_secrets     密钥材料：ciphertext + nonce（AES-GCM），主密钥不入库

@@ -139,7 +139,7 @@ credits.query({ provider: string, credentialRef: string }) -> {
 | `credentials.set` / `credentials.unset` | **红线①**（第 4 节）。一旦存在，某天就会有人用它"顺手把刷新后的 token 写回去"，而那次写入会与 DSH 自己的续期竞争 |
 | `credentials.refresh` | 续期必然要写回凭据存储，同红线①。**后果**：凭据的续期只能由 DSH 完成，我们只能读最新值。读到 `expiresAt` 已过 → 标 `status=expired` 并从候选中剔除，同时提示贡献者去 DSH 里重新登录 |
 | `state.read` / `state.write` | **红线②**（第 4 节）。`state.json` 是 DSH 的运行状态（账号列表、`disabledModels`、`aggregateOrder` 等），与它共享状态就是承认耦合 |
-| 任何"代我调用上游模型"的方法 | sidecar **不参与推理链路**。红线③要求推理上游永走 `127.0.0.1`，如果让 sidecar 代发模型请求，就等于把推理上游地址变成了"由 TS 代码决定"，那正是我们要避免的 |
+| 任何"打开一个 HTTP 端口让 Go 侧代理推理"的方法 | **不进过本机 HTTP 网关**（ALIGN-SPEC H / 红线③）。sidecar **确实参与推理链路**（它就在链路上：Go → IPC → adapter → 官方端点），但那条链路上没有 HTTP 监听端口——推理走进程内 `import()`，数据经 stdio 管道搬运。若提供一个 `:8326` 那样的收口层，就等于把推理又变成"一个可被别人直接敲的 OpenAI 端点"，且会抹掉 provider 账号归因（网关只认一个 Bearer） |
 
 **登录流拿到凭据之后怎么办**：`login.poll` 返回 `credentialRef` 与取值入口，**由贡献者在控制台
 确认后，凭据存进 FreeRouter 自己的 `upstream_secrets`**（AES-GCM），不回写 DSH。
@@ -240,21 +240,21 @@ credits.query({ provider: string, credentialRef: string }) -> {
 |---|---|---|
 | 1 | 加载配置，校验唯一出口（[03-upstream.md](03-upstream.md) 9.3） | **拒绝启动** |
 | 2 | 打开 SQLite，执行迁移 | 拒绝启动 |
-| 3 | 校验 `sidecar.hub_path`（vendored providers-hub）可读、Node 版本满足 | 挂横幅，继续（不阻塞） |
-| 4 | **拉起 sidecar 进程**，等待 `health` 应答（超时 **10s**） | 挂横幅，继续；contributed 全部视为不可用 |
+| 3 | 校验 `sidecar.hub_path`（随包副本 `hub_path`）可读、Node 版本满足 | 挂横幅，继续（不阻塞） |
+| 4 | **拉起 sidecar 进程**，等待 `health` 应答（超时 **10s**） | 挂横幅，继续；vendor 全部视为不可用 |
 | 5 | 异步拉 `GET /v1/models` 写 `real_models` | 每 30s 重试 |
 | 6 | 启动健康探测循环（[03-upstream.md](03-upstream.md) 第 7 节） | —— |
 | 7 | 开始监听，`/readyz` 开始返回 | —— |
 
-**为什么步骤 4 失败**不阻塞启动**：`dsh_provider` 是主供给（providers-hub 账号池 + 上百个模型的额度），
-它不依赖 sidecar。sidecar 只影响 `contributed` 上游与"贡献/登录"这条支线。为了一个支线
+**为什么步骤 4 失败**不阻塞启动**：`relay` 是主供给（providers-hub 账号池 + 上百个模型的额度），
+它不依赖 sidecar。sidecar 只影响 `vendor` 上游与"贡献/登录"这条支线。为了一个支线
 让整站起不来，是把 SLA 绑在了最不重要的一环上。
 
 **为什么 `health` 超时是 10s 而不是 60s**：Node 冷启动 + 加载 providers-hub 模块通常 < 3s。
 10s 已经足够区分"慢"与"卡住"，而更长的等待会让启动看起来很卡（用户会以为进程挂了）。
 
 **为什么不把 sidecar 的 `health` 接进 `/readyz`**：见 [03-upstream.md](03-upstream.md) 7.3——
-`/readyz` 的语义是"能不能服务某个请求"，`dsh_provider` 可用就够了。sidecar 的健康状况通过
+`/readyz` 的语义是"能不能服务某个请求"，`relay` 可用就够了。sidecar 的健康状况通过
 `/healthz` 的明细与横幅暴露。
 
 ### 5.2 运行期
@@ -262,8 +262,8 @@ credits.query({ provider: string, credentialRef: string }) -> {
 | 事件 | 处理 |
 |---|---|
 | sidecar 退出（任意信号） | 主进程按退避重启：1s → 2s → 5s → 15s → 30s → 60s（上限） |
-| 连续 **5 次**启动失败 | 进入 `sidecar_degraded`：停止重启，横幅提示，contributed 全部冷却；**等管理员干预** |
-| 主进程有在途 IPC 调用时 sidecar 死 | 所有在途调用立即以 `E_UPSTREAM_…`（或 `E_PROTOCOL`）失败。若该请求尚未产出可见内容，按 [06-runtime.md](06-runtime.md) 的切换状态机换候选（通常是换到 `dsh_provider` 或 `compatible` 的候选） |
+| 连续 **5 次**启动失败 | 进入 `sidecar_degraded`：停止重启，横幅提示，vendor 全部冷却；**等管理员干预** |
+| 主进程有在途 IPC 调用时 sidecar 死 | 所有在途调用立即以 `E_UPSTREAM_…`（或 `E_PROTOCOL`）失败。若该请求尚未产出可见内容，按 [06-runtime.md](06-runtime.md) 的切换状态机换候选（通常是换到 `relay` 或 `selfhosted` 的候选） |
 | 单次调用超时 | 见 5.3；超时不代表 sidecar 死了，只记 `warn` |
 | 协议违规（`E_PROTOCOL`） | 记错误计数；**连续 3 次**视为 sidecar 失能，主动重启它 |
 

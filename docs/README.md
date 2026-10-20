@@ -18,7 +18,7 @@
 | | [architecture/00-diagrams.md](architecture/00-diagrams.md) | 两张总图：模型调用层级图、权限架构图（mermaid） | ✅ 200 行 |
 | | [architecture/01-overview.md](architecture/01-overview.md) | 分层、进程模型、部署形态 | ✅ 359 行 |
 | | [architecture/02-ir.md](architecture/02-ir.md) | IR 与四协议转换 | ✅ 554 行 |
-| | [architecture/03-upstream.md](architecture/03-upstream.md) | 上游适配：dsh_provider / contributed / compatible | ✅ 544 行 |
+| | [architecture/03-upstream.md](architecture/03-upstream.md) | 上游适配：relay / vendor / selfhosted | ✅ 558 行 |
 | | [architecture/04-sidecar.md](architecture/04-sidecar.md) | Node sidecar 的 IPC 契约 | ✅ 395 行 |
 | | [architecture/05-storage.md](architecture/05-storage.md) | 数据模型、迁移、索引 | ✅ 809 行 |
 | | [architecture/06-runtime.md](architecture/06-runtime.md) | 并发、连接池、流式、超时、错误处理 | ✅ 405 行 |
@@ -93,6 +93,17 @@
 | `suspect` | 有指纹但不达标 | ❌ 拒绝并给证据 |
 | `unverified` | **库中无参考指纹**（冷门模型） | ✅ 放行，标「未鉴定」，进复检队列 |
 | `trusted` | 官方域名 | ✅ 免检 |
+
+**三类上游**（用户用中文命名，代码用英文标识符）：
+
+| 中文名 | 标识符 | 含义 |
+|---|---|---|
+| **反代** | `relay` | 把 providers-hub 的账号池反代出去；凭据在它那里，推理走 sidecar 进程内的 provider adapter |
+| **上游** | `vendor` | 贡献者交的、直接连厂商官方端点的 API 凭据 |
+| **自建** | `selfhosted` | 管理员自己填的 OpenAI / Anthropic 兼容地址 |
+
+> 不用中文直译当标识符：`upstreams.kind='upstream'` 这种自指像 bug，且 `upstream` 已是 L3 层名
+> （`upstream_credentials` / `upstream_secrets`）。详见 [architecture/03-upstream.md](architecture/03-upstream.md) 第 1 节。
 
 ---
 

@@ -34,7 +34,7 @@ dsh:<渠道>/<上游模型 id>
 
 **为什么加 `dsh:` 前缀**（上游 id 本来就已经是 `渠道/模型` 形态，看着像多此一举）：
 
-1. **留命名空间**。上游目前有三种来源（总纲 10 的 `upstreams.kind`）：`dsh_provider`（providers-hub 账号池直连）、`contributed`（贡献者凭据直连官方）、`compatible`（本地或自建 OpenAI 兼容端点）。其中只有 `dsh_provider` 的模型 id 天然带 `渠道/模型` 形态，另两种没有——但它们都叫“上游”，迟早会撞名字。前缀现在就钉死，将来加新来源不必迁移历史数据。
+1. **留命名空间**。上游目前有三种来源（总纲 10 的 `upstreams.kind`）：`relay`（providers-hub 账号池直连）、`vendor`（贡献者凭据直连官方）、`selfhosted`（本地或自建 OpenAI 兼容端点）。其中只有 `relay` 的模型 id 天然带 `渠道/模型` 形态，另两种没有——但它们都叫“上游”，迟早会撞名字。前缀现在就钉死，将来加新来源不必迁移历史数据。
 2. **防混用**。限定名带 `:`，抽象模型名禁止带 `:`（见 [02-abstract.md](02-abstract.md) 命名规则），于是"客户端拿到了一个真实模型名"这件事在字符串层面就能一眼识别，不必查库。
 3. **归因可读**。`requests` 表里落的是解析后的真实模型，管理员看日志时渠道与模型在同一串字符里，不用二次 join。
 
@@ -45,7 +45,7 @@ dsh:<渠道>/<上游模型 id>
 ```
 real_models {
   id,                    -- 内部主键
-  upstream_id,           -- 来源（dsh_provider / contributed / compatible），见总纲 10 upstreams
+  upstream_id,           -- 来源（relay / vendor / selfhosted），见总纲 10 upstreams
   upstream_model_id,     -- 上游原样 id，如 "deepseek-official/deepseek-flash"
   display_name,          -- 管理端显示名，默认取上游 name 字段
   group_name,            -- 目录分组（不是权限组，见第 4 节）

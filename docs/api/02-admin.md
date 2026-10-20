@@ -392,7 +392,7 @@ GET /api/admin/abstract-models/am_fast/chain
 | `GET` | `/api/admin/upstreams` | 列表 | ➖ |
 | `POST` | `/api/admin/upstreams` | 新建 | ➖ |
 | `PATCH` | `/api/admin/upstreams/{id}` | 改名称、base_url、启用 | ➖（禁用时 🔒 二次确认） |
-| `POST` | `/api/admin/upstreams/{id}/kind` | 变更 `kind`（`dsh_provider` / `contributed` / `compatible`） | 🔒（改上游形态） |
+| `POST` | `/api/admin/upstreams/{id}/kind` | 变更 `kind`（`relay` / `vendor` / `selfhosted`） | 🔒（改上游形态） |
 | `POST` | `/api/admin/upstreams/{id}/test` | 连通性测试 | ➖ |
 | `GET` | `/api/admin/credentials` | 列表（筛选 `owner` / `provider` / `verify_status` / `status`） | ➖ |
 | `GET` | `/api/admin/credentials/{id}` | 详情（**无明文**） | ➖ |
@@ -402,15 +402,15 @@ GET /api/admin/abstract-models/am_fast/chain
 
 **没有任何端点返回凭据明文**。总纲 9.4 定"凭据明文永不回显"。 管理端详情返回的是 `provider` / `external_label` / `verify_detail` 等元数据。
 
-**为什么 `dsh_provider` 类型不接受 `base_url`**（2026-10-20 改定）：这一类的调用路径是 **Node sidecar 直接调用 providers-hub 的 provider adapter**（`lib/*-adapter.js`），全程不经过 HTTP 网关。构造 `kind=dsh_provider` 时如果传了地址，端点在保存前就拒绝——不是"忽略它"，而是明确报错。**为什么报错而不是忽略**：忽略会让管理员以为自己配的地址生效了，等排查时才发现根本没被使用；报错把这件事在保存那一刻讲清楚。
+**为什么 `relay` 类型不接受 `base_url`**（2026-10-20 改定）：这一类的调用路径是 **Node sidecar 直接调用 providers-hub 的 provider adapter**（`lib/*-adapter.js`），全程不经过 HTTP 网关。构造 `kind=relay` 时如果传了地址，端点在保存前就拒绝——不是"忽略它"，而是明确报错。**为什么报错而不是忽略**：忽略会让管理员以为自己配的地址生效了，等排查时才发现根本没被使用；报错把这件事在保存那一刻讲清楚。
 
 **三类 `kind` 的字段要求**：
 
 | `kind` | `base_url` | 调用路径 |
 |---|---|---|
-| `dsh_provider` | **禁止提供** | Node sidecar → providers-hub provider adapter |
-| `contributed` | 必填（该供应商官方地址） | Go 直连上游官方端点，凭据来自贡献 |
-| `compatible` | 必填（自建 / 本地兼容端点） | Go 直连该端点 |
+| `relay` | **禁止提供** | Node sidecar → providers-hub provider adapter |
+| `vendor` | 必填（该供应商官方地址） | Go 直连上游官方端点，凭据来自贡献 |
+| `selfhosted` | 必填（自建 / 本地兼容端点） | Go 直连该端点 |
 
 **为什么 `kind` 的变更要单独一个端点并标危险**：它改变的是这条上游**怎么被调用**，不是它的名字或开关。就地 `PATCH` 会让"我改了 base_url"和"我改了调用方式"看起来是同一类操作，而后者会让所有依赖该上游的候选在下一次请求时走一条完全不同的代码路径。
 

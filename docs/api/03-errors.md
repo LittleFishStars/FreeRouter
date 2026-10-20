@@ -212,7 +212,7 @@ Retry-After: 30
 
 **为什么允许"有时没有 `Retry-After`"**：给一个编造的数字 会让守规矩的客户端在错误的时刻重试。宁可让它自行退避。
 
-**为什么 `upstream_unavailable` 也允许带 `Retry-After`**：直连类上游（`dsh_provider` 走 Node sidecar、`compatible` 走自建端点）的恢复时间在"sidecar 进程被重启""上游服务滚动发布"这类场景下是可估计的。给得出就给。
+**为什么 `upstream_unavailable` 也允许带 `Retry-After`**：直连类上游（`relay` 走 Node sidecar、`selfhosted` 走自建端点）的恢复时间在"sidecar 进程被重启""上游服务滚动发布"这类场景下是可估计的。给得出就给。
 
 ### 5.3 弃用信号（RFC 9745 与 RFC 8594）
 

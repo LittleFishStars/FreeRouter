@@ -344,7 +344,7 @@
 | 字段 | 说明 |
 |---|---|
 | 真实模型 | 从真实模型目录选择（`aggregate/*` 默认不可选） |
-| 渠道范围 | 限定可用渠道（如仅 `contributed` 或全部） |
+| 渠道范围 | 限定可用渠道（如仅 `vendor` 或全部） |
 | 约束 | 该候选的附加条件（如必须支持某能力） |
 | 权重 | 仅在该抽象模型的排序链里显式含 `round-robin` 平局决胜时生效；默认链不使用 |
 | 可用性预览 | 声明式候选 → 当前可用的凭据实例数量 |
@@ -394,24 +394,24 @@
 
 ### 8.1 上游 `/admin/upstreams`
 
-**用途**：管理渠道。`kind` 有三种：`dsh_provider`（providers-hub 账号池直连）/ `contributed`（贡献者凭据直连官方）/ `compatible`（本地或自建的 OpenAI 兼容端点）。
+**用途**：管理渠道。`kind` 有三种：`relay`（providers-hub 账号池直连）/ `vendor`（贡献者凭据直连官方）/ `selfhosted`（本地或自建的 OpenAI 兼容端点）。
 
 **关键字段**：
 
 | 字段 | 说明 |
 |---|---|
-| 类型 | `dsh_provider`（复用 providers-hub 池）/ `contributed`（贡献者凭据）/ `compatible`（自建兼容端点） |
+| 类型 | `relay`（复用 providers-hub 池）/ `vendor`（贡献者凭据）/ `selfhosted`（自建兼容端点） |
 | 名称 | 可读名 |
-| base_url | 上游地址。`dsh_provider` **不填地址**（由 sidecar 直接调用 providers-hub 的 provider adapter，不经过任何 HTTP 网关）；`contributed` 填官方地址；`compatible` 填自建端点地址 |
+| base_url | 上游地址。`relay` **不填地址**（由 sidecar 直接调用 providers-hub 的 provider adapter，不经过任何 HTTP 网关）；`vendor` 填官方地址；`selfhosted` 填自建端点地址 |
 | 归属 | `owner_account_id = NULL` 表示平台自有（总纲 4.2） |
 | 启用 | 开关 |
 | 最后连通时间 | 健康信号 |
 
 **主要操作**：新建、编辑、启用 / 禁用、测试连通性。
 
-**为什么 `dsh_provider` 类型没有 base_url 输入框**（2026-10-20 改定）：这一类的调用路径是 **Node sidecar 直接调用 providers-hub 的 provider adapter**（`lib/*-adapter.js`），全程不经过 HTTP 网关。给它一个地址字段等于留了一个必然失败、且会破坏归因的配置项——填什么都没用，因为没有任何代码会去连它。旧设计里这一类的调用要绕一次本机 OpenAI 网关（地址被锁定为回环端口），改名与去地址是同一次变更的两面：既然要直连 adapter，网关与端口就都不存在了。
+**为什么 `relay` 类型没有 base_url 输入框**（2026-10-20 改定）：这一类的调用路径是 **Node sidecar 直接调用 providers-hub 的 provider adapter**（`lib/*-adapter.js`），全程不经过 HTTP 网关。给它一个地址字段等于留了一个必然失败、且会破坏归因的配置项——填什么都没用，因为没有任何代码会去连它。旧设计里这一类的调用要绕一次本机 OpenAI 网关（地址被锁定为回环端口），改名与去地址是同一次变更的两面：既然要直连 adapter，网关与端口就都不存在了。
 
-**为什么还要保留 `compatible` 这个第三类**：它服务的是"自建 / 本地 OpenAI 兼容端点"这种真实需求（总纲第 10 章）。把它塞进 `contributed` 会让"贡献者凭据"这个词失真，塞进 `dsh_provider` 则要求它也走 provider adapter——两者都不成立。
+**为什么还要保留 `selfhosted` 这个第三类**：它服务的是"自建 / 本地 OpenAI 兼容端点"这种真实需求（总纲第 10 章）。把它塞进 `vendor` 会让"贡献者凭据"这个词失真，塞进 `relay` 则要求它也走 provider adapter——两者都不成立。
 
 **危险操作与二次确认**：禁用上游需要 🔒 二次确认，且必须显示"当前有多少候选依赖该上游"。
 

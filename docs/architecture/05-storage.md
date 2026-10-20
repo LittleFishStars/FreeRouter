@@ -269,7 +269,7 @@ CREATE INDEX ix_real_models_status ON real_models(status);
 ```sql
 CREATE TABLE upstreams (
     id               INTEGER PRIMARY KEY,
-    kind             TEXT    NOT NULL CHECK (kind IN ('dsh_provider','contributed','compatible')),
+    kind             TEXT    NOT NULL CHECK (kind IN ('relay','vendor','selfhosted')),
     name             TEXT    NOT NULL,
     base_url         TEXT    NOT NULL,
     secret_id        INTEGER REFERENCES upstream_secrets(id),
@@ -741,7 +741,7 @@ UPDATE group_quota_pools
 |---|---|---|
 | DB 快照 | 备份目录 | —— |
 | 主密钥 | 独立的密钥保管（不与备份同处） | 上游凭据全部作废，必须让贡献者重新提交 |
-| `sidecar.hub_path`（vendored providers-hub） | 部署包内 / npm 缓存 | `dsh_provider` 全部不可用，只能靠 `contributed` 与 `compatible` |
+| `sidecar.hub_path`（随包副本 `hub_path`） | 部署包内 / npm 缓存 | `relay` 全部不可用，只能靠 `vendor` 与 `selfhosted` |
 
 **为什么值得接受"恢复更麻烦"**：反过来（主密钥随备份）意味着**任何拿到备份的人拿到全部
 凭据**，而备份会被复制到更多地方（异地、对象存储、开发机）。把两样东西分开放，

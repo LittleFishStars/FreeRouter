@@ -79,7 +79,7 @@ M9 新增的待处理事项页与 M7 的组管理页可并行，不拉长主线�
   - [ ] 未知方法名 → 结构化错误，不是进程崩溃
   - [ ] sidecar 中途死掉 → 主进程返回 5xx 且自动重拉
 - [ ] 不再有「从 `$DSH_HOME/openai-gateway/api-key` 自举读 key」这一步：
-  `dsh_provider` 用贡献者自己的供应商登录态，没有网关层 key 可读（ALIGN-SPEC H）
+  `relay` 用贡献者自己的供应商登录态，没有网关层 key 可读（ALIGN-SPEC H）
 - [ ] `Makefile`：`build` / `test` / `lint` / `contract`
 
 ### 产出物
@@ -157,7 +157,7 @@ sqlite3 data/freerouter.db "SELECT count(*) FROM real_models;"
 
 ```bash
 # 对一个已知真货跑鉴定
-freerouter verify --upstream dsh_provider --model deepseek-official/deepseek-flash --level L1
+freerouter verify --upstream relay --model deepseek-official/deepseek-flash --level L1
 # 应输出各维度得分与最终判定 verified
 
 # 冷门模型应放行但标记

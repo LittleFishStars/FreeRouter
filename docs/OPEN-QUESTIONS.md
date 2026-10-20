@@ -290,7 +290,7 @@
 - **Q171** `/v1/responses` 与 Gemini 入站是否提供与 OpenAI 完全一致的错误响应形状， 还是各自按自家规范返回。两条都要在 [02-ir.md](architecture/02-ir.md) 与 `../api/03-errors.md` 中对齐。
 - ~~**Q172** 前端形态（Next.js + `embed.FS` 还是 Go 模板 + htmx）会影响 L1 是否要挂静态资源中间件~~ **已定案（2026-10-19）**：Vite + React，产物 `web/dist` 由同目录 `embed.go` 的 `go:embed` 嵌入，L1 **要**挂静态资源中间件（SPA fallback + 不可变缓存头）；构建期需要 Node，运行期不需要。
 - **Q173** P2 多节点时，SQLite → Postgres 会改变事务边界（[05-storage.md](architecture/05-storage.md)）； 同时限速与配额要从进程内状态迁到共享设施。多节点下的 sidecar 是"每节点一个"还是 "独立服务"需要届时决定——现在不做，但本册的分层不应妨碍这两种走法。
-- **Q174** `contributed` 上游是否允许非 OpenAI 兼容协议（例如直接对接某家 Anthropic 兼容端点）。 若允许，L3 需要第二套编码器，IR 的出站映射也要按上游协议而非入站协议选择。
+- **Q174** `vendor` 上游是否允许非 OpenAI 兼容协议（例如直接对接某家 Anthropic 兼容端点）。 若允许，L3 需要第二套编码器，IR 的出站映射也要按上游协议而非入站协议选择。
 - **Q175** 管理面与数据面是否需要在同一进程内做资源隔离（例如管理查询的并发上限、 独立 goroutine 池）。当前假设管理面流量远小于转发流量，先不隔离。
 
 ### architecture/02-ir.md
@@ -305,11 +305,11 @@
 
 ### architecture/03-upstream.md
 
-- **Q183** `contributed` 上游是否允许非 OpenAI 兼容协议（原生 Anthropic / Gemini 端点）。 若允许，[02-ir.md](architecture/02-ir.md) 的出站映射要按上游协议选择，`Dialect` 需要扩充， 且契约测试要覆盖新方言。当前按"只支持 OpenAI 兼容"实现。
+- **Q183** `vendor` 上游是否允许非 OpenAI 兼容协议（原生 Anthropic / Gemini 端点）。 若允许，[02-ir.md](architecture/02-ir.md) 的出站映射要按上游协议选择，`Dialect` 需要扩充， 且契约测试要覆盖新方言。当前按"只支持 OpenAI 兼容"实现。
 - **Q184** 是否需要给单个凭据设连接数上限（防止一个贡献凭据被大量并发打爆）。 当前用 `MaxConnsPerHost` 在 host 级别兜底，逐凭据上限留到有真实滥用数据后再加。
 - **Q185** 是否给单个**凭据**（而非 host）设置连接数上限。当前只有 host 级 `MaxConnsPerHost`，无法阻止一个贡献凭据被大量并发请求打爆（对贡献者是实际损失）。
-- **Q186** `contributed` 上游的模型目录以"贡献者声明"为准还是以 `/v1/models` 为准。 前者可能造假（正是**鉴定**要防的），后者可能不被支持。当前倾向"声明为主 + L0 形式校验"， 但需要与 [../contributions/02-credentials.md](contributions/02-credentials.md) 对齐。
-- **Q187** 上游是否需要一个显式的"出口代理"配置（`HTTP_PROXY`）。当前假设 `dsh_provider` 经本机 sidecar 出网不需要代理、`contributed` 直连。若部署环境强制出网代理，需要在 Transport 层统一注入。
+- **Q186** `vendor` 上游的模型目录以"贡献者声明"为准还是以 `/v1/models` 为准。 前者可能造假（正是**鉴定**要防的），后者可能不被支持。当前倾向"声明为主 + L0 形式校验"， 但需要与 [../contributions/02-credentials.md](contributions/02-credentials.md) 对齐。
+- **Q187** 上游是否需要一个显式的"出口代理"配置（`HTTP_PROXY`）。当前假设 `relay` 经本机 sidecar 出网不需要代理、`vendor` 直连。若部署环境强制出网代理，需要在 Transport 层统一注入。
 - **Q188** 多节点（P2）下每个节点各自起一个 sidecar 子进程是可接受的（同机多进程，各持一份 provider 凭据副本），还是需要独立的 sidecar 服务。当前按"每节点各自连"设计。
 
 ### architecture/04-sidecar.md

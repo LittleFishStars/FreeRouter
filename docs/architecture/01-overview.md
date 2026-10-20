@@ -49,9 +49,9 @@ IR、上游、sidecar、存储、运行时的细节分别在 [02-ir.md](02-ir.md
                      │
                      ▼
         L3 上游
-        ├── dsh_provider → sidecar 直连 providers-hub adapter（官方额度池）
-        ├── contributed  → 贡献者凭据直连官方端点
-        └── compatible   → 标准 OpenAI / Anthropic 兼容端点（API Key）
+        ├── relay → sidecar 直连 providers-hub adapter（官方额度池）
+        ├── vendor  → 贡献者凭据直连官方端点
+        └── selfhosted   → 标准 OpenAI / Anthropic 兼容端点（API Key）
 ```
 
 | 层 | 职责 | **明确不做** |
@@ -158,14 +158,14 @@ IR、上游、sidecar、存储、运行时的细节分别在 [02-ir.md](02-ir.md
 
 | kind | 目标 | 凭据来源 | 协议 |
 |---|---|---|---|
-| `dsh_provider` | **不经 HTTP 网关**——sidecar 进程内 `import()` providers-hub 的 provider adapter，直连官方端点 | 各 provider 的 OAuth 凭据（vendored `hub_path`） | adapter 原生（由 IR 映射） |
-| `contributed` | 贡献凭据自带的第三方端点 | `upstream_secrets`（AES-GCM）+ `upstream_credentials` | 视凭据而定，默认 OpenAI 兼容 |
-| `compatible` | 用户自建的 OpenAI / Anthropic 兼容端点 | `upstream_secrets`（API Key，`owner_account_id = NULL` 为平台自有） | OpenAI Chat / Anthropic Messages |
+| `relay` | **不经 HTTP 网关**——sidecar 进程内 `import()` providers-hub 的 provider adapter，直连官方端点 | 各 provider 的 OAuth 凭据（`hub_path` 处的一份随包副本） | adapter 原生（由 IR 映射） |
+| `vendor` | 贡献凭据自带的第三方端点 | `upstream_secrets`（AES-GCM）+ `upstream_credentials` | 视凭据而定，默认 OpenAI 兼容 |
+| `selfhosted` | 用户自建的 OpenAI / Anthropic 兼容端点 | `upstream_secrets`（API Key，`owner_account_id = NULL` 为平台自有） | OpenAI Chat / Anthropic Messages |
 
 细节见 [03-upstream.md](03-upstream.md)。这里只强调一条：
 
 > **凭据只出站不出户**：三种 kind 的凭据都只在服务端使用，永不下发给客户端；
-> `dsh_provider` 的凭据不经过任何 HTTP 中间层（没有本机网关这一跳），
+> `relay` 的凭据不经过任何 HTTP 中间层（没有本机网关这一跳），
 > 中间层越少，一份泄露的凭据能暴露的面越小。
 
 ---
@@ -318,7 +318,7 @@ $FR_DATA_DIR/
 | D7 | 不静默降级 | 悄悄丢图片 / 丢 `tool_use` 会让客户端以为成功，错误在用户侧才暴露（PLAN 6.1） | 保守声明会让部分组合直接 400 → 用 `capability_mode` 让管理员显式放宽 |
 | D8 | 已吐可见内容后不切候选 | 流式串话是 providers-hub 已经踩过的坑（PLAN 3.3） | 部分可恢复故障变成失败 → 用健康探测把坏候选提前摘掉 |
 | D9 | 策略引擎三段式且默认 `expiry-first` | 最快作废的额度优先用，直接复用 providers-hub 的到期语义 | 可能选到较慢的候选 → 排序链可组合（`fastest` 等） |
-| D10 | 上游永走 `127.0.0.1` | providers-hub 硬约束，且把我们与上游的信任边界收在本机 | 不能跨机部署上游 → 与 P2 多节点方案一起再议 |
+| D10 | 推理不经任何本机 HTTP 网关（无 `:8326` 那一跳） | 网关只认一个 Bearer，会抹掉 provider 账号归因与原始错误语义；且它自身是个可被本机任意进程直接敲的 OpenAI 端点 | 上游只能跑在本机的 sidecar 里 → 与 P2 多节点方案一起再议 |
 | D11 | 错误码区分"模型不存在"(404) / "无候选"(503) / "已禁用"(410) | 三种情况的运维处置完全不同；混成一个 500 会让排障方向错误 | 客户端需要理解三态 → 文档与 SDK 说明 |
 | D12 | 控制面与数据面同进程 | C1 砍掉队列；单机形态下没有理由拆服务 | 管理操作可能影响转发 → 管理面重查询加超时与限流 |
 
@@ -352,7 +352,7 @@ $FR_DATA_DIR/
 > 同时限速与配额要从进程内状态迁到共享设施。多节点下的 sidecar 是"每节点一个"还是
 > "独立服务"需要届时决定——现在不做，但本册的分层不应妨碍这两种走法。
 
-> **待定**：`contributed` 上游是否允许非 OpenAI 兼容协议（例如直接对接某家 Anthropic 兼容端点）。
+> **待定**：`vendor` 上游是否允许非 OpenAI 兼容协议（例如直接对接某家 Anthropic 兼容端点）。
 > 若允许，L3 需要第二套编码器，IR 的出站映射也要按上游协议而非入站协议选择。
 
 > **待定**：管理面与数据面是否需要在同一进程内做资源隔离（例如管理查询的并发上限、

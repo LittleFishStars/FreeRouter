@@ -67,7 +67,7 @@ ip+端口访问」，且部署位置是「先本地跑」。文档的默认路�
 
 ### 1.3 与 DSH 的部署关系
 
-**关键约束**：`dsh_provider` 这条上游由 sidecar **在进程内直接调用 providers-hub 的
+**关键约束**：`relay` 这条上游由 sidecar **在进程内直接调用 providers-hub 的
 provider adapter**（`lib/*-adapter.js`），**不再经过 `127.0.0.1:8326` 的 OpenAI 兼容网关**
 （2026-10-20 定案，ALIGN-SPEC H；细节见 [../architecture/03-upstream.md](../architecture/03-upstream.md) 第 3 节）。
 所以「必须同机」的理由不再是网络层，而是两条本地资源要求：
@@ -201,15 +201,15 @@ TPM 是**速率**（不设速率上限不是不供给）。把这两行写在同
 
 | 键 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `upstream.dsh_provider.enabled` | bool | `true` | 是否启用 `dsh_provider` 这条上游 |
-| `upstream.dsh_provider.timeout` | duration | `300s` | 长回答需要；由 sidecar 透传给 adapter |
-| `upstream.dsh_provider.connect_timeout` | duration | `5s` | |
-| `upstream.dsh_provider.max_retries` | int | `2` | 幂等请求（未吐内容）才重试 |
-| `upstream.dsh_provider.model_refresh_interval` | duration | `10m` | 模型目录刷新 |
-| `upstream.dsh_provider.aggregate_excluded` | bool | `true` | 排除 `aggregate/*` 作候选 |
-| `upstream.dsh_provider.allowlist` | []string | `[]` | 只启用这些 provider id；空 = 全部 `lib/*-adapter.js` 都可用 |
+| `upstream.relay.enabled` | bool | `true` | 是否启用 `relay` 这条上游 |
+| `upstream.relay.timeout` | duration | `300s` | 长回答需要；由 sidecar 透传给 adapter |
+| `upstream.relay.connect_timeout` | duration | `5s` | |
+| `upstream.relay.max_retries` | int | `2` | 幂等请求（未吐内容）才重试 |
+| `upstream.relay.model_refresh_interval` | duration | `10m` | 模型目录刷新 |
+| `upstream.relay.aggregate_excluded` | bool | `true` | 排除 `aggregate/*` 作候选 |
+| `upstream.relay.allowlist` | []string | `[]` | 只启用这些 provider id；空 = 全部 `lib/*-adapter.js` 都可用 |
 
-**为什么这里不再有 `base_url` 与 `api_key_file`**：旧设计把 `dsh_provider` 当成
+**为什么这里不再有 `base_url` 与 `api_key_file`**：旧设计把 `relay` 当成
 `127.0.0.1:8326` 的 OpenAI 兼容网关，所以需要配端点地址和网关自身的 key。2026-10-20
 定案后这条上游由 sidecar **进程内 `import()` provider adapter 直接调用**（ALIGN-SPEC H），
 既没有可配的端点，也没有网关层自己的凭据——鉴权发生在 adapter 内部，用的是贡献者自己的
@@ -299,7 +299,7 @@ chmod 600 /etc/freerouter/master.key
    （改 `server.listen`，或用 `FR_SERVER_LISTEN` 覆盖后重启），**不做自动探测**。
 4. 若 `sidecar` 就绪 → 启动子进程并让它在内部枚举 `lib/*-adapter.js`，把 adapter 报告的
    模型目录写入本地缓存；枚举失败只记警告，不阻断启动。
-   （本版没有「上游自举凭据」这一步：`dsh_provider` 用的是贡献者自己的供应商登录态，
+   （本版没有「上游自举凭据」这一步：`relay` 用的是贡献者自己的供应商登录态，
    没有网关层的 key 需要从文件读入——见 §2.5 与 [../contributions/02-credentials.md](../contributions/02-credentials.md)。）
 5. 若 sidecar 起来了 → 贡献页可用；子进程崩溃只记警告并自动重拉，**不阻塞主进程**。
 
@@ -383,7 +383,7 @@ Caddy 片段（`fr.example.com` 是占位域名，真实域名见 §2.2 的待�
 fr.example.com {
     encode zstd gzip
     # 流式响应必须关闭缓冲
-    reverse_proxy 127.0.0.1:8080 {
+    relay 127.0.0.1:8080 {
         flush_interval -1
         header_up X-Real-IP {remote_host}
     }
