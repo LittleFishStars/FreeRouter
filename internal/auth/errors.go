@@ -39,6 +39,10 @@ const (
 
 	// 入参不合法（HTTP 400）。
 	CodeInvalidRequest Code = "invalid_request"
+
+	// 服务端内部故障（HTTP 500）。依赖缺失、不变式被存储层破坏等
+	// 「调用方什么做错都没有」的情况走这里，与入参错误（400）严格区分。
+	CodeInternal Code = "internal_error"
 )
 
 // Error 是本包唯一的错误类型。
