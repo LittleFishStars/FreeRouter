@@ -48,6 +48,12 @@ type Account struct {
 	LastLoginAt *int64
 	Note        *string
 	Classes     []Class
+	// 账号级速率/并发限位（2026-10-21 定案从 Key 侧迁来）：-1 = 不限，0 = 全拒。
+	// 列 NOT NULL 且列上无 NULL 语义，所以这里用普通 int64 而不是指针——
+	// 指针会暗示"没有值"这个库里不可能出现的状态，误导调用方写 nil 分支。
+	RPMLimit       int64
+	TPMLimit       int64
+	MaxConcurrency int64
 }
 
 // AccountAuth 是认证路径专用的形状：带 password_hash 与 recovery_code_hash。
@@ -128,13 +134,15 @@ func (r *AccountRepo) CreateAccount(ctx context.Context, a AccountAuth, classes 
 // GetAccount 按 id 读账户（含权限类）。
 func (r *AccountRepo) GetAccount(ctx context.Context, id int64) (*Account, error) {
 	row := r.db.QueryRowContext(ctx,
-		`SELECT id, display_name, username, status, created_at, last_login_at, note
+		`SELECT id, display_name, username, status, created_at, last_login_at, note,
+		        rpm_limit, tpm_limit, max_concurrency
 		   FROM accounts WHERE id = ?`, id)
 
 	var a Account
 	var status string
 	if err := row.Scan(&a.ID, &a.DisplayName, &a.Username, &status,
-		&a.CreatedAt, &a.LastLoginAt, &a.Note); err != nil {
+		&a.CreatedAt, &a.LastLoginAt, &a.Note,
+		&a.RPMLimit, &a.TPMLimit, &a.MaxConcurrency); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -167,13 +175,15 @@ func (r *AccountRepo) GetAccountByUsername(ctx context.Context, username string)
 func (r *AccountRepo) GetAccountAuth(ctx context.Context, username string) (*AccountAuth, error) {
 	row := r.db.QueryRowContext(ctx,
 		`SELECT id, display_name, username, password_hash, status,
-		        recovery_code_hash, created_at, last_login_at, note
+		        recovery_code_hash, created_at, last_login_at, note,
+		        rpm_limit, tpm_limit, max_concurrency
 		   FROM accounts WHERE username = ?`, username)
 
 	var a AccountAuth
 	var status string
 	if err := row.Scan(&a.ID, &a.DisplayName, &a.Username, &a.PasswordHash, &status,
-		&a.RecoveryCodeHash, &a.CreatedAt, &a.LastLoginAt, &a.Note); err != nil {
+		&a.RecoveryCodeHash, &a.CreatedAt, &a.LastLoginAt, &a.Note,
+		&a.RPMLimit, &a.TPMLimit, &a.MaxConcurrency); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -212,6 +222,27 @@ func (r *AccountRepo) classesOf(ctx context.Context, accountID int64) ([]Class, 
 	return out, nil
 }
 
+// SetAccountRateLimits 写账号级速率/并发限位（-1 = 不限，0 = 全拒）。
+//
+// 为什么这三个值挂在账户上而不是 Key 上：Key 的六列额度/限位已删（2026-10-21 定案）——
+// 若每把 Key 自带限位，建 10 把 Key 就得到 10 份并发预算，账号级闸门形同虚设。
+// 三个参数各校验下界而不是整体判 >= -1：一次更新三个独立语义的值，
+// 报错时指明是哪一个维度超界，运维不用猜。
+func (r *AccountRepo) SetAccountRateLimits(ctx context.Context, id, rpm, tpm, maxConcurrency int64) error {
+	for name, v := range map[string]int64{"rpm_limit": rpm, "tpm_limit": tpm, "max_concurrency": maxConcurrency} {
+		if v < -1 {
+			return fmt.Errorf("store: %s = %d 非法，必须 >= -1（-1=不限，0=全拒，禁止 NULL）", name, v)
+		}
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE accounts SET rpm_limit = ?, tpm_limit = ?, max_concurrency = ? WHERE id = ?`,
+		rpm, tpm, maxConcurrency, id)
+	if err != nil {
+		return fmt.Errorf("store: 更新账号限位失败: %w", err)
+	}
+	return requireAffected(res, "账户", id)
+}
+
 // SetAccountStatus 改状态。禁用后名下 Key 立即 401 靠的是每次请求实时查账户状态
 // （05-storage.md 7.2），所以这里不需要额外的失效通知机制。
 func (r *AccountRepo) SetAccountStatus(ctx context.Context, id int64, status AccountStatus) error {
@@ -222,6 +253,25 @@ func (r *AccountRepo) SetAccountStatus(ctx context.Context, id int64, status Acc
 		`UPDATE accounts SET status = ? WHERE id = ?`, string(status), id)
 	if err != nil {
 		return fmt.Errorf("store: 更新账户状态失败: %w", err)
+	}
+	return requireAffected(res, "账户", id)
+}
+
+// UpdatePasswordHash 改密码写回（authn 集成点）。
+//
+// 为什么不带"吊销会话"：改密码后其它设备必须立即掉线（PLAN 10），但吊销属于
+// 会话域，由调用方在同一 WithTx 里调 DeleteSessionsByAccount —— 两件事同事务
+// 才是原子，而把两件事拆成两个方法再由调用方拼，能保证拼的方式永远可见于调用代码，
+// 而不是藏在这个方法里发生。
+// hash 是 argon2id 自描述串，持久层不校验其形状（那是认证层的职责）。
+func (r *AccountRepo) UpdatePasswordHash(ctx context.Context, id int64, hash string) error {
+	if hash == "" {
+		return errors.New("store: password_hash 不得为空（改密码写回空值等于锁死账户）")
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE accounts SET password_hash = ? WHERE id = ?`, hash, id)
+	if err != nil {
+		return fmt.Errorf("store: 更新密码失败: %w", err)
 	}
 	return requireAffected(res, "账户", id)
 }

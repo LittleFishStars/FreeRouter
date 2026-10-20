@@ -216,3 +216,15 @@ func (s KeyStatus) valid() bool {
 	}
 	return false
 }
+
+// SetKeyAllowlist 是 storeiface 里 authn 使用的名字：写 Key 的模型白名单。
+// 与 SetKeyModelAllow 同一实现——接口名对齐仓储名，避免 Lead 合并时写适配器；
+// 语义仍是「整体覆盖」：authn 在管理面收到的就是完整集合。
+func (r *KeyRepo) SetKeyAllowlist(ctx context.Context, keyID int64, abstractModelIDs []int64) error {
+	return r.SetKeyModelAllow(ctx, keyID, abstractModelIDs)
+}
+
+// KeyAllowlist 读 Key 的模型白名单（storeiface 对齐别名）。语义见 KeyModelAllow。
+func (r *KeyRepo) KeyAllowlist(ctx context.Context, keyID int64) ([]int64, error) {
+	return r.KeyModelAllow(ctx, keyID)
+}

@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -149,7 +150,7 @@ func pragmas(busyTimeout time.Duration, readonly bool) string {
 	// synchronous=NORMAL：WAL + FULL 会让每次 commit 都 fsync，转发路径的尾延迟会变成
 	// 磁盘延迟；而计量数据可以从上游账本对账补齐，不值得为此付 fsync 的代价。
 	ps := []string{
-		"_pragma=busy_timeout(" + itoa(ms) + ")",
+		"_pragma=busy_timeout(" + strconv.FormatInt(ms, 10) + ")",
 		"_pragma=foreign_keys(1)",
 	}
 	if !readonly {
@@ -164,20 +165,6 @@ func pragmas(busyTimeout time.Duration, readonly bool) string {
 		"_pragma=temp_store(MEMORY)",
 	)
 	return strings.Join(ps, "&")
-}
-
-func itoa(v int64) string {
-	if v == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	return string(buf[i:])
 }
 
 // dsn 构造 modernc.org/sqlite 的连接串。

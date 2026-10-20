@@ -29,7 +29,13 @@ CREATE TABLE IF NOT EXISTS accounts (
     recovery_code_hash TEXT,                   -- 可空
     created_at         INTEGER NOT NULL,
     last_login_at      INTEGER,
-    note               TEXT
+    note               TEXT,
+    -- 账号级速率/并发限位（2026-10-21 定案，从旧三列 quota_* 与被删的 Key 六列迁移到这里）：
+    -- -1 = 不限，0 = 全拒；NOT NULL 禁止 NULL——NULL 参与比较得 UNKNOWN，
+    -- 会让限位检查在"没配置"时静默放行或静默拒绝，-1 把这两种歧义在类型层消灭。
+    rpm_limit          INTEGER NOT NULL DEFAULT -1 CHECK (rpm_limit >= -1),
+    tpm_limit          INTEGER NOT NULL DEFAULT -1 CHECK (tpm_limit >= -1),
+    max_concurrency    INTEGER NOT NULL DEFAULT -1 CHECK (max_concurrency >= -1)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_accounts_username ON accounts(username);
 CREATE INDEX IF NOT EXISTS ix_accounts_status ON accounts(status);
