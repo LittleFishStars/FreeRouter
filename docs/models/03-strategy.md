@@ -73,7 +73,7 @@ F1～F8 判的是**单条候选路径**能不能走；本节判的是**这个请
 
 | # | 闸 | 判据 | 数据来源 | 不通过时 |
 |---|---|---|---|---|
-| Q1 | **账户额度** | 本账户当期已用量 + 本次估算 ≤ 该账户的额度上限（`quota_limit`，按 `quota_unit` 在 `request`/`token`/`credit` 三者中取） | `accounts` 额度字段 + `usage_daily` | 429 `quota_exceeded` |
+| Q1 | **账户额度** | 本账户当期已用量 + 本次估算 ≤ 该 (unit, period) 的额度行（`account_quotas` 合计行；请求命中的抽象模型另有按模型限额行时再判一行） | `account_quotas` 当期行 | 429 `quota_exceeded`（按模型行命中时错误体带 `model`） |
 | Q2 | **所属组共享池** | 所属组中**所有**已配置的池都满足 `pool_used + cost <= pool_limit` | `group_quota_pools`（**在结算时由单条条件 UPDATE 权威判定**，见下） | 429 `pool_exhausted` |
 
 **"未配置"与"配置为 0"必须区分**：某组没设池（数据库里没有那一行）时 Q2 **不构成一道闸**，不是"额度为 0 所以全拒"；
@@ -104,7 +104,7 @@ Q1 判的是**账户**，不是 Key。这看着是细节，但它是一条必须
 
 | 层级 | 持有的额度 | 为什么 |
 |---|---|---|
-| **账户** | `quota_limit` / `quota_used` / `quota_unit` / `rpm_limit` / `tpm_limit` / `max_concurrency` | 一个账户就是一个计费与限流的整体 |
+| **账户** | `account_quotas` 的合计行 + 按模型限额行 + `rpm_limit` / `tpm_limit` / `max_concurrency`（-1 = 不限） | 一个账户就是一个计费与限流的整体 |
 | **Key** | **没有任何额度字段** | 它只回答“这是什么身份”，不回答“能用多少” |
 
 **Key 还剩什么能力**：认证（它是什么身份）、**模型白名单**（`key_model_allow`，只能从账户可访问的抽象模型里**收窄**，不能放大）、生命周期（创建/禁用/过期/吊销）。

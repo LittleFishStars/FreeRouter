@@ -95,13 +95,14 @@ type Security struct {
 	RegistrationRequiresApproval bool     `yaml:"registration_requires_approval"`
 }
 
-// Limits 见 §2.4。0 的语义按字段注释而定，不统一。
+// Limits 见 §2.4。额度类 0 = 不可用（默认拒绝）；速率类 -1 = 不限、0 = 全拒
+// （与 accounts 速率列同一套哨兵，2026-10-20 定案）。
 type Limits struct {
 	DefaultDailyTokens    int64    `yaml:"default_daily_tokens"`   // 0 = 不可用
 	DefaultMonthlyTokens  int64    `yaml:"default_monthly_tokens"` // 0 = 不可用
-	DefaultRPM            int      `yaml:"default_rpm"`
-	DefaultTPM            int64    `yaml:"default_tpm"` // 0 = 不限制
-	DefaultMaxConcurrency int      `yaml:"default_max_concurrency"`
+	DefaultRPM            int      `yaml:"default_rpm"`            // -1 = 不限
+	DefaultTPM            int64    `yaml:"default_tpm"`            // -1 = 不限
+	DefaultMaxConcurrency int      `yaml:"default_max_concurrency"` // -1 = 不限
 	DefaultKeysPerAccount int      `yaml:"default_keys_per_account"`
 	GlobalDailyTokens     int64    `yaml:"global_daily_tokens"` // 0 = 不熔断
 	GlobalRPM             int      `yaml:"global_rpm"`
@@ -179,7 +180,7 @@ func Default() *Config {
 			DefaultDailyTokens:    0,
 			DefaultMonthlyTokens:  0,
 			DefaultRPM:            60,
-			DefaultTPM:            0,
+			DefaultTPM:            -1, // -1 = 不限（旧 0=不限 的语义已随 -1 哨兵定案迁移）
 			DefaultMaxConcurrency: 2,
 			DefaultKeysPerAccount: 10,
 			GlobalDailyTokens:     0,
