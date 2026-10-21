@@ -277,6 +277,29 @@ const METHODS = {
     throw new SidecarError('E_NOT_IMPLEMENTED', 'credits.query 的 hub 调用面尚未在纯 Node 下暴露');
   },
 
+  // —— 推理方法（03-upstream.md §3.1：relay 的生成请求必须经 provider adapter）——
+  // caller.go（Go 侧）已锁定的调用形状：{ provider, model, body, stream }，
+  // 应答载荷是「adapter 吐的 OpenAI 形态流/响应体原文」——Go 侧用候选方言的
+  // StreamReader 消费。hub 就位前：与 models.list 同款的两级降级
+  // （缺 hub → E_DEPENDENCY_MISSING；hub 在而调用面未暴露 → E_NOT_IMPLEMENTED）。
+  'infer.stream': async ({ provider, model, body, stream }) => {
+    if (!provider) throw new SidecarError('E_BAD_REQUEST', 'provider 不能为空');
+    if (!model) throw new SidecarError('E_BAD_REQUEST', 'model 不能为空');
+    if (body == null || typeof body !== 'object') {
+      throw new SidecarError('E_BAD_REQUEST', 'body 必须是请求体对象（候选方言已编码的 JSON）');
+    }
+    const hub = await requireHub('infer.stream');
+    // provider 未知照样透传给 hub（目录表可能落后于 hub 版本——hub 是权威）；
+    // 这里只拦结构性错误，不重复维护一份 provider 白名单。
+    // hub 就位后的目标形态（占位注释，接线时替换）：
+    //   const adapter = hub.getAdapter?.(provider) ?? hub.createAdapter?.(provider);
+    //   const resp = await adapter.stream({ model, ...body, stream });
+    //   return resp; // OpenAI 形态流/响应体，Go 侧 StreamReader 消费
+    void stream; // 流式与否已编码在 body 里；adapter.stream 自行识别
+    void hub;
+    throw new SidecarError('E_NOT_IMPLEMENTED',
+      'infer.stream 的 hub 调用面尚未在纯 Node 下暴露（等待 adapter 入口导出）；Go 侧调用形状已锁定');
+  },
   shutdown: async () => {
     // 5.4 步骤 4：主动清理登录会话（回环监听、定时器）后退出，让主进程不用 SIGKILL。
     sessions.clear();
