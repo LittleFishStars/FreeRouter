@@ -189,12 +189,24 @@ func (r *ModelRepo) ListCredentialsByStatus(ctx context.Context, status VerifySt
 	return out, rows.Err()
 }
 
-// UpsertPlatformCredential 建平台自有凭据行（owner_account_id = NULL 语义
-// 由 ownerAccountID == 0 表达——owner 是 accounts.id 从 1 起，0 不是合法
-// id；不引入额外参数形态）。鉴定流水线 SampleFromPlatformCredentials 的
-// 硬约束「来源必须是 owner_account_id = NULL 的平台自有凭据」靠这个入口
-// 保障。secret_ref 只存引用。
-func (r *ModelRepo) UpsertPlatformCredential(ctx context.Context, provider, externalID, label, secretRef, status string) (int64, error) {
+// UpsertPlatformCredential 建平台自有的凭据行。
+//
+// 归属口径（与 05-storage.md 3.5 / 02-credentials.md §2.1 对齐后定案）：
+//   - upstreams.owner_account_id = NULL 表达「平台自有」——来源属性
+//     （03-upstream.md §1「owner_account_id = NULL 表示平台自有」）；
+//   - upstream_credentials.owner_account_id 表达「贡献归属」——人属性，
+//     05-storage 的 DDL 是 NOT NULL：凭据表里没有 NULL 行。
+//   - 05-verification §10 SampleFromPlatformCredentials 的「owner_account_id
+//     = NULL 的平台自有凭据」指 upstreams 行（凭据表同构但 NOT NULL——
+//     文档张力在这里显式记录：凭据行的「平台自有」由 ownerAccountID 指向
+//     管理员账户表达，与 upstreams 的 NULL 行配对）。
+//
+// ownerAccountID 必须是正整数（NOT NULL 列）：传管理员账户。幂等 upsert
+// 以 (provider, external_id) 为键。
+func (r *ModelRepo) UpsertPlatformCredential(ctx context.Context, ownerAccountID int64, provider, externalID, label, secretRef, status string) (int64, error) {
+	if ownerAccountID <= 0 {
+		return 0, errors.New("store: 平台凭据行必须挂账户（NOT NULL 列；平台自有语义在 upstreams.owner=NULL，见 03-upstream §1）")
+	}
 	if strings.TrimSpace(provider) == "" || strings.TrimSpace(externalID) == "" {
 		return 0, errors.New("store: provider 与 external_id 不得为空")
 	}
@@ -204,12 +216,12 @@ func (r *ModelRepo) UpsertPlatformCredential(ctx context.Context, provider, exte
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO upstream_credentials
 		   (owner_account_id, provider, external_id, external_label, secret_ref, status, created_at)
-		 VALUES(NULL, ?, ?, ?, ?, ?, ?)
+		 VALUES(?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(provider, external_id) DO UPDATE SET
 		   external_label = excluded.external_label,
 		   secret_ref     = excluded.secret_ref,
 		   status         = excluded.status`,
-		provider, externalID, label, secretRef, status, now())
+		ownerAccountID, provider, externalID, label, secretRef, status, now())
 	if err != nil {
 		return 0, fmt.Errorf("store: 写平台凭据失败: %w", err)
 	}

@@ -239,6 +239,22 @@ func (r *GroupRepo) SetDefault(ctx context.Context, newDefaultID int64) error {
 }
 
 func (r *GroupRepo) setDefaultInner(ctx context.Context, newDefaultID int64) error {
+	// 先取旧默认组 id：一旦清了标记就再也找不到「谁曾是默认组」了，
+	// 成员迁移必须在丢掉这个信息之前完成。曾把迁移条件写成
+	// is_default=0 AND id=新组——但此时新组已被打上标记，子查询永假，
+	// 迁移静默落空（TestContractSetDefaultMigration 抓的）。
+	var oldDefaultID int64
+	err := r.db.QueryRowContext(ctx,
+		`SELECT id FROM groups WHERE is_default = 1`).Scan(&oldDefaultID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("store: 查旧默认组失败: %w", err)
+	}
+	if err != nil {
+		oldDefaultID = 0 // 无默认组的库：迁移无从谈起，仅做标记转移
+	}
+	if oldDefaultID == newDefaultID {
+		return nil // 幂等
+	}
 	if _, err := r.db.ExecContext(ctx,
 		`UPDATE groups SET is_default = 0 WHERE is_default = 1`); err != nil {
 		return fmt.Errorf("store: 清旧默认组失败: %w", err)
@@ -251,12 +267,15 @@ func (r *GroupRepo) setDefaultInner(ctx context.Context, newDefaultID int64) err
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrGroupNotFound
 	}
-	if _, err := r.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO group_members(group_id, account_id)
-		  SELECT ?, m.account_id FROM group_members m
-		   WHERE m.group_id IN (SELECT id FROM groups WHERE is_default = 0 AND id = ?)`,
-		newDefaultID, newDefaultID); err != nil {
-		return fmt.Errorf("store: 迁移旧默认组成员失败: %w", err)
+	// 旧默认组成员整体迁入新默认组（INSERT OR IGNORE：成员可能已在
+	// 其它组，「保证至少一组」而不是「只能一组」）。
+	if oldDefaultID != 0 {
+		if _, err := r.db.ExecContext(ctx,
+			`INSERT OR IGNORE INTO group_members(group_id, account_id)
+			  SELECT ?, account_id FROM group_members WHERE group_id = ?`,
+			newDefaultID, oldDefaultID); err != nil {
+			return fmt.Errorf("store: 迁移旧默认组成员失败: %w", err)
+		}
 	}
 	return nil
 }
