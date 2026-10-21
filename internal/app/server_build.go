@@ -35,9 +35,13 @@ func (a *App) buildServer() *httpapi.Server {
 	})
 
 	// v1 面板：模型目录先接（GET /v1/models 立即有数据）。
-	// 推理上游（httpapi.Upstream + CandidateSource）在 task-10（M2 传输）
-	// 合入后补：届时 Candidates 直接查 real_models 构造 Candidate 序列。
 	srv.AttachV1Models(modelCatalog{models: a.store.Repos().Models})
+
+	// 推理上游（task-10 M2 传输 + upstream_shim 装配桥）：Caller 同构面钉到
+	// httpapi.Upstream，候选源查 real_models 按 UpstreamModelID 精确匹配
+	//（M5 过渡——M6 换抽象模型路由后由策略引擎接管，接口不变）。
+	shim, cs := a.newUpstreamShim()
+	srv.AttachV1(shim, cs)
 
 	// 鉴权/限速/配额中间件的参数构造：
 	//   keyAuthBridge —— store 两读 → auth.KeyAuthStore；
