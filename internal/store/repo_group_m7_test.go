@@ -306,6 +306,82 @@ func TestContractComposeUnion(t *testing.T) {
 	}
 }
 
+// TestContractBooleanFailClosedMatrix：布尔放开类（can_create_key /
+// key_allowlist_widen）双组三态全组合矩阵。语义（effective_policy.go
+// allGroupsAllow）：任一组显式 false → false（deny 优先）；全部组显式
+// true → true；混入任一未设组 → false（fail-closed：「没有全员明确
+// 允许就是不允许」）。两个布尔键走同一实现，逐一扫防单键特化回归。
+func TestContractBooleanFailClosedMatrix(t *testing.T) {
+	compose := func(groups []GroupPolicySet) EffectivePolicy {
+		return ComposeEffectivePolicy(mkSnapshot(groups, -1))
+	}
+	states := []struct {
+		name string
+		v    *bool
+	}{
+		{"未设", nil},
+		{"true", boolPtr(true)},
+		{"false", boolPtr(false)},
+	}
+	selects := []struct {
+		name string
+		set  func(*GroupPolicySet, *bool)
+		read func(EffectivePolicy) bool
+	}{
+		{"CanCreateKey",
+			func(g *GroupPolicySet, v *bool) { g.CanCreateKey = v },
+			func(ep EffectivePolicy) bool { return ep.CanCreateKey }},
+		{"KeyAllowlistWiden",
+			func(g *GroupPolicySet, v *bool) { g.KeyAllowlistWiden = v },
+			func(ep EffectivePolicy) bool { return ep.KeyAllowlistWiden }},
+	}
+
+	for _, sel := range selects {
+		t.Run(sel.name, func(t *testing.T) {
+			// 双组 3×3 全组合：仅 (true,true) 放行，其余全部 false。
+			for _, a := range states {
+				for _, b := range states {
+					g1 := GroupPolicySet{GroupID: 1}
+					g2 := GroupPolicySet{GroupID: 2}
+					sel.set(&g1, a.v)
+					sel.set(&g2, b.v)
+					got := sel.read(compose([]GroupPolicySet{g1, g2}))
+					want := a.v != nil && b.v != nil && *a.v && *b.v
+					if got != want {
+						t.Errorf("组(A=%s, B=%s) → %v，期望 %v（deny 优先+fail-closed）",
+							a.name, b.name, got, want)
+					}
+				}
+			}
+			// 顺序无关：(true,未设) 与 (未设,true) 结论一致——矩阵已双向
+			// 覆盖，这里再显式断言一次防实现引入顺序依赖。
+			g1, g2 := GroupPolicySet{GroupID: 1}, GroupPolicySet{GroupID: 2}
+			sel.set(&g1, boolPtr(true))
+			if sel.read(compose([]GroupPolicySet{g1, g2})) {
+				t.Error("(true, 未设) 应 false")
+			}
+			// 单组：true→true；false→false；未设→false。
+			for _, s := range states {
+				g := GroupPolicySet{GroupID: 1}
+				sel.set(&g, s.v)
+				got := sel.read(compose([]GroupPolicySet{g}))
+				want := s.v != nil && *s.v
+				if got != want {
+					t.Errorf("单组(%s) → %v，期望 %v", s.name, got, want)
+				}
+			}
+			// 三组混入未设：T+T+未设 → false（矩阵核心边界：多数派允许
+			// 不能掩盖单个未设组）。
+			g1, g2, g3 := GroupPolicySet{GroupID: 1}, GroupPolicySet{GroupID: 2}, GroupPolicySet{GroupID: 3}
+			sel.set(&g1, boolPtr(true))
+			sel.set(&g2, boolPtr(true))
+			if sel.read(compose([]GroupPolicySet{g1, g2, g3})) {
+				t.Error("T+T+未设 → 应 false（fail-closed）")
+			}
+		})
+	}
+}
+
 // TestContractComposeMin：限制类逐键 min、-1 不参与、未设键不出现、
 // 0 是合法最严值。
 func TestContractComposeMin(t *testing.T) {
