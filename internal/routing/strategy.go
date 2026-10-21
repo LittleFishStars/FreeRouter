@@ -3,7 +3,7 @@
 //
 // 表驱动：新增策略只加一行 orderFuncs 注册（03-strategy.md §8「Rank」；
 // 任务要求「排序策略做成表驱动」）。链式组合语义：前一级相等时看下一级
-//（§5「按顺序生效」）。
+// （§5「按顺序生效」）。
 package routing
 
 import (
@@ -134,24 +134,41 @@ func Rank(paths []Path, chain []string, rr *RoundRobinCursor) []Path {
 	}
 
 	// 稳定排序 + 逐级比较（sort.SliceStable 保证同级保持声明序——
-	// 确定性要求 §3.4：同样输入必须同样输出）。
+	// 确定性要求 §3.4：同样输入必须同样输出）。平局先维持声明序，
+	// 下面统一做 round-robin 旋转。
 	sort.SliceStable(out, func(i, j int) bool {
 		less, eq := rankLess(chain, out[i], out[j])
-		if !eq {
-			return less
-		}
-		// 平局组：round-robin 决胜（仅显式配置时启用）。
-		if hasRR && rr != nil {
-			// 平局组内按游标取模轮转：i 与 j 的相对次序由 (Offset + 组内序)
-			// 决定。这里用索引近似组内序——平局组在稳定排序中保持相邻，
-			// 索引差即组内相对位置。
-			return (int64(i)+rr.Offset)%2 == 0 && i < j
-		}
-		return false // 无决胜 → 稳定序（声明序兜底）
+		return !eq && less
 	})
 
-	// 推进游标：round-robin 生效时每次 Rank 前进一格（均摊语义）。
+	// 平局组旋转（round-robin 决胜，仅显式配置时启用）：排序后同键
+	// 元素保持相邻，对每个极大平局组按游标 Offset 左旋 shift 位。
+	// 为什么不用比较器内取模：比较器的 less 必须满足传递性，而「组内
+	// 轮转一位」用两两比较表达不出来——上一版 (i+Offset)%2 公式任何
+	// Offset 都翻不了转（实测四次全 [10 10 10 10]）。排序后整体旋转
+	// 是唯一既公平又确定的表达；确定性 §3.4 也不破——同样 Offset 同样
+	// 输出，偏移本身就是决策记录的一部分。
 	if hasRR && rr != nil {
+		i := 0
+		for i < len(out) {
+			j := i + 1
+			for j < len(out) {
+				if _, eq := rankLess(chain, out[i], out[j]); !eq {
+					break
+				}
+				j++
+			}
+			if n := j - i; n > 1 {
+				shift := int(rr.Offset % int64(n))
+				if shift > 0 {
+					rotated := make([]Path, 0, n)
+					rotated = append(rotated, out[i+shift:j]...)
+					rotated = append(rotated, out[i:i+shift]...)
+					copy(out[i:j], rotated)
+				}
+			}
+			i = j
+		}
 		rr.Offset++
 		rr.Calls++
 	}
@@ -199,7 +216,7 @@ const DefaultMaxSwitches = 3
 // upstream.StreamStats.VisibleWritten（调用方传入），本包不自造判定。
 // 为什么签名是参数而不是引 internal/upstream：routing 是纯决策层，
 // VisibleWritten 是布尔事实，接口收窄到 bool 让它不 import upstream
-//（装配层搬一个字段即可，测试也无需构造 StreamStats）。
+// （装配层搬一个字段即可，测试也无需构造 StreamStats）。
 func (b SwitchBudget) CanSwitch(visibleWritten bool, switchesDone int) bool {
 	if visibleWritten {
 		// 03-strategy.md §4.1：流式串话是已踩过的坑——明确失败好过

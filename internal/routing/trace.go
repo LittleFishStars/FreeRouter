@@ -5,8 +5,8 @@
 // 要求——过滤与排序对管理员是完全不同的信号）。
 //
 // 红线（02-abstract.md §6.3 两条约束）：
-//   1. 不含凭据明文，也不含能反查具体账户的信息（用内部 id 不用显示名）；
-//   2. 不含 base_url（渠道构成免费送出去等于把池子抄走的图纸）。
+//  1. 不含凭据明文，也不含能反查具体账户的信息（用内部 id 不用显示名）；
+//  2. 不含 base_url（渠道构成免费送出去等于把池子抄走的图纸）。
 package routing
 
 import (
@@ -168,7 +168,7 @@ func ParseTraceHeader(v string) (*Trace, error) {
 // 返回命中的敏感片段列表（空 = 干净）。
 //
 // 检查两类红线（§6.3）：凭据样 token（sk-…/Bearer）与 URL 形态
-//（base_url）。注意它检的是「形状」而非「值」——trace 结构体本身不携带
+// （base_url）。注意它检的是「形状」而非「值」——trace 结构体本身不携带
 // 这些字段（编译期保证），这一层是防未来加字段时无意识带入。
 func RedactScan(traceJSON string) []string {
 	var hits []string

@@ -246,8 +246,12 @@ func (res *Resolver) resolveChain(ctx context.Context, m *AbstractModel) (*Abstr
 		}
 		if visited[next.ID] {
 			// 环：状态机正常路径下不可能（规则 1+2），触发即配置事故。
-			// 降级为「无替代」不报错（§2.5），CycleBroken 让上层告警。
-			return cur, chain, true, nil
+			// 降级为「无替代」不报错（§2.5）——「这个模型没有替代目标」指
+			// 被请求的起点模型 m，所以停回 m 用它自身的候选集，而不是停在
+			// 链尾 cur（cur 是环上的 deprecated 节点，它的候选集是另一个
+			// 模型的配置，落在它上面对用户是「悄悄换模型」，落在 m 上才是
+			// 「无替代」的字面语义）。CycleBroken 让上层告警。
+			return m, chain, true, nil
 		}
 		visited[next.ID] = true
 		chain = append(chain, next.Name)

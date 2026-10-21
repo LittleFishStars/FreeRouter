@@ -84,6 +84,17 @@ func (c *Cooldowns) SetClock(nowMs func() int64) *Cooldowns {
 	return c
 }
 
+// SetJitter 注入抖动源（测试专用；生产路径不调用）。默认抖动把同批
+// 失败实体的冷却窗口错开防惊群，但测试要断言精确窗口（如「窗口过后
+// 恢复」）就必须把它钉成 0——窗口计算 = now + duration + jitter，
+// 抖动不可控时断言「1000ms 窗口在 5000ms 过期」会随机失败。
+func (c *Cooldowns) SetJitter(fn func() int64) *Cooldowns {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.jitter = fn
+	return c
+}
+
 // MarkFailure 把实体置入冷却（失败驱动的主动冷却）。
 //
 // durationMs <= 0 时用 DefaultCooldownMs。抖动在窗口上追加。
@@ -111,7 +122,7 @@ func (c *Cooldowns) MarkFailure(entityID int64, durationMs int64) {
 // 本包冷却记录（「任一次成功即复位」由 upstream 维护，我们只是镜像）。
 //
 // durationMs 是镜像冷却的窗口长度：upstream 的 Health 没有携带截止时刻
-//（状态机是计数驱动的），镜像窗口用本包默认——窗口到期后若 Health 仍
+// （状态机是计数驱动的），镜像窗口用本包默认——窗口到期后若 Health 仍
 // 是 cooling，下一次 Sync 会重新置上，语义上无空洞。
 func (c *Cooldowns) SyncFromHealth(view HealthView, entityIDs []int64, durationMs int64) {
 	if view == nil {

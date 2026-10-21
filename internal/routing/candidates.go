@@ -182,7 +182,7 @@ func modalitySupported(caps Capabilities, need string) bool {
 }
 
 // effortSupported 档位判定：候选未声明档位集合时按「仅 off/low」保守处理
-//（无思考能力的模型占池子多数，宁缺勿滥；真支持 high 的模型目录必然带
+// （无思考能力的模型占池子多数，宁缺勿滥；真支持 high 的模型目录必然带
 // efforts 字段——01-catalog.md §2.3 的映射保证）。
 func effortSupported(caps Capabilities, need string) bool {
 	if len(caps.Efforts) == 0 {
