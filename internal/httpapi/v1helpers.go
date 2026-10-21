@@ -32,8 +32,17 @@ func InjectTestAccount(ctx context.Context) context.Context {
 	return context.WithValue(ctx, v1AccountKey{}, true)
 }
 
-// hasAuthedAccount 判 ctx 是否已有已鉴权账户。
+// hasAuthedAccount 判 ctx 是否已有已鉴权账户（生产：mw_keyauth.go 注入的
+// KeyPrincipal；测试：InjectTestAccount 模拟同一判定语义）。
+//
+// 2026-10-21 装配修正（code-review 巡检发现 A）：原实现只查占位键
+// v1AccountKey{}，而生产链 mw_keyauth 注入的是 ctxKeyKeyPrincipal——两套
+// 键不通用导致正式 KeyPrincipal 永不命中、v1 三端点恒 401。现在双通道
+// 都认：KeyPrincipalFromContext（生产）优先，占位键（测试兼容）兕底。
 func hasAuthedAccount(r *http.Request) bool {
+	if KeyPrincipalFromContext(r.Context()) != nil {
+		return true
+	}
 	v, ok := r.Context().Value(v1AccountKey{}).(bool)
 	return ok && v
 }

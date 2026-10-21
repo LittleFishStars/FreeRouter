@@ -15,8 +15,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/LittleFishStars/FreeRouter/internal/auth"
 	"github.com/LittleFishStars/FreeRouter/internal/config"
 	"github.com/LittleFishStars/FreeRouter/internal/logging"
+	"github.com/LittleFishStars/FreeRouter/internal/meter"
 	"github.com/LittleFishStars/FreeRouter/internal/version"
 )
 
@@ -40,6 +42,12 @@ type Server struct {
 	deps Deps
 	cfg  *config.Config
 	log  *slog.Logger
+
+	// authChain 是鉴权→限速→配额三中间件（SetAuthChain 注入；
+	// 未注入时 Handler() 只挂前四步且不挂 v1 面板）。
+	authChain *authChainDeps
+	// consoleRoutes 是控制台面路由注册回调（SetConsoleRoutes 注入）。
+	consoleRoutes func(r chi.Router)
 }
 
 // New 构造服务器。deps.Logger 为 nil 时使用默认 logger。
@@ -62,9 +70,10 @@ func New(deps Deps) *Server {
 //	请求ID → 安全头 → 可信代理 → body上限 → 鉴权 → 限速 → 配额
 //	→ 抽象模型解析 → 协议解析IR → L2 → 响应编码
 //
-// 顺序不可交换的原因写在 middleware.go 各函数注释里。M0 只落地前四步，
-// 其余步骤由 M3（鉴权）、M4（限速/配额）、M5（协议解析）、M6（抽象模型）依次插入——
-// **插入位置由这条链固定，不由实现者决定**。
+// 顺序不可交换的原因写在 middleware.go 各函数注释里。
+// 鉴权/限速/配额三步由 SetAuthChain 注入（装配层 internal/app 调用）——
+// 未注入时 v1 面板路由不挂：半套链子挂出比不挂更危险（有鉴权无限速
+// 等于把计数器裸奔给攻击者）。
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 
@@ -72,6 +81,11 @@ func (s *Server) Handler() http.Handler {
 	r.Use(s.mwSecurityHeaders)
 	r.Use(s.mwTrustedProxy)
 	r.Use(s.mwBodyLimit)
+	if s.authChain != nil {
+		r.Use(s.authChain.keyAuth)
+		r.Use(s.authChain.rate)
+		r.Use(s.authChain.quota)
+	}
 
 	// 运维探针：不进鉴权、不写访问日志噪音。
 	r.Get("/healthz", s.handleHealthz)
@@ -80,9 +94,20 @@ func (s *Server) Handler() http.Handler {
 	// 公开信息：版本与能力，供客户端探测（docs/api/01-inbound.md）。
 	r.Get("/api/version", s.handleVersion)
 
-	// 初始化向导：尚未创建管理员账户时唯一对外可用的写入口。
-	// M0 只暴露状态查询，创建逻辑在 M3 落地。
-	r.Get("/api/setup/status", s.handleSetupStatus)
+	// 初始化向导与控制台鉴权面：由装配层 SetConsoleRoutes 注入
+	//（M3 交付：handleAuthLogin/handleSetupStatusV2 等 handler 是
+	// 带依赖闭包的方法，装配层才知道 AuthDeps/SetupDeps 怎么组）。
+	if s.consoleRoutes != nil {
+		s.consoleRoutes(r)
+	}
+
+	// v1 协出面：仅在鉴权链就位时挂载（见上注）。
+	if s.authChain != nil {
+		r.Post("/v1/chat/completions", s.HandleV1Chat)
+		r.Post("/v1/messages", s.HandleV1Messages)
+		r.Post("/v1/responses", s.HandleV1Responses)
+		r.Get("/v1/models", s.HandleV1Models)
+	}
 
 	r.NotFound(s.handleNotFound)
 	r.MethodNotAllowed(s.handleMethodNotAllowed)
@@ -90,6 +115,40 @@ func (s *Server) Handler() http.Handler {
 	return r
 }
 
+// authChainDeps 是鉴权三中间件（注入后 v1 面板同时激活）。
+type authChainDeps struct {
+	keyAuth func(http.Handler) http.Handler
+	rate    func(http.Handler) http.Handler
+	quota   func(http.Handler) http.Handler
+}
+
+// SetAuthChain 注入鉴权→限速→配额三中间件（装配层 internal/app 调用）。
+// 三件必须一起给：链子的任何一段缺失都是装配错误，宁可全不挂。
+func (s *Server) SetAuthChain(keyAuth, rate, quota func(http.Handler) http.Handler) {
+	s.authChain = &authChainDeps{keyAuth: keyAuth, rate: rate, quota: quota}
+}
+
+// SetConsoleRoutes 注入控制台面路由（登录/登出/setup；M3 交付）。
+// fn 收到路由器自行注册——为什么是回调而不是逐条方法：控制台路由
+// 会随管理面膨胀（用户/组/审计……），回调让装配层一次组完闭包依赖。
+func (s *Server) SetConsoleRoutes(fn func(r chi.Router)) {
+	s.consoleRoutes = fn
+}
+
+// MiddlewareKeyAuth/Rate/Quota 是三中间件的导出包装——装配层
+// （internal/app）用它们拿闭包再经 SetAuthChain 注回本 Server。
+// 不直接导出 mwKeyAuth 是为了保持「同包才能挂载」的默认安全边界。
+func (s *Server) MiddlewareKeyAuth(authn *auth.KeyAuthenticator) func(http.Handler) http.Handler {
+	return s.mwKeyAuth(authn)
+}
+
+func (s *Server) MiddlewareRate(l *meter.Limiter, limitsOf RateLimitsSource, tokenCost int64) func(http.Handler) http.Handler {
+	return s.mwRate(l, limitsOf, tokenCost)
+}
+
+func (s *Server) MiddlewareQuota(debiter QuotaDebiter, modelIDOf ModelIDSource, groupIDsOf GroupIDsSource, tokenBudget int64) func(http.Handler) http.Handler {
+	return s.mwQuota(debiter, modelIDOf, groupIDsOf, tokenBudget)
+}
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
