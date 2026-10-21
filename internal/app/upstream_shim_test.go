@@ -145,7 +145,7 @@ func TestContractShimCallRoundTrip(t *testing.T) {
 	shim := upstreamShim{caller: caller}
 
 	req := ir.Request{
-		Model:  "m",
+		Model:    "m",
 		Messages: []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart{Idx: 0, Text: "ping"}}}},
 	}
 	cand := httpapi.Candidate{UpstreamModelID: "m", Display: "selfhosted/m", Adapter: openai.Adapter()}

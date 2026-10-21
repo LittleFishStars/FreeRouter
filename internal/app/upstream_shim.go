@@ -160,7 +160,7 @@ func (a *App) newUpstreamShim() (upstreamShim, *realModelCandidates) {
 }
 
 // appRealModelSource 把 App.store 的 ModelRepo 适配到 realModelSource
-//（store 类型经 bridges.go 的别名进来，避免本文件再 import store）。
+// （store 类型经 bridges.go 的别名进来，避免本文件再 import store）。
 type appRealModelSource struct{ app *App }
 
 func (s appRealModelSource) ListVisibleRealModels(ctx context.Context) ([]store.RealModel, error) {
