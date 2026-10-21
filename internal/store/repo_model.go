@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ModelStatus 是 abstract_models.status 的取值。
@@ -489,6 +490,49 @@ func (r *ModelRepo) ListRealModelsByUpstream(ctx context.Context, upstreamID int
 	return out, nil
 }
 
+// ListVisibleRealModels 列出对外可见的真实模型（GET /v1/models 的数据源，
+// task-12 装配缺口；口径：04-sidecar.md 启动步骤⑤ 异步拉目录写 real_models）。
+//
+// 过滤条件（httpapi.ModelCatalog 的存储侧实现面）：
+//   - 上游 enabled：停用上游的模型不列（拉目录刷新也只刷 enabled relay，
+//     但 disabled 上游的存量行可能还是 active——这里在查询层再拦一道，
+//     不依赖刷新器的纪律）；
+//   - status = 'active'：missing（目录里消失）与 disabled（人工停用）不列；
+//   - hidden = 0：运维隐藏（内部模型/过渡期模型）不列。
+//   - TODO(M6)：/v1/models 换抽象模型路由（v1models.go 的既定标记）。
+func (r *ModelRepo) ListVisibleRealModels(ctx context.Context) ([]RealModel, error) {
+	// realModelColumns 是裸列名列表（供单表查询复用）；JOIN 后 id/hidden 等名
+	// 与 upstreams 撞名，SQLite 会报 ambiguous column——给 real_models 的每一列
+	// 加 m. 前缀。写法是按逗号切分再拼（列清单含换行与多空格，直接字符串
+	// 替换覆盖不了全部分隔形态），而不是维护两份列清单：两份清单必然漂移。
+	cols := strings.Split(realModelColumns, ",")
+	for i := range cols {
+		cols[i] = "m." + strings.TrimSpace(cols[i])
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+strings.Join(cols, ", ")+` FROM real_models m
+		  JOIN upstreams u ON u.id = m.upstream_id
+		  WHERE u.enabled = 1 AND m.status = 'active' AND m.hidden = 0
+		  ORDER BY m.upstream_id, m.sort_order, m.upstream_model_id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列可见真实模型失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []RealModel
+	for rows.Next() {
+		m, err := scanRealModel(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: 扫描可见真实模型失败: %w", err)
+		}
+		out = append(out, *m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历可见真实模型失败: %w", err)
+	}
+	return out, nil
+}
+
 // UpsertUpstream 同步一条上游配置，返回 id（按 kind+name 唯一）。
 func (r *ModelRepo) UpsertUpstream(ctx context.Context, kind, name, baseURL string, ownerAccountID *int64, enabled bool) (int64, error) {
 	if kind != "relay" && kind != "vendor" && kind != "selfhosted" {
@@ -497,6 +541,13 @@ func (r *ModelRepo) UpsertUpstream(ctx context.Context, kind, name, baseURL stri
 	if name == "" || baseURL == "" {
 		return 0, errors.New("store: 上游的 name 与 base_url 都不得为空")
 	}
+	// relay 上游 base_url 定案（task-12，承接 task-7 遗留）：存 provider 标识
+	// "sidecar://" + provider（如 "sidecar://fake_provider"）——ALIGN-SPEC H 后
+	// relay 没有可配端点（02-deploy §2.5：base_url/api_key_file 已删），该列对
+	// relay 的语义是「sidecar 内的 provider 锚点」而不是 HTTP 端点；vendor/
+	// selfhosted 仍是真实 base_url。校验只查非空（上面），不强制前缀——前缀
+	// 是写入方（装配/管理 API）的约定，读取方按 kind 解释，写在 DDL 外面
+	// 避免 CHECK 约束把后续演进锁死。
 
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO upstreams(kind, name, base_url, owner_account_id, enabled, last_seen_at)
