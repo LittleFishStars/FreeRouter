@@ -68,10 +68,10 @@ func (s *Server) HandleV1Chat(w http.ResponseWriter, r *http.Request) {
 
 	// SSE 透传（task-8 §5）：chunked 直写、不在中间缓冲——流式头先立
 	// 起来，后续字节经 StreamWriter 逐帧写出（proxyV1→streamOnce 内）。
+	// 2026-10-21 装配收口（code-review 发现 C）：改调 setSSEHeaders 统一——
+	// Connection: keep-alive 由 net/http 自理，显式设在 HTTP/2 下非法。
 	if req.Stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
+		setSSEHeaders(w)
 	}
 
 	s.proxyV1(r.Context(), w, proxyReq{

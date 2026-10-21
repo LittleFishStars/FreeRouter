@@ -82,6 +82,8 @@ type Repos struct {
 	Usage    *UsageRepo
 	Logs     *LogRepo
 	Quotas   *QuotaRepo
+	// Groups 组成员关系读路径（task-12 装配缺口；写路径在 M7）。
+	Groups *GroupRepo
 }
 
 // Open 打开主库：建目录 → 打开写池 → 设 PRAGMA → 迁移 → 打开读池 → 载入主密钥。
@@ -314,6 +316,7 @@ func newRepos(s *Store) *Repos {
 	r.Quotas = &QuotaRepo{db: conn, s: s}
 	r.Usage = &UsageRepo{db: conn, s: s, quotas: r.Quotas}
 	r.Logs = &LogRepo{db: conn, s: s}
+	r.Groups = &GroupRepo{db: conn, s: s}
 	return r
 }
 

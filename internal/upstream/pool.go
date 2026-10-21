@@ -325,7 +325,6 @@ func LogUpstreamFailure(ctx context.Context, t Target, attempt int, class ErrCla
 		// 省略会让「这条日志有没有状态码」变成一个需要额外判断的问题。
 		"http_status", statusOrZero(status),
 		"elapsed_ms", elapsed.Milliseconds(),
-		"request_id", requestIDFrom(ctx, t),
 	)
 }
 
@@ -338,7 +337,6 @@ func LogUpstreamSuccess(ctx context.Context, t Target, status int, elapsed time.
 		"http_status", statusOrZero(status),
 		"elapsed_ms", elapsed.Milliseconds(),
 		"retry_count", retryCount,
-		"request_id", requestIDFrom(ctx, t),
 	)
 }
 
@@ -349,9 +347,8 @@ func statusOrZero(status int) int {
 	return status
 }
 
-// requestIDFrom 取 ctx 里请求级 logger 不可得时的兜底——M1 阶段请求 ID 由
-// httpapi 写进 logger 属性（logging.WithLogger），上游层只透传，不自行编造。
-func requestIDFrom(ctx context.Context, t Target) string {
-	// 预留：ctx 里没有独立 request_id 值时返回空串，slog 会省略该属性。
-	return ""
-}
+// requestIDFrom 是历史占位（2026-10-21 装配裁决：删除函数）。
+// 请求 ID 已由 mwRequestID 写进请求级 logger 属性，FromContext 取到的
+// logger 每条日志自带 request_id——再在字段里补一份恒空串只会被 slog
+// 省略，徒留死代码与误导性注释。若未来需要独立 ctx 值（如跨进程传播
+// 到 sidecar），在 httpapi 导出的 RequestIDFromContext 键上接，不在上游层重造。
