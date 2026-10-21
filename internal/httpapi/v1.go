@@ -437,3 +437,24 @@ type v1Panel struct {
 	upstream   Upstream
 	candidates CandidateSource
 }
+
+// decodeInboundBody 统一读入站请求体（mwBodyLimit 已做 413——这里只是
+// io 层兜底；33 MiB 上限与 §7.1 对齐防极端绕过中间件层的直调路径）。
+func decodeInboundBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 33<<20))
+	if err != nil {
+		writeV1ErrorSafe(w, "invalid_request", "读取请求体失败", "")
+		return nil, false
+	}
+	return body, true
+}
+
+// writeV1ErrorSafe 在无 requestID 语境下的最小错误写出（解码失败早期路径）。
+func writeV1ErrorSafe(w http.ResponseWriter, code, message, requestID string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(errStatus(code))
+	_ = json.NewEncoder(w).Encode(v1Error{
+		Error:     v1ErrorBody{Message: message, Type: ir.CodeToErrorType(code), Param: nil, Code: code},
+		RequestID: requestID,
+	})
+}
