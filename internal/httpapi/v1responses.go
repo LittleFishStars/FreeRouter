@@ -421,6 +421,8 @@ func (s *Server) proxyResponsesOnce(ctx context.Context, w http.ResponseWriter, 
 	if err != nil {
 		return false
 	}
+	// §4.1：出站 model 恒为抽象名（与 proxyOnce 同规则——防泄露池结构）。
+	resp.Model = req.Model
 	out, err := encodeResponsesResponse(resp, reqID)
 	if err != nil {
 		return false

@@ -202,7 +202,7 @@ func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyR
 		RequestID:     reqID,
 		CreatedAt:     time.Now().Unix(),
 	}
-	_ = encOpt // EncodeResponse 现在无 opt 参数；保留以防后续接口扩展时重取
+	_ = encOpt // 出站 EncodeOptions（CreatedAt 兜底在 ir 层：非流式 0→time.Now）
 	upOpt := ir.EncodeOptions{
 		UpstreamModel: cand.UpstreamModelID, // 上行给候选的是真实模型 id（§4.1 只有出站方向恒抽象名）
 		RequestID:     reqID,
@@ -240,6 +240,9 @@ func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyR
 		// 上游给了无法解析的响应体：协议违规，换候选。
 		return false
 	}
+	// §4.1：model 恒为请求里的抽象模型名——上游响应里的真实模型名
+	// （deepseek-chat 等）在出站前覆盖（防泄露池结构）。
+	resp.Model = pr.req.Model
 	out, err := pr.inbound.EncodeResponse(resp)
 	if err != nil {
 		// 入站方言编码失败（如 Anthropic 响应含 openai 方言没有的字段）——
