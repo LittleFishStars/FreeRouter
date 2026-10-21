@@ -16,14 +16,14 @@ import (
 type errorType string
 
 const (
-	typeInvalidRequest   errorType = "invalid_request_error"
-	typeAuthentication   errorType = "authentication_error"
-	typePermission       errorType = "permission_error"
-	typeNotFound         errorType = "not_found_error"
-	typeConflict         errorType = "conflict_error"
-	typeRateLimit        errorType = "rate_limit_error"
-	typeServiceUnavail   errorType = "service_unavailable_error"
-	typeInternal         errorType = "internal_error"
+	typeInvalidRequest errorType = "invalid_request_error"
+	typeAuthentication errorType = "authentication_error"
+	typePermission     errorType = "permission_error"
+	typeNotFound       errorType = "not_found_error"
+	typeConflict       errorType = "conflict_error"
+	typeRateLimit      errorType = "rate_limit_error"
+	typeServiceUnavail errorType = "service_unavailable_error"
+	typeInternal       errorType = "internal_error"
 )
 
 // errorTypes 是 docs/api/03-errors.md §3.1 的 code → type 映射。
@@ -110,6 +110,7 @@ func writeError(w http.ResponseWriter, status int, code, message string, details
 	}
 	_ = json.NewEncoder(w).Encode(payload)
 }
+
 // writeErrorParam 用于 §4 中要求把出错字段填进 `param` 的码（如 405 填方法名、
 // 400 填字段名）。
 func writeErrorParam(w http.ResponseWriter, status int, code, param, message string) {
