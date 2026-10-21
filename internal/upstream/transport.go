@@ -117,8 +117,8 @@ func (t *HTTPTransport) Do(ctx context.Context, tgt Target, body []byte, opts ht
 		snippet := readSnippet(resp.Body, 4096)
 		resp.Body.Close()
 		return nil, resp.StatusCode, &Error{
-			Class:  ClassifyStatus(resp.StatusCode),
-			Status: resp.StatusCode,
+			Class:   ClassifyStatus(resp.StatusCode),
+			Status:  resp.StatusCode,
 			Message: fmt.Sprintf("上游返回 %d: %s", resp.StatusCode, snippet),
 		}
 	}

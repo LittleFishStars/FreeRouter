@@ -41,8 +41,8 @@ type inferParams struct {
 	Model    string `json:"model"`
 	// Body 是候选方言编码后的请求体原文（JSON）——adapter 说什么方言就传什么，
 	// Go 侧不翻译（协议知识在 adapter，重写即双重维护）。
-	Body json.RawMessage `json:"body"`
-	Stream bool          `json:"stream"`
+	Body   json.RawMessage `json:"body"`
+	Stream bool            `json:"stream"`
 }
 
 // InferStream 发起一次 relay 推理调用。
@@ -91,10 +91,10 @@ func relayErr(err error) error {
 	var de *dshprovider.Error
 	if ok := asDshError(err, &de); ok {
 		return &Error{
-			Class:  relayClass(de.Code),
-			Status: 0,
+			Class:   relayClass(de.Code),
+			Status:  0,
 			Message: fmt.Sprintf("sidecar %s(%s): %s", "infer.stream", de.Code, de.Message),
-			Cause:  err,
+			Cause:   err,
 		}
 	}
 	return &Error{Class: Classify(err), Message: err.Error(), Cause: err}

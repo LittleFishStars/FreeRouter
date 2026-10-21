@@ -39,7 +39,7 @@ type UpstreamWriter interface {
 // AdminNotifier 是 admin_inbox 通知的窄接口（§3.3：目录/健康事件的唯一发现点）。
 //
 // ALIGN-SPEC G：relay 连续失败写 upstream_failing。自举阶段能发的通知有限
-//（目录拉不下来 = warn），实现归装配层；接口为 nil 时跳过通知（不阻塞主流程，
+// （目录拉不下来 = warn），实现归装配层；接口为 nil 时跳过通知（不阻塞主流程，
 // §3.3「通知是旁路」）。
 type AdminNotifier interface {
 	// NotifyAdminInbox 写一条待处理通知。kind/severity/detail 的口径见 03-upstream.md §3.3 表。
@@ -88,7 +88,7 @@ type Refresher interface {
 }
 
 // NewRelayBootstrapper 建自举器。writer 为 nil 时自举只拉目录不落行
-//（装配未接线 store 的降级形态——不报错，写库失败本就只记日志）。
+// （装配未接线 store 的降级形态——不报错，写库失败本就只记日志）。
 func NewRelayBootstrapper(source ProviderSource, writer UpstreamWriter, refresher Refresher, notifier AdminNotifier, log *slog.Logger) *RelayBootstrapper {
 	return &RelayBootstrapper{source: source, writer: writer, refresher: refresher, notifier: notifier, log: log}
 }
@@ -96,7 +96,7 @@ func NewRelayBootstrapper(source ProviderSource, writer UpstreamWriter, refreshe
 // Run 执行一轮自举：providers.list → 落 upstreams → 目录刷新。
 //
 // 任何失败都返回**带 SkippedReason 的结果**而不是 error——自举是启动旁路
-//（红线：失败不阻塞启动），调用方（装配层）只需记日志并安排下轮重试。
+// （红线：失败不阻塞启动），调用方（装配层）只需记日志并安排下轮重试。
 // 幂等：重复 Run 与重复启动都安全（upsert 语义 + RefreshOnce 自身幂等）。
 func (b *RelayBootstrapper) Run(ctx context.Context) BootstrapResult {
 	if b == nil || b.source == nil {
