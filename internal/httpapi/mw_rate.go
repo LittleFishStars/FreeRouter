@@ -132,6 +132,31 @@ func (s *Server) writeAuthErr(w http.ResponseWriter, err error) {
 	if msg == "" {
 		msg = err.Error()
 	}
+	// quota 对象（docs/api/03-errors.md §6 双通道定案）：quota_exceeded /
+	// pool_exhausted 必带 {unit, period, model?}——合计行 Model 为空则
+	// 整个键缺省（JSON 省略 model 字段而不是发 null）；客户端的自动降级
+	// （换模型 / 退避到重置）靠它驱动。其余码不带。
+	if ae.Quota != nil && (ae.Code == auth.CodeQuotaExceeded || ae.Code == auth.CodePoolExhausted) {
+		// quota 是 error 对象内的**契约字段**（§6 双通道），不是 writeError
+		// 的 details（details 是非契约排障字段，客户端不得依赖；quota 恰恰
+		// 是客户端要依赖的）。writeError（errors.go，不可改红线）无法往
+		// error 对象里加契约键，故 quota 路径用 writeJSON 自组同形错误体。
+		// 合计行 Model 为空则省略 model 键（不是发 null）。
+		q := map[string]any{"unit": ae.Quota.Unit, "period": ae.Quota.Period}
+		if ae.Quota.Model != "" {
+			q["model"] = ae.Quota.Model
+		}
+		writeJSON(w, status, map[string]any{
+			"error": map[string]any{
+				"message": msg,
+				"type":    string(TypeForCode(string(ae.Code))),
+				"param":   nil,
+				"code":    string(ae.Code),
+				"quota":   q,
+			},
+		})
+		return
+	}
 	writeError(w, status, string(ae.Code), msg, nil)
 }
 

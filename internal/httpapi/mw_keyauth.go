@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
 )
@@ -41,18 +40,15 @@ func (s *Server) mwKeyAuth(authn *auth.KeyAuthenticator) func(http.Handler) http
 			raw := auth.ParseBearer(r.Header.Get("Authorization"))
 			p, err := authn.Authenticate(r.Context(), raw)
 			if err != nil {
+				// 装配错误（CodeInternal，如缺存储依赖）是 500 面，不是凭据面；
+				// 其余一律 401 invalid_api_key 单出口（防枚举）。
+				// 判据用 Code 而不是错误文本——文本匹配会在文案调整时静默失效。
 				var ae *auth.Error
-				msg := "API Key 无效或缺失"
-				if strings.Contains(err.Error(), "internal") {
-					// 装配错误（缺存储依赖等）是 500 面，不是凭据面。
-					writeError(w, http.StatusInternalServerError, string(auth.CodeInternal), err.Error(), nil)
-					return
-				}
-				if ae != nil && ae.Code == auth.CodeInternal {
+				if asAuthError(err, &ae) && ae.Code == auth.CodeInternal {
 					writeError(w, http.StatusInternalServerError, string(auth.CodeInternal), ae.Msg, nil)
 					return
 				}
-				writeError(w, http.StatusUnauthorized, string(auth.CodeInvalidAPIKey), msg, nil)
+				writeError(w, http.StatusUnauthorized, string(auth.CodeInvalidAPIKey), "API Key 无效或缺失", nil)
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(

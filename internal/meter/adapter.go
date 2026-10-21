@@ -171,13 +171,17 @@ func (a *StoreAdapter) TryDebit(ctx context.Context, dc DebitContext) error {
 
 	// 账户额度：先合计行（mid=0）再按模型行——与 PrecheckQuota 的行遍历
 	// 同一顺序，保证"预检拒的行"与"扣减拒的行"是同一道闸。
-	for _, mid := range []int64{store.TotalScope, dc.AbstractModelID} {
-		if mid < 0 {
-			return auth.Errorf(auth.CodeInternal, nil, "模型 id 非法 %d", mid)
+	// mid 去重：AbstractModelID=TotalScope（无按模型行）时列表是 [0,0]，
+	// 不去重会对合计行**扣两次**——每次请求凭空吃掉两份额度（复现于
+	// TestContractAdapterDebitsRealStore：limit=2 第一发后 used 即 2）。
+	mids := []int64{store.TotalScope}
+	if dc.AbstractModelID != store.TotalScope {
+		if dc.AbstractModelID < 0 {
+			return auth.Errorf(auth.CodeInternal, nil, "模型 id 非法 %d", dc.AbstractModelID)
 		}
-		if mid != store.TotalScope && mid == dc.AbstractModelID && dc.AbstractModelID == store.TotalScope {
-			continue // 无按模型行可扣
-		}
+		mids = append(mids, dc.AbstractModelID)
+	}
+	for _, mid := range mids {
 		for _, up := range []struct{ unit, period string }{
 			{"request", "day"}, {"request", "month"},
 			{"token", "day"}, {"token", "month"},
@@ -210,10 +214,7 @@ func (a *StoreAdapter) TryDebit(ctx context.Context, dc DebitContext) error {
 			if !ok || cost == 0 {
 				continue
 			}
-			for _, mid := range []int64{store.TotalScope, dc.AbstractModelID} {
-				if mid != store.TotalScope && dc.AbstractModelID == store.TotalScope {
-					continue
-				}
+			for _, mid := range mids {
 				err := a.quotas.TryDebitPool(ctx, gid, mid, store.QuotaUnit(up.unit), store.QuotaPeriod(up.period), cost)
 				if err == nil {
 					continue
