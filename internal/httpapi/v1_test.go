@@ -88,13 +88,13 @@ func (f *fakeCatalog) ListModelIDs(ctx context.Context) ([]string, error) {
 // 方法就是「路由挂好之后」的语义，测试先行锁定契约。
 func newV1Server(t *testing.T, up Upstream, cs CandidateSource) *Server {
 	t.Helper()
-	s := New(Deps{Config: testConfig(t), Logger: discardLogger()})
+	s := New(Deps{Config: testConfigV1(t), Logger: discardLogger()})
 	s.AttachV1(up, cs)
 	return s
 }
 
 // testConfig 与 contract_test.newTestServer 同源：Default+Validate。
-func testConfig(t *testing.T) *config.Config {
+func testConfigV1(t *testing.T) *config.Config {
 	t.Helper()
 	c := config.Default()
 	if err := c.Validate(); err != nil {
