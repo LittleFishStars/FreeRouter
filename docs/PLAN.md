@@ -196,6 +196,7 @@ account {
 | Key 白名单能否放宽 | 放开类 |
 | 每人日 / 月 token 上限 | 限制类 |
 | 每人 RPM / TPM / 并发上限 | 限制类 |
+| **每人按模型额度上限**（`model × unit × period`，2026-10-20 新增） | 限制类：逐 `(model, unit, period)` 键取 min，声明在 `group_model_quota_caps`、生效值落 `account_quotas` 按模型行；另支持**模型级共享池**（`group_quota_pools.abstract_model_id > 0`，2026-10-20 新增） |
 | 能否使用某类抽象模型（如 `smart`） | 放开类 |
 
 **合并语义（核心）——一个账户可属于多个组：**
@@ -203,7 +204,7 @@ account {
 > **放开类取并集，限制类取最严。**
 
 - 模型可见性 = 各组成员资格之**并集**
-- 额度 / 速率 = 各组的**最小值**
+- 额度 / 速率 = 各组的**最小值**；**某组未设限制类键 = 无限制，记哨兵值 -1，不参与取最严**（2026-10-20 定案，细则见 [security/03-groups.md](security/03-groups.md) 第 3 节）
 - 布尔开关 = **deny 优先**（有一组禁止就不允许）
 
 最终可用模型：
@@ -236,7 +237,7 @@ account {
   按 IP 限速；用户名 / 邮箱做**防枚举**（响应时间恒定、文案不区分）；
   密码 ≥12 字符，argon2id 存储。
 - **审核**：管理端队列 → 批准（**选组 + 配额**，账号转 `active`）/ 拒绝（可填理由）。
-- **管理员导入账密**：单个添加或 CSV（`用户名,密码[,组][,日额度]`），导入即 `active`；
+- **管理员导入账密**：单个添加或 CSV（`用户名,密码[,组][,额度]`，额度格式 `unit:数值[:period]`，2026-10-20 随账户额度行化更新），导入即 `active`；
   密码留空则生成随机密码，一次性展示；导入动作全进审计。
 - **贡献即得 `contributor` 类**：无需审批（见第 4 章）。
 - **`admin` 类只能由现有管理员授予**。
@@ -904,7 +905,9 @@ SQLite（WAL），编号 SQL 迁移，启动时自动执行。
 
 | 表 | 关键字段 | 说明 |
 |---|---|---|
-| `accounts` | id, display_name, username, password_hash, status, recovery_code_hash, quota_limit, quota_used, quota_unit, rpm_limit, tpm_limit, max_concurrency, created_at, last_login_at, note | status: `pending` / `active` / `disabled` / `rejected` / `merged`；**无上级归属**；**额度与速率全在账户级**，`quota_unit` 取 `request` / `token` / `credit` |
+| `accounts` | id, display_name, username, password_hash, status, recovery_code_hash, rpm_limit, tpm_limit, max_concurrency, created_at, last_login_at, note | status: `pending` / `active` / `disabled` / `rejected` / `merged`；**无上级归属**；速率/并发在账户级单列（`-1` = 不限，2026-10-20 定案）；周期额度不在本表（行化在 `account_quotas`） |
+| `account_quotas` | account_id, abstract_model_id, unit, period, quota_limit, quota_used, period_anchor（2026-10-20 新增：账户级周期额度行化；`abstract_model_id = 0` 合计行，非零 = 按模型限额行） | DDL 见 [architecture/05-storage.md](architecture/05-storage.md) 3.1 |
+| `group_model_quota_caps` | group_id, abstract_model_id, unit, period, cap（2026-10-20 新增：按模型的每人上限声明） | DDL 见 3.3.1 |
 | `account_classes` | account_id, class | `admin` / `tenant` / `contributor`，一个账户可多行 |
 | `account_merges` | source_id, target_id, merged_at, reversible_until, undone_at | 合并留痕（类取并集）；撤销窗口 **7 天**，撤销不删行、只写 `undone_at` |
 | `sessions` | id, account_id, token_hash, created_at, expires_at, ip, ua | 改密 / 禁用即吊销；默认 24h 过期 |

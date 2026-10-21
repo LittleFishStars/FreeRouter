@@ -58,8 +58,14 @@ CREATE TABLE accounts (
     recovery_code_hash TEXT,                   -- 可空
     created_at         INTEGER NOT NULL,
     last_login_at      INTEGER,
-    note               TEXT
+    note               TEXT,
+    rpm_limit          INTEGER NOT NULL DEFAULT -1 CHECK (rpm_limit >= -1),
+    tpm_limit          INTEGER NOT NULL DEFAULT -1 CHECK (tpm_limit >= -1),
+    max_concurrency    INTEGER NOT NULL DEFAULT -1 CHECK (max_concurrency >= -1)
 );
+-- 速率/并发上界统一用哨兵值 -1 表达「不限」（2026-10-20 定案，见
+-- [../security/03-groups.md](../security/03-groups.md) 第 3 节）；`0` = 零额度（全拒），
+-- 与 -1 意思完全相反。禁止 NULL：NULL 参与比较得 UNKNOWN，条件 UPDATE 与取 min 全部要额外分支。
 CREATE UNIQUE INDEX ux_accounts_username ON accounts(username);
 CREATE INDEX ix_accounts_status ON accounts(status);
 
@@ -81,7 +87,23 @@ CREATE TABLE account_merges (
 );
 CREATE INDEX ix_account_merges_source ON account_merges(source_id);
 CREATE INDEX ix_account_merges_target ON account_merges(target_id);
+
+-- 账户级周期额度（2026-10-20 定案：**行化**，不在 accounts 上开单列）
+-- abstract_model_id = 0 → 全模型合计（即原「账户总额度」）；> 0 → 只限该抽象模型
+CREATE TABLE account_quotas (
+    account_id        INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    abstract_model_id INTEGER NOT NULL DEFAULT 0,   -- 0 = 合计哨兵（见 3.3 节同形说明）
+    unit              TEXT    NOT NULL CHECK (unit IN ('request', 'token', 'credit')),
+    period            TEXT    NOT NULL CHECK (period IN ('day', 'month')),
+    quota_limit       INTEGER NOT NULL CHECK (quota_limit >= 0),  -- 0 = 全拒；"不限"由没有这一行表达（-1 哨兵只用于组侧标量策略）
+    quota_used        INTEGER NOT NULL DEFAULT 0 CHECK (quota_used >= 0),
+    period_anchor     TEXT    NOT NULL,             -- 'YYYY-MM-DD'：quota_used 属于哪个周期
+    updated_at        INTEGER NOT NULL,
+    PRIMARY KEY (account_id, abstract_model_id, unit, period)
+) WITHOUT ROWID;
 ```
+
+**为什么额度不落在 `accounts` 的列上（2026-10-20 定案，取代旧的 `quota_limit`/`quota_used`/`quota_unit` 三列）**：单列只能存一个周期与一个维度，而组侧的限制类策略是逐 `(unit, period)` 键取 min 的（[../security/03-groups.md](../security/03-groups.md) 第 4 节）；若账户侧只有一行「总额度」，管理员在审批时给的值与组给的「token/日」与「credit/月」根本对不上口径。行化后一个账户可以有 `request/day` + `credit/month` 两行，与组策略键一一对应。`quota_limit` 允许 `0`（全拒）；「不限」由**没有这一行**表达，不用 -1（-1 只适用于组侧的可合并**标量**策略）。
 
 **为什么 `account_classes` 是独立表而不是 `accounts.role`**：一个账户可同时拥有多个权限类
 （README 术语表）；单列存不了集合。另外 `account_classes` 上的 `CHECK` 是**权限类的唯一权威
@@ -148,13 +170,14 @@ CREATE TABLE group_policies (
 -- 组级共享池：有状态的消耗计数，**不进** group_policies（原因见下文）
 CREATE TABLE group_quota_pools (
     group_id      INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    dimension     TEXT    NOT NULL CHECK (dimension IN ('requests', 'tokens')),
+    abstract_model_id INTEGER NOT NULL DEFAULT 0,   -- 0 = 全模型合计；> 0 = 只限该抽象模型
+    unit          TEXT    NOT NULL CHECK (unit IN ('request', 'token', 'credit')),
     period        TEXT    NOT NULL CHECK (period IN ('day', 'month')),
     pool_limit    INTEGER NOT NULL CHECK (pool_limit > 0),
     pool_used     INTEGER NOT NULL DEFAULT 0 CHECK (pool_used >= 0),
     period_anchor TEXT    NOT NULL,              -- 'YYYY-MM-DD'：pool_used 属于哪个周期的起点
     updated_at    INTEGER NOT NULL,
-    PRIMARY KEY (group_id, dimension, period)
+    PRIMARY KEY (group_id, abstract_model_id, unit, period)
 ) WITHOUT ROWID;
 ```
 
@@ -166,13 +189,13 @@ CREATE TABLE group_quota_pools (
 而迁移是线上操作中风险最高的一类。**代价**：值无法由 DB 约束校验形状，必须在应用层用
 schema 校验——这个代价我们接受，因为策略值本来就是 JSON 文档。
 
-**为什么共享池另开一表，而不是又往 `group_policies` 里塞一行 `{"dimension":…,"limit":…}`**：
+**为什么共享池另开一表，而不是又往 `group_policies` 里塞一行 `{"unit":…,"limit":…}`**：
 
 | 理由 | 说明 |
 |---|---|
 | 它是**状态**，不是**策略** | `group_policies` 存的是"管理员设了什么"，值是声明；`pool_used` 是"已经消耗了多少"，每次请求都变。两类数据写频差几个数量级，混在同一张表里会让"改策略"与"扣额度"争同一个行的写锁 |
 | 它需要**单条条件 UPDATE** | 扣减必须写成 `UPDATE … WHERE … AND pool_used + :cost <= pool_limit`（见 [第 7.4 节](#74-组级共享池的并发扣减与惰性重置)）。JSON 列里的数字无法在 `WHERE` 里参与计算与比较，只能先读出来再写回去——正是要避免的读-改-写 |
-| 主键形态不同 | 策略的主键是 `(group_id, policy_key)`；池的主键是 `(group_id, dimension, period)`，一个组可以同时有 `requests/day` 与 `tokens/day` 两行 |
+| 主键形态不同 | 策略的主键是 `(group_id, policy_key)`；池的主键是 `(group_id, abstract_model_id, unit, period)`，一个组可以同时有 `request/day` 合计池与 `credit/month` 合计池（外加若干的**按模型**池，见 3.3.1）；`unit` 列名与 `account_quotas.unit` 同形（旧名 `dimension` 及其两值枚举 `requests`/`tokens` 已于 2026-10-20 废弃：与账户级额度统一拼写，且必须容纳第三维 `credit`） |
 | 可索引、可审计 | `pool_used` 是要拿来排序与告警的（"哪些组快满了"），JSON 值不可索引 |
 
 **为什么"没设"与"设为 0"在类型层面就已经互斥**：`pool_limit` 是 `NOT NULL CHECK (pool_limit > 0)`，
@@ -197,6 +220,35 @@ SQL 里 `NULL` 参与比较的结果是 `UNKNOWN`（既不真也不假），而�
 （等价于"立刻停止本周期消耗"），而这条 CHECK 会让该操作直接写入失败。
 上限是闸门，不是不变式：闸门可以被关到"已经过不去了"，这时的正确表现是**后续请求全被拒**，
 而不是**拒绝管理员关闸**。
+
+**为什么 `group_quota_pools` 带 `abstract_model_id`（0 = 合计哨兵，2026-10-20 新增按模型限额）**：
+按模型的**组级共享池**与合计池是同一形态的资源，只是作用域多一维；用哨兵行而不是另开一张表，
+是为了让结算热路径的扣减语句只有一种形状（见 7.4）。`0` 不是合法模型 id（`abstract_models.id`
+从 1 起），因此哨兵不会与真实模型碰撞。
+
+### 3.3.1 按模型的每人上限（组侧声明）
+
+```sql
+-- 每人按模型上限：组侧的**声明**，与池不同它不带计数器（消耗按人记在 account_quotas）
+CREATE TABLE group_model_quota_caps (
+    group_id          INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    abstract_model_id INTEGER NOT NULL REFERENCES abstract_models(id) ON DELETE CASCADE,
+    unit              TEXT    NOT NULL CHECK (unit IN ('request', 'token', 'credit')),
+    period            TEXT    NOT NULL CHECK (period IN ('day', 'month')),
+    cap               INTEGER NOT NULL CHECK (cap > 0),   -- 每人上限；无行 = 不限
+    PRIMARY KEY (group_id, abstract_model_id, unit, period)
+) WITHOUT ROWID;
+CREATE INDEX ix_gmqc_model ON group_model_quota_caps(abstract_model_id);
+```
+
+**为什么拆成「组侧 cap 声明 + 账户侧计数器」两处**：组侧的 `cap` 是策略（管理员设了什么），
+全组成员共享同一行；而消耗必须**按人记账**——"每人在 `smart` 上每天 50 次"若把计数器挂在
+组行上，就把"每人限额"错实现成了"组共享池再加一维模型"，两者是完全不同的闸（交集语义见
+[../security/03-groups.md](../security/03-groups.md) 第 4 节）。账户侧的生效值由 `EffectivePolicy`
+在成员关系/策略变更时重算：对每个 `(账户, 模型, unit, period)`，取全部所属组 cap 的
+min 后 upsert 进 `account_quotas`（`abstract_model_id > 0` 的行）；任一所属组都没设 = 不限 =
+删行。重算**不清 `quota_used`**：已发生的消耗是事实，换上限不改账本；把上限调到低于已用量
+是合法关闸（同 `pool_limit` 的取舍）。
 
 ### 3.4 抽象模型与目录
 
@@ -331,13 +383,10 @@ CREATE TABLE api_keys (
     name            TEXT,
     status          TEXT    NOT NULL DEFAULT 'active'
                     CHECK (status IN ('active','disabled','expired')),
-    expires_at      INTEGER,
-    quota_limit     INTEGER,              -- NULL = 不限
-    quota_used      INTEGER NOT NULL DEFAULT 0,
-    rpm_limit       INTEGER,
-    tpm_limit       INTEGER,
-    daily_token_cap INTEGER,
-    max_concurrency INTEGER
+    expires_at      INTEGER
+-- （2026-10-20 定案：Key 不持有任何额度/速率字段，旧版本表的 quota_limit/quota_used/
+--   rpm_limit/tpm_limit/daily_token_cap/max_concurrency 六列已删；见
+--   [../security/05-keys.md](../security/05-keys.md) 第 4 节：Key 只剩认证、白名单收窄、生命周期）
 );
 CREATE UNIQUE INDEX ux_api_keys_key_hash ON api_keys(key_hash);
 CREATE INDEX ix_api_keys_account ON api_keys(account_id);
@@ -354,8 +403,10 @@ CREATE INDEX ix_key_model_allow_model ON key_model_allow(abstract_model_id);
 **为什么只存 `key_hash` 且用 `BLOB`**：PLAN 9——明文只在创建时返回一次。Hash 用 BLOB 的理由
 同 `sessions.token_hash`。**为什么校验必须走唯一索引**：Key 校验是转发热路径上的第一跳。
 
-**为什么额度上限列可空**：`NULL` 与 `0` 语义不同——`NULL` 是"不限"，`0` 是"额度为零（全部拒绝）"。
-把两者混淆会让"新建 Key 默认无法请求"（PLAN 14 验收项）与"不限额度"变得无法区分。
+**为什么额度不再挂在 Key 上（2026-10-20 定案，取代旧的「`NULL` = 不限」可空列设计）**：若每把 Key
+有自己的 `quota_limit`，用户建 10 把 Key 就得到 10 份额度，账户级上限形同虚设；额度一律在
+`account_quotas` 按账户计，判定与扣减与本次请求用的是哪把 Key 无关。旧设计里"NULL = 不限与 0 = 全拒"的
+三态问题，现由"行存在与否"取代（与池同形），不再存在可空上限列。
 
 ### 3.7 请求记录与计量
 
@@ -388,16 +439,16 @@ CREATE INDEX ix_requests_error ON requests(error_code, ts);
 
 CREATE TABLE usage_daily (
     day               TEXT    NOT NULL,        -- 'YYYY-MM-DD'（UTC）
-    key_id            INTEGER NOT NULL,
+    account_id        INTEGER NOT NULL,        -- 2026-10-20 改定：按账户聚合（额度判定目标就是账户，见 06-audit 第 1 节）
     abstract_model_id INTEGER NOT NULL,
     real_model_id     INTEGER NOT NULL,
     requests          INTEGER NOT NULL DEFAULT 0,
     in_tokens         INTEGER NOT NULL DEFAULT 0,
     out_tokens        INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (day, key_id, abstract_model_id, real_model_id)
+    PRIMARY KEY (day, account_id, abstract_model_id, real_model_id)
 ) WITHOUT ROWID;
 CREATE INDEX ix_usage_daily_day ON usage_daily(day);
-CREATE INDEX ix_usage_daily_key ON usage_daily(key_id, day);
+CREATE INDEX ix_usage_daily_account ON usage_daily(account_id, day);
 ```
 
 **`requests` 里没有 `cost` 列，这是刻意的**（PLAN 10 明确）：我们**不做计价**。理由：每个上游
@@ -510,8 +561,9 @@ GROUP BY uc.id;
 长期事实，它必须落表；而贡献统计的期间与 `requests` 完全重叠，多存一份只得到
 一份可能不一致的副本。
 
-> **待定**：`usage_daily` 目前按 `key_id` 聚合（看板视角）；若贡献统计日后也需要
-> 长期保留（例如贡献者服务了两年想看向历史总量），要么给它加 `credential_id` 维度，
+> **已定（2026-10-20）+ 待定**：`usage_daily` 已改为按 `account_id` 聚合（额度判定目标就是账户，
+> 见 [../security/06-audit.md](../security/06-audit.md) 第 1 节，DDL 已同步）。若贡献统计日后也需要
+> 长期保留（例如贡献者服务了两年想看历史总量），要么给它加 `credential_id` 维度，
 > 要么单独建表。目前按「不建」处理，因为贡献统计的定位是**当下可用性反馈**。
 
 ---
@@ -524,9 +576,9 @@ GROUP BY uc.id;
 | `ux_api_keys_key_hash` | 每次模型请求的 Key 校验 | 转发热路径第一跳 |
 | `ux_real_models_upstream_model` | 目录同步 upsert | 同步按 `(upstream, model_id)` 匹配 |
 | `ix_requests_key_ts` 等 | 用量查询、对账、排障 | 都带时间范围，故索引前导列是**实体 id + ts** |
-| `ix_usage_daily_*` | 日报表 | 主键是 `(day, …)`，按 day 查走主键；按 key 查需要额外索引 |
+| `ix_usage_daily_*` | 日报表 | 主键是 `(day, …)`，按 day 查走主键；按账户查走 `ix_usage_daily_account`（按 Key 的明细在 `requests`，不在此表） |
 | `ux_upstream_credentials_external` | 去重 | 硬约束，不是优化 |
-| `group_quota_pools` 的**隐式**主键索引 | 每次结算的原子扣减、组详情页的 "还剩多少" | 扣减的 `WHERE` 要命中 `(group_id, dimension, period)` 全列；没有额外索引，因为主键已经正好是这个形状 |
+| `group_quota_pools` 的**隐式**主键索引 | 每次结算的原子扣减、组详情页的 "还剩多少" | 扣减的 `WHERE` 要命中 `(group_id, abstract_model_id, unit, period)` 全列；没有额外索引，因为主键已经正好是这个形状 |
 
 **通用原则：时间序列类索引的末列是 `ts`，不是首列。** 因为所有真实查询都是
 "某个实体在某段时间内的记录"。反过来（`ts` 在前）会导致范围扫描在时间维度展开，
@@ -634,8 +686,8 @@ checkpoint。这是"长报表查询把 `-wal` 撑大"这类问题的根治手段
 |---|---|---|
 | Key 校验 | 单条 `SELECT`，无显式事务 | 自动提交；且**必须实时查账户状态**（PLAN 9：账户转 `disabled` 后名下 Key 立即 401），不能靠缓存 |
 | 一次模型请求的落库 | 流结束后**一个**事务：`INSERT requests` + `usage_daily` upsert（+ 额度递增 + 组池扣减） | 四段必须原子：否则会出现"有请求记录但日汇总少一笔"或"池子扣了但用量没记"，两种都对不上账 |
-| `usage_daily` 累加 | `INSERT … ON CONFLICT(day,key_id,abstract_model_id,real_model_id) DO UPDATE SET requests=requests+?` | 读-改-写会在并发下丢更新；upsert 由 DB 保证原子 |
-| `api_keys.quota_used` 递增 | `UPDATE api_keys SET quota_used = quota_used + ? WHERE id = ?` | 同上 |
+| `usage_daily` 累加 | `INSERT … ON CONFLICT(day,account_id,abstract_model_id,real_model_id) DO UPDATE SET requests=requests+?` | 读-改-写会在并发下丢更新；upsert 由 DB 保证原子 |
+| 账户额度递增 | 对`account_quotas`的当期合计行（与命中模型的行）各跑单条条件 UPDATE（见 7.4）；不限 = 无行 = 跳过 | 同上；额度与用量同一事务，不会出现"池子扣了但用量没记" |
 | 抽象模型/候选/组策略变更 | 单事务（含替代链成环校验） | 校验与写入必须同事务，否则并发下会出现"校验时没环、写下去有环" |
 | 账户合并 | 单事务（多个表） | 合并是多表改写的；中途失败留下半个身份是灾难 |
 | 组级共享池扣减 | **与请求落库同一个事务**，单条条件 `UPDATE`（见第 3.3 节与 [第 7.4 节](#74-组级共享池的并发扣减与惰性重置)） | 池扣减与用量必须同生同死；而条件 `UPDATE` 把"判定+递增"压进一条语句，避免并发超发 |
@@ -659,10 +711,17 @@ checkpoint。这是"长报表查询把 `-wal` 撑大"这类问题的根治手段
 以"受影响行数"为成败。
 
 ```sql
--- 扣减：0 行 = 额度不足（拒绝）；1 行 = 成功（放行）
+-- 账户额度扣减（合计行 :mid = 0；按模型限额行 :mid > 0）：0 行 = 不足（拒绝）；1 行 = 成功
+UPDATE account_quotas
+   SET quota_used = quota_used + :cost, updated_at = :now
+ WHERE account_id = :aid AND abstract_model_id = :mid AND unit = :unit AND period = :period
+   AND period_anchor = :current_anchor      -- 先由重置语句保证锚点是当期
+   AND quota_used + :cost <= quota_limit;
+
+-- 池扣减（与上面同形，目标是组级共享池）：0 行 = 额度不足（拒绝）；1 行 = 成功（放行）
 UPDATE group_quota_pools
    SET pool_used = pool_used + :cost, updated_at = :now
- WHERE group_id = :gid AND dimension = :dim AND period = :period
+ WHERE group_id = :gid AND abstract_model_id = :mid AND unit = :unit AND period = :period
    AND period_anchor = :current_anchor      -- 先由下面的重置语句保证锚点是当期
    AND pool_used + :cost <= pool_limit;
 ```
@@ -692,9 +751,10 @@ UPDATE group_quota_pools
 ```sql
 UPDATE group_quota_pools
    SET pool_used = 0, period_anchor = :current_anchor, updated_at = :now
- WHERE group_id = :gid AND dimension = :dim AND period = :period
+ WHERE group_id = :gid AND abstract_model_id = :mid AND unit = :unit AND period = :period
    AND period_anchor <> :current_anchor;
-```
+-- account_quotas 的惰性重置与池同形（account_id/:aid 替 group_id/:gid，pool_used/pool_limit 替
+-- quota_used/quota_limit）；"不限" = 无行 = 根本不参与重置与扣减，无需额外分支
 
 | 方案 | 取舍 |
 |---|---|

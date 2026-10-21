@@ -22,9 +22,10 @@ account {
   recovery_code_hash, -- contributor 无密码时的找回凭据
   created_at, last_login_at, note
 
-  -- 额度与速率（账户级，见第 1 节「额度在账户级」）：一个账户的所有 Key 共享同一份
-  quota_limit, quota_used, quota_unit,  -- unit ∈ { request, token, credit }
-  rpm_limit, tpm_limit, max_concurrency
+  -- 周期额度（账户级，行化，见第 1 节「额度在账户级」）：拆到 account_quotas 表，
+  --   每行一个 (abstract_model_id=0 合计 | >0 按模型, unit, period)，一个账户的所有 Key 共享
+  -- 速率与并发（仍单列，-1 = 不限）：
+  rpm_limit, tpm_limit, max_concurrency   -- 默认 -1；0 = 全拒
 }
 
 account_class {
@@ -40,9 +41,8 @@ account_class {
 
 | 字段 | 计量维度 | 说明 |
 |---|---|---|
-| `quota_limit` / `quota_used` | `quota_unit` | 账户额度的上限与已用 |
-| `quota_unit` | — | **三种计量维度之一**：`request` / `token` / `credit` |
-| `rpm_limit` | 请求数 / 分钟 | 速率 |
+| 表 `account_quotas`：`(account_id, abstract_model_id, unit, period)` → `quota_limit` / `quota_used` / `period_anchor` | `unit` ∈ `request` / `token` / `credit` | 周期额度的上限与当期已用；`abstract_model_id = 0` 是合计行，非零是**按模型限额行**（2026-10-20 新增，DDL 见 [../architecture/05-storage.md](../architecture/05-storage.md) 3.1） |
+| `rpm_limit` | 请求数 / 分钟 | 速率；**-1 = 不限**（2026-10-20 定案，下同） |
 | `tpm_limit` | token / 分钟 | 速率 |
 | `max_concurrency` | 在途请求数 | 并发 |
 
@@ -63,12 +63,20 @@ credits = (in_tokens * in_multiplier + out_tokens * out_multiplier) / BASE
 - 内置一份常见模型价格表，**表里没有的模型乘数默认 1**；管理员可在管理面手动调整任意模型的乘数，改动进审计。
 - 价格乘数表与「`price` 排序策略」共用同一份数据（见 [../models/03-strategy.md](../models/03-strategy.md)）。
 
+**额度行化后的三层关系（2026-10-20 定案，取代旧待定）**：
+
+| 层 | 载体 | 语义 |
+|---|---|---|
+| 合计额度 | `account_quotas` 的 `abstract_model_id = 0` 行 | “这个人本周期总共能烧多少”，按 (unit, period) 可多行 |
+| 按模型限额 | `account_quotas` 的 `abstract_model_id > 0` 行 | “这个人在 `smart` 上本周期能烧多少”，由组侧 `group_model_quota_caps` 重算落入 |
+| 周期上界来源 | 组限制类策略 | 审批/变更时由 `EffectivePolicy` 取 min 后写进行；未设键 = -1 不落行 |
+
+旧待定「`quota_limit` 是总额度还是日/月额度」**已定**：不存在单独的“总额度”——周期属性就在行键 `(unit, period)` 里，一行就是一个闸；“不限”由无行表达，`quota_limit = 0` 只表示零额度全拒（默认拒绝）。三层叠加（合计 × 按模型 × Key 白名单）中 Key 白名单不参与额度，只收窄模型集合（见 05-keys.md）。
+
 - **为什么额度落在账户而不是 Key**：否则"同一账户多开 10 把 Key"就等于额度翻 10 倍，账户级额度形同虚设。Key 只保留三件事：认证、模型白名单收窄、生命周期。
 - **为什么需要 `credit` 这一维**：`token` 维度把贵模型与便宜模型视为等价，一个用户改用最贵的模型，就能在同样的 token 额度内消耗掉几十倍的上游成本；`credit` 用价格乘数把"钱"折回来，让额度表达的是成本而不是字数。代价是维护一份价格表——而这份表本来就要为 `price` 排序策略准备，属于同一份数据。
 - **为什么维度可以多设且各自独立判定**：`request` 防高频小请求刷次数，`token` / `credit` 防单次超长请求，`max_concurrency` 防占用式刷——它们拦的是不同形状的滥用，用其中一个去兜另外两个，会让某一类滥用完全无约束。
 - **为什么额度字段允许为 0**：默认值必须是拒绝（PLAN 9.1）。
-
-> **待定**：`quota_limit` 与"日额度 / 月额度"的关系——本册按"`quota_limit` 是账户的总额度、日 / 月额度由组策略给上界"撰写，但总纲同时出现了这两种表述，需确认是否存在三层（总额度 / 周期额度 / Key 白名单）叠加。
 
 > **待定**：`BASE` 的取值（1 token 还是 1 万 token 为一个 credit），以及内置价格表的初始条目与更新来源。
 **不变式**（写入时校验）：
@@ -303,13 +311,21 @@ type Account struct {
     CreatedAt   time.Time
     LastLoginAt *time.Time
     Note        string
-    // 额度与速率（账户级）：一个账户的所有 Key 共享这份额度，见第 1 节。
-    QuotaLimit     int64
-    QuotaUsed      int64
-    QuotaUnit      string // request / token / credit
-    RPMLimit       *int
-    TPMLimit       *int
-    MaxConcurrency *int
+    // 速率与并发（账户级单列，-1 = 不限；2026-10-20 定案）
+    RPMLimit       int   // -1 = 不限；0 = 全拒
+    TPMLimit       int
+    MaxConcurrency int
+}
+
+// AccountQuota 是 account_quotas 表的一行（2026-10-20 定案：额度行化，不在 Account 上单列）。
+// AbstractModelID = 0 → 合计额度；> 0 → 按模型限额行。
+type AccountQuota struct {
+    AbstractModelID int64 // 0 = 合计哨兵
+    Unit            string // request / token / credit
+    Period          string // day / month
+    QuotaLimit      int64  // 0 = 全拒；"不限" = 没有这一行
+    QuotaUsed       int64
+    PeriodAnchor    string // 'YYYY-MM-DD'，惰性重置
 }
 
 // Subject 是判定链上的主体快照 = 账户 + 本次行为以哪个类进行。

@@ -1,0 +1,12 @@
+{
+  "model": "claude-test",
+  "max_tokens": 256,
+  "system": "You are helpful.",
+  "messages": [
+    {"role": "user", "content": "Hi"},
+    {"role": "assistant", "content": [{"type": "text", "text": "Hello!"}]},
+    {"role": "user", "content": "Bye"}
+  ],
+  "temperature": 0.5,
+  "stop_sequences": ["STOP"]
+}

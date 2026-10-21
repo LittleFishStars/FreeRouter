@@ -33,8 +33,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LittleFishStars/FreeRouter/internal/app"
 	"github.com/LittleFishStars/FreeRouter/internal/config"
-	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
 	"github.com/LittleFishStars/FreeRouter/internal/logging"
 	"github.com/LittleFishStars/FreeRouter/internal/version"
 )
@@ -130,16 +130,38 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	// 步骤 4-6：装配（app.Setup 把存储迁移→sidecar→上游自举→HTTP 一次完成；
+	// 06-runtime.md 启动序列）。sidecar 失败在 Setup 内部降级为 Warn，不阻塞。
+	application, err := app.Setup(context.Background(), app.Options{Config: cfg, Logger: log})
+	if err != nil {
+		log.Error("进程装配失败", "err", err)
+		return 1
+	}
+	defer func() {
+		// 关闭顺序固定（06-runtime §8）：先 sidecar（可能回写最后一批用量）后库。
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace.Std())
+		_ = stopCancel
+		application.Stop(stopCtx)
+		if err := application.Close(); err != nil {
+			log.Warn("存储关闭出错", "err", err)
+		}
+	}()
+
+	// 步骤 3（真判定）：初始化向导。已建管理员账户且监听非回环→提醒；
+	// 未初始化且非回环→强警告（M0 只有警告，deny 语义在 config.Validate）。
+	if !cfg.IsLoopbackListen() {
+		log.Warn("监听地址非回环：初始化完成前请勿把该端口暴露到不可信网络", "listen", cfg.Server.Listen)
+	}
+
 	var shuttingDown atomic.Bool
 
 	srv := &http.Server{
 		Addr:              cfg.Server.Listen,
-		Handler:           httpapi.New(httpapi.Deps{Config: cfg, Logger: log, ShuttingDown: shuttingDown.Load}).Handler(),
+		Handler:           application.Handler(),
 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Std(),
 		IdleTimeout:       cfg.Server.IdleTimeout.Std(),
 		ErrorLog:          nil, // 由 slog 承接；标准库的 ErrorLog 输出格式与结构化日志不一致
 	}
-
 	// 步骤 6：监听。先 Listen 再 Serve，是为了让「端口被占用」在启动日志里
 	// 表现为一条明确错误，而不是一个后台 goroutine 里的 panic。
 	ln, err := net.Listen("tcp", cfg.Server.Listen)
@@ -183,14 +205,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	time.Sleep(drainWindow)
 
 	// 关闭步骤 2 + 3：关 listener，并给在飞请求留剩余时间。
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace.Std())
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Warn("优雅关闭超时，强制结束在飞请求", "err", err)
 	}
 
-	// 关闭步骤 4 / 5（关 sidecar、关库并 WAL checkpoint）在 M8 / M4 接入后补在这里，
-	// 顺序固定：sidecar 先于数据库，因为 sidecar 关闭时可能回写最后一批用量。
+	// 关闭步骤 4 / 5：已由 app.Setup 的 defer 执行（先 sidecar 后库，
+	// sidecar 关闭时可能回写最后一批用量——06-runtime §8.1 顺序）。
 	log.Info("已关闭")
 	return 0
 }

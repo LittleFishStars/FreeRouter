@@ -176,8 +176,8 @@ bob,,grp_default,request,1000
 | 用户名 | 唯一 |
 | 密码 | 留空则生成随机密码，**一次性展示** |
 | 组 | 可选，默认进默认组 |
-| 额度单位 | 可选，`request` / `token` / `credit`；留空则不单独设额度，取全局默认值 |
-| 额度上限 | 可选，与该单位配套 |
+| 额度单位 | 可选，`request` / `token` / `credit`；与「额度上限」配套写入 `account_quotas` 合计行，可写多行（多维度） |
+| 额度上限 | 可选，与该单位配套；`0` = 全拒；留空则不写该维度行（该维度不限）；周期默认 `day`，支持月额度 |
 
 导入即 `active`（总纲 2.7），全进审计。
 
@@ -213,17 +213,24 @@ bob,,grp_default,request,1000
   "models": ["smart", "fast"],
   "policies": {
     "allow_create_key": true, "max_keys": 5, "allow_widen_allowlist": false,
-    "account_quota": {"unit": "token", "limit": 200000, "period": "day"},
+    "account_quotas": [
+      {"unit": "token", "limit": 200000, "period": "day"},
+      {"unit": "credit", "limit": 50000, "period": "month"}
+    ],
+    "model_quota_caps": [
+      {"model": "smart", "unit": "request", "limit": 50, "period": "day"},
+      {"model": "smart", "unit": "credit", "limit": 20000, "period": "day"}
+    ],
     "account_rpm_limit": 60, "account_tpm_limit": 100000, "account_max_concurrency": 4,
-    "pool": [
-      {"unit": "request", "period": "day", "limit": 500},
-      {"unit": "credit", "period": "month", "limit": 2000000}
+      {"model": null, "unit": "request", "period": "day", "limit": 500},
+      {"model": null, "unit": "credit", "period": "month", "limit": 2000000},
+      {"model": "smart", "unit": "request", "period": "day", "limit": 300}
     ]
   }
 }
 ```
 
-**为什么额度字段改成 `account_quota` + `pool` 两个结构**（2026-10-20 改定）：① 额度不再挂在 Key 上，所以组策略里的一切额度都是**账户级**的，字段名必须体现这一点（`account_quota` 而不是裸的 `daily_token_cap`），否则读文档的人会以为它还是逐 Key 生效；② 计量维度从两种（requests / tokens）扩到三种（`request` / `token` / `credit`），单一标量字段放不下"维度 + 周期 + 上限"三元组，因此个人额度用一个对象、共享池用一个数组；③ 共享池是**可多行**的（三个维度各自独立判定、哪个先到算哪个），数组形态与数据层"多行 or 无行"一一对应。
+**为什么额度字段改成 `account_quotas` + `model_quota_caps` + `pool` 三个结构**（2026-10-20 改定，含按模型限额扩展）：① 额度不再挂在 Key 上，所以组策略里的一切额度都是**账户级**的，字段名必须体现这一点，否则读文档的人会以为它还是逐 Key 生效；② 计量维度从两种（requests / tokens）扩到三种（`request` / `token` / `credit`），单一标量字段放不下"维度 + 周期 + 上限"三元组，因此每人额度与共享池都用**数组**（可多行：多维度、多周期、含按模型行），数组形态与数据层"多行 or 无行"一一对应；③ **新增 `model_quota_caps`**（每人按模型上限，2026-10-20 定案，见 [../security/03-groups.md](../security/03-groups.md) 4.5），与每人合计额度同性质、逐 `(model, unit, period)` 取 min，但它是**声明表** `group_model_quota_caps`，不与 `account_quotas` 的合并键混存；④ `pool` 增加 `model` 字段（`null` = 合计池）承载**模型级共享池**，与合计池同表同结算路径。未设的限额不在 JSON 中出现（-1 哨兵只用于标量策略值），读端把缺失视为不限。
 
 **为什么组详情里没有端点、密钥、邀请这三类字段**：总纲 2.6 与 [../ui/03-admin.md](../ui/03-admin.md) 5.2 都明确它们不该存在。 API 层不定义它们，界面就无法渲染它们。
 

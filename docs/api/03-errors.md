@@ -88,13 +88,14 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 | `request_too_large` | 413 | `invalid_request_error` | 请求体超过入站上限（默认 32 MiB） | 不重试，缩减请求 |
 | `model_not_found` | 404 | `not_found_error` | 抽象模型不存在 / 请求的是真实模型名 / 对当前 Key 不可见 | 不重试；先 `GET /v1/models` 对照 |
 | `model_retired` | 410 | `not_found_error` | 模型 `Sunset` 到期后已 `disabled` | 不重试；按迁移文档换名 |
-| `quota_exceeded` | 429 | `rate_limit_error` | **账户级**额度任一维度（`request` / `token` / `credit`）打满，或全局预算熔断 | 按 `Retry-After`（若有）等待，或等额度重置；**同一账户名下所有 Key 一起被拦** |
+| `quota_exceeded` | 429 | `rate_limit_error` | **账户级**额度任一维度（`request` / `token` / `credit`）打满——含**按模型限额行**（错误体 `quota.model` 指名模型，客户端可改用其他模型），或全局预算熔断 | 按 `Retry-After`（若有）等待，或等额度重置；**同一账户名下所有 Key 一起被拦** |
 | `pool_exhausted` | 429 | `rate_limit_error` | **所属组的共享额度池**已耗尽 | 管理员调池或等重置；改 Key / 换参数均无效 |
 | `rate_limited` | 429 | `rate_limit_error` | 超出 RPM / TPM / 并发上限 | **必须**按 `Retry-After` 退避重试 |
 | `upstream_unavailable` | 502 | `service_unavailable_error` | 上游网关不可达（如 DSH 未运行） | 可重试；退避 |
 | `upstream_timeout` | 504 | `service_unavailable_error` | 上游未在超时内响应 | 可重试；退避 |
 | `upstream_error` | 502 | `service_unavailable_error` | 上游返回了无法映射为上述码的失败 | 可重试；退避 |
 | `no_candidate` | 503 | `service_unavailable_error` | 策略引擎过滤后无候选可用 | 可重试；退避 |
+| `overloaded` | 503 | `service_unavailable_error` | 进程级并发闸门（`global_concurrency`）排队超 `queue_timeout`（2026-10-21 定案） | **必须**按 `Retry-After` 退避重试；服务侧过载不是用户越限，找管理员无用 |
 | `internal_error` | 500 | `internal_error` | 未预期故障 | 可重试一次；持续失败报请求 ID |
 
 **为什么 `model_not_found` 同时覆盖"不存在"与"请求了真实模型名"**： 总纲 3.1 明确"客户端直接请求真实模型名 → 404（不泄露池结构）"。 如果真实模型名返回一个不同的码（例如 `real_model_not_exposed`）， 这个码本身就确认了"这个名字存在，只是不给你"。同一个码让两种情况不可区分。
@@ -104,6 +105,8 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 **为什么 `quota_exceeded` 与 `rate_limited` 都用 429**：两者都是 "你撞到了使用上限"，且都需要"等"，因此状态码层面不必分开。区分它们的信息在 `code` 里：`rate_limited` 是**瞬时**的（令牌桶几十秒内回填，带上 `Retry-After` 后重试是正解），`quota_exceeded` 是**周期性**的（等日 / 月重置，或请管理员调高额度）。**为什么仍然保留两个码而不合并**：客户端的动作不同——对 `rate_limited` 无脑退避重试是对的，对 `quota_exceeded` 无脑重试只是在浪费请求，正解是告知用户、走额度调整。这正是 3.4 第一条分界（动作不同就拆）。
 
 **为什么 `no_candidate` 用 503 而不是 404**：总纲 3.6 明确 "无候选可用返回 503 + 专用错误码（与「模型不存在」404 区分）"。 从客户端视角，"这个模型现在没资源"与"没有这个模型"会导致完全不同的动作： 前者重试，后者改代码。
+
+**为什么全局闸排队超时新增 `overloaded` 而不是复用 429 `rate_limited`（2026-10-21 定案）**：两者归因不同——`rate_limited` 是"你（账户/Key）超了上限"，客户端动作是降速或请管理员调额；`overloaded` 是"进程级闸门饱和，与你是谁无关"，重试时机由服务端用 `Retry-After`（= queue_timeout）给出确定性承诺。混进 429 会让按码运营的告警（"rate_limited 上涨说明有人在刷"）被容量问题污染；混进 `no_candidate` 则抹掉"容量 vs 候选"的排障分界（PLAN D11 三态原则同源）。
 
 ### 3.2 控制台面与账户自助
 
@@ -130,14 +133,14 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 
 | 概念 | 归属 | 说明 |
 |---|---|---|
-| 额度上限与已用量（`quota_limit` / `quota_used` / `quota_unit`） | **账户** | 一个账户一行，按 `request` / `token` / `credit` 三种维度可只设一种或同时设多种 |
-| 速率上限（RPM / TPM / 并发） | **账户** | 同上，不随 Key 变化 |
+| 额度上限与已用量（`account_quotas`：合计行 + **按模型限额行**） | **账户** | 按 `(unit, period[, model])` 可多行：`request` / `token` / `credit` × 日/月，可只设一种或同时设多种；`abstract_model_id > 0` 的行是该模型的单独限额（2026-10-20 新增） |
+| 速率上限（RPM / TPM / 并发） | **账户** | 同上，不随 Key 变化；`-1` = 不限 |
 | Key 自身携带的额度 | **不存在** | `api_keys` 表里没有额度与速率字段 |
 | Key 自身携带的限制 | 只剩**模型白名单** | `key_model_allow`，且只能从账户可访问的抽象模型里**收窄**，不能放大 |
 
 **为什么这件事必须写在错误码分册里**：客户端拿到 `quota_exceeded` 时的第一反应是"换一把 Key 再试"。如果文档不把它写死，这个反应在错误的方向上会一直有效——用户会以为多建几把 Key 就能绕过额度，而实际行为是**换 Key 仍然被拦**，因为闸门挂在账户上。反过来，把这条写清楚之后，客户端的多 Key 策略就有明确边界：多 Key 能解决"并发隔离""按用途分账""快速吊销"这三件事，**不能**解决额度。
 
-**三种计量维度的错误信息要能区分**：同一个 `quota_exceeded` 必须能回答"是哪个维度打满的"。实现上放在错误消息里（`message` 指名维度与重置时刻），**不新增码**——因为三种维度下客户端的动作完全相同（等重置）。这也符合 3.4 的边界原则：**动作不同才拆码**。
+**三种计量维度的错误信息要能区分**：同一个 `quota_exceeded` 必须能回答"是哪个维度打满的"。**2026-10-20 定案**：`message` 用自然语言（"账户的 request 额度已用尽，60 秒后重置"）+ 错误体加**机器可读 `quota` 对象** `{"unit": "…", "period": "…", "model": "…"}`（合计行无 `model`；按模型限额行有）——`message` 给人读，`quota` 给客户端的自动降级（换模型、退避到重置）用，两不耽误。**不新增码**：三种维度与按模型行下客户端的"等重置或换模型"动作同源，符合 3.4 的"动作不同才拆码"边界。
 
 > **为什么 `pool_exhausted` 反而是独立的码**：组共享池与个人额度是**两个不同的资源**（前者全组共用、后者每人各自），且它们的可操作建议不同（个人额度打满可由管理员调高，池打满往往意味着全组的用量结构需要重新评估）。资源不同、建议不同，正是拆码的判据。
 
@@ -167,7 +170,7 @@ FreeRouter 有三个各自的错误面，它们共用**同一套错误码**与**
 | 429 | 速率或额度受限 | `rate_limited`、`quota_exceeded`（账户级，三计量维度） 、`pool_exhausted`（组共享池）、`too_many_attempts` |
 | 500 | 服务端未预期故障 | `internal_error` |
 | 502 | 上游不可用或返回了坏响应 | `upstream_unavailable`、`upstream_error` |
-| 503 | 服务侧暂时无资源 | `no_candidate` |
+| 503 | 服务侧暂时无资源 | `no_candidate`、`overloaded` |
 | 504 | 上游超时 | `upstream_timeout` |
 
 **为什么 405 与 415 复用 `invalid_request` 而不新增码**：客户端 对这两者的动作与 400 完全相同（改请求）。为它们新增码违反了 3.4 的第一条分界——动作相同时不该拆。
@@ -204,10 +207,11 @@ Retry-After: 30
 | 情况 | `Retry-After` | 为什么 |
 |---|---|---|
 | `rate_limited` | **必有**，整数秒 | 验收第 4 条要求"429 + 有值 Retry-After" |
-| `quota_exceeded`（账户额度，`request` / `token` / `credit` 任一维度） | 有值，指向该维度额度重置时刻；无法计算时省略 | 额度重置时刻是可计算的；`credit` 维度与 `token` 维度的重置时刻由各自的 `period` 决定 |
+| `quota_exceeded`（账户额度，合计行或按模型行，`request` / `token` / `credit` 任一维度） | 有值，指向该额度行重置时刻；无法计算时省略 | 额度重置时刻是可计算的；按模型行与合计行同机制，`quota.model` 告诉客户端换哪个模型可继续 |
 | `pool_exhausted` | 有值，指向**池**的重置时刻（`period_anchor` + 1 日 / 1 月） | 与账户额度不同但同样可计算 |
 | `quota_exceeded`（全局预算熔断） | 省略 | 熔断解除依赖人工，给一个数字是误导 |
 | `no_candidate` | 可选 | 候选恢复时间不可预测 |
+| `overloaded` | **必有**，= `queue_timeout` 秒数 | 闸门排队超时的承诺时刻就是超时窗口本身，确定可算（2026-10-21 定案） |
 | `upstream_unavailable` / `upstream_timeout` | 可选 | 上游恢复时间不可预测 |
 
 **为什么允许"有时没有 `Retry-After`"**：给一个编造的数字 会让守规矩的客户端在错误的时刻重试。宁可让它自行退避。
@@ -293,7 +297,7 @@ data: [DONE]
 
 | 分类 | 码 | 客户端做法 |
 |---|---|---|
-| 可重试（带退避） | `rate_limited`、`no_candidate`、`upstream_*`、`internal_error` | 指数退避；有 `Retry-After` 时以它为准。**注意 `rate_limited` 是速率、`quota_exceeded` 是额度**，两者虽然都是 429，但前者的正确反应是"慢一点"，后者是"等它重置" |
+| 可重试（带退避） | `rate_limited`、`no_candidate`、`overloaded`、`upstream_*`、`internal_error` | 指数退避；有 `Retry-After` 时以它为准。**注意 `rate_limited` 是速率、`quota_exceeded` 是额度、`overloaded` 是服务容量**，三者动作各不同：慢一点 / 等重置 / 按承诺时刻重试 |
 | 不可重试（等重置或等管理员） | `pool_exhausted`、`quota_exceeded` | **换 Key 无效**（额度挂在账户上）；等重置或请管理员调高 |
 | 不可重试 | `invalid_api_key`、`invalid_request`、`capability_unsupported`、`request_too_large`、`model_not_found`、`model_retired` | 修改请求或配置后重新发起 |
 | 需人工介入 | `forbidden` | 去申请对应权限类（这是权限类的问题，不是认证的问题） |
@@ -323,4 +327,4 @@ data: [DONE]
 
 > **待定**：错误消息是否需要 i18n？当前假设单一语言， 与 [../ui/06-design.md](../ui/06-design.md) 第 10 节的 i18n 待定项相关。
 
-> **待定**：`quota_exceeded` 的 `message` 里如何表达"是哪个维度打满"—— 是用自然语言（"账户的 request 额度已用尽，60 秒后重置"）还是在错误体里加一个机器可读字段（如 `quota_unit`）。当前按前者撰写，但机器可读字段对客户端的自动降级更有用。
+> **已定（2026-10-20）**：双通道——`message` 自然语言 + 错误体机器可读 `quota` 对象（`unit`/`period`/`model?`），见第 6 节末尾。
