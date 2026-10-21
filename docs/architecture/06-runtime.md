@@ -321,8 +321,9 @@ w 可能不再是原始类型，类型断言会静默失败——表现为「流
 
 ```
 收到 SIGTERM/SIGINT
- 1. 停止接受新连接（Listener.Close）
- 2. 把 /readyz 置为不就绪
+ 1. 把 /readyz 置为不就绪（2026-10-21 归档对调：先摘流再关端口——
+    负载均衡才有窗口把实例从池里摘掉，直接停 listener 仍会被导流）
+ 2. 停止接受新连接（Listener.Close，随 srv.Shutdown 一体执行）
  3. 等待进行中的请求完成，最多 shutdown_grace（默认 30s）
  4. 取消根 ctx（中断仍在跑的流）
  5. 关闭 sidecar（拒新 IPC 等 5s → 发 shutdown 等 3s → SIGTERM 等 2s → SIGKILL）
@@ -332,6 +333,9 @@ w 可能不再是原始类型，类型断言会静默失败——表现为「流
 
 **为什么先置 `/readyz` 不就绪再等待**：负载均衡需要时间感知。
 如果直接停，仍然会被导流过来。先摘流、再 drain，是标准的两步。
+实现侧（cmd/freerouter/main.go）：步骤 4 的「取消根 ctx」由
+srv.Shutdown 的截止时间等价承担——在飞请求拿到剩余 grace 而不是
+被硬掐，语义更温和；流式长请求的强制中断由该截止时间兜底。
 第 5 步的四级超时（5s / 3s / 2s / SIGKILL）以
 [04-sidecar.md](04-sidecar.md) 第 5.4 节为权威，本节只记总体顺序。
 **为什么第 4 步要强制取消而不是无限等待**：流式请求可能持续很久

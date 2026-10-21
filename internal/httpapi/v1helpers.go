@@ -21,10 +21,9 @@ func requestIDOf(r *http.Request) string {
 	return r.Header.Get("X-Request-ID")
 }
 
-// accountKey 是 ctx 里的账户标记。authn 的 mw_keyauth.go 会注入真实账户；
-// 本包只消费「有没有」——防御性 401（01-inbound §2.2）。
-// 为什么是自定义类型：ctxKey 在 middleware.go（铁律不改），这里的 key
-// 与它不冲突即可；authn 落地后此占位会被其正式账户结构替换。
+// accountKey 是 ctx 里的账户标记（测试专用：InjectTestAccount 模拟
+// mw_keyauth 已注入的状态）。生产通道是 ctxKeyKeyPrincipal 里的
+// KeyPrincipal——hasAuthedAccount 双通道都认（2026-10-21 发现 A 修复后）。
 type v1AccountKey struct{}
 
 // InjectTestAccount 测试注入账户 ctx（生产路径由 mw_keyauth.go 注入）。

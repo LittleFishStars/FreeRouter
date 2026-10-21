@@ -73,6 +73,10 @@ func (a *App) buildServer() *httpapi.Server {
 	)
 	// v1 路由由 Handler() 在鉴权链就位时自动挂载（server.go）——
 	// 不需要独立的 MountV1 调用。
+	// 控制台面（登录/登出/setup）：直接调 SetConsoleRoutes——不能走
+	// a.AttachConsole()，它读 a.server，而 buildServer 里 a.server 尚未
+	// 赋值（Setup 最后一步才 a.server = 返回值），nil 解引用。
+	srv.SetConsoleRoutes(a.MountConsoleRoutes)
 	return srv
 }
 

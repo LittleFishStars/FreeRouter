@@ -191,3 +191,44 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 	}
 	return true
 }
+
+// ---------------------------------------------------------------------------
+// 装配层导出面（internal/app 经 SetConsoleRoutes 回调挂载用）。
+//
+// 为什么在 mw_session.go 而不是 server.go：server.go 是装配挂载点
+// （写域铁律不动）；导出包装与对应私有实现放同一文件，改 handler 时
+// 包装不会被落下。模式与 server.go 的 MiddlewareKeyAuth 相同（那是
+// Lead 为 Key 面加的导出面）。
+// ---------------------------------------------------------------------------
+
+// ConsoleHandlerLogin 导出登录 handler。挂载点：**不挂 mwSession**——
+// 登录建立会话，挂在会话判定之下是循环依赖。
+func (s *Server) ConsoleHandlerLogin(deps *AuthDeps) http.HandlerFunc {
+	return s.handleAuthLogin(deps)
+}
+
+// ConsoleHandlerLogout 导出登出 handler（挂 ConsoleMiddlewareSession 下）。
+func (s *Server) ConsoleHandlerLogout(deps *AuthDeps) http.HandlerFunc {
+	return s.handleAuthLogout(deps)
+}
+
+// ConsoleHandlerSession 导出会话主体 handler（挂 ConsoleMiddlewareSession 下）。
+func (s *Server) ConsoleHandlerSession() http.HandlerFunc {
+	return s.handleAuthSession()
+}
+
+// ConsoleMiddlewareSession 导出会话中间件（控制台面路由组用）。
+func (s *Server) ConsoleMiddlewareSession(sessMgr *auth.SessionManager) func(http.Handler) http.Handler {
+	return s.mwSession(sessMgr)
+}
+
+// ConsoleHandlerSetupStatus 导出 setup 状态真判定 handler（替换 M0 占位：
+// 装配层注册本 handler 的路由即覆盖 server.go 里 handleSetupStatus 的挂载）。
+func (s *Server) ConsoleHandlerSetupStatus(deps *SetupDeps) http.HandlerFunc {
+	return s.handleSetupStatusV2(deps)
+}
+
+// ConsoleHandlerSetupInit 导出初始化 handler。
+func (s *Server) ConsoleHandlerSetupInit(deps *SetupDeps) http.HandlerFunc {
+	return s.handleSetupInit(deps)
+}
