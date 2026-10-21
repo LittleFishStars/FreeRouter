@@ -40,8 +40,11 @@ func (a *App) buildServer() *httpapi.Server {
 	// 推理上游（task-10 M2 传输 + upstream_shim 装配桥）：Caller 同构面钉到
 	// httpapi.Upstream，候选源查 real_models 按 UpstreamModelID 精确匹配
 	//（M5 过渡——M6 换抽象模型路由后由策略引擎接管，接口不变）。
-	shim, cs := a.newUpstreamShim()
-	srv.AttachV1(shim, cs)
+	// M6 接线：候选源换成策略引擎（Resolver→Filter→Rank→Cooldown），
+	// realModelCandidates 保留在 upstream_shim.go 里作为 M5 形态的
+	// 独立测试对象与回退参考（不再进生产路径）。
+	shim, _ := a.newUpstreamShim()
+	srv.AttachV1(shim, newRoutingCandidates(a))
 
 	// 鉴权/限速/配额中间件的参数构造：
 	//   keyAuthBridge —— store 两读 → auth.KeyAuthStore；

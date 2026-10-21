@@ -52,7 +52,8 @@ real_models {
   context_window,        -- 上下文窗口
   modalities,            -- 模态，来自上游 input[]
   efforts,               -- 思考档位，来自上游 reasoning.efforts[]
-  status,                -- normal / missing
+  status,                -- 目录语义 normal / missing；落库值域 active / missing /
+                         -- disabled（05-storage.md 的 DDL 是事实源，装配层按 active 判可用）
   hidden,                -- 管理端列表是否折叠
   sort_order,            -- 置顶排序
   source,                -- auto / override
@@ -225,7 +226,7 @@ admin_inbox(
 | 落在哪 | `real_models.status` | 候选 × 凭据实例（运行时展开后的临时对象） |
 | 变化频率 | 天级 | 秒～分钟级 |
 | 语义 | "上游还认不认这个模型" | "这一条路现在还走得通吗" |
-| 取值 | `normal` / `missing` | `healthy` / `degraded` / `cooldown` / `blocked` |
+| 取值 | `normal` / `missing`（落库 `active` / `missing` / `disabled`——DDL 见 05-storage.md §4） | `healthy` / `degraded` / `cooldown` / `blocked` |
 
 **为什么必须分开**：一个模型可能在上游目录里活得好好的（`normal`），但此刻所有可用凭据都在冷却（`cooldown`）；反过来，一个 `missing` 的模型若还有存量凭据能打通，运行时它可能是 `healthy`。把两者塞进一个字段，过滤阶段就说不清"到底该剔谁"。
 

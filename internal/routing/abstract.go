@@ -90,7 +90,7 @@ type RealModelInfo struct {
 	ContextWindow          *int64 // nil = 未知（01-catalog.md §2.3 已知空缺）
 	Modalities             []string
 	Efforts                []string
-	Status                 string // "normal" | "missing"
+	Status                 string // "active" | "missing" | "disabled"（05-storage.md DDL）
 	ExcludedFromCandidates bool   // aggregate/* 默认 true（01-catalog.md §5）
 	UpstreamEnabled        bool
 }
@@ -286,7 +286,12 @@ func (res *Resolver) expandCandidates(ctx context.Context, m *AbstractModel) ([]
 		if err != nil {
 			return nil, nil, fmt.Errorf("routing: 查询真实模型 %d: %w", d.RealModelID, err)
 		}
-		if rm == nil || rm.Status != "normal" || rm.ExcludedFromCandidates || !rm.UpstreamEnabled {
+		// status 值域以存储 DDL 为准（05-storage.md §4：
+		// CHECK (status IN ('active','missing','disabled'))）；01-catalog.md
+		// 里的 normal 是语义概念（「目录里活着」），落到库里就是 active。
+		// 早期按 "normal" 判定会把全部候选剔成空池——这是装配时实测到的
+		// 口径冲突，以 DDL 为事实源修正。
+		if rm == nil || rm.Status != "active" || rm.ExcludedFromCandidates || !rm.UpstreamEnabled {
 			continue
 		}
 		// aggregate/* 排除双保险：excluded_from_candidates 是目录刷新器写

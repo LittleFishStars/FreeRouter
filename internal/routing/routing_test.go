@@ -56,7 +56,7 @@ func (f *fakeStore) GetRealModel(ctx context.Context, id int64) (*RealModelInfo,
 func mkReal(id int64, channel, modelID string) *RealModelInfo {
 	return &RealModelInfo{
 		ID: id, UpstreamID: 100 + id, UpstreamModelID: modelID, UpstreamKind: "relay",
-		Channel: channel, Status: "normal", UpstreamEnabled: true,
+		Channel: channel, Status: "active", UpstreamEnabled: true,
 		Modalities: []string{"text"}, Efforts: []string{"off", "low", "high"},
 	}
 }

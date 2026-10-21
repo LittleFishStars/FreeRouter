@@ -71,3 +71,11 @@ func isRealModelName(ctx context.Context, model string) bool {
 	// 真正的判定由 Lead 装配 ModelCatalog 时注入——留接口。
 	return false
 }
+
+// wantsTrace 判定请求是否要路由诊断（x-fr-trace: 1）。
+//
+// 为什么只在值为 1 时开：trace 头含候选池结构与上游模型 id（管理端可见
+// 面），无条件回写等于把它变成对租户的默认暴露面（02-abstract.md §6.2）。
+func wantsTrace(r *http.Request) bool {
+	return r.Header.Get("X-FR-Trace") == "1"
+}
