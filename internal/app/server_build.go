@@ -73,6 +73,9 @@ func (a *App) buildServer() *httpapi.Server {
 	)
 	// v1 路由由 Handler() 在鉴权链就位时自动挂载（server.go）——
 	// 不需要独立的 MountV1 调用。
+	// 控制台面（登录/登出/setup）：console_routes.go 的 AttachConsole
+	//（生产接线 c4deca2 后补这一行——authn 队友报告的集成差异点）。
+	a.AttachConsole()
 	return srv
 }
 
