@@ -208,6 +208,11 @@ type SwitchBudget struct {
 // 03-strategy.md §4.5 待定项没给数；取候选数与 3 的较小者——
 // 「3」是上游重试与冷却阈值的公共量级（pool.go defaultFailThreshold），
 // 超过它继续换路的边际收益已经低于「让用户尽快拿到明确失败」。
+//
+// 总时长预算的另一维已由 lead 裁决（M6 合并同步）：装配层构造
+// SwitchBudget 时传 MaxDurationMs: 5000（5s，对齐 shutdown 风格的
+// 上限量级）。本包不给这个常量——它是装配参数不是协议语义，
+// 写死在库里会让后续调优必须改包。
 const DefaultMaxSwitches = 3
 
 // CanSwitch 报告预算是否还允许下一次切换。
