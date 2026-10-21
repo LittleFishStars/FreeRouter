@@ -37,6 +37,16 @@ func KeyPrincipalFromContext(ctx context.Context) *auth.KeyPrincipal {
 func (s *Server) mwKeyAuth(authn *auth.KeyAuthenticator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 公共路径豁免：鉴权链在 server.go 是全局 r.Use（装配层注入），
+			// 但运维探针（healthz/readyz——LB 探活不能带凭据）、公开信息
+			// （/api/version）、控制台鉴权面（/api/auth/*——登录建立会话，
+			// 它自身就是凭据入口）与初始化向导（/api/setup/*——0 账户窗口
+			// 内没有可鉴权主体，窗口判定在 handler 内）都不是 Key 面。
+			// 不豁免会让整个控制台与探针被 Key 面挡死（集成实测 401）。
+			if isNonKeyPath(r.URL.Path) {
+				next.ServeHTTP(w, r)
+				return
+			}
 			raw := auth.ParseBearer(r.Header.Get("Authorization"))
 			p, err := authn.Authenticate(r.Context(), raw)
 			if err != nil {
@@ -56,3 +66,22 @@ func (s *Server) mwKeyAuth(authn *auth.KeyAuthenticator) func(http.Handler) http
 		})
 	}
 }
+
+// nonKeyPaths 是 Key 鉴权链的公共路径豁免表。
+//
+// 为什么用精确表而不是前缀匹配：豁免面必须**穷举可审计**——每一条
+// 都有"为什么它不需要 Key"的理由写在注释里；前缀匹配（如 strings.
+// HasPrefix(path, "/api/")）会悄悄把将来的管理端点也豁免掉。
+var nonKeyPaths = map[string]bool{
+	"/healthz":          true, // LB/K8s 探活，不带凭据（server.go 注释：不进鉴权）
+	"/readyz":           true, // 同上
+	"/api/version":      true, // 公开探测面（01-inbound §1：供客户端探测）
+	"/api/auth/login":   true, // 登录建立会话：凭据入口本身，Key 面无意义
+	"/api/auth/logout":  true, // 登出走会话校验（mwSession），非 Key 面
+	"/api/auth/session": true, // 同上
+	"/api/setup/status": true, // 向导状态：0 账户窗口的判定入口
+	"/api/setup/init":   true, // 向导创建：窗口判定在 handler（先 409 后验参）
+}
+
+// isNonKeyPath 报告该路径是否豁免 Key 鉴权。
+func isNonKeyPath(p string) bool { return nonKeyPaths[p] }
