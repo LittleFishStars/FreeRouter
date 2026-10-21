@@ -65,6 +65,9 @@ type ModelRefresher struct {
 	source   CatalogSource
 	interval time.Duration
 	log      *slog.Logger
+	// hooks 是 task-16 的可选联动（鉴定写回 + inbox 通知）。
+	// nil = 纯刷新（M1 行为，NewModelRefresher 旧签名构造出的就是它）。
+	hooks *RefreshHooks
 }
 
 // NewModelRefresher 构造刷新器。interval<=0 时用 DefaultModelRefreshInterval；
@@ -77,6 +80,22 @@ func NewModelRefresher(st *store.Store, source CatalogSource, interval time.Dura
 		log = slog.Default()
 	}
 	return &ModelRefresher{store: st, source: source, interval: interval, log: log}
+}
+
+// NewModelRefresherWithHooks 构造带联动的刷新器（task-16）。
+//
+// 为什么不是改老签名而是加新构造：app.go 的装配点（startModelRefresh）
+// 与 task-7 的测试都在用旧签名；hooks 是可选增强，旧调用必须零改动继续
+// 编译——「接线与否」由 Lead 在装配层决定，不强迫所有调用方传 nil。
+func NewModelRefresherWithHooks(st *store.Store, source CatalogSource, interval time.Duration, log *slog.Logger, hooks *RefreshHooks) *ModelRefresher {
+	r := NewModelRefresher(st, source, interval, log)
+	if hooks != nil {
+		if hooks.Log == nil {
+			hooks.Log = log
+		}
+		r.hooks = hooks
+	}
+	return r
 }
 
 // Interval 返回生效的刷新间隔（测试与可观测用）。
@@ -133,7 +152,13 @@ func (r *ModelRefresher) refreshUpstream(ctx context.Context, u store.Upstream) 
 		return 0, nil
 	}
 
+	// 刷新前的可见集合：upsert 后 diff 出「本轮新增」行（inbox added 事件用）。
+	// 为什么在 upsert 前抓快照：upsert 会把新行写进去，事后无法区分
+	// 「本来就存在」与「本轮新落」——目录刷新的天然时序给了我们免费的新增检测。
+	before := r.visibleModelIDs(ctx, u.ID)
+
 	keepIDs := make([]int64, 0, len(models))
+	verifyItems := make([]verifyItem, 0, len(models))
 	for _, m := range models {
 		if m.UpstreamModelID == "" {
 			// 目录里混入无名条目：跳过而不是整体失败——一个坏条目
@@ -146,6 +171,31 @@ func (r *ModelRefresher) refreshUpstream(ctx context.Context, u store.Upstream) 
 			return 0, err
 		}
 		keepIDs = append(keepIDs, id)
+		verifyItems = append(verifyItems, verifyItem{
+			realModelID: id,
+			kind:        u.Kind,
+			info:        modelInfoInputOf(m),
+		})
+	}
+
+	// task-16 联动：对**本轮见到的每一条**跑鉴定并写回（新增与变更都会走到
+	// 这里——upsert 的 ON CONFLICT 分支同样刷新字段，「变更」在本轮同样
+	// 重判，满足任务第 2 点「刷新后对新增/变更的 real_model 跑鉴定」）。
+	// 鉴定失败不阻塞刷新（红线）：applyVerification 内部逐条容错。
+	if r.hooks != nil {
+		if n, err := r.hooks.applyVerification(ctx, verifyItems); err != nil {
+			r.log.Warn("upstream: 本轮鉴定存在写回失败（刷新不受影响）",
+				"upstream", u.Name, "written", n, "first_err", err)
+		}
+		// 新增事件：before 快照里没有的 id 才投递（§3.3：目录新增模型是
+		// 唯一发现点，检测到就写，不等请求路径上报）。
+		if r.hooks.Inbox != nil {
+			for _, it := range verifyItems {
+				if _, existed := before[it.realModelID]; !existed {
+					r.hooks.notifyAdded(ctx, r.log, u.Name, it.realModelID, it.info.UpstreamModelID)
+				}
+			}
+		}
 	}
 
 	// 标记目录里消失的模型（status=missing + missing_since 首次标记时间）。
@@ -155,9 +205,65 @@ func (r *ModelRefresher) refreshUpstream(ctx context.Context, u store.Upstream) 
 	if err != nil {
 		return 0, err
 	}
+	// missing 事件（§3.3 表 upstream_model_missing，warn）：MarkMissing 只给
+	// 条数不给 id——用 before 快照与 keepIDs 的差集还原本轮消失的行。
+	if r.hooks != nil && r.hooks.Inbox != nil && marked > 0 {
+		keep := make(map[int64]struct{}, len(keepIDs))
+		for _, id := range keepIDs {
+			keep[id] = struct{}{}
+		}
+		for id, model := range before {
+			if _, still := keep[id]; !still {
+				r.hooks.notifyMissing(ctx, r.log, u.Name, id, model)
+			}
+		}
+	}
 	r.log.Info("upstream: 模型目录刷新完成",
 		"upstream", u.Name, "models", len(keepIDs), "marked_missing", marked)
 	return len(keepIDs), nil
+}
+
+// visibleModelIDs 抓某上游当前可见（status=active）的模型集合。
+// 查询失败返回空 map：新增检测降级为「每轮全量投递」比「刷新挂掉」好——
+// 空集合会让 before 判定全部 miss，配合 Inbox 侧去重（§3.3 read_at IS NULL
+// 不重复插入）不会刷屏。
+func (r *ModelRefresher) visibleModelIDs(ctx context.Context, upstreamID int64) map[int64]string {
+	out := make(map[int64]string)
+	rows, err := r.store.Repos().Models.ListVisibleRealModels(ctx)
+	if err != nil {
+		r.log.Warn("upstream: 刷新前快照可见模型失败（新增检测降级）", "error", err)
+		return out
+	}
+	for _, row := range rows {
+		if row.UpstreamID == upstreamID {
+			out[row.ID] = row.UpstreamModelID
+		}
+	}
+	return out
+}
+
+// modelInfoInputOf 把 dshprovider.ModelInfo 转成联动层的输入形态
+// （JSON 原文与 real_models 列口径一致——upsertModel 的序列化逻辑同款）。
+func modelInfoInputOf(m dshprovider.ModelInfo) ModelInfoInput {
+	in := ModelInfoInput{
+		UpstreamModelID: m.UpstreamModelID,
+		ContextWindow:   nil,
+	}
+	if m.ContextWindow != nil {
+		cw := int64(*m.ContextWindow)
+		in.ContextWindow = &cw
+	}
+	if len(m.Modalities) > 0 {
+		if b, err := json.Marshal(m.Modalities); err == nil {
+			in.ModalitiesJSON = string(b)
+		}
+	}
+	if len(m.Efforts) > 0 {
+		if b, err := json.Marshal(m.Efforts); err == nil {
+			in.EffortsJSON = string(b)
+		}
+	}
+	return in
 }
 
 // upsertModel 把一条目录条目转成仓储行并 upsert。
