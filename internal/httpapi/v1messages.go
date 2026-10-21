@@ -84,9 +84,7 @@ func (s *Server) HandleV1Messages(w http.ResponseWriter, r *http.Request) {
 	// SSE 头（§6.3）：text/event-stream；无 [DONE]、不发 ping 由
 	// anthropic StreamWriter 自理（ir 层已按具名事件实现）。
 	if req.Stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
+		setSSEHeaders(w) // 同 v1chat：统一收口，Connection 头由 net/http 自理
 	}
 
 	s.proxyV1(r.Context(), w, proxyReq{

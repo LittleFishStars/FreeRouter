@@ -21,10 +21,9 @@ func requestIDOf(r *http.Request) string {
 	return r.Header.Get("X-Request-ID")
 }
 
-// accountKey 是 ctx 里的账户标记。authn 的 mw_keyauth.go 会注入真实账户；
-// 本包只消费「有没有」——防御性 401（01-inbound §2.2）。
-// 为什么是自定义类型：ctxKey 在 middleware.go（铁律不改），这里的 key
-// 与它不冲突即可；authn 落地后此占位会被其正式账户结构替换。
+// accountKey 是 ctx 里的账户标记（测试专用：InjectTestAccount 模拟
+// mw_keyauth 已注入的状态）。生产通道是 ctxKeyKeyPrincipal 里的
+// KeyPrincipal——hasAuthedAccount 双通道都认（2026-10-21 发现 A 修复后）。
 type v1AccountKey struct{}
 
 // InjectTestAccount 测试注入账户 ctx（生产路径由 mw_keyauth.go 注入）。
@@ -32,8 +31,17 @@ func InjectTestAccount(ctx context.Context) context.Context {
 	return context.WithValue(ctx, v1AccountKey{}, true)
 }
 
-// hasAuthedAccount 判 ctx 是否已有已鉴权账户。
+// hasAuthedAccount 判 ctx 是否已有已鉴权账户（生产：mw_keyauth.go 注入的
+// KeyPrincipal；测试：InjectTestAccount 模拟同一判定语义）。
+//
+// 2026-10-21 装配修正（code-review 巡检发现 A）：原实现只查占位键
+// v1AccountKey{}，而生产链 mw_keyauth 注入的是 ctxKeyKeyPrincipal——两套
+// 键不通用导致正式 KeyPrincipal 永不命中、v1 三端点恒 401。现在双通道
+// 都认：KeyPrincipalFromContext（生产）优先，占位键（测试兼容）兕底。
 func hasAuthedAccount(r *http.Request) bool {
+	if KeyPrincipalFromContext(r.Context()) != nil {
+		return true
+	}
 	v, ok := r.Context().Value(v1AccountKey{}).(bool)
 	return ok && v
 }
