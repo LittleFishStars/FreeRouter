@@ -35,9 +35,8 @@ func newConsoleTestApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatalf("Setup 失败: %v", err)
 	}
-	// 生产接线在 buildServer 末尾（lead 一行 a.AttachConsole()）；
-	// 测试在 Setup 后手动挂，验证 MountConsoleRoutes 的完整形状。
-	a.AttachConsole()
+	// 生产接线已在 buildServer 末尾（a.AttachConsole()）；测试不再手动挂，
+	// 直接走生产路径——「测试验证的形状=生产形状」比重复挂载更可靠。
 	t.Cleanup(func() { _ = a.Close() })
 	return a
 }

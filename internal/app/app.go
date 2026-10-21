@@ -134,11 +134,9 @@ func (a *App) startModelRefresh(ctx context.Context) {
 	if a.sidecar == nil || !a.cfg.Upstream.Relay.Enabled {
 		return
 	}
-	// 装配点：CatalogSource 由 dshprovider.Client 天然满足（task-7 设计），
-	// 存储侧的 upsert/missing 标记经窄接口注入。
 	// 装配点：CatalogSource 由 dshprovider.Client 天然满足（task-7 设计）；
-	// refresh.go 直接要 *store.Store（UpsertRealModel/MarkMissingRealModels 都在
-	// Store 聚合上）——这里直传，不另包一层。
+	// refresh.go 直接要 *store.Store（UpsertRealModel/MarkMissingRealModels
+	// 都在 Store 聚合上）——这里直传，不另包一层。
 	refresher := upstream.NewModelRefresher(
 		a.store, a.sidecar,
 		a.cfg.Upstream.Relay.ModelRefreshInterval.Std(), a.log)
