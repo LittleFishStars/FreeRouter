@@ -65,6 +65,15 @@ func (s *Server) mwRate(l *meter.Limiter, limitsOf RateLimitsSource, tokenCost i
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			p := KeyPrincipalFromContext(r.Context())
 			if p == nil {
+				// 公共路径豁免（mw_keyauth 的 nonKeyPaths 同表）：
+				// 探针/登录面/向导没有 Key 主体，**不进**速率闸——
+				// 登录路径有它自己的限速（LoginGuard 双维退避与锁定，
+				// 02-authn §10），向导有窗口判定（handler 内 409），
+				// 再叠一层 Key 面速率闸只会在装配上互相咬。
+				if isNonKeyPath(r.URL.Path) {
+					next.ServeHTTP(w, r)
+					return
+				}
 				// 装配顺序错误（限速挂在鉴权前）——暴露给日志而不是让
 				// 计数器挂在空主体上把所有请求算进一个桶。
 				writeError(w, http.StatusInternalServerError,

@@ -48,6 +48,13 @@ func (s *Server) mwQuota(debiter QuotaDebiter, modelIDOf ModelIDSource, groupIDs
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			p := KeyPrincipalFromContext(r.Context())
 			if p == nil {
+				// 公共路径豁免（同 mw_rate 的说明）：无 Key 主体即无配额
+				// 主体——额度挂在账户上，登录/向导路径没有"账户在烧额度"
+				// 的语义。
+				if isNonKeyPath(r.URL.Path) {
+					next.ServeHTTP(w, r)
+					return
+				}
 				writeError(w, http.StatusInternalServerError,
 					string(auth.CodeInternal), "配额中间件缺少鉴权主体（装配顺序错误）", nil)
 				return
