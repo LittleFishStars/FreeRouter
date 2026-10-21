@@ -3,6 +3,8 @@
 // 路由一律从 PAGES 表生成：本文件不含任何页面级硬编码，IA 增删页面不动这里。
 
 import { HashRouter, NavLink, Route, Routes } from 'react-router-dom'
+import { SessionProvider, useSession } from './api/session'
+import RequireSession from './components/RequireSession'
 import { NAV_LABELS, PAGES, pagesOfNav, type NavGroup, type PageDef } from './routes'
 import NotFoundPage from './pages/NotFoundPage'
 
@@ -36,21 +38,31 @@ function Sidebar() {
   )
 }
 
-/** 路由表条目 → <Route>。IA 的 :id 参数与 react-router 语法一致，原样透传。 */
+/** 路由表条目 → <Route>。IA 的 :id 参数与 react-router 语法一致，原样透传。
+ *  requires !== 'none' 的路由包会话守卫（渲染层拦截；真授权在服务端）。 */
 function toRoute(p: PageDef) {
   const El = p.element
-  return <Route key={p.path} path={p.path} element={<El def={p} />} />
+  const guarded = p.requires !== 'none' ? <RequireSession><El def={p} /></RequireSession> : <El def={p} />
+  return <Route key={p.path} path={p.path} element={guarded} />
+}
+
+function AccountMenu() {
+  // 顶栏账户菜单：未登录给登录链接；已登录显示名（登出按钮在控制台页）
+  const { session } = useSession()
+  if (!session) return <a href="#/login">登录</a>
+  return <span>{session.display_name}</span>
 }
 
 export default function App() {
   return (
     <Router>
+      <SessionProvider>
       <div className="app-shell">
         <header className="topbar">
           <span className="site-name">FreeRouter</span>
           {/* 顶栏只承载全站同质的运行态横幅（06-design.md 2.1），占位期留空 */}
           <span className="runstate" />
-          <span className="account-menu">未登录（占位）</span>
+          <span className="account-menu"><AccountMenu /></span>
         </header>
         <div className="main-row">
           <Sidebar />
@@ -69,6 +81,7 @@ export default function App() {
           <span>FreeRouter 控制台 · 前端骨架</span>
         </footer>
       </div>
+      </SessionProvider>
     </Router>
   )
 }
