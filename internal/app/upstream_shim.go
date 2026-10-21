@@ -76,7 +76,7 @@ type realModelCandidates struct {
 }
 
 // Candidates 返回该模型名的候选序列（按 real_models 行序）。
-func (c realModelCandidates) Candidates(ctx context.Context, model string) ([]httpapi.Candidate, error) {
+func (c realModelCandidates) Candidates(ctx context.Context, model string, _ ir.Request) ([]httpapi.Candidate, error) {
 	rows, err := c.models.ListVisibleRealModels(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("app: 查询可见真实模型失败: %w", err)
@@ -231,6 +231,8 @@ func (a *App) targetOf() func(upstream.CallCandidate) (upstream.Target, error) {
 
 // 编译期断言：两个装配桥必须满足 httpapi 的消费面（改接口名会在这里炸）。
 var (
-	_ httpapi.Upstream        = upstreamShim{}
+	_ httpapi.Upstream = upstreamShim{}
+	// M6 起生产候选源是 routingCandidates（routing_bridge.go）；这里只钉
+	// M5 过渡实现与 httpapi 消费面的编译期兼容（测试仍覆盖它的匹配逻辑）。
 	_ httpapi.CandidateSource = (*realModelCandidates)(nil)
 )
