@@ -436,6 +436,7 @@ func (s *Server) v1Candidates() CandidateSource {
 type v1Panel struct {
 	upstream   Upstream
 	candidates CandidateSource
+	catalog    ModelCatalog
 }
 
 // decodeInboundBody 统一读入站请求体（mwBodyLimit 已做 413——这里只是
