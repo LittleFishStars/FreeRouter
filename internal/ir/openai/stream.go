@@ -173,6 +173,13 @@ func (s *streamWriter) chunkID() string {
 }
 
 func (s *streamWriter) writeChunk(d delta, finish *string) error {
+	// 01-inbound.md §4.1：首帧 delta 必须含 role:"assistant"——部分 OpenAI
+	// SDK 以首帧的 role 建立会话状态，缺失会让它们把流当异常。
+	// 为什么在这里补而不是在 EvStart：OpenAI 没有显式 start 帧，首个 chunk
+	// 隐含它——「第一条真正写出的帧」就是首帧，在这里判 seq 最可靠。
+	if s.seq == 0 && d.Role == "" {
+		d.Role = "assistant"
+	}
 	return s.writeFrame(chunk{
 		ID:      s.chunkID(),
 		Object:  "chat.completion.chunk",
@@ -351,6 +358,27 @@ func (s *streamReader) Next() (ir.Event, error) {
 			s.pending = append(s.pending, ir.Event{Type: ir.EvDone, Stop: s.stop})
 			s.finished = true
 			continue
+		}
+
+		// 错误帧优先于 chunk 解析（§4.3：上游中途出错时只有 error 帧，没有 chunk 形状）。
+		// 先探顶层 error 键——errorEnvelope 与 chunk 的公共字段不冲突，但语义完全不同。
+		var errProbe struct {
+			Error *struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+				Code    any    `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(data), &errProbe); err == nil && errProbe.Error != nil {
+			// 细码优先（ErrorTypeToCode 归一粗 type；上游粗 type 保留信息但丢细度）。
+			code := ""
+			if s, ok := errProbe.Error.Code.(string); ok {
+				code = s
+			}
+			if code == "" {
+				code = ir.ErrorTypeToCode(errProbe.Error.Type)
+			}
+			return ir.Event{Type: ir.EvError, Err: &ir.Error{Code: code, Message: errProbe.Error.Message}}, nil
 		}
 
 		var c chunk
