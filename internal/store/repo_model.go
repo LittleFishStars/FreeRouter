@@ -606,13 +606,33 @@ func (r *ModelRepo) ListVisibleRealModels(ctx context.Context) ([]RealModel, err
 }
 
 // UpsertUpstream 同步一条上游配置，返回 id（按 kind+name 唯一）。
+//
+// 保留两返回值签名：既有调用方（upstream/bootstrap、路由装配、仓储测试）只关心 id。
+// 需要「新建 vs 更新」的调用方用 UpsertUpstreamWithCreated。
 func (r *ModelRepo) UpsertUpstream(ctx context.Context, kind, name, baseURL string, ownerAccountID *int64, enabled bool) (int64, error) {
+	id, _, err := r.UpsertUpstreamWithCreated(ctx, kind, name, baseURL, ownerAccountID, enabled)
+	return id, err
+}
+
+// UpsertUpstreamWithCreated 与 UpsertUpstream 语义完全相同，额外返回 created：
+// 本次调用是否**新建**了行（true = INSERT，false = 命中冲突走 UPDATE）。
+//
+// 为什么单独一个方法而不是把 UpsertUpstream 改成三返回值：管理面（admin-api）
+// 需要 created 决定 201/200 与审计语义，但既有自举与路由装配调用只接两个值。
+// Go 没有重载，改签名会把所有调用方拖进同一次改动；旧签名 + 新方法既满足新需求，
+// 也避免「改一处编译过、另一处悄悄失效」。
+func (r *ModelRepo) UpsertUpstreamWithCreated(ctx context.Context, kind, name, baseURL string, ownerAccountID *int64, enabled bool) (int64, bool, error) {
 	if kind != "relay" && kind != "vendor" && kind != "selfhosted" {
-		return 0, fmt.Errorf("store: 非法上游类型 %q（kind 只能是 relay/vendor/selfhosted）", kind)
+		return 0, false, fmt.Errorf("store: 非法上游类型 %q（kind 只能是 relay/vendor/selfhosted）", kind)
 	}
 	if name == "" || baseURL == "" {
-		return 0, errors.New("store: 上游的 name 与 base_url 都不得为空")
+		return 0, false, errors.New("store: 上游的 name 与 base_url 都不得为空")
 	}
+	created, err := r.upstreamAbsent(ctx, kind, name)
+	if err != nil {
+		return 0, false, err
+	}
+
 	// relay 上游 base_url 定案（task-12，承接 task-7 遗留）：存 provider 标识
 	// "sidecar://" + provider（如 "sidecar://fake_provider"）——ALIGN-SPEC H 后
 	// relay 没有可配端点（02-deploy §2.5：base_url/api_key_file 已删），该列对
@@ -620,8 +640,7 @@ func (r *ModelRepo) UpsertUpstream(ctx context.Context, kind, name, baseURL stri
 	// selfhosted 仍是真实 base_url。校验只查非空（上面），不强制前缀——前缀
 	// 是写入方（装配/管理 API）的约定，读取方按 kind 解释，写在 DDL 外面
 	// 避免 CHECK 约束把后续演进锁死。
-
-	_, err := r.db.ExecContext(ctx,
+	_, err = r.db.ExecContext(ctx,
 		`INSERT INTO upstreams(kind, name, base_url, owner_account_id, enabled, last_seen_at)
 		 VALUES(?,?,?,?,?,?)
 		 ON CONFLICT(kind, name) DO UPDATE SET
@@ -631,15 +650,34 @@ func (r *ModelRepo) UpsertUpstream(ctx context.Context, kind, name, baseURL stri
 		     last_seen_at     = excluded.last_seen_at`,
 		kind, name, baseURL, ownerAccountID, boolInt(enabled), now())
 	if err != nil {
-		return 0, fmt.Errorf("store: 同步上游失败: %w", err)
+		return 0, false, fmt.Errorf("store: 同步上游失败: %w", err)
 	}
 
 	var id int64
 	if err := r.db.QueryRowContext(ctx,
 		`SELECT id FROM upstreams WHERE kind = ? AND name = ?`, kind, name).Scan(&id); err != nil {
-		return 0, fmt.Errorf("store: 回读上游 id 失败: %w", err)
+		return 0, false, fmt.Errorf("store: 回读上游 id 失败: %w", err)
 	}
-	return id, nil
+	return id, created, nil
+}
+
+// upstreamAbsent 报告 (kind,name) 当前是否不存在（即下一次 upsert 会 INSERT）。
+//
+// 为什么在写前查一次：SQLite 的 upsert 不返回「插入还是更新」，changes() 也分不出来
+// （ON CONFLICT DO UPDATE 同样计一次变更）。写池上限为 1 且管理面调用方通常已包
+// WithTx，这条 SELECT 与后面的 upsert 之间不会有第二个写者插进来；即便出现，
+// 最坏也只是 created 标记偏保守，不影响任何数据语义。
+func (r *ModelRepo) upstreamAbsent(ctx context.Context, kind, name string) (bool, error) {
+	var id int64
+	err := r.db.QueryRowContext(ctx,
+		`SELECT id FROM upstreams WHERE kind = ? AND name = ?`, kind, name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: 查询上游是否存在失败: %w", err)
+	}
+	return false, nil
 }
 
 // ListUpstreams 列出全部上游（含 base_url 与启用状态）。
@@ -670,6 +708,16 @@ func (r *ModelRepo) ListUpstreams(ctx context.Context) ([]Upstream, error) {
 		return nil, fmt.Errorf("store: 遍历上游失败: %w", err)
 	}
 	return out, nil
+}
+
+// GetUpstreamByID 按 id 读上游行（管理面的公开访问器）。
+//
+// 为什么导出：PATCH / 改形态 / 详情都要「先读旧行」，而之前只有包内的
+// getUpstreamByID；跨包调用方只能 ListUpstreams 全表遍历——小表能跑，但错误形态
+// 不对（不存在会被当成"列表里没找到"，而不是 ErrNotFound）。这里只是薄包装，
+// 语义（含 ErrNotFound）与包内函数完全一致。
+func (r *ModelRepo) GetUpstreamByID(ctx context.Context, id int64) (*Upstream, error) {
+	return r.getUpstreamByID(ctx, id)
 }
 
 // Upstream 是上游的读模型。
