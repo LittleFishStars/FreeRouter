@@ -2,6 +2,11 @@ package upstream
 
 import (
 	"context"
+	"encoding/json"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/logging"
@@ -63,12 +68,19 @@ type CreditsQuerier interface {
 // QuotaProbe 用 sidecar 客户端探测 relay 类 provider 的配额。
 type QuotaProbe struct {
 	client CreditsQuerier
+
+	// mu 保护快照。快照是「最近一轮探测的配额读数」，供 /readyz 明细与
+	// 排序策略的 balance 维度读，不落库（05-storage.md 第 1 节：健康/配额是
+	// 短周期信号，落库会带来写放大与陈旧状态）。
+	mu     sync.RWMutex
+	snap   map[string]Quota
+	snapAt time.Time
 }
 
 // NewQuotaProbe 建探测器。client 允许为 nil——nil 时全部返回 unverified，
 // 装配层在 sidecar 不可用时仍可安全持有探测器（失败不阻塞启动，任务红线）。
 func NewQuotaProbe(client CreditsQuerier) *QuotaProbe {
-	return &QuotaProbe{client: client}
+	return &QuotaProbe{client: client, snap: make(map[string]Quota)}
 }
 
 // Probe 对一个 provider 做一次配额探测。
@@ -105,6 +117,11 @@ func (q *QuotaProbe) Probe(ctx context.Context, provider string) Quota {
 		// Raw 仅供排障，但 unit 缺失时从 raw 里捞一次值得：unit 决定数字的可读性。
 		out.Unit = guessUnitFromRaw(credits.Raw)
 	}
+	if out.ExpiresAt == "" && credits.Raw != nil {
+		// 到期时间通常只在 raw 里（credits.query 的契约没有独立字段）。能拿到就带：
+		// 它比余额更早决定「这条凭据还有没有用」（03-upstream.md 任务第 4 点）。
+		out.ExpiresAt = expiryFromRaw(credits.Raw)
+	}
 	return out
 }
 
@@ -118,41 +135,221 @@ func (q *QuotaProbe) ProbeAll(ctx context.Context, providers []string) []Quota {
 		return nil
 	}
 	results := make([]Quota, len(providers))
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		type slot struct{ idx int }
-		sem := make(chan slot, len(providers))
-		for i := range providers {
-			sem <- slot{idx: i}
-		}
-		// 有界并发：全量并行会在 sidecar 侧排队（串行一问一答），17 个 goroutine
-		// 等一个 mutex 没有收益；给 4 个并发度让超时能各自走完。
-		const concurrency = 4
-		var wg chan struct{}
-		_ = wg
-		work := make(chan int)
-		go func() {
-			defer close(work)
-			for i := range providers {
-				work <- i
-			}
-		}()
-		var fin = make(chan int, len(providers))
-		for w := 0; w < concurrency; w++ {
-			go func() {
-				for i := range work {
-					results[i] = q.Probe(ctx, providers[i])
-					fin <- i
-				}
-			}()
-		}
-		for range providers {
-			<-fin
-		}
-	}()
-	<-done
+
+	// 有界并发：全量并行会在 sidecar 侧排队（串行一问一答），17 个 goroutine
+	// 等一个 mutex 没有收益；给 4 个并发度让超时能各自走完。
+	const concurrency = 4
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for i := range providers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results[i] = q.Probe(ctx, providers[i])
+		}(i)
+	}
+	wg.Wait()
+	q.RecordSnapshot(results)
 	return results
+}
+
+// QuotaSnapshot 是一轮探测的不可变结果（按 provider 名升序）。
+//
+// 为什么需要快照：余额与到期时间是排序策略的输入（01-catalog.md §8 的 balance），
+// 但探测是低频旁路任务；让读方直接调 Probe 会把「排序一次打 17 个公网请求」变成热路径。
+type QuotaSnapshot struct {
+	// GeneratedAt 是快照写入时刻（零值 = 从未探测过）。
+	GeneratedAt time.Time
+	Quotas      []Quota
+}
+
+// Lookup 按 provider 查一条配额。
+func (s QuotaSnapshot) Lookup(provider string) (Quota, bool) {
+	for _, q := range s.Quotas {
+		if q.Provider == provider {
+			return q, true
+		}
+	}
+	return Quota{}, false
+}
+
+// Len 返回快照里的 provider 数。
+func (s QuotaSnapshot) Len() int { return len(s.Quotas) }
+
+// RecordSnapshot 把一轮探测结果并入快照。导出的原因是：装配层可能用自己的
+// 调度器（而不是 ProbeAll）驱动探测，它仍应能以同一形状发布读数供 /readyz 使用。
+func (q *QuotaProbe) RecordSnapshot(results []Quota) {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.snap == nil {
+		q.snap = make(map[string]Quota)
+	}
+	for _, r := range results {
+		if r.Provider != "" {
+			q.snap[r.Provider] = r
+		}
+	}
+	q.snapAt = time.Now()
+}
+
+// Snapshot 返回当前快照的副本（按 provider 升序，调用方改不动内部状态）。
+func (q *QuotaProbe) Snapshot() QuotaSnapshot {
+	if q == nil {
+		return QuotaSnapshot{}
+	}
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	providers := make([]string, 0, len(q.snap))
+	for p := range q.snap {
+		providers = append(providers, p)
+	}
+	sort.Strings(providers)
+	out := QuotaSnapshot{GeneratedAt: q.snapAt, Quotas: make([]Quota, 0, len(providers))}
+	for _, p := range providers {
+		out.Quotas = append(out.Quotas, q.snap[p])
+	}
+	return out
+}
+
+// Last 返回某 provider 的最近一次探测结果。
+func (q *QuotaProbe) Last(provider string) (Quota, bool) {
+	if q == nil {
+		return Quota{}, false
+	}
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	v, ok := q.snap[provider]
+	return v, ok
+}
+
+// ExpiresAtTime 解析 ExpiresAt（空/不可解析时 ok=false）。
+func (q Quota) ExpiresAtTime() (time.Time, bool) {
+	if q.ExpiresAt == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, q.ExpiresAt)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// Expired 报告配额/订阅是否已到期。不可知时不判过期（拿不到不是过期）。
+func (q Quota) Expired(now time.Time) bool {
+	t, ok := q.ExpiresAtTime()
+	return ok && !now.Before(t)
+}
+
+// expiryKeys 是 raw 里可能承载到期时间的键（统一转小写后比较）。
+//
+// 为什么要做一张候选表而不是只认 expiresAt：credits.query 的 raw 是「上游原始响应的
+// 子集」，字段名由各家端点决定（expiresAt / expiry / endTime / validUntil…）。
+// 只认一个名字的后果不是“少一个字段”，而是“到期凭据继续被当成可用”。
+var expiryKeys = []string{
+	"expiresat", "expires_at", "expireat", "expire_at",
+	"expiry", "expiryat", "expiry_at", "expires",
+	"endtime", "end_time", "validuntil", "valid_until",
+	"quotaexpiresat", "quota_expires_at", "subscriptionexpiresat",
+	"subscription_expires_at",
+}
+
+// expiryFromRaw 从 upstream 原始响应里取到期时间，归一成 RFC3339（UTC）。
+// 拿不到就返回空串——与 Quota.ExpiresAt 的三态语义一致：空 = 不可知，不是“永不过期”。
+func expiryFromRaw(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return ""
+	}
+	if s, ok := findExpiry(v, 0); ok {
+		return s
+	}
+	return ""
+}
+
+// findExpiry 先按候选键名找，再递归进嵌套对象/数组。
+// 深度上限 3 是防环预算：raw 是外部输入，不设上限时一个自引用的巨型对象可以吃光栈。
+func findExpiry(v any, depth int) (string, bool) {
+	if depth > 3 {
+		return "", false
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		lower := make(map[string]any, len(x))
+		for k, val := range x {
+			lower[strings.ToLower(strings.TrimSpace(k))] = val
+		}
+		for _, k := range expiryKeys {
+			if val, ok := lower[k]; ok {
+				if s, ok := parseExpiryValue(val); ok {
+					return s, true
+				}
+			}
+		}
+		// 嵌套查找按 key 排序，保证同一份 raw 每次得到同一个答案（map 遍历无序）。
+		keys := make([]string, 0, len(lower))
+		for k := range lower {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if s, ok := findExpiry(lower[k], depth+1); ok {
+				return s, true
+			}
+		}
+	case []any:
+		for _, val := range x {
+			if s, ok := findExpiry(val, depth+1); ok {
+				return s, true
+			}
+		}
+	}
+	return "", false
+}
+
+// parseExpiryValue 接受 RFC3339、常见日期格式与 unix 秒/毫秒。
+func parseExpiryValue(v any) (string, bool) {
+	switch x := v.(type) {
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return "", false
+		}
+		for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05", "2006-01-02"} {
+			if t, err := time.Parse(layout, s); err == nil {
+				return formatExpiry(t)
+			}
+		}
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return formatExpiry(unixExpiry(n))
+		}
+	case float64:
+		return formatExpiry(unixExpiry(int64(x)))
+	}
+	return "", false
+}
+
+func unixExpiry(n int64) time.Time {
+	if n > 1e12 { // 毫秒时间戳
+		return time.UnixMilli(n).UTC()
+	}
+	return time.Unix(n, 0).UTC()
+}
+
+// formatExpiry 拒绝明显不可能是到期时间的值（0、1970、2100 以后）：
+// raw 里的数字字段可能是配额数量或序号，把 0 当成到期时间会让整个 provider 被误剔。
+func formatExpiry(t time.Time) (string, bool) {
+	if t.IsZero() || t.Year() < 2000 || t.Year() > 2100 {
+		return "", false
+	}
+	return t.UTC().Format(time.RFC3339), true
 }
 
 // guessUnitFromRaw 从原始响应里猜 unit 字段（仅排障辅助，猜不中就保持空）。

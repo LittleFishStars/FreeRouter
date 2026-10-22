@@ -22,9 +22,10 @@ import (
 // RelayTransport 是 relay 类上游的传输实现。
 //
 // 方法面：dshprovider.Client.Call(ctx, "infer.stream", params)（04-sidecar.md
-// 2.2 方法集之外的推理方法，sidecar 以 NDJSON 帧流式应答——目前 sidecar/index.mjs
-// 尚未实现 infer.stream（返回 E_UNKNOWN_METHOD / E_NOT_IMPLEMENTED），本传输
-// 先把调用形状与错误归一定型，sidecar 侧就绪后立即生效。
+// 2.2 方法集之外的推理方法，sidecar 以 NDJSON 帧流式应答）。
+// 帧 → ir.Event 的转换在 relay_stream.go：sidecar 侧 hub 未就绪时仍会返回
+// E_NOT_IMPLEMENTED（归 ErrProtocol），但 Go 侧的调用形状、帧映射与错误归一
+// 已定型——sidecar 一就绪即可用，不需要再改适配层。
 type RelayTransport struct {
 	client *dshprovider.Client
 }
@@ -50,6 +51,19 @@ type inferParams struct {
 // 返回 rc 是 sidecar 流式应答的载荷（SSE/NDJSON 事件流，由候选方言的
 // StreamReader 消费）；err 归一到本包 Error（sidecar 错误码 → ErrClass 映射）。
 func (t *RelayTransport) InferStream(ctx context.Context, tgt Target, body []byte, stream bool) (io.ReadCloser, error) {
+	raw, err := t.inferPayload(ctx, tgt, body, stream)
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytesReader(raw)), nil
+}
+
+// inferPayload 是 relay 调用的公共前半段：参数编码、IPC 调用、错误归一。
+//
+// 为什么独立出来：InferStream 服务「字节流消费面」（Caller→httpapi），Open
+// （relay_stream.go）服务「IR 事件消费面」；把 IPC 细节抄两遍，两边的错误分类
+// 与空载荷判定就会开始漂移。
+func (t *RelayTransport) inferPayload(ctx context.Context, tgt Target, body []byte, stream bool) ([]byte, error) {
 	if err := ValidateTarget(tgt); err != nil {
 		return nil, &Error{Class: ErrBadRequest, Message: err.Error()}
 	}
@@ -68,10 +82,8 @@ func (t *RelayTransport) InferStream(ctx context.Context, tgt Target, body []byt
 	}
 	params := inferParams{Provider: provider, Model: model, Body: json.RawMessage(body), Stream: stream}
 
-	// dshprovider.Call 是「一问一答」语义（串行锁内单帧应答）；流式推理的
-	// 多帧应答在 client.go 的 Call 通道上以累积 payload 返回（RawMessage），
-	// 这里包成 ReadCloser 供 StreamReader 逐帧消费。形态与 hub 就绪后的
-	// infer.stream 实现对齐（先把 Go 侧的调用形状与错误归一定型）。
+	// dshprovider.Call 是「一问一答」语义（串行锁内单帧应答）；流式推理的多帧应答
+	// 由 sidecar 在 result 内以帧流/帧数组返回，由 relay_stream.go 逐帧解成 ir.Event。
 	raw, err := t.client.Call(ctx, "infer.stream", params)
 	if err != nil {
 		return nil, relayErr(err)
@@ -79,7 +91,7 @@ func (t *RelayTransport) InferStream(ctx context.Context, tgt Target, body []byt
 	if len(raw) == 0 {
 		return nil, &Error{Class: ErrProtocol, Message: "sidecar infer.stream 返回空载荷"}
 	}
-	return io.NopCloser(bytesReader(raw)), nil
+	return raw, nil
 }
 
 // relayErr 把 dshprovider 错误映射到本包 ErrClass（03-upstream.md 2.3 表：
