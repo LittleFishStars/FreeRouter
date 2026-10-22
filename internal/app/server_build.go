@@ -16,6 +16,7 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
 	"github.com/LittleFishStars/FreeRouter/internal/meter"
+	"github.com/LittleFishStars/FreeRouter/internal/webui"
 )
 
 // buildServer 构造 httpapi.Server 并完成三件事：
@@ -80,6 +81,13 @@ func (a *App) buildServer() *httpapi.Server {
 	// a.AttachConsole()，它读 a.server，而 buildServer 里 a.server 尚未
 	// 赋值（Setup 最后一步才 a.server = 返回值），nil 解引用。
 	srv.SetConsoleRoutes(a.MountConsoleRoutes)
+
+	// 控制台前端：注入 internal/webui 的静态处理器。两种构建形态由 webui
+	// 自己的 build tag 决定（裸 go build 得到占位页，-tags webui_dist 得到
+	// 真产物），装配层不知情、只负责注入；built 标志透给 /api/version 让
+	// 运维一眼分辨「忘了 pnpm build 就重新编译」——这是本项目最容易出现的
+	// 部署态错误，且两种情况的页面都能打开。
+	srv.SetWebUI(webui.Handler(), webui.Built())
 	return srv
 }
 
