@@ -41,7 +41,11 @@ type App struct {
 	keyAuthn *auth.KeyAuthenticator
 	limiter  *meter.Limiter
 	debiter  httpapi.QuotaDebiter
-
+	// quotaLedger 是同一个 StoreAdapter 的完整账本面（TryDebit + Credit）。
+	// 为什么要两个字段：debiter 给中间件只用判定（TryDebit）；终态结算需要
+	// Credit（meter.SettlementRecorder 的入参）。类型分开写，是为了让
+	// 「判定面」与「记账面」的边界在编译期就可见，而不是靠注释。
+	quotaLedger meter.QuotaLedger
 	// 后台任务（模型目录刷新等）的取消函数，Stop 时统一收回。
 	bgCancel context.CancelFunc
 

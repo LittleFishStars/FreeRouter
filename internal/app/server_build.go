@@ -76,8 +76,15 @@ func (a *App) buildServer() *httpapi.Server {
 		GlobalDailyTokens: a.cfg.Limits.GlobalDailyTokens,
 		QueueTimeout:      a.cfg.Limits.QueueTimeout.Std(),
 	})
-	a.debiter = meter.NewStoreAdapter(
-		a.store.Repos().Quotas, a.store.Repos().Groups)
+	// 同一个 StoreAdapter 实例只建一次：debiter（判定面）与 quotaLedger
+	// （记账面）必须是同一个对象——两个实例会让额度行的内存态与库态分叉。
+	ledger := meter.NewStoreAdapter(a.store.Repos().Quotas, a.store.Repos().Groups)
+	a.debiter = ledger
+	a.quotaLedger = ledger
+
+	// 终态结算出口（M1）：一次请求恰一次，额度面 + requests/usage_daily。
+	// 不注入时 v1 请求照常服务但不记账（测试与降级态）。
+	srv.SetSettler(a.newSettler())
 
 	// 注册到 Server 的挂载点（Handler() 在 server.go 里逐条 r.Use）。
 	srv.SetAuthChain(
