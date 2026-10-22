@@ -32,6 +32,10 @@ import (
 // 事务里，需要一个跨包的 tx 句柄穿透——那是把 store 的私有 Repos 暴露
 // 给 meter，代价大于收益。当前取舍：同库但非同事务；不一致的窗口是
 // 「额度扣了、requests 没写」，由对账告警发现（量级远小于双记风险）。
+// **发现后的动作必须可执行**：告警文案要带排障线索（见 Settle 的返回包装）——
+// 额度面已扣而 requests 缺行时，按 account_id + ended_at 时间窗查 requests/usage_daily
+// 的差集（usage_daily 有行而 requests 无行 = 请求面丢了），补行前先确认该窗口没有
+// 同一请求的既有行，避免把一次请求补成两行。
 
 // settleBridge 实现 httpapi.Settler。
 type settleBridge struct {
@@ -152,7 +156,16 @@ func (b *settleBridge) Settle(ctx context.Context, in httpapi.SettleInput) error
 
 	// 请求面失败才是真失败（账本主记录）；额度面失败合并进去。
 	reqErr := b.usage.RecordRequest(ctx, rec, store.Settlement{})
-	return errors.Join(quotaErr, reqErr)
+	merged := errors.Join(quotaErr, reqErr)
+	if merged == nil {
+		return nil
+	}
+	// 把可执行排障线索带进调用方的 warn（httpapi.settleRequest 只打一行日志）。
+	// 两半非同事务：唯一会制造「额度面已扣、请求面缺行」的窗口就在本函数内，
+	// 告警若只写“结算失败”，值班得从头猜是哪一半、怎么补。
+	return fmt.Errorf("%w（对账线索：额度面与请求面非同事务；若额度已扣而 requests 缺行，"+
+		"按 account_id + requests.ts/usage_daily.day 的时间窗查差集后补行；"+
+		"补行前先确认该窗口无同一请求既有行，避免双记）", merged)
 }
 
 func ptrInt64(v int64) *int64 { return &v }
