@@ -5,8 +5,10 @@ package httpapi
 // 入站契约（docs/api/01-inbound.md §5）：
 // - 形状 {"object":"list","data":[{"id","object":"model","created",...
 //   "owned_by":"free-router"}]}——owned_by 固定值防泄露渠道。
-// - M6 前先列 real_models 打通链路（M6 换抽象模型——TODO 注释标记）。
-// - 鉴权必须（交集可见性——M5 最小面：已鉴权即全可见，组过滤 M6）。
+// - **只列抽象模型**（红线 C2，02-abstract.md §6.2）：真实模型名对外
+//   一律 404，列表里出现它们等于把池结构念给租户听。装配层
+//   （app.modelCatalog）负责只读 active/deprecated。
+// - 鉴权必须；组可见性交集过滤是 M7 的事（现在已鉴权即全可见）。
 // - M5 不做弃用头（Deprecation/Sunset）。
 
 import (
@@ -23,10 +25,9 @@ type ModelEntry struct {
 	OwnedBy string `json:"owned_by"`
 }
 
-// ModelCatalog 是模型目录的数据源接口。M6 前列 real_models（sidecar
-// 异步拉的 GET /v1/models 写库，04-sidecar L245）；M6 换抽象模型路由。
+// ModelCatalog 是模型目录的数据源接口：列**抽象模型**名（不是真实模型）。
 // 为什么是接口：目录来源（store 查询/sidecar 拉取的镜像）是部署态，
-// handler 只消费「当前有哪些模型 id」这一抽象面。
+// handler 只消费「当前对外可见的模型 id」这一抽象面。
 type ModelCatalog interface {
 	// ListModelIDs 返回对外可见的模型 id 列表。
 	ListModelIDs(ctx context.Context) ([]string, error)
@@ -49,8 +50,10 @@ func (s *Server) v1Catalog() ModelCatalog {
 }
 
 // HandleV1Models 处理 GET /v1/models。
-// TODO(M6)：换抽象模型列表（real_models → abstract_models；组可见性
-// 交集过滤也在此落地——01-inbound §5）。
+//
+// 组可见性交集过滤（M7）在装配层做：handler 只见「一个 id 列表」这一
+// 窄面，把「哪些组能看到哪些模型」的策略藏进 catalog 实现比埋在
+// handler 里更可测（01-inbound §5）。
 func (s *Server) HandleV1Models(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.writeV1Error(w, "invalid_request", "方法不允许", requestIDOf(r))
@@ -79,9 +82,8 @@ func (s *Server) HandleV1Models(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO(M6)：real_models 直列是打通链路的过渡形态——模型名空间、
-	// 组可见性、弃用头都等抽象模型路由。created 用目录构建时刻：
-	// 列表本身的语义是「目录快照」，不是每个模型的发布时刻。
+	// created 用目录构建时刻：列表本身的语义是「目录快照」，
+	// 不是每个模型的发布时刻（真值要等目录入库带发布时间才接）。
 	now := time.Now().Unix()
 	entries := make([]ModelEntry, 0, len(ids))
 	for _, id := range ids {

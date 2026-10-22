@@ -70,11 +70,6 @@ func (s *Server) HandleV1Messages(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Stream = isStreamRequest(r, body)
 
-	if s.v1Candidates() != nil && isRealModelName(r.Context(), req.Model) {
-		s.writeV1AnthropicError(w, "model_not_found", "模型不存在", requestID)
-		return
-	}
-
 	if err := req.Validate(); err != nil {
 		payload := classifyErr(err)
 		s.writeV1AnthropicError(w, payload.code, payload.message, requestID)

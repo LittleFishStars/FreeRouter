@@ -61,16 +61,6 @@ func isStreamRequest(r *http.Request, body []byte) bool {
 	return false
 }
 
-// isRealModelName 判模型名是否 real_models 域的 id（M5 契约：真实模型名
-// 对外 404，防泄露池结构——03-milestones M5 验收）。候选源未接线时
-// 返回 false（无 real_models 数据可判，不拦）。
-// TODO(M6)：抽象模型路由上线后移除——届时模型名空间统一为抽象名。
-func isRealModelName(ctx context.Context, model string) bool {
-	// M5 前段：real_models 经 CandidateSource 暴露；这里做精确前缀/
-	// 形态判定的意义不大（模型名空间未定），先用候选源的模型清单。
-	// 真正的判定由 Lead 装配 ModelCatalog 时注入——留接口。
-	return false
-}
 
 // wantsTrace 判定请求是否要路由诊断（x-fr-trace: 1）。
 //

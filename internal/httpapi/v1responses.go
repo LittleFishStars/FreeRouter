@@ -362,11 +362,6 @@ func (s *Server) HandleV1Responses(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Stream = isStreamRequest(r, body)
 
-	if s.v1Candidates() != nil && isRealModelName(r.Context(), req.Model) {
-		s.writeV1Error(w, "model_not_found", "模型不存在", requestID)
-		return
-	}
-
 	if err := req.Validate(); err != nil {
 		payload := classifyErr(err)
 		s.writeV1Error(w, payload.code, payload.message, requestID)
