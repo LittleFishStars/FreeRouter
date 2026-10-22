@@ -161,6 +161,8 @@ var (
 // setupStoreAdapter 把账户仓储钉到 httpapi.SetupStore。
 type setupStoreAdapter struct {
 	accounts *store.AccountRepo
+	store    *store.Store
+	maxKeys  int
 }
 
 func (a setupStoreAdapter) CountAccounts(ctx context.Context) (int, error) {
@@ -175,6 +177,12 @@ func (a setupStoreAdapter) CountAccounts(ctx context.Context) (int, error) {
 // init 至多一个 INSERT 成功，另一个撞唯一索引——这里把该错误翻成
 // auth.ErrConflict（调用方 handler 已按 CodeConflict → 409 翻译）。
 func (a setupStoreAdapter) CreateFirstAdmin(ctx context.Context, username, passwordHash, displayName string) error {
+	// 默认组必须先于账户存在（03-groups §5）：首管理员也要有策略来源，
+	// 否则他建不出第一把 Key（can_create_key 的 fail-closed 判定会拒绝）。
+	gid, err := a.store.EnsureDefaultGroup(ctx, a.maxKeys)
+	if err != nil {
+		return err
+	}
 	id, err := a.accounts.CreateAccount(ctx, store.AccountAuth{
 		Account: store.Account{
 			DisplayName: displayName,
@@ -190,7 +198,9 @@ func (a setupStoreAdapter) CreateFirstAdmin(ctx context.Context, username, passw
 		}
 		return err
 	}
-	_ = id
+	if err := a.store.Repos().Groups.AddMember(ctx, gid, id); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -269,7 +279,7 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	deps := a.buildConsoleAuth()
 	authDeps := &httpapi.AuthDeps{Login: deps.login, Sess: deps.sess}
 	setupDeps := &httpapi.SetupDeps{
-		SetupStore: setupStoreAdapter{accounts: a.store.Repos().Accounts},
+		SetupStore: setupStoreAdapter{accounts: a.store.Repos().Accounts, store: a.store, maxKeys: a.cfg.Limits.DefaultKeysPerAccount},
 		Hasher:     auth.NewPasswordHasher(a.cfg.Security.PasswordMinLength),
 	}
 
@@ -283,6 +293,16 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	// 窗口内没有可鉴权主体），窗口判定在 handler 内（先 409 后验参数）。
 	r.Get("/api/setup/status", a.server.ConsoleHandlerSetupStatus(setupDeps))
 	r.Post("/api/setup/init", a.server.ConsoleHandlerSetupInit(setupDeps))
+
+	// 租户自助 Key 面（M3）：会话鉴权（mwSession），KeyManager 判定归属/上限/
+	// 白名单。明文只在创建/轮换响应里出现一次。
+	km := a.buildKeyManager()
+	keysDeps := &httpapi.AccountKeysDeps{Manager: km}
+	sessMW := a.server.ConsoleMiddlewareSession(deps.sess)
+	r.Get("/api/account/keys", sessMW(a.server.HandleAccountKeysList(keysDeps)).(http.HandlerFunc))
+	r.Post("/api/account/keys", sessMW(a.server.HandleAccountKeyCreate(keysDeps)).(http.HandlerFunc))
+	r.Post("/api/account/keys/{id}/revoke", sessMW(a.server.HandleAccountKeyRevoke(keysDeps)).(http.HandlerFunc))
+	r.Post("/api/account/keys/{id}/rotate", sessMW(a.server.HandleAccountKeyRotate(keysDeps)).(http.HandlerFunc))
 
 	// 管理面（M7）：45 端点整组挂 /api/admin，组级中间件 mwAdmin。
 	// 先 AttachAdmin 再 Mount：Server 的 deps 注册表按实例键，挂载时取。
@@ -326,3 +346,19 @@ func (a *App) buildAdminDeps() *httpapi.AdminDeps {
 
 // chiRouter 是 chi.Router 的本地别名（SetConsoleRoutes 回调签名）。
 type chiRouter = chi.Router
+
+// buildKeyManager 构造租户 Key 管理器（归属/上限/白名单判定都在 auth 侧）。
+func (a *App) buildKeyManager() *auth.KeyManager {
+	stores := authLoginStores{
+		accounts: a.store.Repos().Accounts,
+		sessions: a.store.Repos().Sessions,
+	}
+	return auth.NewKeyManager(
+		auth.KeyPolicy{DefaultMaxKeysPerAccount: a.cfg.Limits.DefaultKeysPerAccount},
+		auth.Stores{
+			Accounts: stores,
+			Sessions: stores,
+			Keys:     newKeyManagerBridge(a.store),
+			Policies: policyBridge{groups: a.store.Repos().Groups, models: a.store.Repos().Models},
+		})
+}

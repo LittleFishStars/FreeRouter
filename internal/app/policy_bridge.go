@@ -67,7 +67,7 @@ func snapshotToGroupPolicies(ctx context.Context, models *store.ModelRepo, snap 
 		g := &snap.Groups[i]
 		// 组元数据（名称等）：合并算法不消费，但保留 ID 供审计侧追溯。
 		gp := auth.GroupPolicy{
-			Group: auth.Group{ID: strconv.FormatInt(g.GroupID, 0)},
+			Group: auth.Group{ID: strconv.FormatInt(g.GroupID, 10)},
 		}
 		if g.CanCreateKey != nil {
 			v := *g.CanCreateKey

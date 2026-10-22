@@ -693,3 +693,41 @@ func int64sToAny(in []int64) []any {
 	}
 	return out
 }
+
+// EnsureDefaultGroup 保证默认组存在，并在**首次创建**时写入一组保守可用策略。
+//
+// 为什么必须有这一步（03-groups §5「默认组必须始终存在」）：
+// 账户的每个策略键都需要一个来源，否则判定链要在运行期处理"没有策略"
+// ——而那个状态的默认解释极易写成 fail-open。默认组把空洞消灭在数据层。
+//
+// 为什么首次创建时要写 can_create_key=true：默认组策略「由管理员配置、建议保守」，
+// 但一个刚装好的实例如果连站长自己都建不出第一把 Key，它就不是保守而是不可用。
+// 只写两条最小放行（can_create_key / max_keys），其余限制类键保持未设（= -1）。
+//
+// 已存在则**不覆盖**任何策略：管理员改过的配置不能被启动流程重置。
+func (s *Store) EnsureDefaultGroup(ctx context.Context, maxKeys int) (int64, error) {
+	var id int64
+	err := s.writeDB.QueryRowContext(ctx,
+		`SELECT id FROM groups WHERE is_default = 1 LIMIT 1`).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("store: 查默认组: %w", err)
+	}
+
+	return id, s.WithTx(ctx, func(tx *Repos) error {
+		gid, err := tx.Groups.CreateGroup(ctx, "默认组", "新账户自动加入；策略由管理员配置", true)
+		if err != nil {
+			return err
+		}
+		id = gid
+		if err := tx.Groups.SetPolicy(ctx, gid, PolicyCanCreateKey, "true"); err != nil {
+			return err
+		}
+		if maxKeys <= 0 {
+			maxKeys = 10
+		}
+		return tx.Groups.SetPolicy(ctx, gid, PolicyMaxKeys, fmt.Sprintf("%d", maxKeys))
+	})
+}

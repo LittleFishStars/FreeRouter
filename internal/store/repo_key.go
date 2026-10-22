@@ -14,6 +14,10 @@ const (
 	KeyActive   KeyStatus = "active"
 	KeyDisabled KeyStatus = "disabled"
 	KeyExpired  KeyStatus = "expired"
+	// KeyRevoked 是单向吊销（05-keys §4）：签发后不可恢复。
+	// 为什么与 disabled 分开：disabled 是运营动作（先停一下，可恢复），
+	// revoked 是安全动作（疑似泄露，不可恢复）；合并会让"可恢复"污染吊销语义。
+	KeyRevoked  KeyStatus = "revoked"
 )
 
 // APIKey 是 Key 的读模型。
@@ -211,7 +215,7 @@ func (r *KeyRepo) KeyModelAllow(ctx context.Context, keyID int64) ([]int64, erro
 
 func (s KeyStatus) valid() bool {
 	switch s {
-	case KeyActive, KeyDisabled, KeyExpired:
+	case KeyActive, KeyDisabled, KeyExpired, KeyRevoked:
 		return true
 	}
 	return false
@@ -227,4 +231,16 @@ func (r *KeyRepo) SetKeyAllowlist(ctx context.Context, keyID int64, abstractMode
 // KeyAllowlist 读 Key 的模型白名单（storeiface 对齐别名）。语义见 KeyModelAllow。
 func (r *KeyRepo) KeyAllowlist(ctx context.Context, keyID int64) ([]int64, error) {
 	return r.KeyModelAllow(ctx, keyID)
+}
+
+// SetKeyName 改展示名（不影响鉴权）。名字为空串等价于清空。
+//
+// 为什么单独一个方法而不是复用 Update：Key 的其余字段没有可改的语义
+// （哈希/前缀不可变），只暴露"改名"这一条写路径比一个通用 Update 更难误用。
+func (r *KeyRepo) SetKeyName(ctx context.Context, id int64, name *string) error {
+	res, err := r.db.ExecContext(ctx, `UPDATE api_keys SET name = ? WHERE id = ?`, name, id)
+	if err != nil {
+		return fmt.Errorf("store: 改名失败: %w", err)
+	}
+	return requireAffected(res, "Key", id)
 }
