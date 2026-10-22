@@ -88,5 +88,6 @@ func (s *Server) HandleV1Messages(w http.ResponseWriter, r *http.Request) {
 		anthropicShape:    true,
 		maxTokensRequired: true,
 		traceRequested:    wantsTrace(r),
+		endpoint:          "anthropic-messages", // 同上：词表受 CHECK 约束
 	}, requestID)
 }

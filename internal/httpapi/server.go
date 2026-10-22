@@ -60,6 +60,10 @@ type Server struct {
 	// 运维要能一眼分辨「忘了 pnpm build 就重新编译」——那是本项目
 	// 最容易出现的部署态错误，而两种情况页面都能打开。
 	webUIBuilt bool
+
+	// settler 是 v1 请求终态结算出口（SetSettler 注入）。
+	// nil = 未装配：请求照常服务但不写 requests/usage_daily（测试与降级态）。
+	settler Settler
 }
 
 // New 构造服务器。deps.Logger 为 nil 时使用默认 logger。

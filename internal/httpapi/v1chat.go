@@ -67,8 +67,9 @@ func (s *Server) HandleV1Chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.proxyV1(r.Context(), w, proxyReq{
-		req:     *req,
-		inbound: adapterFor(ir.ProtocolOpenAIChat),
+		req:      *req,
+		inbound:  adapterFor(ir.ProtocolOpenAIChat),
+		endpoint: "openai-chat", // requests.endpoint 词表见 0001_init.sql
 		// x-fr-trace: 1 → 响应头回写路由诊断（M6 接线）。
 		traceRequested: wantsTrace(r),
 	}, requestID)

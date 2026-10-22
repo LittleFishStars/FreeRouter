@@ -240,6 +240,11 @@ type proxyReq struct {
 	// traceRequested=true 时请求带了 X-FR-Trace: 1，proxyV1 挂诊断
 	// sink 并把路由 trace 落到 X-FR-Trace 响应头（M6 接线）。
 	traceRequested bool
+	// endpoint 是端点标识（v1.chat / v1.messages），写进 requests.endpoint。
+	// 为什么由 handler 传入而不从 URL 推断：三个 v1 端点的路径形状不同
+	//（/v1/chat/completions、/v1/messages），且日后新增端点时不该改 proxyV1
+	// 的解析逻辑——调用方最知道自己在服务哪个端点。
+	endpoint string
 }
 
 // errPayload 是从上游/解码层提出来的结构化错误（code+message 已就位）。
@@ -271,7 +276,10 @@ func classifyErr(err error) errPayload {
 // proxyOnce 对单个候选执行一次完整代理（非流式路径）。
 // 返回 nil 表示该候选失败（调用方换下一个）；错误已写入 w 的情形只发生在
 // 所有候选耗尽后——单候选失败不向客户端吐任何字节（C7：未吐可见内容才可切）。
-func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyReq, cand Candidate, reqID string) bool {
+// 为什么带 obs：终态结算需要本次尝试的 usage / 总耗时 / 候选行 id。
+// obs 可能为 nil（未来只关心成败的调用点）——写入前一律判空。
+func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyReq, cand Candidate, reqID string, obs *attemptObs) bool {
+	start := time.Now()
 	// 出站给客户端的编码永远用入站方言：客户端说的是 Chat 就回 Chat
 	// （跨方言转换在 IR 层完成，HTTP 层不做二次翻译）。
 	encOpt := ir.EncodeOptions{
@@ -326,6 +334,14 @@ func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyR
 		// 这是本请求不可恢复的冲突，向上抛给调用方终止。
 		return false
 	}
+	// 终态结算的可观测产物：成功候选才写 Usage 与 RealModelID
+	// （换过候选时，失败的尝试不该把它们的 usage/行 id 带进账）。
+	if obs != nil {
+		u := resp.Usage // 值类型取地址：调用方可能要区分「有 usage」与「没报」
+		obs.Usage = &u
+		obs.RealModelID = cand.ID
+		obs.TotalMs = time.Since(start).Milliseconds()
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
@@ -335,7 +351,9 @@ func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyR
 // streamOnce 对单个候选执行一次流式代理。
 // 返回 true 表示已经开始向客户端写字节（此后不可再切候选——C7）；
 // 返回 false 表示失败且未吐任何可见内容（可安全换候选）。
-func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxyReq, cand Candidate, reqID string) bool {
+// 为什么带 obs：流式的终态 usage 只在事件里出现一次（I4），
+// 不在循环里留就会丢；TTFT 也只有这里能测准（首段可见内容时刻）。
+func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxyReq, cand Candidate, reqID string, obs *attemptObs) bool {
 	// 起点用于 TTFT 计算：必须在编码/上游握手之前取，否则首包延迟被低估。
 	start := time.Now()
 	upOpt := ir.EncodeOptions{
@@ -383,6 +401,11 @@ func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxy
 		if !writer.State().Accept(ev) {
 			continue
 		}
+		// 终态 usage 只在 Accept 放行的那一份上留：I4 保证至多一次，
+		// 重复被 Accept 丢弃时不应覆盖第一份（与 EncoderState 同口径）。
+		if ev.Type == ir.EvUsage && ev.Usage != nil && obs != nil {
+			obs.Usage = ev.Usage
+		}
 		if err := writer.Write(ev); err != nil {
 			// 客户端断开：整场结束（写失败没有恢复语义）。
 			streamErr = err
@@ -409,6 +432,15 @@ func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxy
 		errEv := ir.Event{Type: ir.EvError, Err: &ir.Error{Code: payload.code, Message: payload.message}}
 		if writer.State().Accept(errEv) {
 			_ = writer.Write(errEv)
+		}
+	}
+	// 流式尝试的可观测产物：TTFT 恒为「首段可见内容」；从未 Visible
+	// （整场只有壳帧/错误帧）时保持 -1——缺样本不编造（与 routing 同口径）。
+	if obs != nil {
+		obs.TotalMs = time.Since(start).Milliseconds()
+		obs.RealModelID = cand.ID
+		if !first {
+			obs.TTFTMs = ttft.Sub(start).Milliseconds()
 		}
 	}
 	_ = writer.Close() // 幂等：补收尾帧（[DONE] / message_stop）
@@ -438,6 +470,12 @@ const v1SwitchBudgetMs = 5000
 //
 // upstream/candidates 为 nil 时直接 no_candidate（未接线是部署态）。
 func (s *Server) proxyV1(ctx context.Context, w http.ResponseWriter, pr proxyReq, requestID string) {
+	// 终态结算的唯一入口：一次请求恰一个 defer（自围栏在 attempt 内会
+	// 因换候选写多行——见 settle.go 文件头）。st 是单 goroutine 写读，
+	// 无需加锁；TTFTMs 初值 -1 = 无样本。
+	st := &settleState{obs: attemptObs{TTFTMs: -1}}
+	defer s.settleRequest(ctx, pr, requestID, st)
+
 	if pr.traceRequested {
 		// sink 必须在调候选源之前挂上：trace 由候选源在排序完成后
 		// 经 ctx 回填（routing.BuildTrace 的产物）。
@@ -452,6 +490,7 @@ func (s *Server) proxyV1(ctx context.Context, w http.ResponseWriter, pr proxyReq
 		case errors.Is(err, ErrModelNotFound):
 			// 模型不可见 → 404（客户端动作是「换模型」，与 503 的
 			// 「稍后重试」必须分开——03-errors.md §3.1）。
+			st.status, st.httpStatus, st.errorCode = "error", 404, "model_not_found"
 			if pr.anthropicShape {
 				s.writeV1AnthropicError(w, "model_not_found", "模型不存在", requestID)
 			} else {
@@ -471,6 +510,7 @@ func (s *Server) proxyV1(ctx context.Context, w http.ResponseWriter, pr proxyReq
 	if len(cands) == 0 {
 		// 无候选 → 503 no_candidate（03-errors.md §3.1；客户端动作是
 		// 「稍后重试」而非改代码——与 404 model_not_found 区分）。
+		st.status, st.httpStatus, st.errorCode = "error", 503, "no_candidate"
 		if pr.anthropicShape {
 			s.writeV1AnthropicError(w, "no_candidate", "当前无可用上游候选", requestID)
 		} else {
@@ -484,15 +524,18 @@ func (s *Server) proxyV1(ctx context.Context, w http.ResponseWriter, pr proxyReq
 	// 候选循环的终局响应统一由骨架写（成功走 attempt、失败走 onExhausted）——
 	// 调用点是无条件顺序调用，见 runCandidates 的注释。
 	s.runCandidates(ctx, w, requestID, cs, cands, func(cand Candidate) bool {
+		st.attempts++
 		if pr.req.Stream {
-			if s.streamOnce(ctx, w, pr, cand, requestID) {
+			if s.streamOnce(ctx, w, pr, cand, requestID, &st.obs) {
+				st.status, st.httpStatus, st.errorCode = "ok", 200, ""
 				return true // 已开流：成功或已吐内容，不切
 			}
 			// 未吐可见内容：换下一个候选（C7 唯一切换窗口）
 			s.log.Info("v1 stream candidate failed, switching", "request_id", requestID, "candidate", cand.Display)
 			return false
 		}
-		if s.proxyOnce(ctx, w, pr, cand, requestID) {
+		if s.proxyOnce(ctx, w, pr, cand, requestID, &st.obs) {
+			st.status, st.httpStatus, st.errorCode = "ok", 200, ""
 			return true
 		}
 		s.log.Info("v1 candidate failed, switching", "request_id", requestID, "candidate", cand.Display)
@@ -500,6 +543,7 @@ func (s *Server) proxyV1(ctx context.Context, w http.ResponseWriter, pr proxyReq
 	}, func() {
 		// 全部候选失败（或预算耗尽）且未吐内容：对外 502 upstream_unavailable
 		//（03-errors.md：上游都不可用；客户端可重试）。
+		st.status, st.httpStatus, st.errorCode = "error", 502, "upstream_unavailable"
 		if pr.anthropicShape {
 			s.writeV1AnthropicError(w, "upstream_unavailable", "所有上游候选均失败", requestID)
 			return
