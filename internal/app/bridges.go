@@ -33,7 +33,6 @@ func unixTime(sec *int64) *time.Time {
 // ---------------------------------------------------------------------------
 // Key 鉴权桥（auth.KeyAuthStore 两读）
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 
 // keyAuthBridge 把 store 的 Key/Account 仓储接到 auth.KeyAuthStore。
 type keyAuthBridge struct {
@@ -114,10 +113,9 @@ func (a *App) groupIDsOfAccount(ctx context.Context, accountID int64) ([]int64, 
 	return a.store.Repos().Groups.GroupIDsOfAccount(ctx, accountID)
 }
 
-// rateLimitsOf 给 mwRate 的 RateLimitsSource：读账户行上的速率三列。
-// 生效值 = 组策略 min 叠加这一步**不在装配层做**——EffectivePolicy 是
-// auth 包的知识域；这里先返回账户列原始值，组叠加接线随 M7 组授权落地
-// （届时把这里改成一次调用 auth.EffectivePolicy + 账户列合成）。
+// rateLimitsOf 给 mwRate 的 RateLimitsSource：返回**组策略 min 叠加后**的
+// 生效速率上界（03-groups §4：限制类逐键取最严，未设 = -1 不参与 min，
+// 全部未设才落回账户列）。
 func (a *App) rateLimitsOf(ctx context.Context, accountID string) (meter.AccountLimits, bool) {
 	id, err := parseID(accountID)
 	if err != nil {
@@ -125,16 +123,21 @@ func (a *App) rateLimitsOf(ctx context.Context, accountID string) (meter.Account
 		//（跳过账户闸，全局闸照常），与「未装配策略」同语义。
 		return meter.AccountLimits{}, false
 	}
-	acc, err := a.store.Repos().Accounts.GetAccount(ctx, id)
+	snap, err := a.store.Repos().Groups.LoadPolicySnapshot(ctx, id)
 	if err != nil {
 		return meter.AccountLimits{}, false
 	}
+	// 合并只走 store 的单一实现（ComposeEffectivePolicy，账户列已作为
+	// fallback 算入）。不在装配层重算，也不取 auth 侧那份同名合并
+	// ——两份实现本轮已被发现布尔语义相反（fail-closed vs fail-open），
+	// 已在任务板挂账待裁决；在此之前速率/额度一律以 store 那份为准。
+	ep := store.ComposeEffectivePolicy(*snap)
 	return meter.AccountLimits{
-		// -1 不限 / 0 全拒的哨兵语义在 store 行上就是这套（2026-10-20
+		// -1 不限 / 0 全拒的哨兵语义在 store 快照上就是这套（2026-10-20
 		// 额度域定案），meter 已按同一定案解释——直传不加工。
-		RPM:            int(acc.RPMLimit),
-		TPM:            acc.TPMLimit,
-		MaxConcurrency: int(acc.MaxConcurrency),
+		RPM:            int(ep.RPMLimit),
+		TPM:            ep.TPMLimit,
+		MaxConcurrency: int(ep.MaxConcurrency),
 	}, true
 }
 
