@@ -29,6 +29,11 @@ const (
 	RealModelDisabled RealModelStatus = "disabled"
 )
 
+// aggregateChannel 是上游的聚合渠道名（01-catalog.md §5、总纲 5.1 实测 20 个
+// 渠道之一）。它下的条目默认 excluded_from_candidates=true：上游自己的一层
+// 策略与我们的抽象模型策略层重叠后无法归因。
+const aggregateChannel = "aggregate"
+
 // AbstractModel 是对外暴露的抽象模型。
 type AbstractModel struct {
 	ID                 int64
@@ -368,6 +373,28 @@ func (r *ModelRepo) UpsertRealModel(ctx context.Context, m RealModel) (int64, er
 		seenAt = &ts
 	}
 
+	// excluded_from_candidates：aggregate/* 渠道默认排除（01-catalog.md §5）。
+	//
+	// 为什么放在存储层而不是刷新器：这是**目录事实**而非人工决定。
+	// ① 刷新器只 import dshprovider 类型，而 ModelInfo 目前没有 owned_by
+	//    字段（协议层 11.1 第 2 条实测 hub listModels 不给），渠道只能从
+	//    upstream_model_id 的 `渠道/模型` 形态推——放在 SQL 里做前缀判定，
+	//    判定依据与唯一标识同源，不会因为解析口径分叉。
+	// ② 人工解除排除（01-catalog.md §5 待定项）发生在管理 API，走
+	//    source=override 行；刷新必须写回权威值，否则管理员解除后下一轮
+	//    刷新又悄悄被按渠道重新排除，他改了个寂寞。
+	// ③ 排序上把它排在 source=override 保护**之后**判定：override 行整体
+	//    不被刷新覆盖，管理员的显式解除不会被渠道前缀逻辑推翻。
+	//
+	// 渠道前缀只认第一个 `/` 之前的部分，且必须精确等于 aggregate——避免
+	// `aggregate-v2/xxx`、`my_aggregate/x` 这类近似名被误排除。
+	excluded := m.ExcludedFromCandidates
+	if !excluded {
+		if ch, _, ok := strings.Cut(m.UpstreamModelID, "/"); ok && ch == aggregateChannel {
+			excluded = true
+		}
+	}
+
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO real_models(upstream_id, upstream_model_id, display_name, group_name,
 		                         context_window, modalities, efforts, status, hidden,
@@ -381,12 +408,17 @@ func (r *ModelRepo) UpsertRealModel(ctx context.Context, m RealModel) (int64, er
 		     modalities     = excluded.modalities,
 		     efforts        = excluded.efforts,
 		     status         = excluded.status,
+		     -- excluded_from_candidates 同样随刷新写回：它是渠道事实而非人工
+		     -- 展示字段。少了这一句，本函数上线前已落库的 aggregate 行会永远
+		     -- 停在 0 上；人工解除排除走 source=override，被下面的 WHERE 挡住，
+		     -- 两件事不冲突。
+		     excluded_from_candidates = excluded.excluded_from_candidates,
 		     last_seen_at   = excluded.last_seen_at,
 		     missing_since  = NULL
 		   WHERE real_models.source = 'auto'`,
 		m.UpstreamID, m.UpstreamModelID, m.DisplayName, m.GroupName,
 		m.ContextWindow, m.Modalities, m.Efforts, string(status),
-		boolInt(m.Hidden), boolInt(m.ExcludedFromCandidates), m.SortOrder, source,
+		boolInt(m.Hidden), boolInt(excluded), m.SortOrder, source,
 		seenAt, m.MissingSince)
 	if err != nil {
 		return 0, fmt.Errorf("store: 同步真实模型 %s 失败: %w", m.UpstreamModelID, err)
