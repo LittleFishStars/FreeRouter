@@ -29,11 +29,11 @@ export default function RequirePage({ def, children }: { def: PageDef; children:
   if (session.status === 'pending' && def.path !== '/pending') {
     return <Navigate to="/pending" replace />
   }
-	// 强制改密窗口：一次性口令（首启随机生成/管理员重置）之下只能去改密页。
-	// 前端守卫只是体验层；服务端 mwSession/mwAdmin 仍有同一道闸。
-	if (session.must_change_password && def.path !== '/account/password') {
-		return <Navigate to="/account/password" replace state={{ firstLogin: true }} />
-	}
+  // 强制改密窗口：一次性口令（首启随机生成/管理员重置）之下只能去改密页。
+  // 前端守卫只是体验层；服务端 mwSession/mwAdmin 仍有同一道闸。
+  if (session.must_change_password && def.path !== '/account/password') {
+    return <Navigate to="/account/password" replace state={{ firstLogin: true }} />
+  }
 
   if (!canAccess(def.requires, session.classes)) {
     return <Navigate to="/error/404" replace />

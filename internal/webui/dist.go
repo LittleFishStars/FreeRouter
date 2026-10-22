@@ -6,6 +6,7 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"strings"
 )
 
 // dist 是前端构建产物目录。go:embed 的约束决定了整个方案的形状：
@@ -27,6 +28,13 @@ func handler() http.Handler {
 	fileServer := http.FileServerFS(sub)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Vary", "Accept-Encoding")
+		// index.html 是产物文件名的清单：缓存它等于让浏览器拿旧清单去
+		// 加载已被新构建删掉的旧 chunk（表现为白屏，且硬刷新前“总好不了”）。
+		// 这里对根路径与所有 .html 加 no-store；带 hash 的 assets 不在此列，
+		// 仍可被缓存（文件名变则内容变，缓存不会错配）。
+		if r.URL.Path == "/" || strings.HasSuffix(r.URL.Path, ".html") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		fileServer.ServeHTTP(w, r)
 	})
 }

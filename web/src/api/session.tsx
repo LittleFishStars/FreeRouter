@@ -51,9 +51,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [refresh])
 
   // 401 统一跳登录：保留当前路径作为回跳目标（客户端守卫的 from 语义）。
+  //
+  // 关键：同时**清掉内存会话**。只跳转不清会话时，登录页看到 session
+  // 非空会立刻 Navigate 回受保护页，而该页的请求继续 401，形成
+  // login ↔ 受保护页的无限跳转（实测表现：页面不断闪烁后空白，
+  // 典型触发是清库/改密后仍开着的旧标签页，Cookie 已失效而内存会话还在）。
   useEffect(() => {
     setUnauthorizedHandler(() => {
-      navigate('/login', { replace: true, state: { from: location.pathname } })
+      setSessionState(null)
+      if (location.pathname !== '/login') {
+        navigate('/login', { replace: true, state: { from: location.pathname } })
+      }
     })
     return () => setUnauthorizedHandler(null)
   }, [navigate, location.pathname])
