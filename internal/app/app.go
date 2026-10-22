@@ -174,10 +174,13 @@ func refreshHooksFor(st *store.Store, log *slog.Logger) *upstream.RefreshHooks {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &upstream.RefreshHooks{
-		Verification: upstream.NewStoreVerificationWriter(st),
-		Log:          log,
+	h := &upstream.RefreshHooks{Log: log}
+	if st != nil {
+		h.Verification = upstream.NewStoreVerificationWriter(st)
+		// Inbox：目录新增/消失的站内通知（M7 的待处理事项数据源）。
+		h.Inbox = newRefreshInboxBridge(st)
 	}
+	return h
 }
 
 // Handler 返回装配好的 http.Handler（供 main 塞进 http.Server）。
