@@ -402,3 +402,32 @@ func requireAffected(res sql.Result, what string, id int64) error {
 	}
 	return nil
 }
+
+// SetRecoveryCodeHash 写/清恢复码哈希（贡献者找回通道）。
+// hash 为 nil = 清除；与 CreateAccount 写入的列一致。
+func (r *AccountRepo) SetRecoveryCodeHash(ctx context.Context, id int64, hash string) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE accounts SET recovery_code_hash = ? WHERE id = ?`, hash, id)
+	if err != nil {
+		return fmt.Errorf("store: 更新恢复码失败: %w", err)
+	}
+	return requireAffected(res, "账户", id)
+}
+
+// RecoveryCodeHashOf 读恢复码哈希（无码返回空串，不当作错误——
+// 「没设过恢复码」是正常状态，不是异常）。
+func (r *AccountRepo) RecoveryCodeHashOf(ctx context.Context, id int64) (string, error) {
+	var hash *string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT recovery_code_hash FROM accounts WHERE id = ?`, id).Scan(&hash)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", fmt.Errorf("store: 读取恢复码失败: %w", err)
+	}
+	if hash == nil {
+		return "", nil
+	}
+	return *hash, nil
+}

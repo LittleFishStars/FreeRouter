@@ -244,3 +244,14 @@ func (r *KeyRepo) SetKeyName(ctx context.Context, id int64, name *string) error 
 	}
 	return requireAffected(res, "Key", id)
 }
+
+// SetKeyExpiry 写/清除 Key 的过期时间（租户自助改期）。
+// t 为 nil = 清除（永久有效）；语义与 CreateKey 写入的列一致。
+func (r *KeyRepo) SetKeyExpiry(ctx context.Context, id int64, t *int64) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE api_keys SET expires_at = ? WHERE id = ?`, t, id)
+	if err != nil {
+		return fmt.Errorf("store: 更新 Key 过期时间失败: %w", err)
+	}
+	return requireAffected(res, "Key", id)
+}

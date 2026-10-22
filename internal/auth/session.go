@@ -153,8 +153,9 @@ func (m *SessionManager) Validate(ctx context.Context, token, actingClass string
 		Classes:     acct.Classes, // 会话携带**全部**权限类（2026-10-20 取消类级提权）
 		ActingClass: cls,
 		Kind:        CredentialSession,
-		// 强制改密标志每次校验都从账户实时读取（管理员重置可随时置位）。
+		// 强制改密标志与状态每次校验都从账户实时读取（管理员随时可能改）。
 		MustChangePassword: acct.MustChangePassword,
+		Status:             acct.Status,
 		SessionID:          s.ID,
 	}, nil
 }

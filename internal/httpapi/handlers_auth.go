@@ -88,6 +88,8 @@ func (s *Server) handleAuthLogin(deps *AuthDeps) http.HandlerFunc {
 			// 首启随机口令/管理员重置后为 true：前端据此直跳改密页，
 			// 服务端仍有 mwSession 的强制闸兜底。
 			resp["must_change_password"] = p.MustChangePassword
+			// 账户状态：pending 账户的前端让路（PendingGate）依赖它。
+			resp["status"] = p.Status
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}
@@ -138,6 +140,8 @@ func (s *Server) handleAuthSession() http.HandlerFunc {
 			"session_id":   p.SessionID,
 			// 强制改密窗口：前端路由守卫与顶栏提示的输入。
 			"must_change_password": p.MustChangePassword,
+			// 账户状态（pending 账户只能停在 /pending）。
+			"status": p.Status,
 		})
 	}
 }

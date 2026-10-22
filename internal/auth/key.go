@@ -147,6 +147,23 @@ type CreateResult struct {
 //  2. 组策略必须允许建 Key（放开类布尔，deny 优先）。
 //  3. 数量未超上限（放开类数值，多组取最大值）。
 func (m *KeyManager) Create(ctx context.Context, s Subject, name string) (*CreateResult, error) {
+	return m.CreateWithOptions(ctx, s, CreateOptions{Name: name})
+}
+
+// CreateOptions 是创建 Key 的可选参数（前端「创建 Key」表单的对应字段）。
+type CreateOptions struct {
+	// Name 是展示名；空允许。
+	Name string
+	// ExpiresAt 非空时写入过期时间（status 仍是 active，过期由读取时推导）。
+	ExpiresAt *time.Time
+}
+
+// CreateWithOptions 是 Create 的完整形状：name + 过期时间。
+//
+// 为什么拆出来而不改 Create 签名：Create 已有三个调用点（含测试），
+// 可变参数会让「谁在用过期时间」不可见；显式方法让旧调用点零改动。
+// 白名单不在创建参数里：它经 SetAllowlist 单独设置（有 ⊆ 组授权校验）。
+func (m *KeyManager) CreateWithOptions(ctx context.Context, s Subject, opts CreateOptions) (*CreateResult, error) {
 	if m.stores.Keys == nil || m.stores.Accounts == nil {
 		return nil, Errorf(CodeInternal, nil, "KeyManager 缺少存储依赖")
 	}
@@ -193,9 +210,10 @@ func (m *KeyManager) Create(ctx context.Context, s Subject, name string) (*Creat
 		AccountID: acct.ID,
 		KeyHash:   HashToken(plaintext),
 		Prefix:    DisplayPrefix(plaintext),
-		Name:      name,
+		Name:      opts.Name,
 		Status:    KeyActive,
 		CreatedAt: now,
+		ExpiresAt: opts.ExpiresAt,
 		// 白名单建为空：默认拒绝。若白名单默认等于组授权，
 		// 那么"新建 Key"这个动作本身就等于把全部模型授权一次性发出去。
 	}

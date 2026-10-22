@@ -13,6 +13,22 @@
 
 ### 新增
 
+- **租户面/注册/贡献者面端点落地**（2026-10-23，界面此前按契约先行）：
+  - `GET /api/usage/overview`（用量总览：组、Key 统计、额度维度与 reset_at、按模型限额）、
+    `GET /api/usage/logs`（调用日志筛选分页）、`GET /api/usage/models`（组授权 ∩ Key 白名单）、
+    `GET /api/account/sessions` + `POST /api/account/sessions/{id}/revoke`（我的会话）；
+  - Key 面补齐：`GET/PATCH /{id}`、`enable/disable`、创建支持 `expires_at` 与 `allowlist`，
+    响应形状对齐前端 `ApiKey/ApiKeyCreated`（前端路径改为 `/api/account/keys`）；
+  - 修复 Key 白名单链路：auth 层语言是模型名，桥此前把名字当数字 id 解析导致
+    白名单恒为空（设了等于没设）；现桥做名字↔id 显式翻译；
+  - `POST /api/register`（防枚举：占用与成功同形 201 pending）与
+    `GET /api/account/status`；登录/会话响应新增 `status` 字段（pending 让路生效）；
+  - 贡献者面：`providers`、`POST /api/contributions`（未登录自动建 contributor 账户 +
+    一次性恢复码 `frv-<id>-<secret>`）、`recovery` 兑换、我的凭据/详情/统计、
+    `recovery-code` 状态与 regenerate（每次生成覆盖旧码）；
+  - pending/contributor 账户不进默认组（组成员要求 tenant 类，03-groups §9）；
+    组的落位发生在审批通过时。
+
 - M0 骨架：配置（YAML + `FR_` 环境变量覆盖）、L1 中间件链（请求 ID / 安全头 / 可信代理 / body 上限）、
   `/healthz` `/readyz` `/api/version`、优雅关闭；`make contract` 契约测试门禁。
 - sidecar 契约层：Go 客户端（stdio+NDJSON 一问一答、超时杀进程、崩溃降级不影响转发）

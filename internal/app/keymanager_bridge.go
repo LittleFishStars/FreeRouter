@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -19,11 +20,12 @@ import (
 // Key 生命周期需要写与列表，职责不同（只读 vs 读写合并会让鉴权面吃到写接口）。
 
 type keymanagerBridge struct {
-	keys *store.KeyRepo
+	keys   *store.KeyRepo
+	models *store.ModelRepo
 }
 
 func newKeyManagerBridge(st *store.Store) *keymanagerBridge {
-	return &keymanagerBridge{keys: st.Repos().Keys}
+	return &keymanagerBridge{keys: st.Repos().Keys, models: st.Repos().Models}
 }
 
 func (b *keymanagerBridge) CreateKey(ctx context.Context, k *auth.APIKey) error {
@@ -113,14 +115,29 @@ func (b *keymanagerBridge) RotateKey(ctx context.Context, oldKeyID string, newKe
 	return b.keys.SetKeyStatus(ctx, oldID, store.KeyRevoked)
 }
 
-func (b *keymanagerBridge) SetKeyAllowlist(ctx context.Context, keyID string, abstractModelIDs []string) error {
+// SetKeyAllowlist 写白名单。
+//
+// 白名单两侧的语言是**抽象模型名**（auth.KeyManager.SetAllowlist 用组授权的
+// 名字集合做 ⊆ 校验），store 存的是 id——桥负责名字↔id 翻译。
+// 旧实现把名字字符串直接 strconv.ParseInt，全部 parse 失败后白名单恒为空
+// （租户设了等于没设，静默失效）；这里显式查表，名字不存在时报错而不是吞掉。
+func (b *keymanagerBridge) SetKeyAllowlist(ctx context.Context, keyID string, abstractModelNames []string) error {
 	id, err := strconv.ParseInt(keyID, 10, 64)
 	if err != nil {
 		return store.ErrNotFound
 	}
-	return b.keys.SetKeyAllowlist(ctx, id, parseIDs(abstractModelIDs))
+	ids := make([]int64, 0, len(abstractModelNames))
+	for _, name := range abstractModelNames {
+		m, err := b.models.GetAbstractModelByName(ctx, name)
+		if err != nil {
+			return fmt.Errorf("app: 白名单模型 %q 不存在: %w", name, err)
+		}
+		ids = append(ids, m.ID)
+	}
+	return b.keys.SetKeyAllowlist(ctx, id, ids)
 }
 
+// KeyAllowlist 读白名单（翻译成模型名，与 auth 层/前端的语言一致）。
 func (b *keymanagerBridge) KeyAllowlist(ctx context.Context, keyID string) ([]string, error) {
 	id, err := strconv.ParseInt(keyID, 10, 64)
 	if err != nil {
@@ -132,7 +149,12 @@ func (b *keymanagerBridge) KeyAllowlist(ctx context.Context, keyID string) ([]st
 	}
 	out := make([]string, 0, len(ids))
 	for _, v := range ids {
-		out = append(out, strconv.FormatInt(v, 10))
+		if m, err := b.models.GetAbstractModel(ctx, v); err == nil {
+			out = append(out, m.Name)
+		} else {
+			// 引用的模型已被删：保留占位而不是静默少一行（界面上看得见异常）。
+			out = append(out, fmt.Sprintf("#%d", v))
+		}
 	}
 	return out, nil
 }

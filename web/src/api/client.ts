@@ -40,7 +40,8 @@ export const PATHS = {
   contributeRecovery: '/api/contributions/recovery',
   contributeProviders: '/api/contributions/providers',
   // 租户面（端点未定稿）
-  keys: '/api/keys',
+  // 租户 Key 面：路径与后端一致（/api/account/keys，会话面）。
+  keys: '/api/account/keys',
   usageOverview: '/api/usage/overview',
   usageLogs: '/api/usage/logs',
   usageModels: '/api/usage/models',

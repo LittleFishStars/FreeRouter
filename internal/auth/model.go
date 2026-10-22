@@ -248,6 +248,8 @@ type Principal struct {
 	// MustChangePassword 从账户实时读入：会话不过期，但账户可能被管理员
 	// 重置成一次性口令——强制改密要求必须每次校验都重新判定。
 	MustChangePassword bool
+	// Status 是账户当前状态机取值（pending 账户的界面让路要靠它）。
+	Status AccountStatus
 
 	SessionID string // Kind == session 时非空
 	KeyID     string // Kind == apikey 时非空

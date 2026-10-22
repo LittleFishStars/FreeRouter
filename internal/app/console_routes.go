@@ -305,12 +305,33 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	// 租户自助 Key 面（M3）：会话鉴权（mwSession），KeyManager 判定归属/上限/
 	// 白名单。明文只在创建/轮换响应里出现一次。
 	km := a.buildKeyManager()
-	keysDeps := &httpapi.AccountKeysDeps{Manager: km}
+	kmBridge := newKeyManagerBridge(a.store)
+	// SetKeyExpiry：桥只翻译（字符串 id → int64 主键 + unix 秒），写回 KeyRepo。
+	keysDeps := &httpapi.AccountKeysDeps{
+		Manager:     km,
+		AllowlistOf: kmBridge.KeyAllowlist,
+		SetKeyExpiry: func(ctx context.Context, keyID string, t *time.Time) error {
+			id, err := parseID(keyID)
+			if err != nil {
+				return err
+			}
+			var ts *int64
+			if t != nil {
+				u := t.Unix()
+				ts = &u
+			}
+			return a.store.Repos().Keys.SetKeyExpiry(ctx, id, ts)
+		},
+	}
 	sessMW := a.server.ConsoleMiddlewareSession(deps.sess)
 	r.Get("/api/account/keys", sessMW(a.server.HandleAccountKeysList(keysDeps)).(http.HandlerFunc))
 	r.Post("/api/account/keys", sessMW(a.server.HandleAccountKeyCreate(keysDeps)).(http.HandlerFunc))
 	r.Post("/api/account/keys/{id}/revoke", sessMW(a.server.HandleAccountKeyRevoke(keysDeps)).(http.HandlerFunc))
 	r.Post("/api/account/keys/{id}/rotate", sessMW(a.server.HandleAccountKeyRotate(keysDeps)).(http.HandlerFunc))
+	r.Get("/api/account/keys/{id}", sessMW(a.server.HandleAccountKeyGet(keysDeps)).(http.HandlerFunc))
+	r.Patch("/api/account/keys/{id}", sessMW(a.server.HandleAccountKeyPatch(keysDeps)).(http.HandlerFunc))
+	r.Post("/api/account/keys/{id}/enable", sessMW(a.server.HandleAccountKeyEnable(keysDeps)).(http.HandlerFunc))
+	r.Post("/api/account/keys/{id}/disable", sessMW(a.server.HandleAccountKeyDisable(keysDeps)).(http.HandlerFunc))
 
 	// 账户自助面（首启强制改密）：改密端点不挂额外鉴权，但必须在 mwSession
 	// 之下——强制改密窗口内的白名单判定在 mwSession 里按路径放行。
@@ -322,7 +343,46 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	r.Post("/api/account/password", sessMW(a.server.ConsoleHandlerAccountPassword(acctDeps)).(http.HandlerFunc))
 	r.Patch("/api/account/profile", sessMW(a.server.ConsoleHandlerAccountProfile(acctDeps)).(http.HandlerFunc))
 
-	// 管理面（M7）：45 端点整组挂 /api/admin，组级中间件 mwAdmin。
+	// 租户面（docs/ui/04-tenant.md 的 HTTP 出口）：用量/日志/可用模型/我的会话。
+	// 全部挂 sessMW——它们是「登录后的自助面」，不是 Key 面，也不是公开面。
+	tenantDeps := &httpapi.TenantUsageDeps{
+		Store:    newTenantBridge(a.store),
+		KeyLimit: a.cfg.Limits.DefaultKeysPerAccount,
+	}
+	r.Get("/api/usage/overview", sessMW(a.server.HandleUsageOverview(tenantDeps)).(http.HandlerFunc))
+	r.Get("/api/usage/logs", sessMW(a.server.HandleUsageLogs(tenantDeps)).(http.HandlerFunc))
+	r.Get("/api/usage/models", sessMW(a.server.HandleUsageModels(tenantDeps)).(http.HandlerFunc))
+	r.Get("/api/account/sessions", sessMW(a.server.HandleAccountSessions(tenantDeps)).(http.HandlerFunc))
+	r.Post("/api/account/sessions/{id}/revoke", sessMW(a.server.HandleAccountSessionRevoke(tenantDeps)).(http.HandlerFunc))
+
+	// 注册/待审核（docs/ui/02-public §4/§5）：register 是未登录面（不挂
+	// sessMW，无会话可挂）；status 是会话面。
+	registerDeps := &httpapi.RegisterDeps{
+		Store:   newRegisterBridge(a.store, a.cfg.Limits.DefaultKeysPerAccount),
+		Hasher:  auth.NewPasswordHasher(a.cfg.Security.PasswordMinLength),
+		Enabled: a.cfg.Security.RegistrationEnabled,
+	}
+	r.Post("/api/register", a.server.HandleRegister(registerDeps))
+	r.Get("/api/account/status", sessMW(a.server.HandleAccountStatus(registerDeps)).(http.HandlerFunc))
+
+	// 贡献者面（docs/ui/05-contributor.md）：提交/ providers/恢复码兑换是
+	// 公开区（未登录可用，内部自动建号）；我的凭据/统计/恢复码是会话面。
+	contribDeps := &httpapi.ContributionDeps{
+		Submitter: newContributionBridge(a.store, a.Contribution(), a.cfg.Limits.DefaultKeysPerAccount),
+		Store:     newContributionBridge(a.store, a.Contribution(), a.cfg.Limits.DefaultKeysPerAccount),
+		Hasher:    auth.NewPasswordHasher(a.cfg.Security.PasswordMinLength),
+		Sess:      deps.sess,
+	}
+	r.Get("/api/contributions/providers", a.server.HandleContributeProviders(contribDeps))
+	r.Post("/api/contributions", a.server.HandleContributeSubmit(contribDeps))
+	r.Post("/api/contributions/recovery", a.server.HandleContributeRecovery(contribDeps))
+	r.Get("/api/contributions", sessMW(a.server.HandleMyContributions(contribDeps)).(http.HandlerFunc))
+	r.Get("/api/contributions/credentials", sessMW(a.server.HandleMyCredentials(contribDeps)).(http.HandlerFunc))
+	r.Get("/api/contributions/credentials/{id}", sessMW(a.server.HandleMyCredentialDetail(contribDeps)).(http.HandlerFunc))
+	r.Get("/api/contributions/stats", sessMW(a.server.HandleContributionStats(contribDeps)).(http.HandlerFunc))
+	r.Get("/api/contributions/recovery-code", sessMW(a.server.HandleRecoveryCodeState(contribDeps)).(http.HandlerFunc))
+	r.Post("/api/contributions/recovery-code/regenerate", sessMW(a.server.HandleRecoveryCodeRegenerate(contribDeps)).(http.HandlerFunc))
+
 	// 先 AttachAdmin 再 Mount：Server 的 deps 注册表按实例键，挂载时取。
 	a.server.AttachAdmin(a.buildAdminDeps())
 	a.server.MountAdminRoutes(r)

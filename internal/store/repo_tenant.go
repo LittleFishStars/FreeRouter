@@ -1,0 +1,242 @@
+package store
+
+// repo_tenant.go —— 租户面/账户自助面的只读查询（05-storage 读模型）。
+//
+// 为什么集中一个文件：这些查询都是「给控制台看」的读模型（列表/统计），
+// 与写路径（RecordRequest/SetKeyStatus）的职责不同；集中放置让
+// 「读面有哪些」一眼可见，避免在写路径文件里堆查询。
+//
+// 约定：
+//   - 时间一律 Unix 秒（与 accounts/requests 既有列一致），RFC3339 由 httpapi 层转换；
+//   - 「不存在」统一返回 ErrNotFound；列表空返回空切片不是 nil；
+//   - 分页 total 与行一起返回（两次查询），调用方不拼二次查询。
+
+import (
+	"context"
+	"fmt"
+)
+
+// ---------------------------------------------------------------------------
+// 会话列表（账户自助「我的会话」）
+// ---------------------------------------------------------------------------
+
+// SessionRow 是一条会话的展示行。刻意不含 token_hash：展示面不需要，
+// 且哈希离开判定面（SessionRepo.GetSessionByTokenHash）就是多余敏感数据。
+type SessionRow struct {
+	ID        string
+	CreatedAt int64
+	ExpiresAt int64
+	IP        *string
+	UA        *string
+}
+
+// ListSessionsByAccount 列出该账户全部会话（按创建时间倒序）。
+func (r *SessionRepo) ListSessionsByAccount(ctx context.Context, accountID int64) ([]SessionRow, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, created_at, expires_at, ip, ua
+		   FROM sessions WHERE account_id = ? ORDER BY created_at DESC, id DESC`, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列出账户会话失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []SessionRow{}
+	for rows.Next() {
+		var row SessionRow
+		if err := rows.Scan(&row.ID, &row.CreatedAt, &row.ExpiresAt, &row.IP, &row.UA); err != nil {
+			return nil, fmt.Errorf("store: 扫描会话失败: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历会话失败: %w", err)
+	}
+	return out, nil
+}
+
+// ---------------------------------------------------------------------------
+// 请求日志（租户「调用日志」）
+// ---------------------------------------------------------------------------
+
+// RequestLogFilter 是调用日志的筛选与分页。
+//
+// From/To 是 Unix 秒（0 = 不限）；KeyID/ModelID nil = 不筛；
+// Failed = 只看失败（status != 'ok'）；Limit/Offset 由调用方 clamp。
+type RequestLogFilter struct {
+	From, To       int64
+	KeyID, ModelID *int64
+	Failed         bool
+	Limit, Offset  int
+}
+
+// RequestLogRow 是一条请求日志的展示行。
+//
+// AbstractModel/KeyName/KeyPrefix 来自 LEFT JOIN：历史行引用的对象可能已被删，
+// 缺失时是空串而不是错误（日志必须能显示，哪怕对象没了）。
+type RequestLogRow struct {
+	ID            int64
+	TS            int64
+	Endpoint      string
+	AbstractModel string
+	KeyID         *int64
+	KeyName       string
+	KeyPrefix     string
+	Status        string
+	HTTPStatus    *int64
+	ErrorCode     *string
+	RetryCount    int64
+	TTFTMs        *int64
+	TotalMs       *int64
+	InTokens      *int64
+	OutTokens     *int64
+}
+
+const requestLogColumns = `SELECT r.id, r.ts, r.endpoint, COALESCE(m.name, ''),
+       r.key_id, COALESCE(k.name, ''), COALESCE(k.prefix, ''),
+       r.status, r.http_status, r.error_code, r.retry_count,
+       r.ttft_ms, r.total_ms, r.in_tokens, r.out_tokens
+  FROM requests r
+  LEFT JOIN abstract_models m ON m.id = r.virtual_model_id
+  LEFT JOIN api_keys k ON k.id = r.key_id`
+
+// ListRequestLogsByAccount 按账户列请求日志（筛选 + 分页 + 总数）。
+func (r *UsageRepo) ListRequestLogsByAccount(ctx context.Context, accountID int64, f RequestLogFilter) ([]RequestLogRow, int64, error) {
+	where := " r.account_id = ?"
+	var args []any
+	args = append(args, accountID)
+	if f.From > 0 {
+		where += " AND r.ts >= ?"
+		args = append(args, f.From)
+	}
+	if f.To > 0 {
+		where += " AND r.ts <= ?"
+		args = append(args, f.To)
+	}
+	if f.KeyID != nil {
+		where += " AND r.key_id = ?"
+		args = append(args, *f.KeyID)
+	}
+	if f.ModelID != nil {
+		where += " AND r.virtual_model_id = ?"
+		args = append(args, *f.ModelID)
+	}
+	if f.Failed {
+		where += " AND r.status <> 'ok'"
+	}
+
+	var total int64
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM requests r WHERE`+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("store: 统计请求日志失败: %w", err)
+	}
+
+	limit, offset := f.Limit, f.Offset
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	rows, err := r.db.QueryContext(ctx, requestLogColumns+
+		` WHERE`+where+fmt.Sprintf(` ORDER BY r.ts DESC, r.id DESC LIMIT %d OFFSET %d`, limit, offset),
+		args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("store: 列出请求日志失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []RequestLogRow{}
+	for rows.Next() {
+		var row RequestLogRow
+		if err := rows.Scan(&row.ID, &row.TS, &row.Endpoint, &row.AbstractModel,
+			&row.KeyID, &row.KeyName, &row.KeyPrefix,
+			&row.Status, &row.HTTPStatus, &row.ErrorCode, &row.RetryCount,
+			&row.TTFTMs, &row.TotalMs, &row.InTokens, &row.OutTokens); err != nil {
+			return nil, 0, fmt.Errorf("store: 扫描请求日志失败: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("store: 遍历请求日志失败: %w", err)
+	}
+	return out, total, nil
+}
+
+// CountKeysUsedSince 统计某账户在 since（Unix 秒）以来用过的 Key 数（DISTINCT）。
+// keys_used_7d 用；没有请求 = 0。
+func (r *UsageRepo) CountKeysUsedSince(ctx context.Context, accountID, since int64) (int64, error) {
+	var n int64
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT key_id) FROM requests WHERE account_id = ? AND key_id IS NOT NULL AND ts >= ?`,
+		accountID, since).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("store: 统计近用 Key 失败: %w", err)
+	}
+	return n, nil
+}
+
+// ---------------------------------------------------------------------------
+// 贡献者面（我的凭据 / 贡献统计）
+// ---------------------------------------------------------------------------
+
+// ListCredentialsByOwner 列出某账户贡献的凭据（按创建时间倒序）。
+// 与管理面 ListCredentials 不同：这里按属主过滤，只看自己的。
+func (r *ModelRepo) ListCredentialsByOwner(ctx context.Context, ownerAccountID int64) ([]Credential, error) {
+	rows, err := r.db.QueryContext(ctx, credentialColumns+
+		` WHERE owner_account_id = ? ORDER BY created_at DESC, id DESC`, ownerAccountID)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列出贡献凭据失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []Credential{}
+	for rows.Next() {
+		c, err := scanCredentialRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历贡献凭据失败: %w", err)
+	}
+	return out, nil
+}
+
+// ContributionUsageByOwner 汇总该账户贡献凭据的调用量（贡献统计页）。
+// requests.resolved_credential_id 指向被使用的凭据；owner 是凭据属主。
+func (r *UsageRepo) ContributionUsageByOwner(ctx context.Context, ownerAccountID int64) (calls, inTokens, outTokens int64, err error) {
+	err = r.db.QueryRowContext(ctx,
+		`SELECT COUNT(1), COALESCE(SUM(in_tokens),0), COALESCE(SUM(out_tokens),0)
+		   FROM requests r
+		   JOIN upstream_credentials c ON c.id = r.resolved_credential_id
+		  WHERE c.owner_account_id = ?`, ownerAccountID).
+		Scan(&calls, &inTokens, &outTokens)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("store: 汇总贡献用量失败: %w", err)
+	}
+	return calls, inTokens, outTokens, nil
+}
+
+// ---------------------------------------------------------------------------
+// 账户状态（待审核页 / 会话响应）
+// ---------------------------------------------------------------------------
+
+// AccountStatusOf 读账户状态与权限类（自助面不透出 hash/速率等大字段）。
+type AccountStatusInfo struct {
+	Status  string
+	Classes []string
+}
+
+func (r *AccountRepo) AccountStatusOf(ctx context.Context, id int64) (AccountStatusInfo, error) {
+	a, err := r.GetAccount(ctx, id)
+	if err != nil {
+		return AccountStatusInfo{}, err
+	}
+	classes := make([]string, 0, len(a.Classes))
+	for _, c := range a.Classes {
+		classes = append(classes, string(c))
+	}
+	return AccountStatusInfo{Status: string(a.Status), Classes: classes}, nil
+}
