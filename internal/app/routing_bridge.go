@@ -151,7 +151,7 @@ func (b *abstractModelBridge) GetRealModel(ctx context.Context, id int64) (*rout
 		UpstreamID:             rm.UpstreamID,
 		UpstreamModelID:        rm.UpstreamModelID,
 		UpstreamKind:           u.Kind,
-		Channel:                channelOf(u),
+		Channel:                channelOf(rm.Channel, u),
 		ContextWindow:          rm.ContextWindow,
 		Modalities:             parseJSONList(rm.Modalities),
 		Efforts:                parseJSONList(rm.Efforts),
@@ -181,13 +181,18 @@ func (b *abstractModelBridge) upstreamSnapshot(ctx context.Context) (map[int64]s
 	return snap, nil
 }
 
-// channelOf 取上游的渠道名（01-catalog.md §2.1：限定名的渠道段）。
+// channelOf 取渠道名，两级来源（01-catalog.md §2.3）。
 //
-// relay 的 base_url 是 sidecar://<provider>，provider 名就是渠道名；
-// vendor/selfhosted 的渠道名就是上游行自己的 name（管理员命名）。
-func channelOf(u store.Upstream) string {
-	if rest, ok := strings.CutPrefix(u.BaseURL, sidecarScheme); ok && rest != "" {
-		return rest
+// 权威来源是模型级 real_models.channel（0002 迁移起落库）：由刷新器
+// 写 owned_by 的权威值，拿不到时从限定名「渠道/模型」首段派生。
+// 渠道不可知时该列为 NULL（不是空串）。
+//
+// 上游行级渠道（upstreams.name / sidecar://provider）只作兜底——
+// 它是管理员的运营命名，可能与上游实际归属不一致（一个 provider
+// 里既能拉 deepseek 也能拉 openai 时就是这种情况），所以是次级来源。
+func channelOf(ch *string, u store.Upstream) string {
+	if ch != nil && *ch != "" {
+		return *ch
 	}
 	return u.Name
 }
