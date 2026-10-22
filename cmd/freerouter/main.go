@@ -40,6 +40,13 @@ import (
 )
 
 func main() {
+	// 进程级 umask：服务创建的所有文件（库、-wal/-shm、备份、主密钥）默认仅属主
+	// 可读写。为什么在 main 而不在 store.Open：umask 是进程级状态，写进包函数
+	// 会让「谁改了 umask」变成隐式副作用；放在进程入口，一眼能看到全局约定。
+	// 为什么必须做：SQLite 按 umask 创建文件，而 checkpoint 会删掉并重建 -wal，
+	// 只在打开时 chmod 一次拦不住重建——安全基线 C7（同机其他用户可读库）
+	// 就靠这一行长期成立。
+	syscall.Umask(0o077)
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 

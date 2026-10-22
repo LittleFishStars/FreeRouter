@@ -625,8 +625,13 @@ func (s *RelayStream) Stats() StreamStats {
 }
 
 // Open 是 relay 类上游的 IR 原生流式入口：经 sidecar infer.stream 拿到载荷后
-// 直接产出 ir.Event。Caller（httpapi 形态的字节流消费面）仍走 InferStream，
-// 两条入口共用同一份帧解析——协议知识只有一份。
+// 直接产出 ir.Event。Caller（httpapi 形态的字节流消费面）仍走 InferStream。
+//
+// !! 已知局限（code-review 2026-10-22 指出，保留接口位但**不要新增调用方**）：
+//   - 当前无生产调用方（httpapi 统一走 Caller→InferStream 的字节流面）；
+//   - 拆完信封拿到的是 OpenAI SSE 文本，而 relayPayloadToNDJSON 期望 relay 帧
+//     {"event":..}——即使拆了信封也解不出事件。真要启用，内部应改走
+//     openai.Adapter().NewStreamReader 把 SSE 转 IR。删/改由 M10 后接口整理定。
 func (t *RelayTransport) Open(ctx context.Context, tgt Target, body []byte, stream bool) (Stream, error) {
 	raw, err := t.inferPayload(ctx, tgt, body, stream)
 	if err != nil {
