@@ -24,9 +24,11 @@ M0–M9 主干全部落地：
 
 | 事项 | owner | 状态 |
 |---|---|---|
-| code-review 复验（verification_writer、settle_bridge、routing、M9） | code-review | 排队 |
-| 贡献测试 WAL 断言强化 + 遮蔽正则左边界 | contrib-sidecar | 返工中 |
+| code-review 复验 | code-review | ✅ 五项签收（relay 信封/鉴定装配/告警键/sidecar 返工/M9） |
+| 贡献测试 WAL 断言强化 + 遮蔽正则左边界 | contrib-sidecar | ✅ 已合并 |
 | M10 实跑 | Lead | ✅ 完成（压测与 govulncheck 留 CI） |
+| M7 管理面装配 | Lead | ✅ 45 端点已挂载（admin_bridge×5 + MountAdminRoutes + Key 面整组豁免）；settings/ip-check/refresh/upstream-test 四字段留 nil |
+| 已推送 GitHub | Lead | ✅ main 72f5a4b |
 | 结算 `ResolvedCredentialID` 留空（待 M8 凭据回传） | Lead 集成 | 登记 |
 | `config.sidecar.deps_root` → sidecar 子进程 env 接线 | Lead | 登记（当前自动枚举可用） |
 | 租户/贡献者/注册端点 docs/api 分册定稿 | 文档待办 | 登记 |
