@@ -149,13 +149,43 @@ func opsTo(list ...Op) CapabilitySet {
 // 管理面与模型面共用同一条链；差异只在"主体从哪来"（会话 vs Key），
 // 而那发生在协议层组装 Principal 的时候，不在这里。
 type AuthzService struct {
-	stores Stores
-	now    func() time.Time // CheckModelCall 的 Key 过期判定需要时钟（测试注入，不 sleep）
+	keys     authzKeyStore    // 窄接口：Key 的三读（KeyByHash/KeyByID/KeyAllowlist）
+	accounts AccountByIDOnly  // 账户实时状态（单方法子集）
+	policies PolicyRepository // 组策略（GroupsForAccount）
+	now      func() time.Time // CheckModelCall 的 Key 过期判定需要时钟（测试注入，不 sleep）
 }
 
-// NewAuthz 构造判定服务。
+// authzKeyStore 是判定链只需要的 Key 存储面（窄接口）。
+//
+// 为什么不直接用 KeyRepository（9 方法）：EffectiveModels/Check/CheckModelCall
+// 只触达三读；装配侧补桥时实现三读即可，让"创建/轮换 Key"这类写能力
+// 天然不在判定链的依赖面上——依赖面 = 职责面（与 KeyAuthStore 同一理由）。
+type authzKeyStore interface {
+	KeyByHash(ctx context.Context, keyHash []byte) (*APIKey, error)
+	KeyByID(ctx context.Context, keyID string) (*APIKey, error)
+	KeyAllowlist(ctx context.Context, keyID string) ([]string, error)
+}
+
+// NewAuthz 用完整 Stores 构造（全仓既有调用点保持不变）。
 func NewAuthz(stores Stores) *AuthzService {
-	return &AuthzService{stores: stores, now: time.Now}
+	return &AuthzService{keys: stores.Keys, accounts: stores.Accounts, policies: stores.Policies, now: time.Now}
+}
+
+// AccountByIDOnly 是判定链的账户读面（AccountRepository 的单方法子集）。
+//
+// 为什么不直接用 AccountRepository：那个接口还带 AccountByUsername/
+// TouchLastLogin/UpdatePasswordHash（登录面的知识）；判定链（第 4/5 步）
+// 只实时读账户——装配侧补桥时实现一个方法即可，登录面的桥不该被迫
+// 出现在可见性路径上。接口收窄是"依赖面=职责面"的同一条纪律。
+type AccountByIDOnly interface {
+	AccountByID(ctx context.Context, id string) (*Account, error)
+}
+
+// NewAuthzNarrow 用窄依赖构造（装配层补桥用：Key 三读 + 账户单读 +
+// 组策略；KeyRepository/AccountRepository 的写方法与登录方法不在
+// 装配路径上）。
+func NewAuthzNarrow(keys authzKeyStore, accounts AccountByIDOnly, policies PolicyRepository) *AuthzService {
+	return &AuthzService{keys: keys, accounts: accounts, policies: policies, now: time.Now}
 }
 
 // WithClock 注入时钟（测试用）。
@@ -214,10 +244,10 @@ func (a *AuthzService) ownedKind(k ResourceKind) bool {
 func (a *AuthzService) resourceOwner(ctx context.Context, res Resource) (string, error) {
 	switch res.Kind {
 	case ResAPIKey:
-		if a.stores.Keys == nil {
+		if a.keys == nil {
 			return "", Errorf(CodeInternal, nil, "Authz 缺少 Key 存储")
 		}
-		k, err := a.stores.Keys.KeyByID(ctx, res.ID)
+		k, err := a.keys.KeyByID(ctx, res.ID)
 		if err != nil {
 			return "", err
 		}
@@ -234,10 +264,10 @@ func (a *AuthzService) resourceOwner(ctx context.Context, res Resource) (string,
 // AccountUsable 是禁用联动的单点（04-authz.md §8）：账户状态与类**实时读**，
 // 不依赖长 TTL 缓存。模型面每请求调用它（判定链第 4 步）。
 func (a *AuthzService) AccountUsable(ctx context.Context, accountID string, required Class) (*Account, error) {
-	if a.stores.Accounts == nil {
+	if a.accounts == nil {
 		return nil, Errorf(CodeInternal, nil, "Authz 缺少账户存储")
 	}
-	acct, err := a.stores.Accounts.AccountByID(ctx, accountID)
+	acct, err := a.accounts.AccountByID(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -414,10 +444,10 @@ func (a *AuthzService) EffectiveModels(ctx context.Context, accountID, keyID str
 		return nil, err
 	}
 	eff := MergeGroupPolicies(groups)
-	if a.stores.Keys == nil {
+	if a.keys == nil {
 		return nil, Errorf(CodeInternal, nil, "Authz 缺少 Key 存储")
 	}
-	allow, err := a.stores.Keys.KeyAllowlist(ctx, keyID)
+	allow, err := a.keys.KeyAllowlist(ctx, keyID)
 	if err != nil {
 		return nil, err
 	}
@@ -456,10 +486,10 @@ func (a *AuthzService) ModelCallable(ctx context.Context, accountID, keyID, requ
 // groupsFor 读取账户全部组策略；无 PolicyRepository 时返回空切片
 // （合并算法对空输入 = 全部键未设 = 全部 Unlimited，由调用方落全局默认）。
 func (a *AuthzService) groupsFor(ctx context.Context, accountID string) ([]GroupPolicy, error) {
-	if a.stores.Policies == nil {
+	if a.policies == nil {
 		return nil, nil
 	}
-	return a.stores.Policies.GroupsForAccount(ctx, accountID)
+	return a.policies.GroupsForAccount(ctx, accountID)
 }
 
 // EffectivePolicyFor 是供 meter / 中间件取"合并后的上界"的入口。
@@ -484,7 +514,7 @@ type ModelCallPlan struct {
 //
 // 失败错误就是协议层要映射的对象：401（凭据/账户）与 404（不可见模型）。
 func (a *AuthzService) CheckModelCall(ctx context.Context, rawKey, requestedModel string) (*ModelCallPlan, error) {
-	if a.stores.Keys == nil || a.stores.Accounts == nil {
+	if a.keys == nil || a.accounts == nil {
 		return nil, Errorf(CodeInternal, nil, "Authz 缺少存储依赖")
 	}
 	// 第 2/3 步：Key 自身（格式、哈希查表、状态/过期）——复用 KeyManager.Usable 的判定，
@@ -492,7 +522,7 @@ func (a *AuthzService) CheckModelCall(ctx context.Context, rawKey, requestedMode
 	if !LooksLikeKey(rawKey) {
 		return nil, ErrInvalidAPIKey
 	}
-	key, err := a.stores.Keys.KeyByHash(ctx, HashToken(rawKey))
+	key, err := a.keys.KeyByHash(ctx, HashToken(rawKey))
 	if err != nil {
 		return nil, ErrInvalidAPIKey
 	}
@@ -500,7 +530,7 @@ func (a *AuthzService) CheckModelCall(ctx context.Context, rawKey, requestedMode
 		return nil, ErrInvalidAPIKey
 	}
 	// 第 4 步：账户实时状态 + tenant 类。
-	acct, err := a.stores.Accounts.AccountByID(ctx, key.AccountID)
+	acct, err := a.accounts.AccountByID(ctx, key.AccountID)
 	if err != nil {
 		return nil, ErrInvalidAPIKey // 对外同形：机器凭据不给探测面（§5 禁用联动 401）
 	}
