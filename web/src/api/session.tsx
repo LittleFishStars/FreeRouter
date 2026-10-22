@@ -3,9 +3,22 @@
 // 为什么不用 localStorage：会话凭据是 HttpOnly Cookie，JS 侧根本拿不到
 // token——「缓存」的只是会话主体（display_name/classes 等展示信息），
 // 失效与吊销的判定权永远在服务端（每次敏感操作后端都会再验）。
+//
+// 401 兜底不直接在 HTTP 层改 hash：client 暴露 setUnauthorizedHandler，
+// 由这里用 react-router 的 navigate 跳登录页，并带上 from 回跳目标
+// （直接改 window.location.hash 会与内部 history 状态脱同步，见 code-review）。
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { getAuthSession, type Session } from './client'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode
+} from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { getAuthSession, setUnauthorizedHandler, type Session } from './client'
 
 interface SessionState {
   /** null = 未登录/会话失效；undefined = 探测中（页面应渲染过渡态）。 */
@@ -20,6 +33,8 @@ const SessionContext = createContext<SessionState | null>(null)
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [session, setSessionState] = useState<Session | null | undefined>(undefined)
+  const navigate = useNavigate()
+  const location = useLocation()
 
   const refresh = useCallback(async () => {
     try {
@@ -31,13 +46,26 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [])
 
   // 顶层只探测一次；之后由登录/登出动作驱动
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
 
-  const value = useMemo<SessionState>(() => ({
-    session,
-    setSession: setSessionState,
-    refresh
-  }), [session, refresh])
+  // 401 统一跳登录：保留当前路径作为回跳目标（客户端守卫的 from 语义）。
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      navigate('/login', { replace: true, state: { from: location.pathname } })
+    })
+    return () => setUnauthorizedHandler(null)
+  }, [navigate, location.pathname])
+
+  const value = useMemo<SessionState>(
+    () => ({
+      session,
+      setSession: setSessionState,
+      refresh
+    }),
+    [session, refresh]
+  )
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
 }
