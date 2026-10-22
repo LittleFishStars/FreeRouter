@@ -155,22 +155,24 @@ func (a *App) groupIDsSource(ctx context.Context, accountID string) ([]int64, bo
 // 模型目录桥（upstream 的 real_model 仓储面 + httpapi.ModelCatalog）
 // ---------------------------------------------------------------------------
 
-// modelCatalog 把 ListVisibleRealModels 接到 httpapi.ModelCatalog。
-
-// modelCatalog 把 ListVisibleRealModels 接到 httpapi.ModelCatalog。
-// modelCatalog 把 ListVisibleRealModels 接到 httpapi.ModelCatalog。
+// modelCatalog 把模型目录接到 httpapi.ModelCatalog。
+//
+// M6 口径：对外只暴露抽象模型（红线 C2，docs/models/02-abstract.md §6.2），
+// 因此这里读 abstract_models 而不是 real_models——租户看到的 id 是「请求
+// 时能用的模型名」，真实模型只在管理端可见。includeDisabled=false 让
+// disabled 不出现、deprecated 仍可见（弃用模型必须能被看见才能迁移）。
 type modelCatalog struct {
 	models *store.ModelRepo
 }
 
 func (m modelCatalog) ListModelIDs(ctx context.Context) ([]string, error) {
-	rows, err := m.models.ListVisibleRealModels(ctx)
+	rows, err := m.models.ListAbstractModels(ctx, false)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]string, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, r.UpstreamModelID)
+		out = append(out, r.Name)
 	}
 	return out, nil
 }
