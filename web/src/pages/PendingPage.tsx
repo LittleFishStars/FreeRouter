@@ -9,7 +9,7 @@
 
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { postAuthLogout } from '../api/client'
+import { isUnavailable, postAuthLogout } from '../api/client'
 import { getAccountStatus } from '../api/endpoints'
 import { useSession } from '../api/session'
 import { Banner, Field, FormError, Section, StatusBadge } from '../components/ui'
@@ -37,8 +37,14 @@ export default function PendingPage({ def }: PageProps) {
         setNotice('仍是「待审核」。管理员处理后，这里会显示最新状态。')
       }
     } catch (e) {
-      // 状态端点未接入时退化为重新探测会话（登录态本身仍有效）
-      setError(e)
+      // /api/account/status 在 M9 后端尚未上线（预期 404）。对 pending 用户
+      // 显示红字报错只会吓到人：折叠成「状态未知，稍后重试」，仍刷新一次会话
+      // （登录态本身有效；是否已转 active 由 refresh 的会话探测决定）。
+      if (isUnavailable(e)) {
+        setNotice('审核状态暂时无法查询（接口尚未接入），稍后重试即可；你的登录状态仍然有效。')
+      } else {
+        setError(e)
+      }
       await refresh()
     } finally {
       setRefreshing(false)
