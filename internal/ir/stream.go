@@ -98,6 +98,12 @@ func (s *EncoderState) Visible() bool { return s.visible }
 // Finished 报告流是否已终结。
 func (s *EncoderState) Finished() bool { return s.finished }
 
+// Errored 报告是否已写过错误帧（I6：此后只允许 done）。
+// 供编码器的收尾路径使用：Anthropic 的 error 是终止事件，官方 SDK 遇 error
+// 直接抛错；若之后仍补 content_block_stop / message_delta，严格客户端会看到
+// “报错后又来帧”。收尾层据此只写 message_stop。
+func (s *EncoderState) Errored() bool { return s.errored }
+
 // MarkWritten 记录"即将写出一个协议帧"，在帧真正写出前调用。
 //
 // 编码器应当在**写出前**调用它，而不是写出后：中间件无法回滚已经发到 socket 的字节，

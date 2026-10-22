@@ -295,7 +295,16 @@ func (s *streamWriter) writeDelta(d *streamDelta) error {
 
 // finish 收尾：关块 → message_delta(stop_reason+usage) → message_stop。
 // 协议没有 [DONE]（01-inbound.md §6.3），多发一帧只会让严格客户端困惑。
+//
+// errored 分支：本流已发过 error 帧时，只补 message_stop 就收尾。
+// Anthropic 规范里 error 是终止事件——之后再补 content_block_stop /
+// message_delta 会让严格客户端（官方 SDK 遇 error 直接抛错）看到「报错后又来帧」，
+// 且 message_delta 里的 stop_reason 可能被弱客户端当成正常收尾。
 func (s *streamWriter) finish() error {
+	if s.st.Errored() {
+		s.closed = true
+		return s.writeFrame(evMessageStop, streamFrame{Type: string(evMessageStop)})
+	}
 	if err := s.closeBlock(); err != nil {
 		return err
 	}

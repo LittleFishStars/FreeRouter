@@ -395,6 +395,41 @@ func TestContractAnthropicStreamEncodeGolden(t *testing.T) {
 	compareGolden(t, "anthropic/stream_encode.want.sse", buf.Bytes())
 }
 
+// TestContractAnthropicStreamErroredClose 锁 I6 的协议帧面：一旦写过 error，
+// 收尾只准补 message_stop。为什么不能只测 EncoderState：content_block_stop /
+// message_delta 是 Close() 直写的，绕过 Accept——只在状态机上写对不够。
+func TestContractAnthropicStreamErroredClose(t *testing.T) {
+	a := anthropic.Adapter()
+	var buf bytes.Buffer
+	w := a.NewStreamWriter(&buf, ir.EncodeOptions{UpstreamModel: "claude-test", RequestID: "req_err"})
+
+	for _, ev := range []ir.Event{
+		{Type: ir.EvStart},
+		{Type: ir.EvTextDelta, Text: "HELLO"},
+		{Type: ir.EvError, Err: &ir.Error{Code: "upstream_error", Message: "boom"}},
+	} {
+		if err := w.Write(ev); err != nil {
+			t.Fatalf("写事件 %s: %v", ev.Type, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("收尾: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, `"type":"error"`) && !strings.Contains(out, `event: error`) {
+		t.Fatalf("错误帧未写出:\n%s", out)
+	}
+	if !strings.Contains(out, "message_stop") {
+		t.Fatalf("errored 收尾仍应写 message_stop（流终结）:\n%s", out)
+	}
+	for _, forbidden := range []string{"content_block_stop", "message_delta"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("errored 后不得再写 %s（Anthropic 规范 error 是终止事件）:\n%s", forbidden, out)
+		}
+	}
+}
+
 // ---- C6：能力缺失不静默降级 ----
 
 func TestContractCapabilityCheckUnsupported(t *testing.T) {
