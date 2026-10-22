@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -301,6 +302,43 @@ func TestContractRelayClassMapping(t *testing.T) {
 	err := relayErr(&dshprovider.Error{Code: "E_RATE_LIMITED", Message: "限流"})
 	if !strings.Contains(err.Error(), "infer.stream") || !strings.Contains(err.Error(), "E_RATE_LIMITED") {
 		t.Fatalf("relayErr 文案缺锚点：%s", err.Error())
+	}
+}
+
+// TestContractRelayUnwrapSSEPayload：sidecar 的 {"sse":...} 信封要被拆掉，
+// 裸载荷（旧假设）照旧透传——两种形态都必须能进 StreamReader。
+func TestContractRelayUnwrapSSEPayload(t *testing.T) {
+	const sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"
+	// 形态一：sidecar M8 起的信封（用 json.Marshal 造载荷，避免手写转义出错）
+	enveloped, err := json.Marshal(map[string]string{"sse": sse})
+	if err != nil {
+		t.Fatalf("构造信封失败：%v", err)
+	}
+	rc, err := unwrapInferPayload(enveloped)
+	if err != nil {
+		t.Fatalf("拆信封失败：%v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	if string(got) != sse {
+		t.Fatalf("拆出的 SSE 不一致：%q", string(got))
+	}
+	_ = rc.Close()
+
+	// 形态二：裸 SSE 文本（旧版 sidecar / 直通实现）
+	rc, err = unwrapInferPayload([]byte(sse))
+	if err != nil {
+		t.Fatalf("裸载荷应透传：%v", err)
+	}
+	got, _ = io.ReadAll(rc)
+	if string(got) != sse {
+		t.Fatalf("裸载荷被改写了：%q", string(got))
+	}
+
+	// 形态三：空载荷是协议错误（不是"空响应"）。
+	if _, err := unwrapInferPayload(nil); err == nil {
+		t.Fatal("空载荷应 ErrProtocol")
+	} else if ue, ok := err.(*Error); !ok || ue.Class != ErrProtocol {
+		t.Fatalf("空载荷应归 protocol，得 %v", err)
 	}
 }
 

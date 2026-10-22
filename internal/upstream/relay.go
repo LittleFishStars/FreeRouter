@@ -76,8 +76,26 @@ func (t *RelayTransport) InferStream(ctx context.Context, tgt Target, body []byt
 	if err != nil {
 		return nil, relayErr(err)
 	}
+	return unwrapInferPayload(raw)
+}
+
+// unwrapInferPayload 把 sidecar 的 infer.stream 应答换成 Go 侧要消费的字节流。
+//
+// 为什么需要解一层：sidecar（M8 起）真跑 hub adapter，adapter 吐的是 StreamChunk 事件，
+// 由 sidecar 还原成 OpenAI chat.completion.chunk 的 SSE **文本**，装进 `{"sse": "..."}`。
+// 而 relay 的消费面是「SSE 原文」，所以这一步必须把信封拆掉。
+//
+// 为什么要兼容裸载荷：M8 之前的契约假设是「adapter 吐的原文直接当载荷」，同一段代码
+// 也会被旧版 sidecar（或未来的直通实现）打到。两种形态都接受，判定只看 `sse` 字段。
+func unwrapInferPayload(raw []byte) (io.ReadCloser, error) {
 	if len(raw) == 0 {
 		return nil, &Error{Class: ErrProtocol, Message: "sidecar infer.stream 返回空载荷"}
+	}
+	var wrapped struct {
+		SSE string `json:"sse"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err == nil && wrapped.SSE != "" {
+		return io.NopCloser(bytesReader([]byte(wrapped.SSE))), nil
 	}
 	return io.NopCloser(bytesReader(raw)), nil
 }
