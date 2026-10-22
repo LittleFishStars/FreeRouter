@@ -184,6 +184,10 @@
 | `global_budget` | 全站预算熔断 | 全站停止服务，等级最高 |
 | `key_anomaly` | 单账户单位时间用量突增 | PLAN 9.1 的异常用量检测（可选自动暂停见待定） |
 
+**词表是唯一的**：上表 10 个 `kind` 是全站权威取值，`severity` 固定为 `info` / `warning` / `error`（秩递增，列表按 `severity DESC, created_at DESC, id DESC` 排——次级决胜键是必须的，否则同 severity 行的顺序随查询计划漂移）。其它分册（01-catalog 3.5、03-upstream 3.3、02-admin 12）一律引用本表，不再各列一份词表。
+
+**执法点在 Go 层而不是 DDL**：`admin_inbox` 建在 0001 里且**已发布的迁移不可修改**（`migrate.go` 逐文件校验 sha256，改注释会让已有库拒绝启动），而 SQLite 也不支持给既有表追加 `CHECK`。所以 0001 里 `severity` 那行 `info|warning|critical` 的注释是过时措辞；真正拦拼错的是 `store` 层的枚举校验（`repo_inbox.go` 的 `Append` 拒非枚举值并返回可判定错误）。severity 是排序键，一个写错的值会静默排到末尾——属于"看起来能用、实际不可用"那一类。
+
 **收件箱与审计的关系**：
 
 | 维度 | `audit_log` | `admin_inbox` |
@@ -199,7 +203,7 @@
 
 > **待定**：`admin_inbox` 的保留策略——已读项保留多久、是否需要"忽略 / 稍后提醒"这类状态、以及同一 `related_id` 重复产生时是去重还是追加。
 
-> **待定**：未读计数的告警阈值（未读超过 N 条、或某条 `severity = high` 未读超过 T 小时 → 是否需要站内提示之外的通道）。
+> **待定**：未读计数的告警阈值（未读超过 N 条、或某条 `severity = error` 未读超过 T 小时 → 是否需要站内提示之外的通道）。
 
 ## 4. 脱敏模式
 
