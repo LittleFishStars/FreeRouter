@@ -88,7 +88,9 @@ func (t *RelayTransport) inferPayload(ctx context.Context, tgt Target, body []by
 	if err != nil {
 		return nil, relayErr(err)
 	}
-	return unwrapInferPayload(raw)
+	// 这里返回**原始载荷**：解信封是消费面的责任（InferStream 解成字节流，
+	// Open 逐帧解成 ir.Event）——在公共前半段就解会逼着两条消费面都接受 io.ReadCloser。
+	return raw, nil
 }
 
 // unwrapInferPayload 把 sidecar 的 infer.stream 应答换成 Go 侧要消费的字节流。
