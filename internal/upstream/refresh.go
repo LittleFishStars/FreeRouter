@@ -283,6 +283,16 @@ func (r *ModelRefresher) upsertModel(ctx context.Context, upstreamID int64, m ds
 		// 目录没给展示名时回退到模型 id，避免前端拿到空字符串。
 		row.DisplayName = m.UpstreamModelID
 	}
+	// 渠道（01-catalog.md §2.3）：走 dshprovider.ModelOwnedBy() 而不是直接读
+	// m.OwnedBy——它把「hub 权威值」与「从 `渠道/模型` 前缀派生」两种来源显式区分。
+	// 两种都落同一个 channel 列（存储层不关心来源），但本层仍用它的返回值而不是
+	// 自己再切一次前缀：协议层已有解析口径，两边各切一遍必然分叉。
+	//
+	// 解析不出（畸形 id / 裸 id 且无权威值）时留 nil，让仓储再兜底一次；
+	// 两层都拿不出就是 NULL（"渠道不可知"），不猜、不回退上游名。
+	if ch := m.ModelOwnedBy().Channel; ch != "" {
+		row.Channel = ptr(ch)
+	}
 	if m.ContextWindow != nil {
 		cw := int64(*m.ContextWindow)
 		row.ContextWindow = &cw
