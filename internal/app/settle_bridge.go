@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
@@ -45,6 +46,8 @@ type settleBridge struct {
 	usage *store.UsageRepo
 	// modelIDOf 把抽象模型名翻成 store 主键（与配额中间件同一个解析器）。
 	modelIDOf func(ctx context.Context, name string) (int64, bool)
+	// log 用于两半各自的结构性告警（errors.Join 后调用方分不清哪一半失败）。
+	log *slog.Logger
 }
 
 // newSettler 构造终态结算出口（server_build 里注入 Server.SetSettler）。
@@ -53,6 +56,7 @@ func (a *App) newSettler() httpapi.Settler {
 		recorder:  meter.NewSettlementRecorder(a.quotaLedger, a.groupIDsSource),
 		usage:     a.store.Repos().Usage,
 		modelIDOf: a.modelIDOf,
+		log:       a.log,
 	}
 }
 
@@ -155,7 +159,17 @@ func (b *settleBridge) Settle(ctx context.Context, in httpapi.SettleInput) error
 	}
 
 	// 请求面失败才是真失败（账本主记录）；额度面失败合并进去。
+	// 两半各自记一条结构性 warn：errors.Join 后调用方无法区分哪一半失败，
+	// 而单独一半失败（尤其是额度面）也需要在值班视角里独立可见。
+	if quotaErr != nil {
+		b.log.Warn("settle.quota_failed", "account_id", in.AccountID,
+			"model", in.ModelName, "ts", in.EndedAt.Unix(), "error", quotaErr)
+	}
 	reqErr := b.usage.RecordRequest(ctx, rec, store.Settlement{})
+	if reqErr != nil {
+		b.log.Warn("settle.requests_failed", "account_id", in.AccountID,
+			"model", in.ModelName, "ts", in.EndedAt.Unix(), "error", reqErr)
+	}
 	merged := errors.Join(quotaErr, reqErr)
 	if merged == nil {
 		return nil

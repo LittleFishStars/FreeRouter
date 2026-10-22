@@ -632,7 +632,17 @@ func (t *RelayTransport) Open(ctx context.Context, tgt Target, body []byte, stre
 	if err != nil {
 		return nil, err
 	}
-	return NewRelayStream(io.NopCloser(bytes.NewReader(relayPayloadToNDJSON(raw)))), nil
+	// 与 InferStream 同源：信封必须先拆，否则 relayPayloadToNDJSON 看不见 sse 字段，
+	// 会把整个 JSON 当成一帧不可解载荷（实测会报「流在 start 之前结束」）。
+	rc, err := unwrapInferPayload(raw)
+	if err != nil {
+		return nil, err
+	}
+	sse, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, &Error{Class: ErrProtocol, Message: "读取 sidecar 载荷失败: " + err.Error()}
+	}
+	return NewRelayStream(io.NopCloser(bytes.NewReader(relayPayloadToNDJSON(sse)))), nil
 }
 
 // OpenFromPayload 是 Open 的纯函数版：把已经拿到的载荷直接包成流，供装配层

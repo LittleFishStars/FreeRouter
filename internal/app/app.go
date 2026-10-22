@@ -144,9 +144,17 @@ func (a *App) startModelRefresh(ctx context.Context) {
 	// 装配点：CatalogSource 由 dshprovider.Client 天然满足（task-7 设计）；
 	// refresh.go 直接要 *store.Store（UpsertRealModel/MarkMissingRealModels
 	// 都在 Store 聚合上）——这里直传，不另包一层。
-	refresher := upstream.NewModelRefresher(
+	// 必须带 hooks：只刷新目录不写鉴定结果，0004 三列在真实运行中恒为
+	// unverified（M2 的「入池行都过过判定」成为空诺），inbox 三事件也不投递。
+	// Verification 接 store 写入器（唯一版本映射 VerifySourceOf）；Inbox 暂不接
+	// （需先有 NotifyInbox→store.Append 的桥，登记在 M7 收尾）。
+	refresher := upstream.NewModelRefresherWithHooks(
 		a.store, a.sidecar,
-		a.cfg.Upstream.Relay.ModelRefreshInterval.Std(), a.log)
+		a.cfg.Upstream.Relay.ModelRefreshInterval.Std(), a.log,
+		&upstream.RefreshHooks{
+			Verification: upstream.NewStoreVerificationWriter(a.store),
+			Log:          a.log,
+		})
 	refresher.Start(ctx)
 }
 

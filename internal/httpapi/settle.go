@@ -151,8 +151,11 @@ func (s *Server) settleRequest(ctx context.Context, pr proxyReq, requestID strin
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
 	defer cancel()
 	if err := s.settler.Settle(sctx, in); err != nil {
+		// 告警必须自带对账键：只写“结算失败”+操作说明，值班拿不到 account/ts/model，
+		// 还得反查 request_id → account_id（而全仓没有这种关联日志）。
 		s.log.Warn("v1 settle failed",
 			"request_id", requestID, "endpoint", in.Endpoint,
-			"status", in.Status, "error", err)
+			"account_id", in.AccountID, "model", in.ModelName,
+			"ts", in.EndedAt.Unix(), "status", in.Status, "error", err)
 	}
 }

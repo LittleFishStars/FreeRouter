@@ -146,6 +146,19 @@ function handleLine(line) {
         }),
       );
 
+    // infer.stream：返回 M8 之后 sidecar 的真实形状——SSE 文本装进 {"sse":...} 信封。
+    // 契约测试用它验证 relay 必须先拆信封再交给 adapter 的 StreamReader；不拆会得到
+    // 「200 + 空回答」（信封不是 SSE，reader 只能看到 EOF）——比 502 更难发现。
+    case 'infer.stream':
+      return send(
+        okFrame(req, {
+          sse:
+            'data: {"id":"chatcmpl-fake","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"你好"},"finish_reason":null}]}\n\n' +
+            'data: {"id":"chatcmpl-fake","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n' +
+            'data: [DONE]\n\n',
+        }),
+      );
+
     case 'login.start':
       return send(
         okFrame(req, {

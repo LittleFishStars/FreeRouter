@@ -55,7 +55,10 @@ func (t *RelayTransport) InferStream(ctx context.Context, tgt Target, body []byt
 	if err != nil {
 		return nil, err
 	}
-	return io.NopCloser(bytesReader(raw)), nil
+	// 必须解一层信封：M8 起 sidecar 把 adapter 的 StreamChunk 还原成 SSE 文本，
+	// 装进 {"sse": "..."} 返回；直接把信封交给 adapter 的 StreamReader，
+	// 会得到「200 + 空回答」（信封不是 SSE，reader 只看到 EOF）——比 502 更难发现。
+	return unwrapInferPayload(raw)
 }
 
 // inferPayload 是 relay 调用的公共前半段：参数编码、IPC 调用、错误归一。
