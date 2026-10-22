@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/LittleFishStars/FreeRouter/internal/store"
+	"github.com/LittleFishStars/FreeRouter/internal/upstream/dshprovider"
 )
 
 // ———— 判定表 ————
@@ -486,4 +487,42 @@ func parseSecretRefDecimal(ref string) (int64, bool) {
 		n = n*10 + int64(c-'0')
 	}
 	return n, n > 0
+}
+
+// TestContractRedactionSingleSource 钉住「Go 侧只有一份遮蔽模式」（code-review 建议 ④）。
+//
+// 背景：同一组正则原先在 dshprovider/client.go 与 contribution.go 各写一份、内容逐字相同，
+// 加上 sidecar/redact.mjs 共三处。复制的那份一旦漂移，表现是「一边遮、一边漏」且没人发现。
+// 现在 contribution 的 redactText 是转调 dshprovider.RedactLine，本用例做两件事：
+//  1. 相等性：同一输入两边输出必须一致（防止有人又在本地写第二份正则）；
+//  2. 行为锚点：证据（verify_detail）里的错误码不被抹掉——这是 M8 联调最需要的字段。
+func TestContractRedactionSingleSource(t *testing.T) {
+	corpus := []string{
+		"Authorization: Bearer sk-live-abcdefgh12345678",
+		"Authorization: Basic dXNlcjpwYXNzd29yZA==",
+		"GET /cb?code=abcd1234efghijkl&state=x",
+		`{"access_token":"ya29.A0AfH6SMBx"}`,
+		`{"error_code":"upstream_unavailable","message":"上游 502"}`,
+		"upstream_error code=no_candidate",
+		"code=E_DEPENDENCY_MISSING",
+		"password=hunter2hunter2",
+		"普通文本：provider=modelscope 装载成功",
+	}
+	for _, in := range corpus {
+		if got, want := redactText(in), dshprovider.RedactLine(in); got != want {
+			t.Errorf("两份实现漂移：\n  in   = %q\n  local= %q\n  hub  = %q", in, got, want)
+		}
+	}
+	// 行为锚点：探测失败的原因里带错误码时，证据必须保留「为什么」。
+	ev := evidenceJSON("L0", "端点不可达：error_code=upstream_unavailable detail=no_candidate")
+	for _, keep := range []string{"upstream_unavailable", "no_candidate"} {
+		if !strings.Contains(ev, keep) {
+			t.Errorf("证据把排障字段抹掉了：缺 %q，实际 %s", keep, ev)
+		}
+	}
+	// 反向：真凭据形态必须被遮（否则这条测试只是「都在做无用功」）。
+	ev = evidenceJSON("L0", "上游拒绝鉴权（401/403）：Bearer sk-live-abcdefgh12345678")
+	if strings.Contains(ev, "sk-live-abcdefgh12345678") {
+		t.Errorf("证据泄露了密钥：%s", ev)
+	}
 }
