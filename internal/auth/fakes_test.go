@@ -252,7 +252,19 @@ func (f *fakeStore) setStatus(id string, st AccountStatus) {
 }
 
 func boolp(b bool) *bool { return &b }
-func intp(i int) *int    { return &i }
+
+// allowKeyCreation 给账户挂一个显式允许建 Key 的默认组。
+// fail-closed 定案后这是所有建 Key 用例的公共前置（生产里由管理员在默认组
+// 上设 can_create_key=true 达成，测试模拟同一状态）。
+func (f *fakeStore) allowKeyCreation(accountID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.groups[accountID] = []GroupPolicy{
+		{Group: Group{ID: "gd", IsDefault: true}, CanCreateKey: boolp(true)},
+	}
+}
+
+func intp(i int) *int { return &i }
 
 // testClock 返回可控时钟：测试推进"现在"而不 sleep。
 func testClock() (*fakeStore, func(time.Duration)) {

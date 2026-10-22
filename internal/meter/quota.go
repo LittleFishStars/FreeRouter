@@ -57,7 +57,12 @@ func (p Period) Anchor(now time.Time) string {
 		y, w := t.ISOWeek()
 		return "W" + itoa(y) + "-" + pad2(w)
 	case PeriodMonth:
-		return t.Format("2006-01")
+		// 与 store 的 periodAnchor 完全同口径（"当月 1 日"全日期格式，
+		// 不是 "2006-01" 紧凑格式）：store 的 ErrQuotaExhausted.ResetAt
+		// 用 time.Parse("2006-01-02", PeriodAnchor) 解析锚点，紧凑格式
+		// 解析失败 → 脏锚点 → Retry-After 永远发不出。同口径是
+		// task-14 的硬要求（只读 store 口径，不另算一套）。
+		return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
 	default:
 		return "unknown"
 	}

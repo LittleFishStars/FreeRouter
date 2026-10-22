@@ -97,10 +97,17 @@ func TestContractKeyGroupPolicyDenyPriority(t *testing.T) {
 	_, err := km.Create(context.Background(), Subject{AccountID: "acc-t", ActingClass: ClassTenant}, "n")
 	codeOfErr(t, err, CodeForbidden)
 
-	// 全组未设置 → 允许（默认组不变式："没配"不等于"禁止"）。
+	// 全组未设置 → 拒绝（fail-closed 定案，lead 裁决 2026-10-22：
+	// "没配"不是"允许"；03-groups §5 把"缺口变 fail-open"列为要防的事故，
+	// 默认组要能建 Key 必须显式设 can_create_key=true）。
 	h.f.groups["acc-t"] = []GroupPolicy{{Group: Group{ID: "ga"}}}
+	if _, err := km.Create(context.Background(), Subject{AccountID: "acc-t", ActingClass: ClassTenant}, "n"); err == nil {
+		t.Fatal("未设 CanCreateKey 应拒绝建 Key（fail-closed）")
+	}
+	// 全部组显式 true → 允许。
+	h.f.groups["acc-t"] = []GroupPolicy{{Group: Group{ID: "ga"}, CanCreateKey: boolp(true)}}
 	if _, err := km.Create(context.Background(), Subject{AccountID: "acc-t", ActingClass: ClassTenant}, "n"); err != nil {
-		t.Fatalf("未设 CanCreateKey 应允许建 Key: %v", err)
+		t.Fatalf("全组显式 true 应允许建 Key: %v", err)
 	}
 }
 
@@ -109,8 +116,8 @@ func TestContractKeyCountLimitTakesMaxAcrossGroups(t *testing.T) {
 	h.putUser(t, "acc-t", "ten", ClassTenant)
 	// 放开类数值取**最大值**（03-groups.md §3 定案）：10 vs 3 → 10。
 	h.f.groups["acc-t"] = []GroupPolicy{
-		{Group: Group{ID: "ga"}, MaxKeys: intp(3)},
-		{Group: Group{ID: "gb"}, MaxKeys: intp(10)},
+		{Group: Group{ID: "ga"}, CanCreateKey: boolp(true), MaxKeys: intp(3)},
+		{Group: Group{ID: "gb"}, CanCreateKey: boolp(true), MaxKeys: intp(10)},
 	}
 	km := NewKeyManager(KeyPolicy{DefaultMaxKeysPerAccount: 1}, h.f.stores()).WithClock(h.nowFn)
 	s := Subject{AccountID: "acc-t", ActingClass: ClassTenant}
@@ -142,6 +149,7 @@ func TestContractKeyCountLimitTakesMaxAcrossGroups(t *testing.T) {
 func TestContractKeyRevokedIsOneWay(t *testing.T) {
 	h := newHarness()
 	h.putUser(t, "acc-t", "ten", ClassTenant)
+	h.f.allowKeyCreation("acc-t")
 	km := NewKeyManager(KeyPolicy{}, h.f.stores()).WithClock(h.nowFn)
 	s := Subject{AccountID: "acc-t", ActingClass: ClassTenant}
 	res, err := km.Create(context.Background(), s, "k")
@@ -163,6 +171,7 @@ func TestContractKeyRevokedIsOneWay(t *testing.T) {
 func TestContractKeyRotateSwapsAtomically(t *testing.T) {
 	h := newHarness()
 	h.putUser(t, "acc-t", "ten", ClassTenant)
+	h.f.allowKeyCreation("acc-t")
 	km := NewKeyManager(KeyPolicy{}, h.f.stores()).WithClock(h.nowFn)
 	s := Subject{AccountID: "acc-t", ActingClass: ClassTenant}
 	old, err := km.Create(context.Background(), s, "old")
@@ -187,6 +196,7 @@ func TestContractKeyRotateSwapsAtomically(t *testing.T) {
 func TestContractKeyExpiryIsDerived(t *testing.T) {
 	h := newHarness()
 	h.putUser(t, "acc-t", "ten", ClassTenant)
+	h.f.allowKeyCreation("acc-t")
 	km := NewKeyManager(KeyPolicy{}, h.f.stores()).WithClock(h.nowFn)
 	res, err := km.Create(context.Background(), Subject{AccountID: "acc-t", ActingClass: ClassTenant}, "k")
 	if err != nil {
@@ -434,6 +444,7 @@ func TestContractChangePasswordRevokesSessionsNotKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	km := NewKeyManager(KeyPolicy{}, h.f.stores()).WithClock(h.nowFn)
+	h.f.allowKeyCreation("acc-t")
 	created, err := km.Create(ctx, p.Subject(), "keep-me")
 	if err != nil {
 		t.Fatal(err)
@@ -561,6 +572,7 @@ func TestContractAuthzOthersKeyIs404(t *testing.T) {
 	h := newHarness()
 	h.putUser(t, "acc-a", "alice", ClassTenant)
 	h.putUser(t, "acc-b", "bob", ClassTenant)
+	h.f.allowKeyCreation("acc-b") // fail-closed 前提：bob 的默认组显式允许建 Key
 	km := NewKeyManager(KeyPolicy{}, h.f.stores()).WithClock(h.nowFn)
 	res, err := km.Create(context.Background(), Subject{AccountID: "acc-b", ActingClass: ClassTenant}, "bobs")
 	if err != nil {
@@ -583,8 +595,8 @@ func TestContractSetAllowlistOnlyNarrows(t *testing.T) {
 	h := newHarness()
 	h.putUser(t, "acc-t", "ten", ClassTenant)
 	h.f.groups["acc-t"] = []GroupPolicy{
-		{Group: Group{ID: "ga"}, Models: []string{"fast", "smart"}},
-		{Group: Group{ID: "gb"}, Models: []string{"eco"}},
+		{Group: Group{ID: "ga"}, Models: []string{"fast", "smart"}, CanCreateKey: boolp(true)},
+		{Group: Group{ID: "gb"}, Models: []string{"eco"}, CanCreateKey: boolp(true)},
 	}
 	km := NewKeyManager(KeyPolicy{}, h.f.stores()).WithClock(h.nowFn)
 	s := Subject{AccountID: "acc-t", ActingClass: ClassTenant}
@@ -612,8 +624,8 @@ func TestContractEffectiveModelsIsIntersection(t *testing.T) {
 	h := newHarness()
 	h.putUser(t, "acc-t", "ten", ClassTenant)
 	h.f.groups["acc-t"] = []GroupPolicy{
-		{Group: Group{ID: "ga"}, Models: []string{"fast", "smart"}},
-		{Group: Group{ID: "gb"}, Models: []string{"eco"}},
+		{Group: Group{ID: "ga"}, Models: []string{"fast", "smart"}, CanCreateKey: boolp(true)},
+		{Group: Group{ID: "gb"}, Models: []string{"eco"}, CanCreateKey: boolp(true)},
 	}
 	km := NewKeyManager(KeyPolicy{}, h.f.stores()).WithClock(h.nowFn)
 	s := Subject{AccountID: "acc-t", ActingClass: ClassTenant}
@@ -706,10 +718,10 @@ func TestContractMergeUnionAndStrictest(t *testing.T) {
 	if len(eff.Pools) != 2 {
 		t.Fatalf("池应原样保留两条: %v", eff.Pools)
 	}
-	// 空输入：默认拒绝方向由调用方落（结果 = 全未设，布尔全真由 ALL 语义推得）。
+	// 空输入：fail-closed——布尔全 false（无组 = 无显式许可），数值键不落。
 	empty := MergeGroupPolicies(nil)
-	if !empty.CanCreateKey || empty.MaxKeys != nil || len(empty.Pools) != 0 {
-		t.Fatalf("空组合并不应引入限制: %+v", empty)
+	if empty.CanCreateKey || empty.AllowlistWiden || empty.MaxKeys != nil || len(empty.Pools) != 0 {
+		t.Fatalf("空组合并应全 false（fail-closed）: %+v", empty)
 	}
 }
 
