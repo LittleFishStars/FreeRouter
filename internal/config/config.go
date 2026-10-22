@@ -133,6 +133,9 @@ type Sidecar struct {
 	Entry          string   `yaml:"entry"`
 	IPC            string   `yaml:"ipc"` // 固定 stdio
 	HubPath        string   `yaml:"hub_path"`
+	// DepsRoot 是 DSH 安装目录（B 层依赖根），空 = sidecar 自行枚举
+	//（PATH 里的 dsh → 系统安装位 → nvm/用户级）。显式配置用于容器/多版本共存。
+	DepsRoot       string   `yaml:"deps_root"`
 	StartupTimeout Duration `yaml:"startup_timeout"`
 }
 
