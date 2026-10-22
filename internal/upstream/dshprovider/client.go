@@ -33,6 +33,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -329,16 +330,138 @@ func (c *Client) readLoop(stdout io.Reader) {
 	}
 }
 
+// stderrLogMaxBytes 是进结构化日志的 sidecar stderr 单行上限。
+//
+// 为什么必须有上限：sidecar 的 stdout-guard 会把「任何绕过 console 直写 stdout 的内容」
+// 改道 stderr（典型：第三方库 banner、hub adapter 的调试输出）。这些行可能很长，
+// 也可能带整段 HTML/JSON；整行落进日志既淹没有用信息，也放大泄露面。
+// 512 字节足够保留「哪一类输出、在哪一步」，又不会把日志变成大文件。
+const stderrLogMaxBytes = 512
+
 // drainStderr 把 sidecar 的日志并进主进程日志流。
 // sidecar 的 stdout 只准是 NDJSON，任何人类可读内容都必须从这里出来。
+//
+// 两道处理（都已实测过泄露路径，见 docs/architecture/04-sidecar.md §8）：
+//  1. **截断**到 stderrLogMaxBytes；
+//  2. **遮蔽** Bearer/授权码/token/secret/sk- 形态——sidecar 的 stdout-guard 会把
+//     第三方库的任意输出改道到这里，OAuth 回调 URL 里的 `code=` 完全可能混进来。
+//
+// 环形缓冲里保留**原文**：StderrTail 是排障用的（要看完整错误），且它只在本进程内存里、
+// 不会进日志系统；进结构化日志的那一份才是需要遮蔽的。
 func (c *Client) drainStderr(stderr io.Reader) {
 	sc := bufio.NewScanner(stderr)
 	sc.Buffer(make([]byte, 0, 64<<10), readBufSize)
 	for sc.Scan() {
 		line := sc.Text()
 		c.stderr.push(line)
-		c.log.Debug("sidecar stderr", "line", line)
+		c.log.Debug("sidecar stderr", "line", redactLogLine(line), "raw_bytes", len(line))
 	}
+}
+
+// —— 敏感文本遮蔽（Go 侧的**唯一实现**）——
+//
+// ⚠️ 三处同源，改一处必须同步其余两处：
+//   1. 本文件（sidecar stderr 进结构化日志前）；
+//   2. internal/upstream/contribution.go 的 redactText —— 直接转调 RedactLine（不复制模式）；
+//   3. sidecar/redact.mjs —— sidecar 自己外发的错误/stderr 文本。
+// Go 侧只有这一份模式（第 2 处是转调）；第 3 处是跨语言副本，
+// 由 sidecar/selftest.mjs 的同一组表驱动用例把两边钉住。
+//
+// 两条设计约束（改正则前必须先读，否则会踩已经踩过的坑）：
+//   - **键名要左边界**：裸 `code`/`token` 会命中 `error_code`/`status_code` 的子串，
+//     把排障字段（正是 sidecar 错误帧 `{code:"E_..."}` 的形态）一并抹掉。
+//   - **RE2 不支持反向引用/环视**：带引号的值不能靠 `\1` 配对，必须分组 + 手工拼装，
+//     否则引号被吃掉，日志里的 JSON 不再可解析。
+//
+// 值什么时候**不遮**：snake_case 标识符（E_DEPENDENCY_MISSING、no_candidate、
+// model_not_found）是错误码而不是凭据。这条优先级明确——宁可漏遮「长成这样」的真凭据
+// （极少见），也不抹掉「为什么失败」，否则 M8 联调时日志会变成一堆 ***。
+
+var (
+	// 鉴权头：Bearer <tok> / Basic <base64(user:pass)>。
+	// Basic 以前漏遮——base64 里就是明文的 user:pass。
+	redactBearerRE = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}`)
+	redactBasicRE  = regexp.MustCompile(`(?i)\bBasic\s+[A-Za-z0-9+/=]{8,}`)
+	// 裸密钥前缀（OpenAI 风格）：即使没有键名也要遮。
+	//
+	// 左边界是 `(^|[^A-Za-z0-9_])` 而不是 `\b`：`\b` 要求前一个是「词/非词交界」，
+	// 而 `sk-` 前面常是另一个词字符（`token:sk-...` 里是冒号，没问题；但拼接日志里
+	// 可能直接粘在字母后面）——`\b` 会在那里静默不匹配。用非词字符做左边界既挡住
+	// `task-management` 这类误伤，也不会漏掉粘在字母后的真 key。
+	redactSKRE = regexp.MustCompile(`(^|[^A-Za-z0-9_])sk-[A-Za-z0-9_-]{8,}`)
+	// 「键 = 值 / 键: 值」。group1=左边界（同时保证 `error_code` 不会被当成 `code`），
+	// group2=键与分隔符，group3=值（带引号形态由 `"[^"]*"` 分支整体接住并保留配对引号）。
+	//
+	// 值字符集排除 `"` `'` 与空白/分隔符，避免把 JSON 结构字符吞进来（那样会破坏可解析性）。
+	redactPairRE = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_])((?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?code|oauth[_-]?code|authorization[_-]?code|client[_-]?secret|secret|token|code|key|password)["']?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&)}"']{8,})`)
+	// 标识符形态（至少一个下划线）——判定「这是错误码/状态名，不是凭据」。
+	redactIdentifierRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+$`)
+)
+
+// RedactLine 返回可安全进日志/证据的一行。
+//
+// 导出给 internal/upstream/contribution.go 转调：「哪一行算敏感」不该有两套规则。
+// 包方向是既有的（relay.go 已 import 本包）。
+//
+// 幂等：对已遮蔽的文本再跑一次不变（同一行可能被多层包装：adapter → sidecar → 主进程日志）。
+func RedactLine(line string) string {
+	out := line
+	// 先截断再遮蔽：反过来会把 `***` 截掉一半，留下半截密钥前缀——那比不遮更糟。
+	if len(out) > stderrLogMaxBytes {
+		out = out[:stderrLogMaxBytes] + "…"
+	}
+	out = redactBearerRE.ReplaceAllString(out, "Bearer ***")
+	out = redactBasicRE.ReplaceAllString(out, "Basic ***")
+	out = redactSKRE.ReplaceAllString(out, "${1}sk-***")
+	return redactPairs(out)
+}
+
+// redactLogLine 是 drainStderr 的调用点（保留短名，导出名给跨包用）。
+func redactLogLine(line string) string { return RedactLine(line) }
+
+// redactPairs 处理「键=值」形态：纯正则可以命中，但「遮不遮」要看值的形态
+// （标识符保留、其余替换），所以用一次扫描 + 手工拼装，而不是 ReplaceAllString。
+func redactPairs(s string) string {
+	matches := redactPairRE.FindAllStringSubmatchIndex(s, -1)
+	if len(matches) == 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	last := 0
+	for _, m := range matches {
+		keyEnd := m[5]   // group2 结束：写到这里为止（键与前导分隔原样保留）
+		valStart := m[6] // group3 开始
+		valEnd := m[7]
+		value := s[valStart:valEnd]
+		if looksLikeIdentifier(value) {
+			continue // 错误码/状态名：原样保留（`last` 不动，后面的拼接会带上它）
+		}
+		b.WriteString(s[last:keyEnd])
+		// 保留配对引号，保证 JSON 还能解析（`{"access_token":"***"}`）。
+		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
+			b.WriteByte(value[0])
+			b.WriteString("***")
+			b.WriteByte(value[0])
+		} else {
+			b.WriteString("***")
+		}
+		last = valEnd
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// looksLikeIdentifier 判断值是否是被抹掉会伤排障的标识符（错误码/状态名）。
+//
+// 规则刻意保守：必须含下划线（`E_X`、`no_candidate`、`model_not_found`），
+// 长度 8..64。纯小写随机串（`abcd1234efghijkl`）没有下划线 → 仍然遮蔽。
+func looksLikeIdentifier(v string) bool {
+	v = strings.Trim(v, `"'`)
+	if len(v) < 8 || len(v) > 64 {
+		return false
+	}
+	return redactIdentifierRE.MatchString(v)
 }
 
 // Call 发一个方法调用并等应答。params 为 nil 时字段整个省略。

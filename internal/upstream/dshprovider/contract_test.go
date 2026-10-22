@@ -11,7 +11,9 @@ package dshprovider
 // node 不在 PATH 时全部 Skip —— CI 的 Go-only runner 不该因为缺 Node 而红。
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -519,17 +521,34 @@ func TestContractRealSidecar(t *testing.T) {
 		t.Fatalf("provider 目录应为 17 家，得 %d", len(ps))
 	}
 
-	// 缺 hub：必须拿到**结构化错误**（不是超时、不是进程死亡），且进程依旧健康。
-	_, err = c.CredentialsResolve(ctx, "dsh:buddy:0")
-	if err == nil {
-		t.Fatal("本机未装 B 层依赖，credentials.resolve 理应报错（若环境已装齐请更新本用例）")
+	// credentials.resolve 现在走 $DSH_HOME/.credentials.yaml 的**只读**解析（与 hub 无关），
+	// 契约是「空值/不存在 → result 为 null」。所以这里接受两种正确形态：
+	//   a) 无错误 + nil —— 本机没有这个 ref（最常见）；
+	//   b) 结构化错误 —— 文件缺失/不可读，或将来换成 DSH 后端时的 E_DEPENDENCY_MISSING。
+	// 无论哪种都**不得**是超时或进程死亡。
+	cred, err := c.CredentialsResolve(ctx, "dsh:buddy:0")
+	if err != nil {
+		switch de := asError(t, err); de.Code {
+		case CodeDependencyMissng, CodeNotImplemented, CodeCredentialMissng:
+			// 可接受：这台机器上没有该凭据或没有对应后端
+		default:
+			t.Errorf("credentials.resolve 的失败码应为 E_DEPENDENCY_MISSING/E_NOT_IMPLEMENTED/E_CREDENTIAL_MISSING，得 %s（%v）",
+				de.Code, de)
+		}
+	} else if cred != nil && cred.Value == "" {
+		// resolve 命中时不得回空串：空值按契约必须表达为 null（DSH 口径）。
+		t.Error("credentials.resolve 命中时值不得为空串（空值应表达为 null）")
 	}
-	de := asError(t, err)
-	if de.Code != CodeDependencyMissng && de.Code != CodeNotImplemented {
-		t.Errorf("缺 hub 应 E_DEPENDENCY_MISSING/E_NOT_IMPLEMENTED，得 %s（%v）", de.Code, de)
+
+	// 「业务错误不影响通道健康」的活体断言：credits.query 恒为 E_NOT_IMPLEMENTED
+	// （余额端点要的是 DSH 账号对象，sidecar 无账号池替身）。它必须是**结构化错误**
+	// 而不是超时/断连——这正是「缺能力不崩」的核心。
+	_, err = c.Call(ctx, "credits.query", map[string]any{"provider": "modelscope", "credentialRef": "x"})
+	if CodeOf(err) != CodeNotImplemented {
+		t.Errorf("credits.query 应回 E_NOT_IMPLEMENTED，得 %v", err)
 	}
 	if !c.Available() {
-		t.Fatal("业务错误不得影响通道健康——「缺 hub 不崩」是本用例的核心断言")
+		t.Fatal("业务错误不得影响通道健康——「缺能力不崩」是本用例的核心断言")
 	}
 
 	// 红线守卫的活体往返（真 sidecar 侧）。
@@ -563,4 +582,134 @@ func nodeVersion() string {
 		return "不可用"
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// ────────────────────────────────────────────────────────────────
+// ⑬ sidecar stderr 的日志遮蔽（code-review 一般 8）：
+//
+//	sidecar 的 stdout-guard 会把第三方库任意输出改道 stderr（典型：hub adapter 的
+//	调试行、OAuth 回调 URL）。这些行**不能原样**进主进程日志——授权码/token 会
+//	跟着进去。本用例断言「进日志的那一份」被截断且遮蔽，而排障用的环形缓冲保留原文。
+//
+// ────────────────────────────────────────────────────────────────
+func TestContractStderrRedaction(t *testing.T) {
+	var buf bytes.Buffer
+	h := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	// 不走子进程：drainStderr 只依赖 log + stderr 环，直接构造最小 Client。
+	c := &Client{log: slog.New(h), stderr: newStderrRing(8)}
+
+	const (
+		secretToken = "sk-live-abcdef1234567890"
+		authCode    = "abcd1234efghijkl"
+	)
+	long := strings.Repeat("A", 4096)
+	input := strings.Join([]string{
+		"Authorization: Bearer " + secretToken,
+		"GET /oauth/callback?code=" + authCode + "&state=xyz HTTP/1.1",
+		`{"access_token":"` + secretToken + `","expires_in":3600}`,
+		long, // 超长行：截断
+		"普通日志：provider=modelscope 装载成功",
+	}, "\n") + "\n"
+	c.drainStderr(strings.NewReader(input))
+
+	// 1. 遮蔽：日志里不得出现任何形态的密钥/授权码。
+	logged := buf.String()
+	for _, leak := range []string{secretToken, authCode} {
+		if strings.Contains(logged, leak) {
+			t.Fatalf("stderr 日志泄露了凭据：%q 出现在\n%s", leak, logged)
+		}
+	}
+	// 2. 截断：超长行不得整行进日志（512 字节上限 + "…"）。日志是结构化 TextHandler，
+	//    行内会被包引号与转义，所以按 600 个连续 A 是否出现来判定「没有整行照抄」。
+	if strings.Contains(logged, strings.Repeat("A", 600)) {
+		t.Errorf("超长 stderr 行未被截断（应 ≤ %d 字节）", stderrLogMaxBytes)
+	}
+	// 3. 正常内容仍要可读（遮蔽不能把有用信息一起吃掉）。
+	if !strings.Contains(logged, "modelscope") {
+		t.Errorf("普通日志不应被遮蔽掉：%s", logged)
+	}
+	// 4. 环形缓冲保留原文：排障要看完整错误（它只在内存里，不进日志系统）。
+	tail := c.StderrTail(16)
+	joined := strings.Join(tail, "\n")
+	if !strings.Contains(joined, secretToken) {
+		t.Errorf("环形缓冲应保留原文供排障，实际：%v", tail)
+	}
+	if len(tail) != 5 {
+		t.Errorf("应保留 5 行，得 %d：%v", len(tail), tail)
+	}
+}
+
+// TestContractRedactLogLineIdempotent 断言遮蔽幂等：对已遮蔽的文本再跑一次不变。
+// 为什么重要：同一行可能被多层包装（adapter → sidecar → 主进程日志），
+// 非幂等的遮蔽会在第二层把 `***` 当成值再遮一次，产出 `******` 之类的噪音。
+func TestContractRedactLogLineIdempotent(t *testing.T) {
+	once := redactLogLine("Authorization: Bearer sk-abcdefgh12345678")
+	if twice := redactLogLine(once); twice != once {
+		t.Errorf("遮蔽应幂等：once=%q twice=%q", once, twice)
+	}
+	if strings.Contains(once, "abc...") || strings.Contains(once, "defgh12345678") {
+		t.Errorf("遮蔽不彻底：%q", once)
+	}
+}
+
+// TestContractRedactLineTable 是遮蔽规则的**表驱动契约**（code-review 复验追加）：
+// 真敏感值必须遮，排障字段（错误码/状态名/请求 id）必须留。
+//
+// 为什么用表而不是几条 if：这类模式的最常见回归是「遮多了」或「遮少了」各一半，
+// 单条断言只看一个方向。表里两个方向都钉住，改正则时一跑就知道伤没伤到排障。
+func TestContractRedactLineTable(t *testing.T) {
+	const (
+		bearerTok = "sk-live-abcdefgh12345678"
+		basicTok  = "dXNlcjpwYXNzd29yZA=="
+		oauthCode = "abcd1234efghijkl"
+		accessTok = "ya29.A0AfH6SMBx"
+		refresh   = "1//0gXyzAbcDef"
+	)
+	// 敏感：输出里不得再出现这些值。
+	sensitive := []struct {
+		name, in, secret string
+	}{
+		{"Bearer 头", "Authorization: Bearer " + bearerTok, bearerTok},
+		{"Basic 头（base64 里是 user:pass）", "Authorization: Basic " + basicTok, basicTok},
+		{"OAuth 回调 code=", "GET /callback?code=" + oauthCode + "&state=ok", oauthCode},
+		{"query 裸 key", "GET /v1/models?key=" + oauthCode, oauthCode},
+		{"JSON 双 token", `{"access_token":"` + accessTok + `","refresh_token":"` + refresh + `"}`, accessTok},
+		{"裸 sk- 前缀", "received " + bearerTok, bearerTok},
+		{"password 键", "password=hunter2hunter2", "hunter2hunter2"},
+	}
+	for _, tc := range sensitive {
+		out := RedactLine(tc.in)
+		if strings.Contains(out, tc.secret) {
+			t.Errorf("%s：未遮蔽，输入=%q 输出=%q", tc.name, tc.in, out)
+		}
+	}
+	// 排障字段：必须原样保留（抹掉它们等于把「为什么失败」删了）。
+	preserved := []struct{ name, in, keep string }{
+		{"JSON error_code", `{"error_code":"upstream_unavailable","message":"上游 502"}`, `"upstream_unavailable"`},
+		{"error_code 键值", "error_code=model_not_found request_id=abc", "model_not_found"},
+		{"sidecar 错误帧形态", "upstream_error code=no_candidate", "no_candidate"},
+		{"E_ 错误码", "code=E_DEPENDENCY_MISSING method=infer.stream", "E_DEPENDENCY_MISSING"},
+		{"status_code", "status_code=503 upstream=http", "503"},
+		{"request_id", "request_id=abc error_code=timeout_killed", "request_id=abc"},
+	}
+	for _, tc := range preserved {
+		out := RedactLine(tc.in)
+		if !strings.Contains(out, tc.keep) {
+			t.Errorf("%s：排障字段被误遮，输入=%q 输出=%q（应保留 %q）", tc.name, tc.in, out, tc.keep)
+		}
+	}
+	// JSON 必须仍然可解析（引号配对保留）——否则日志里的错误体就没法看了。
+	out := RedactLine(`{"access_token":"` + accessTok + `","refresh_token":"` + refresh + `"}`)
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("遮蔽后 JSON 不可解析：%q（错误 %v）", out, err)
+	}
+	if parsed["access_token"] != "***" || parsed["refresh_token"] != "***" {
+		t.Errorf("遮后值应为 ***，得 %v", parsed)
+	}
+	// 截断仍在遮蔽之前：超长行必须被截断，且行尾不残留明文。
+	long := strings.Repeat("x", 4096) + bearerTok
+	if got := RedactLine(long); len(got) > stderrLogMaxBytes+len("…")+16 || strings.Contains(got, bearerTok) {
+		t.Errorf("超长行处理不对：len=%d 含明文=%v", len(got), strings.Contains(got, bearerTok))
+	}
 }

@@ -118,6 +118,15 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 	}
 	s.writeDB = writeDB
 
+	// 库文件权限：SQLite 自己按 umask 创建（常见 0644），而同机其他用户能读库
+	// 就等于能拿走全部凭据密文（05-storage 8.2 / 安全基线 C7）。打开后立即收窄
+	// 到 0600，并把 WAL 文件一并处理（它们同样含数据）。
+	// 为什么不在 DSN 里做：SQLite 没有文件模式参数，只能由进程自己设。
+	if err := chmodStoreFiles(opts.Path); err != nil {
+		_ = s.writeDB.Close()
+		return nil, err
+	}
+
 	// 迁移失败要立刻关池，否则测试里 t.TempDir() 清理会因句柄未关而留下 -wal 文件。
 	if err := s.migrate(ctx); err != nil {
 		_ = s.writeDB.Close()
@@ -355,3 +364,24 @@ func quoteLiteral(s string) string {
 }
 
 var _ = url.QueryEscape // 保留 url 导入，DSN 组装演进时使用
+
+// chmodStoreFiles 把主库与 WAL/SHM 收到 0600。
+//
+// 为什么必须在打开后做而不是“部署文档要求运维 chmod”：进程以什么身份跑就
+// 决定它创建的文件权限，而运维不可能在每次迁移、每次 -wal 重建后记得补 chmod；
+// SQLite 在 checkpoint 后会删掉并重建 -wal，权限会回到 umask 默认值。
+// 因此由进程每次打开时收窄，是唯一能长期成立的做法。
+//
+// 失败不静默跳过：库文件权限过宽是本册 C7 的红线（同机其他用户可读全部凭据密文），
+// 拿不到权限就拒绝启动，而不是带着 0644 继续跑。
+func chmodStoreFiles(path string) error {
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue // -wal/-shm 只在有写入时存在
+			}
+			return fmt.Errorf("store: 收窄库文件权限 %s: %w", p, err)
+		}
+	}
+	return nil
+}

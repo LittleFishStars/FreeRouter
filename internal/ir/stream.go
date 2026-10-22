@@ -86,6 +86,7 @@ type EncoderState struct {
 	visible  bool // 是否已写出可见内容
 	usage    bool // 是否已发过 usage（I4）
 	finished bool // 是否已发过 done（I5）
+	errored  bool // 是否已发过 error（I6：之后只允许 done）
 }
 
 // Started 报告是否已经开始向客户端输出。
@@ -96,6 +97,12 @@ func (s *EncoderState) Visible() bool { return s.visible }
 
 // Finished 报告流是否已终结。
 func (s *EncoderState) Finished() bool { return s.finished }
+
+// Errored 报告是否已写过错误帧（I6：此后只允许 done）。
+// 供编码器的收尾路径使用：Anthropic 的 error 是终止事件，官方 SDK 遇 error
+// 直接抛错；若之后仍补 content_block_stop / message_delta，严格客户端会看到
+// “报错后又来帧”。收尾层据此只写 message_stop。
+func (s *EncoderState) Errored() bool { return s.errored }
 
 // MarkWritten 记录"即将写出一个协议帧"，在帧真正写出前调用。
 //
@@ -111,6 +118,9 @@ func (s *EncoderState) MarkWritten(e Event) {
 		s.usage = true
 	case EvDone:
 		s.finished = true
+	case EvError:
+		// I6：error 之后只允许 done。置位后 Accept 会丢弃一切非 done 事件。
+		s.errored = true
 	}
 }
 
@@ -119,6 +129,11 @@ func (s *EncoderState) MarkWritten(e Event) {
 // 返回 false 表示编码器应丢弃该事件（不是报错——上游多给一个 usage 不值得让整个流失败，
 // 但必须让调用方能计数并告警）。
 func (s *EncoderState) Accept(e Event) bool {
+	// I6：error 之后只允许 done——上游在错误帧后继续发 delta 是协议违规，
+	// 写出去会与已写出的错误帧自相矛盾（客户端侧表现为「报错后又来内容」）。
+	if s.errored && e.Type != EvDone {
+		return false
+	}
 	if s.finished {
 		// I5：done 之后一律丢弃。
 		return false

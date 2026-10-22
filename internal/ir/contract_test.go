@@ -395,6 +395,41 @@ func TestContractAnthropicStreamEncodeGolden(t *testing.T) {
 	compareGolden(t, "anthropic/stream_encode.want.sse", buf.Bytes())
 }
 
+// TestContractAnthropicStreamErroredClose 锁 I6 的协议帧面：一旦写过 error，
+// 收尾只准补 message_stop。为什么不能只测 EncoderState：content_block_stop /
+// message_delta 是 Close() 直写的，绕过 Accept——只在状态机上写对不够。
+func TestContractAnthropicStreamErroredClose(t *testing.T) {
+	a := anthropic.Adapter()
+	var buf bytes.Buffer
+	w := a.NewStreamWriter(&buf, ir.EncodeOptions{UpstreamModel: "claude-test", RequestID: "req_err"})
+
+	for _, ev := range []ir.Event{
+		{Type: ir.EvStart},
+		{Type: ir.EvTextDelta, Text: "HELLO"},
+		{Type: ir.EvError, Err: &ir.Error{Code: "upstream_error", Message: "boom"}},
+	} {
+		if err := w.Write(ev); err != nil {
+			t.Fatalf("写事件 %s: %v", ev.Type, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("收尾: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, `"type":"error"`) && !strings.Contains(out, `event: error`) {
+		t.Fatalf("错误帧未写出:\n%s", out)
+	}
+	if !strings.Contains(out, "message_stop") {
+		t.Fatalf("errored 收尾仍应写 message_stop（流终结）:\n%s", out)
+	}
+	for _, forbidden := range []string{"content_block_stop", "message_delta"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("errored 后不得再写 %s（Anthropic 规范 error 是终止事件）:\n%s", forbidden, out)
+		}
+	}
+}
+
 // ---- C6：能力缺失不静默降级 ----
 
 func TestContractCapabilityCheckUnsupported(t *testing.T) {
@@ -467,6 +502,40 @@ func TestContractEncoderStateStartedVisible(t *testing.T) {
 	st2.MarkWritten(ir.Event{Type: ir.EvUsage, Usage: &u})
 	if st2.Accept(ir.Event{Type: ir.EvUsage, Usage: &u}) {
 		t.Fatalf("重复 usage 应被 I4 拒绝")
+	}
+}
+
+// TestContractEncoderStateI6ErrorThenOnlyDone 锁 I6：error 之后只允许 done。
+// 为什么必须测：上游在错误帧后继续发 delta 时，若照写会与已写出的错误帧自相矛盾
+// （客户端表现为“报错后又来内容”），而旧实现 Accept 只判 I4/I5，这条一直漏网。
+func TestContractEncoderStateI6ErrorThenOnlyDone(t *testing.T) {
+	var st ir.EncoderState
+	st.MarkWritten(ir.Event{Type: ir.EvStart})
+	// 错误帧本身允许写出（写入前 Accept 判定时 errored 尚未置位）。
+	if !st.Accept(ir.Event{Type: ir.EvError, Err: &ir.Error{Code: "upstream_error", Message: "boom"}}) {
+		t.Fatal("error 帧本身应允许写出")
+	}
+	st.MarkWritten(ir.Event{Type: ir.EvError, Err: &ir.Error{Code: "upstream_error", Message: "boom"}})
+
+	// error 之后一切非 done 事件都拒绝。
+	for _, ev := range []ir.Event{
+		{Type: ir.EvTextDelta, Text: "late"},
+		{Type: ir.EvThinkingDelta, Text: "late"},
+		{Type: ir.EvToolCallStart, Call: &ir.ToolCallPart{Idx: 0}},
+		{Type: ir.EvUsage, Usage: &ir.Usage{InputTokens: ir.Ptr(1)}},
+	} {
+		if st.Accept(ev) {
+			t.Fatalf("I6：error 之后 %s 应被拒绝", ev.Type)
+		}
+	}
+	// done 仍允许（作为流终结）。
+	if !st.Accept(ir.Event{Type: ir.EvDone}) {
+		t.Fatal("I6：error 之后的 done 应允许")
+	}
+	st.MarkWritten(ir.Event{Type: ir.EvDone})
+	// done 之后按 I5 全拒。
+	if st.Accept(ir.Event{Type: ir.EvDone}) {
+		t.Fatal("I5：done 之后的 done 也应拒绝")
 	}
 }
 

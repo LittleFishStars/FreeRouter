@@ -72,6 +72,9 @@ sidecar:
   # 固定 stdio + NDJSON，不提供 socket / tcp 选项（docs/architecture/04-sidecar.md 2.1）。
   ipc: "stdio"
   hub_path: ""
+  # DSH 安装目录（B 层依赖根）；留空则 sidecar 自动枚举。
+  # 容器与多版本共存场景显式配（对应 FR_SIDECAR_DEPS_ROOT）。
+  deps_root: ""
   startup_timeout: "20s"
 
 store:

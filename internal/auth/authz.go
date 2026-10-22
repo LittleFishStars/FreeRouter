@@ -149,13 +149,43 @@ func opsTo(list ...Op) CapabilitySet {
 // 管理面与模型面共用同一条链；差异只在"主体从哪来"（会话 vs Key），
 // 而那发生在协议层组装 Principal 的时候，不在这里。
 type AuthzService struct {
-	stores Stores
-	now    func() time.Time // CheckModelCall 的 Key 过期判定需要时钟（测试注入，不 sleep）
+	keys     authzKeyStore    // 窄接口：Key 的三读（KeyByHash/KeyByID/KeyAllowlist）
+	accounts AccountByIDOnly  // 账户实时状态（单方法子集）
+	policies PolicyRepository // 组策略（GroupsForAccount）
+	now      func() time.Time // CheckModelCall 的 Key 过期判定需要时钟（测试注入，不 sleep）
 }
 
-// NewAuthz 构造判定服务。
+// authzKeyStore 是判定链只需要的 Key 存储面（窄接口）。
+//
+// 为什么不直接用 KeyRepository（9 方法）：EffectiveModels/Check/CheckModelCall
+// 只触达三读；装配侧补桥时实现三读即可，让"创建/轮换 Key"这类写能力
+// 天然不在判定链的依赖面上——依赖面 = 职责面（与 KeyAuthStore 同一理由）。
+type authzKeyStore interface {
+	KeyByHash(ctx context.Context, keyHash []byte) (*APIKey, error)
+	KeyByID(ctx context.Context, keyID string) (*APIKey, error)
+	KeyAllowlist(ctx context.Context, keyID string) ([]string, error)
+}
+
+// NewAuthz 用完整 Stores 构造（全仓既有调用点保持不变）。
 func NewAuthz(stores Stores) *AuthzService {
-	return &AuthzService{stores: stores, now: time.Now}
+	return &AuthzService{keys: stores.Keys, accounts: stores.Accounts, policies: stores.Policies, now: time.Now}
+}
+
+// AccountByIDOnly 是判定链的账户读面（AccountRepository 的单方法子集）。
+//
+// 为什么不直接用 AccountRepository：那个接口还带 AccountByUsername/
+// TouchLastLogin/UpdatePasswordHash（登录面的知识）；判定链（第 4/5 步）
+// 只实时读账户——装配侧补桥时实现一个方法即可，登录面的桥不该被迫
+// 出现在可见性路径上。接口收窄是"依赖面=职责面"的同一条纪律。
+type AccountByIDOnly interface {
+	AccountByID(ctx context.Context, id string) (*Account, error)
+}
+
+// NewAuthzNarrow 用窄依赖构造（装配层补桥用：Key 三读 + 账户单读 +
+// 组策略；KeyRepository/AccountRepository 的写方法与登录方法不在
+// 装配路径上）。
+func NewAuthzNarrow(keys authzKeyStore, accounts AccountByIDOnly, policies PolicyRepository) *AuthzService {
+	return &AuthzService{keys: keys, accounts: accounts, policies: policies, now: time.Now}
 }
 
 // WithClock 注入时钟（测试用）。
@@ -214,10 +244,10 @@ func (a *AuthzService) ownedKind(k ResourceKind) bool {
 func (a *AuthzService) resourceOwner(ctx context.Context, res Resource) (string, error) {
 	switch res.Kind {
 	case ResAPIKey:
-		if a.stores.Keys == nil {
+		if a.keys == nil {
 			return "", Errorf(CodeInternal, nil, "Authz 缺少 Key 存储")
 		}
-		k, err := a.stores.Keys.KeyByID(ctx, res.ID)
+		k, err := a.keys.KeyByID(ctx, res.ID)
 		if err != nil {
 			return "", err
 		}
@@ -234,10 +264,10 @@ func (a *AuthzService) resourceOwner(ctx context.Context, res Resource) (string,
 // AccountUsable 是禁用联动的单点（04-authz.md §8）：账户状态与类**实时读**，
 // 不依赖长 TTL 缓存。模型面每请求调用它（判定链第 4 步）。
 func (a *AuthzService) AccountUsable(ctx context.Context, accountID string, required Class) (*Account, error) {
-	if a.stores.Accounts == nil {
+	if a.accounts == nil {
 		return nil, Errorf(CodeInternal, nil, "Authz 缺少账户存储")
 	}
-	acct, err := a.stores.Accounts.AccountByID(ctx, accountID)
+	acct, err := a.accounts.AccountByID(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -260,10 +290,15 @@ func (a *AuthzService) AccountUsable(ctx context.Context, accountID string, requ
 // EffectivePolicy 是一个账户全部所属组合并后的策略快照。
 type EffectivePolicy struct {
 	// 放开类
-	VisibleModels  []string // ∪ 各组抽象模型（稳定排序）
-	CanCreateKey   bool     // 布尔 deny 优先：任一组显式 false 即 false
-	AllowlistWiden bool     // 同上
-	MaxKeys        *int     // 放开类数值：多组取**最大值**；nil = 无组设置（落默认值）
+	VisibleModels []string // ∪ 各组抽象模型（稳定排序）
+	// 布尔放开类 = **fail-closed**（lead 裁决 2026-10-22，与
+	// store.ComposeEffectivePolicy 的 allGroupsAllow 同判据）：
+	// 任一组 false **或未设** → false；全部组显式 true → true；无组 → false。
+	// 旧实现「初值 true、只有显式 false 才翻」是 fail-open，与 03-groups
+	// §5「缺口最容易变成 fail-open」要防的事故同形，已废。
+	CanCreateKey   bool
+	AllowlistWiden bool
+	MaxKeys        *int // 放开类数值：多组取**最大值**；nil = 无组设置（落默认值）
 	// 限制类：逐键取 min；键不存在于结果 = 所有组都未设 = Unlimited。
 	Quotas         map[QuotaKey]int64
 	ModelQuotas    map[ModelQuotaKey]int64
@@ -290,12 +325,14 @@ func (e *EffectivePolicy) Quota(q QuotaKey) (int64, bool) {
 // 不能因为"它也是个上限"就错拿 min——那会让加一个小配额组顺带压掉建 Key 能力。
 func MergeGroupPolicies(groups []GroupPolicy) *EffectivePolicy {
 	eff := &EffectivePolicy{
-		CanCreateKey:   true,
-		AllowlistWiden: true,
-		Quotas:         make(map[QuotaKey]int64),
-		ModelQuotas:    make(map[ModelQuotaKey]int64),
+		// fail-closed：布尔从 false 起，ALL(显式 true) 才翻真（判据见
+		// allGroupsAllow——与 store 的 allGroupsAllow 是同一句话）。
+		Quotas:      make(map[QuotaKey]int64),
+		ModelQuotas: make(map[ModelQuotaKey]int64),
 	}
 	seenModels := make(map[string]bool)
+	// 逐组布尔：记录"该组是否全部显式 true"。初值 false = 无组即 false。
+	canCreateOK, widenOK := len(groups) > 0, len(groups) > 0
 
 	for i := range groups {
 		g := &groups[i]
@@ -307,12 +344,12 @@ func MergeGroupPolicies(groups []GroupPolicy) *EffectivePolicy {
 				eff.VisibleModels = append(eff.VisibleModels, mdl)
 			}
 		}
-		// 布尔开关：deny 优先——任何一组显式禁止即禁止；未设（nil）不参与。
-		if g.CanCreateKey != nil && !*g.CanCreateKey {
-			eff.CanCreateKey = false
+		// 布尔开关（fail-closed）：任一组的值为 nil（未设）或 false 即永久 false。
+		if !allGroupsAllowBool(g.CanCreateKey) {
+			canCreateOK = false
 		}
-		if g.KeyAllowlistWiden != nil && !*g.KeyAllowlistWiden {
-			eff.AllowlistWiden = false
+		if !allGroupsAllowBool(g.KeyAllowlistWiden) {
+			widenOK = false
 		}
 		// Key 数量上限：放开类数值取**最大值**。
 		if g.MaxKeys != nil {
@@ -347,9 +384,22 @@ func MergeGroupPolicies(groups []GroupPolicy) *EffectivePolicy {
 		eff.Pools = append(eff.Pools, g.Pools...)
 	}
 
+	eff.CanCreateKey = canCreateOK
+	eff.AllowlistWiden = widenOK
 	sort.Strings(eff.VisibleModels)
 	return eff
 }
+
+// allGroupsAllowBool 是布尔放开类的**唯一判据表达式**（lead 裁决：与
+// store/effective_policy.go 的 allGroupsAllow 同一语义，两处共享这句话）：
+//
+//	nil 或 false → 不允许；显式 true → 允许。
+//	调用侧对全部所属组做 AND；空组列表 → 不允许（fail-closed）。
+//
+// 为什么 auth 不直接 import store 的那份：依赖方向（store 是持久层，
+// auth 不 import 它）；两份是同一算法对两个输入形状的适配器，判据
+// 表达式逐字一致，评审对 diff 只看这一句。
+func allGroupsAllowBool(v *bool) bool { return v != nil && *v }
 
 // minPtr 取"两个已设值里更严（更小）的那个"；nil 表示该来源未设置。
 // 显式 Unlimited（-1 及一切负数）同样视为"不构成闸"，不参与。
@@ -394,10 +444,10 @@ func (a *AuthzService) EffectiveModels(ctx context.Context, accountID, keyID str
 		return nil, err
 	}
 	eff := MergeGroupPolicies(groups)
-	if a.stores.Keys == nil {
+	if a.keys == nil {
 		return nil, Errorf(CodeInternal, nil, "Authz 缺少 Key 存储")
 	}
-	allow, err := a.stores.Keys.KeyAllowlist(ctx, keyID)
+	allow, err := a.keys.KeyAllowlist(ctx, keyID)
 	if err != nil {
 		return nil, err
 	}
@@ -436,10 +486,10 @@ func (a *AuthzService) ModelCallable(ctx context.Context, accountID, keyID, requ
 // groupsFor 读取账户全部组策略；无 PolicyRepository 时返回空切片
 // （合并算法对空输入 = 全部键未设 = 全部 Unlimited，由调用方落全局默认）。
 func (a *AuthzService) groupsFor(ctx context.Context, accountID string) ([]GroupPolicy, error) {
-	if a.stores.Policies == nil {
+	if a.policies == nil {
 		return nil, nil
 	}
-	return a.stores.Policies.GroupsForAccount(ctx, accountID)
+	return a.policies.GroupsForAccount(ctx, accountID)
 }
 
 // EffectivePolicyFor 是供 meter / 中间件取"合并后的上界"的入口。
@@ -464,7 +514,7 @@ type ModelCallPlan struct {
 //
 // 失败错误就是协议层要映射的对象：401（凭据/账户）与 404（不可见模型）。
 func (a *AuthzService) CheckModelCall(ctx context.Context, rawKey, requestedModel string) (*ModelCallPlan, error) {
-	if a.stores.Keys == nil || a.stores.Accounts == nil {
+	if a.keys == nil || a.accounts == nil {
 		return nil, Errorf(CodeInternal, nil, "Authz 缺少存储依赖")
 	}
 	// 第 2/3 步：Key 自身（格式、哈希查表、状态/过期）——复用 KeyManager.Usable 的判定，
@@ -472,7 +522,7 @@ func (a *AuthzService) CheckModelCall(ctx context.Context, rawKey, requestedMode
 	if !LooksLikeKey(rawKey) {
 		return nil, ErrInvalidAPIKey
 	}
-	key, err := a.stores.Keys.KeyByHash(ctx, HashToken(rawKey))
+	key, err := a.keys.KeyByHash(ctx, HashToken(rawKey))
 	if err != nil {
 		return nil, ErrInvalidAPIKey
 	}
@@ -480,7 +530,7 @@ func (a *AuthzService) CheckModelCall(ctx context.Context, rawKey, requestedMode
 		return nil, ErrInvalidAPIKey
 	}
 	// 第 4 步：账户实时状态 + tenant 类。
-	acct, err := a.stores.Accounts.AccountByID(ctx, key.AccountID)
+	acct, err := a.accounts.AccountByID(ctx, key.AccountID)
 	if err != nil {
 		return nil, ErrInvalidAPIKey // 对外同形：机器凭据不给探测面（§5 禁用联动 401）
 	}

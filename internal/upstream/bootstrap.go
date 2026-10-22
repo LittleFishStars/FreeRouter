@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/LittleFishStars/FreeRouter/internal/upstream/dshprovider"
 )
@@ -83,6 +84,16 @@ type RelayBootstrapper struct {
 	refresher Refresher
 	notifier  AdminNotifier
 	log       *slog.Logger
+	// notified 是通知的进程内节流表（key = kind|relatedID|title）。
+	// 为什么需要：store 的 Append 去重靠部分索引 `ON CONFLICT(kind, related_id)
+	// WHERE read_at IS NULL AND related_id IS NOT NULL`，而自举失败的两条通知
+	// **拿不到数字行 id**（provider 行还没落库 / 落库本身就失败）——related 为
+	// 空时实现侧转成 nil，部分索引不覆盖 NULL，去重失效；而自举会随启动重试
+	// 与周期重跑，每轮都投就会把待处理页刷成噪声（§3.3：噪声等于没有通知）。
+	// 所以进程内按 (kind, related, title) 只投一次；进程重启后是新表，可以再投
+	// ——重启本身就该让人重新看一眼状态。
+	notified map[string]bool
+	notifMu  sync.Mutex
 }
 
 // Refresher 是目录同步的最小接口（*ModelRefresher 天然满足；窄接口便于单测 fake）。
@@ -93,7 +104,10 @@ type Refresher interface {
 // NewRelayBootstrapper 建自举器。writer 为 nil 时自举只拉目录不落行
 // （装配未接线 store 的降级形态——不报错，写库失败本就只记日志）。
 func NewRelayBootstrapper(source ProviderSource, writer UpstreamWriter, refresher Refresher, notifier AdminNotifier, log *slog.Logger) *RelayBootstrapper {
-	return &RelayBootstrapper{source: source, writer: writer, refresher: refresher, notifier: notifier, log: log}
+	return &RelayBootstrapper{
+		source: source, writer: writer, refresher: refresher, notifier: notifier, log: log,
+		notified: make(map[string]bool),
+	}
 }
 
 // Run 执行一轮自举：providers.list → 落 upstreams → 目录刷新。
@@ -148,13 +162,28 @@ func (b *RelayBootstrapper) Run(ctx context.Context) BootstrapResult {
 	return res
 }
 
-// notify 发 admin_inbox 通知（§3.3：旁路，失败绝不影响主结果）。
+// notify 发 admin_inbox 通知（§3.3：旁路，失败绝不影响主结果），带进程内节流。
+// 节流理由见 RelayBootstrapper.notified 字段注释：自举类通知没有数字行 id，
+// store 的部分索引去重覆盖不到它们。
 func (b *RelayBootstrapper) notify(ctx context.Context, kind, relatedID, title, detail, severity string) {
 	if b.notifier == nil {
 		return
 	}
+	key := kind + "|" + relatedID + "|" + title
+	b.notifMu.Lock()
+	if b.notified[key] {
+		b.notifMu.Unlock()
+		return
+	}
+	if b.notified == nil {
+		b.notified = make(map[string]bool) // 零值构造兼容（字段表可能是 nil）
+	}
+	b.notified[key] = true
+	b.notifMu.Unlock()
+
 	if err := b.notifier.NotifyAdminInbox(ctx, kind, relatedID, title, detail, severity); err != nil {
 		// 写入失败（库锁/磁盘满）必须落 slog 且不得影响目录刷新本身（§3.3 末段）。
+		// 不回滚节流位：通知失败重试交下一轮/人工，不靠反复投递刷日志。
 		slog.Default().Warn("admin_inbox 通知写入失败（旁路）", "kind", kind, "error", err)
 	}
 }

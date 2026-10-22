@@ -16,12 +16,15 @@ import (
 //     落库计数，store 的条件 UPDATE（判定即扣减）。
 //
 // 本中间件做**预检**（TryDebit 判定即扣减，请求数维度 cost=1；token 维度
-// 用估计值）。token 实际用量在终态结算（RecordRequest 的 Settlement）多退
-// 少不补：预检估计值偏大导致的少量少放是可接受的（比超发好），
+// 用估计值）。token 实际用量在终态结算（M1 已接：proxyV1 入口的 defer →
+// httpapi.Settler → app.settleBridge → meter.SettlementRecorder.Credit +
+// store.UsageRepo.RecordRequest，见 settle.go 与 internal/app/settle_bridge.go）
+// 多退少不补：预检估计值偏大导致的少量少放是可接受的（比超发好），
 // 预检偏小的部分在结算时**不再追扣**——总量上界由 daily 汇总与对账兜底
 // （05-storage §7.4"本周期总量可能超上限"的既定口径）。
 //
-// 装配归 Lead：Handler() 里在 mwRate 之后挂 s.mwQuota(adapter, modelIDOf)。
+// 装配归 Lead：Handler() 里在 mwRate 之后挂 s.mwQuota(adapter, modelIDOf)；
+// 结算出口单独注入（Server.SetSettler），两者不共享同一个接口。
 
 // ModelIDSource 把"请求路径里的模型名"解析成 store 的抽象模型 id。
 //

@@ -285,13 +285,40 @@ func (r *ModelRefresher) upsertModel(ctx context.Context, upstreamID int64, m ds
 	}
 	// 渠道（01-catalog.md §2.3）：走 dshprovider.ModelOwnedBy() 而不是直接读
 	// m.OwnedBy——它把「hub 权威值」与「从 `渠道/模型` 前缀派生」两种来源显式区分。
-	// 两种都落同一个 channel 列（存储层不关心来源），但本层仍用它的返回值而不是
-	// 自己再切一次前缀：协议层已有解析口径，两边各切一遍必然分叉。
+	// 本层用它的返回值而不是自己再切一次前缀：协议层已有解析口径，
+	// 两边各切一遍必然分叉。
 	//
 	// 解析不出（畸形 id / 裸 id 且无权威值）时留 nil，让仓储再兜底一次；
 	// 两层都拿不出就是 NULL（"渠道不可知"），不猜、不回退上游名。
-	if ch := m.ModelOwnedBy().Channel; ch != "" {
-		row.Channel = ptr(ch)
+	//
+	// ⚠ **来源标记（Authoritative/Derived）不落库**：real_models 只有 channel
+	// 一列（0002）且它收的是纯字符串——**丢失就在下面这一行的
+	// `m.ModelOwnedBy().Channel`**（只取 Channel，丢掉了第二信息）。
+	// 为什么不加 channel_source 列（lead 裁决 B，与裁决 A 的权衡已做对照）：
+	//   · **没有决策消费者**——四处渠道消费点（store repo_model.go 与
+	//     routing/abstract.go 的 aggregate 排除、routing/candidates.go 的
+	//     channelAllowed、routing/trace.go 展示）全部按**值**判定；
+	//   · 为什么值判定就够（这句是裁决的全部理由，原话归档）：
+	//     **`Derived` 只标「这是派生的」，不指示「派生错了」**——id 自称
+	//     aggregate 而 owned_by 说 deepseek-official 那种自相矛盾的数据，
+	//     拿来源标记也判不出该信哪边；而 §5 要排的是 aggregate **这个渠道**
+	//     本身，权威值还是派生值都该排。
+	//   · 排障需求（「这个渠道名从哪来」）落在日志而不是列：见下面那行 Debug。
+	//     日志能记录「某一次刷新走了哪条路径」，比列里的静态最终值信息量大。
+	//   · 下一个人**不要拿来源参与判定**，也不要为它补列（那会多出一个
+	//     无人读的列 + 一条迁移 + 一处 upsert 覆盖规则）。
+	// 所以这里把来源打进 Debug 日志：事后追查时看日志，不去 SQL 查列。
+	// 为什么 Debug 级：渠道来源不是异常，正常部署下每一条都有这行，
+	// Info 会把日志刷成噪声；它只在「要回答从哪来」时才需要被看到。
+	own := m.ModelOwnedBy()
+	if own.Channel != "" {
+		row.Channel = ptr(own.Channel)
+		src := "derived"
+		if own.Authoritative {
+			src = "owned_by"
+		}
+		r.log.Debug("upstream: 渠道来源",
+			"model", m.UpstreamModelID, "channel", own.Channel, "channel_source", src)
 	}
 	if m.ContextWindow != nil {
 		cw := int64(*m.ContextWindow)

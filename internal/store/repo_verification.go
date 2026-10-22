@@ -63,6 +63,44 @@ func (r *ModelRepo) MarkVerified(ctx context.Context, credentialID int64, status
 	return nil
 }
 
+// SetRealModelVerification 写回目录侧鉴定三列（real_models.verify_status/
+// verify_detail/verify_source，0004 迁移）。
+//
+// 与 MarkVerified 的区别（两者共用同一套 VerifyStatus 四态，但不是同一件事）：
+//   - MarkVerified：L1 凭据侧（upstream_credentials），回答「这把 key 是不是它声称的模型」；
+//   - 本方法：目录侧（real_models），回答「目录条目与指纹表/声明的结构是否相符」。
+//     一条凭据服务 N 个模型，把目录结论写进凭据行会 N×M 互相覆盖（0004 的证据性理由）。
+//
+// source 由调用方传入（upstream.VerifySourceOf 是唯一映射点）：列是 TEXT 且语义是
+// 「版本标识」而不是数字，存储层不发明格式，也不把 int 版本的翻译散落到调用方。
+// evidence 为空时写 NULL 而不是空串：verify_detail 的 NULL 表示「没有说明」，
+// 空串会被读方当成「有一条空证据」。
+func (r *ModelRepo) SetRealModelVerification(ctx context.Context, realModelID int64, status VerifyStatus, evidence, source string) error {
+	if realModelID == 0 {
+		return errors.New("store: real_model id 不得为 0")
+	}
+	if !status.valid() {
+		return fmt.Errorf("store: 非法鉴定状态 %q（四态：verified/suspect/unverified/trusted）", status)
+	}
+	var detail, src any
+	if evidence != "" {
+		detail = evidence
+	}
+	if source != "" {
+		src = source
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE real_models SET verify_status = ?, verify_detail = ?, verify_source = ? WHERE id = ?`,
+		string(status), detail, src, realModelID)
+	if err != nil {
+		return fmt.Errorf("store: 写目录鉴定结论失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Credential 是 upstream_credentials 的读取形态（鉴定相关列 + 定位列）。
 // secret_ref 只是引用不含明文（主密钥管的事，这里原样转交）。
 type Credential struct {

@@ -125,7 +125,7 @@ func TestContractPeriodAnchorAndReset(t *testing.T) {
 		t.Fatal("day 锚点必须跨 UTC 日切换")
 	}
 	m := PeriodMonth
-	if got := m.Anchor(base); got != "2026-10" {
+	if got := m.Anchor(base); got != "2026-10-01" { // 与 store periodAnchor 同口径（当月 1 日全格式）
 		t.Fatalf("month 锚点 = %s", got)
 	}
 	// ResetAt：日重置 = 次日 UTC 00:00。

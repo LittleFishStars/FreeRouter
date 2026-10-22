@@ -309,8 +309,9 @@ func (res *Resolver) expandCandidates(ctx context.Context, m *AbstractModel) ([]
 		// 是虚假安全感：注释写着「刷新器 bug 时路由层兜底」，实际兜不住。
 		//
 		// 现在两道都判模型 id 前缀：手工改库把 excluded_from_candidates 清成
-		// 0 时，这道仍挡住（这才是双保险的用途）；而渠道名判据即便将来
-		// 有渠道语义变化（channel/channel_source 两列落地）也不必动这里。
+		// 0 时，这道仍挡住（这才是双保险的用途）；而渠道列（real_models.channel，
+		// 0002 落地）即便将来语义再变也不必动这里——本判定读的是 id 前缀
+		// 不是渠道列，与渠道来源（权威 owned_by vs 前缀派生）正交。
 		if ch, _, ok := strings.Cut(rm.UpstreamModelID, "/"); ok && ch == aggregateChannel {
 			continue
 		}

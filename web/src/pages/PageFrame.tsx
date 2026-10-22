@@ -4,46 +4,28 @@
 //   3. 主操作按钮组（右对齐）
 //   4. 分区内容
 // 所有页面共用这一处，保证「标题下必须有一句话说明」不会因为赶工而漏掉。
+//
+// 面包屑按路由表前缀推导（breadcrumbTrail），不依赖 nav 字段：详情页
+// （nav=null）同样能显示「管理层 / 账户列表 / 账户详情」。
 
 import type { ReactNode } from 'react'
-import type { PageDef } from '../routes'
+import { breadcrumbTrail, type PageDef } from '../routes'
 
 export interface PageFrameProps {
   def: PageDef
-  /** 主操作按钮组（右对齐区）。占位页一般没有。 */
+  /** 主操作按钮组（右对齐区）。 */
   actions?: ReactNode
   children?: ReactNode
 }
 
-/** 由路径推导面包屑段：/admin/accounts/:id → 管理 / 账户详情 / 详情。 */
-function breadcrumbs(def: PageDef): string[] {
-  const segs: string[] = []
-  if (def.nav) segs.push(navCrumbLabel(def.nav))
-  // 层级页面（nav=null 的子页）用标题作第二段；根路径不冗余显示
-  if (def.path !== '/' && def.path.split('/').filter(Boolean).length > 1) {
-    segs.push(def.title)
-  }
-  return segs
-}
-
-function navCrumbLabel(nav: NonNullable<PageDef['nav']>): string {
-  switch (nav) {
-    case 'public': return '公共区'
-    case 'account': return '账户'
-    case 'admin': return '管理'
-    case 'usage': return '我的使用'
-    case 'contributions': return '我的贡献'
-  }
-}
-
 export default function PageFrame({ def, actions, children }: PageFrameProps) {
-  const crumbs = breadcrumbs(def)
+  const crumbs = breadcrumbTrail(def)
   return (
     <section className="page-frame">
       {crumbs.length > 1 && (
         <nav aria-label="面包屑" className="breadcrumb">
           {crumbs.map((c, i) => (
-            <span key={i}>
+            <span key={`${c}-${i}`}>
               {i > 0 && <span aria-hidden="true"> / </span>}
               {c}
             </span>
@@ -55,8 +37,10 @@ export default function PageFrame({ def, actions, children }: PageFrameProps) {
           <h1>
             {def.title}
             {def.dangerous && (
-              // IA 全站唯一的 🔒 标记：提示本页存在危险写（实装的确认框在 M9 后接入）
-              <span title="本页含危险写操作，提交前须二次确认"> 🔒</span>
+              // IA 全站唯一的 🔒 标记：本页存在危险写；提交前必须走统一确认框。
+              <span className="lock-mark" title="本页含危险写操作，提交前须二次确认">
+                {' '}🔒
+              </span>
             )}
           </h1>
           <p className="page-summary">{def.summary}</p>

@@ -35,8 +35,18 @@ func (a *App) buildServer() *httpapi.Server {
 		ShuttingDown: func() bool { return false }, // main 侧原子标志经 SetShuttingDown 注入
 	})
 
+	// 判定链第 5 步（task-22）：候选源与模型目录都过可见性闸——
+	// gatedCandidates 在解析前判（不可见 → ErrModelNotFound → 404，
+	// 与"模型不存在"同形）；gatedCatalog 列表 ∩ 可见集。testBypass=true
+	// 是占位通道兼容层（httpapi 既有 v1 测试用 InjectTestAccount 无
+	// KeyPrincipal；生产带 Key 流量走严格判定），迁移后删。
+	vis := a.newVisibilityDeps(
+		modelCatalog{models: a.store.Repos().Models},
+		newRoutingCandidates(a),
+	)
+
 	// v1 面板：模型目录先接（GET /v1/models 立即有数据）。
-	srv.AttachV1Models(modelCatalog{models: a.store.Repos().Models})
+	srv.AttachV1Models(vis.catalog) // 第 5 步接线：列表 ∩ 主体可见集
 
 	// 推理上游（task-10 M2 传输 + upstream_shim 装配桥）：Caller 同构面钉到
 	// httpapi.Upstream，候选源查 real_models 按 UpstreamModelID 精确匹配
@@ -45,7 +55,7 @@ func (a *App) buildServer() *httpapi.Server {
 	// realModelCandidates 保留在 upstream_shim.go 里作为 M5 形态的
 	// 独立测试对象与回退参考（不再进生产路径）。
 	shim, _ := a.newUpstreamShim()
-	srv.AttachV1(shim, newRoutingCandidates(a))
+	srv.AttachV1(shim, vis.candidates) // 候选源过第 5 步闸
 
 	// 鉴权/限速/配额中间件的参数构造：
 	//   keyAuthBridge —— store 两读 → auth.KeyAuthStore；
@@ -66,8 +76,15 @@ func (a *App) buildServer() *httpapi.Server {
 		GlobalDailyTokens: a.cfg.Limits.GlobalDailyTokens,
 		QueueTimeout:      a.cfg.Limits.QueueTimeout.Std(),
 	})
-	a.debiter = meter.NewStoreAdapter(
-		a.store.Repos().Quotas, a.store.Repos().Groups)
+	// 同一个 StoreAdapter 实例只建一次：debiter（判定面）与 quotaLedger
+	// （记账面）必须是同一个对象——两个实例会让额度行的内存态与库态分叉。
+	ledger := meter.NewStoreAdapter(a.store.Repos().Quotas, a.store.Repos().Groups)
+	a.debiter = ledger
+	a.quotaLedger = ledger
+
+	// 终态结算出口（M1）：一次请求恰一次，额度面 + requests/usage_daily。
+	// 不注入时 v1 请求照常服务但不记账（测试与降级态）。
+	srv.SetSettler(a.newSettler())
 
 	// 注册到 Server 的挂载点（Handler() 在 server.go 里逐条 r.Use）。
 	srv.SetAuthChain(

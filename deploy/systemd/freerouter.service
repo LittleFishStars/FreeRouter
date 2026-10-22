@@ -1,0 +1,117 @@
+# FreeRouter —— systemd 单元（形态 A：裸机/虚拟机直连，默认部署形态）
+#
+# 安装（见 docs/ops/02-deploy.md 新增的「部署形态与运维手册」小节）：
+#   sudo install -m 0755 bin/freerouter /usr/local/bin/freerouter
+#   sudo install -d -m 0750 -o freerouter -g freerouter /var/lib/freerouter
+#   sudo install -D -m 0644 deploy/systemd/freerouter.service /etc/systemd/system/freerouter.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now freerouter
+#
+# 前置：服务用户与主密钥必须先存在（主密钥缺失时 store.Open 会拒绝启动，
+# 这是刻意的——见 internal/store/masterkey.go「主密钥没有默认路径」）：
+#   sudo useradd --system --home /var/lib/freerouter --shell /usr/sbin/nologin freerouter
+#   sudo mkdir -p /etc/freerouter && sudo install -m 0600 -o freerouter -g freerouter /dev/null /etc/freerouter/master.key
+#   head -c 32 /dev/urandom > /tmp/k && sudo install -m 0600 -o freerouter -g freerouter /tmp/k /etc/freerouter/master.key && rm -f /tmp/k
+#
+# ── 为什么 UMask=0077 是这一份单元里最要紧的一行 ────────────────────
+# 01-security §4.2 要求数据库文件 0600。实测（M10）：
+#   umask 022 下启动 → 库文件 644（同机他人可读凭据密文与密码哈希）
+#   umask 077 下启动 → 库文件 600，-wal/-shm 同为 0600
+# internal/store 建目录用的是 0750、建库走驱动默认，两者都要 **减去 umask**；
+# 也就是说这一行不改任何 Go 代码就能让 C7 基线成立。这是本单元存在的核心理由之一，
+# 也因此 scripts/smoke.sh 与 security-checklist.sh 会把它作为可断言项。
+# 注意：umask 只影响**新建**文件。已有 644 的库要手工 chmod 600 一次。
+#
+# ── 为什么数据目录要在安装时预建，而不是靠 ProtectSystem 放行就够 ────
+# store.Open 的 MkdirAll(0750) 同样受 umask 影响：umask 077 下建出来是 0700（更安全），
+# 但如果目录是 root 事先建的 755，程序不会去改它。安装命令里显式 -m 0750 才是确定形态。
+
+[Unit]
+Description=FreeRouter —— AI Agent 免费额度池化共享路由
+Documentation=file:///opt/freerouter/docs/ops/02-deploy.md
+After=network-online.target
+Wants=network-online.target
+# 库里存的是凭据密文，主密钥在 /etc/freerouter：如果它落在加密卷上，
+# 必须等卷就绪，否则 store.Open 读到空密钥文件会以「长度不对」失败，
+# 而那条错误离真正原因（卷没挂）隔得很远。
+# RequiresMountsFor 让 systemd 自己插挂载依赖，比手写 after 可靠。
+RequiresMountsFor=/var/lib/freerouter /etc/freerouter
+[Service]
+Type=simple
+User=freerouter
+Group=freerouter
+
+# 主密钥与数据目录**分开**：/etc/freerouter（密钥）与 /var/lib/freerouter（库）。
+# 这是 05-storage.md 8.2 的落地形态，不是风格偏好。
+EnvironmentFile=-/etc/freerouter/env
+Environment=FR_STORE_PATH=/var/lib/freerouter/freerouter.db
+Environment=FR_STORE_BACKUP_DIR=/var/lib/freerouter/backups
+Environment=FR_STORE_MASTER_KEY_FILE=/etc/freerouter/master.key
+Environment=FR_SIDECAR_ENTRY=/opt/freerouter/sidecar/index.mjs
+Environment=FR_SERVER_LISTEN=127.0.0.1:8080
+Environment=FR_LOG_FORMAT=json
+# 默认形态：明文直连 + 只绑回环。要对外服务请改 FR_SERVER_LISTEN 并读
+# docs/ops/01-security.md §2（tls.mode / insecure_public_listen 的组合决定告警还是拒绝启动）。
+
+# ExecStart 必须带 --config（任务定案）：让「这份单元跑的是哪份配置」在 ps 输出里
+# 一眼可见，排障时少一个未知数。前提是安装步骤**一定要**把配置装到位（见文件头
+# 安装命令）；systemd 不支持 ExecStart 里的条件判断，用 sh -c 包装又会让
+# Type=simple 丢掉「直接 exec 守护进程」的性质（信号与 cgroup 归属都会变复杂）。
+# 所以这里取硬约束：配置文件不存在就是安装没做完，启动失败并写进 journal 是对的。
+ExecStart=/usr/local/bin/freerouter --config /etc/freerouter/config.yaml
+
+UMask=0077
+WorkingDirectory=/var/lib/freerouter
+
+UMask=0077
+WorkingDirectory=/var/lib/freerouter
+
+Restart=on-failure
+RestartSec=3s
+# 优雅关闭：main.go 收到 SIGTERM 后按「readyz 变红 → 关 listener → drain 在飞流式请求
+# → 关 sidecar → 关库（WAL checkpoint）」走完，默认窗口 30s（server.shutdown_grace）。
+# TimeoutStopSec 必须比它宽，否则 systemd 会在 drain 中途 SIGKILL，把进行中的流式请求掐断。
+KillSignal=SIGTERM
+TimeoutStopSec=45
+TimeoutStartSec=60
+
+# ── 文件系统隔离 ──
+ProtectSystem=strict
+# 只有这两个路径可写：数据目录（库/-wal/-shm/备份）与 /tmp。
+# 为什么不用 PrivateTmp：Go 的 os.TempDir 会被重定向到 /tmp/systemd-private-*，
+# 那是可写且随服务生命周期清理的，本身没问题；但 sidecar 与宿主共享 /tmp 的场景
+# （provider OAuth 回调的临时文件）会变成「看不见对方的临时文件」，增加排障歧义。
+# 保留共享 /tmp + ReadWritePaths 里显式列出，可写面仍然只有三处。
+ReadWritePaths=/var/lib/freerouter /tmp
+# 主密钥只读可达，绝不可写（写坏了等于凭据全废）。
+ReadOnlyPaths=/etc/freerouter
+
+# ── 进程/内核面收敛 ──
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=false
+# 上面这行必须保持 false：本进程是 Go + Node 子进程，Node 的 JIT 需要
+# 可写可执行内存；开了 MemoryDenyWriteExecute 会把 sidecar 直接打死，
+# 而失败表现是「主进程活着、贡献功能全废」这种最难归因的形态。
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+# AmbientCapabilities 刻意不写：写了就是主动往进程的 effective set 里加能力。
+# 绑 8080 不需要任何 cap（>1024），绑定 443 那种需求请走反代而不是提权。
+
+# ── 日志 ──
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=freerouter
+
+[Install]
+WantedBy=multi-user.target

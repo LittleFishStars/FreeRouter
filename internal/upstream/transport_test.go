@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -304,6 +305,43 @@ func TestContractRelayClassMapping(t *testing.T) {
 	}
 }
 
+// TestContractRelayUnwrapSSEPayload：sidecar 的 {"sse":...} 信封要被拆掉，
+// 裸载荷（旧假设）照旧透传——两种形态都必须能进 StreamReader。
+func TestContractRelayUnwrapSSEPayload(t *testing.T) {
+	const sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"
+	// 形态一：sidecar M8 起的信封（用 json.Marshal 造载荷，避免手写转义出错）
+	enveloped, err := json.Marshal(map[string]string{"sse": sse})
+	if err != nil {
+		t.Fatalf("构造信封失败：%v", err)
+	}
+	rc, err := unwrapInferPayload(enveloped)
+	if err != nil {
+		t.Fatalf("拆信封失败：%v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	if string(got) != sse {
+		t.Fatalf("拆出的 SSE 不一致：%q", string(got))
+	}
+	_ = rc.Close()
+
+	// 形态二：裸 SSE 文本（旧版 sidecar / 直通实现）
+	rc, err = unwrapInferPayload([]byte(sse))
+	if err != nil {
+		t.Fatalf("裸载荷应透传：%v", err)
+	}
+	got, _ = io.ReadAll(rc)
+	if string(got) != sse {
+		t.Fatalf("裸载荷被改写了：%q", string(got))
+	}
+
+	// 形态三：空载荷是协议错误（不是"空响应"）。
+	if _, err := unwrapInferPayload(nil); err == nil {
+		t.Fatal("空载荷应 ErrProtocol")
+	} else if ue, ok := err.(*Error); !ok || ue.Class != ErrProtocol {
+		t.Fatalf("空载荷应归 protocol，得 %v", err)
+	}
+}
+
 // TestContractRelaySplitProviderModel：provider/model 拆分。
 func TestContractRelaySplitProviderModel(t *testing.T) {
 	cases := []struct {
@@ -349,18 +387,36 @@ func TestContractRelayEndToEndFakeSidecar(t *testing.T) {
 
 	tr := NewRelayTransport(client)
 	tgt := Target{UpstreamID: 1, Kind: KindRelay, RealModel: "buddy/deepseek-v4.1"}
-	_, err = tr.InferStream(testCtx, tgt, []byte(`{"model":"deepseek-v4.1","messages":[]}`), true)
-	if err == nil {
-		t.Fatal("sidecar 未实现 infer.stream，应失败")
+	// M8 后 fake 真的实现了 infer.stream，且返回 {"sse": ...} 信封——
+	// 这条 e2e 验证的是**生产调用点**：InferStream 必须先拆信封再交给
+	// adapter 的 StreamReader，否则会得到「200 + 空回答」（信封不是 SSE）。
+	// 旧版本只测 unwrapInferPayload 孤立函数，接线断了测不出来（237d584 就是这么丢的）。
+	rc, err := tr.InferStream(testCtx, tgt, []byte(`{"model":"deepseek-v4.1","messages":[]}`), true)
+	if err != nil {
+		t.Fatalf("infer.stream 应成功，got %v", err)
 	}
-	ue, ok2 := err.(*Error)
-	if !ok2 {
-		// 可能是 ErrConnect（fake ok 模式的 health 正常但 infer 未知方法归一为
-		// ErrProtocol）；也可能 fake 没实现该方法导致 E_UNKNOWN_METHOD → protocol。
-		t.Fatalf("应归一 *upstream.Error，got %T: %v", err, err)
+	defer func() { _ = rc.Close() }()
+
+	reader := openai.Adapter().NewStreamReader(rc, ir.DecodeOptions{RequestID: "req_relay_e2e"})
+	var text strings.Builder
+	sawDone := false
+	for {
+		ev, err := reader.Next()
+		if err != nil {
+			break
+		}
+		switch ev.Type {
+		case ir.EvTextDelta:
+			text.WriteString(ev.Text)
+		case ir.EvDone:
+			sawDone = true
+		}
 	}
-	if ue.Class != ErrProtocol {
-		t.Logf("infer.stream 错误类=%s（fake 侧实现变化时关注）", ue.Class)
+	if text.String() != "你好" {
+		t.Fatalf("拆信封后应拿到 text_delta 文本，got %q（信封未拆时会为空）", text.String())
+	}
+	if !sawDone {
+		t.Fatal("流应有 done 事件")
 	}
 }
 

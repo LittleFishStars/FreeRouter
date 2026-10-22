@@ -41,12 +41,19 @@ type App struct {
 	keyAuthn *auth.KeyAuthenticator
 	limiter  *meter.Limiter
 	debiter  httpapi.QuotaDebiter
-
+	// quotaLedger 是同一个 StoreAdapter 的完整账本面（TryDebit + Credit）。
+	// 为什么要两个字段：debiter 给中间件只用判定（TryDebit）；终态结算需要
+	// Credit（meter.SettlementRecorder 的入参）。类型分开写，是为了让
+	// 「判定面」与「记账面」的边界在编译期就可见，而不是靠注释。
+	quotaLedger meter.QuotaLedger
 	// 后台任务（模型目录刷新等）的取消函数，Stop 时统一收回。
 	bgCancel context.CancelFunc
 
 	// HTTP 服务器（装配好全部中间件与路由的）。
 	server *httpapi.Server
+
+	// 贡献流程服务（M8）：惰性构造，无状态，可被控制台/管理面复用。
+	contribution *upstream.ContributionService
 }
 
 // Options 控制装配行为（测试用得上的注入点）。
@@ -137,10 +144,32 @@ func (a *App) startModelRefresh(ctx context.Context) {
 	// 装配点：CatalogSource 由 dshprovider.Client 天然满足（task-7 设计）；
 	// refresh.go 直接要 *store.Store（UpsertRealModel/MarkMissingRealModels
 	// 都在 Store 聚合上）——这里直传，不另包一层。
-	refresher := upstream.NewModelRefresher(
+	// 必须带 hooks：只刷新目录不写鉴定结果，0004 三列在真实运行中恒为
+	// unverified（M2 的「入池行都过过判定」成为空诺），inbox 三事件也不投递。
+	// Verification 接 store 写入器（唯一版本映射 VerifySourceOf）；Inbox 暂不接
+	refresher := upstream.NewModelRefresherWithHooks(
 		a.store, a.sidecar,
-		a.cfg.Upstream.Relay.ModelRefreshInterval.Std(), a.log)
+		a.cfg.Upstream.Relay.ModelRefreshInterval.Std(), a.log,
+		refreshHooksFor(a.store, a.log))
 	refresher.Start(ctx)
+}
+
+// refreshHooksFor 构造目录刷新的联动 hooks。
+//
+// 抽成独立函数而不是写在 startModelRefresh 里：装配点需要一条测试守住本
+// 意图——「生产装配不是 nil」。旧实现（NewModelRefresher 无 hooks）让 0004
+// 三列在生产恒 unverified，而这个缺口在当时没有任何测试能发现。
+//
+// Inbox 暂不接：需要一个 NotifyInbox→store.InboxRepo.Append 的桥（kind/severity
+// 映射），登记在 M7 收尾；此处留 nil 并在注释里写明，不冒充已接。
+func refreshHooksFor(st *store.Store, log *slog.Logger) *upstream.RefreshHooks {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &upstream.RefreshHooks{
+		Verification: upstream.NewStoreVerificationWriter(st),
+		Log:          log,
+	}
 }
 
 // Handler 返回装配好的 http.Handler（供 main 塞进 http.Server）。

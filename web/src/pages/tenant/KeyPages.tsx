@@ -1,0 +1,495 @@
+// 租户端 API Key（docs/ui/04-tenant.md 第 3 节）。
+//
+// 三条硬约束：
+//   - 列表只显示前缀（fr-xxxx…xxxx）；明文只在创建时出现一次；
+//   - Key 没有自己的额度与速率：额度/速率是**账户级**的，Key 只剩
+//     「认证、模型白名单、生命周期」三件事；
+//   - 白名单默认为空 = 无法发起请求（默认拒绝），创建页必须主动解释。
+//
+// 端点说明：租户面在 docs/api 尚无分册，路径按 REST 形状暂定；未接入时
+// 页面走「接口尚未接入」态。
+
+import { useEffect, useState, type FormEvent } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import {
+  createKey,
+  getKey,
+  getUsageOverview,
+  listAvailableModels,
+  listKeys,
+  listUsageLogs,
+  patchKey,
+  revokeKey,
+  setKeyEnabled
+} from '../../api/endpoints'
+import type { ApiKey, ApiKeyCreated, AvailableModel } from '../../api/types'
+import { useApi } from '../../hooks/useApi'
+import ConfirmDialog from '../../components/ConfirmDialog'
+import OneTimeSecret from '../../components/OneTimeSecret'
+import {
+  AsyncView,
+  Banner,
+  DataTable,
+  EmptyState,
+  Field,
+  FormError,
+  KeyValues,
+  Section,
+  StatusBadge
+} from '../../components/ui'
+import { fmtNum, fmtTime, statusLabel, truncate } from '../../utils/format'
+import PageFrame from '../PageFrame'
+import type { PageProps } from '../../routes'
+
+/** 新建/编辑共用的白名单多选。 */
+function AllowlistPicker({
+  models,
+  value,
+  onChange
+}: {
+  models: AvailableModel[]
+  value: string[]
+  onChange: (v: string[]) => void
+}) {
+  if (models.length === 0) {
+    return (
+      <p className="muted">
+        当前没有可选的抽象模型。你所属的组可能还没有授权任何模型——请联系管理员。
+      </p>
+    )
+  }
+  return (
+    <div className="checkbox-grid">
+      {models.map((m) => (
+        <label key={m.name} className="checkbox-line">
+          <input
+            type="checkbox"
+            checked={value.includes(m.name)}
+            onChange={() =>
+              onChange(value.includes(m.name) ? value.filter((x) => x !== m.name) : [...value, m.name])
+            }
+          />
+          <code>{m.name}</code>
+          <span className="muted">{m.display_name}</span>
+          {m.status === 'deprecated' && <span className="badge badge-warn">已弃用</span>}
+        </label>
+      ))}
+    </div>
+  )
+}
+
+/** 把 datetime-local 值转成 RFC3339；空 = 永不过期。 */
+function expiryToISO(local: string): string | null {
+  if (!local) return null
+  const d = new Date(local)
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
+}
+
+/** 列表/详情：过期时间展示（未设 = 永不过期）。 */
+function expiryText(v: string | null | undefined): string {
+  return v ? fmtTime(v) : '永不过期'
+}
+
+// ── 列表 ───────────────────────────────────────────────────────────────
+
+export function KeysPage({ def }: PageProps) {
+  const q = useApi(() => listKeys({ limit: 100 }), [])
+  const models = useApi(() => listAvailableModels(), [])
+  const [editing, setEditing] = useState<ApiKey | null>(null)
+  const [name, setName] = useState('')
+  const [expiry, setExpiry] = useState('')
+  const [allowlist, setAllowlist] = useState<string[]>([])
+  const [revoking, setRevoking] = useState<ApiKey | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<unknown>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!editing) return
+    setName(editing.name)
+    setExpiry(editing.expires_at ? editing.expires_at.slice(0, 16) : '')
+    setAllowlist(editing.allowlist ?? [])
+  }, [editing])
+
+  async function saveEdit() {
+    if (!editing) return
+    setBusy(true)
+    setError(null)
+    try {
+      await patchKey(editing.id, { name, expires_at: expiryToISO(expiry), allowlist })
+      setNotice('已保存（收窄白名单立即生效）')
+      setEditing(null)
+      q.reload()
+    } catch (e) {
+      setError(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function toggle(k: ApiKey) {
+    setBusy(true)
+    setError(null)
+    try {
+      await setKeyEnabled(k.id, k.status !== 'active')
+      q.reload()
+    } catch (e) {
+      setError(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <PageFrame
+      def={def}
+      actions={<Link className="btn-primary" to="/usage/keys/new">新建 API Key</Link>}
+    >
+      <Banner tone="muted">
+        额度与速率属于**账户**，名下所有 Key 共享；Key 只提供模型白名单收窄与生命周期管理。
+        列表只显示前缀，明文只在创建时出现一次。
+      </Banner>
+      <FormError error={error} />
+      {notice && <Banner tone="ok">{notice}</Banner>}
+
+      {editing && (
+        <Section
+          title={`编辑 Key ${editing.name}`}
+          actions={<button type="button" className="btn-ghost" onClick={() => setEditing(null)}>取消</button>}
+          hint="收窄白名单是安全的；放宽受组的放开类上限约束。"
+        >
+          <div className="field-row">
+            <Field label="名称" required>
+              <input value={name} onChange={(e) => setName(e.target.value)} />
+            </Field>
+            <Field label="过期时间" hint="留空 = 永不过期">
+              <input type="datetime-local" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
+            </Field>
+          </div>
+          <AllowlistPicker models={models.data?.data ?? []} value={allowlist} onChange={setAllowlist} />
+          <button type="button" className="btn-primary" onClick={() => void saveEdit()} disabled={busy || !name.trim()}>
+            保存
+          </button>
+        </Section>
+      )}
+
+      <AsyncView
+        state={q}
+        loadingRows={5}
+        empty={(d) =>
+          d.data.length === 0 ? (
+            <EmptyState
+              title="还没有任何 API Key"
+              hint="新建的 Key 默认白名单为空，需要先勾选模型才能调用；额度是账户级的，不随 Key 变化。"
+              action={<Link className="btn-primary" to="/usage/keys/new">新建 API Key</Link>}
+            />
+          ) : null
+        }
+      >
+        {(d) => (
+          <Section title={`我的 Key（${d.total ?? d.data.length}）`}>
+            <DataTable headers={['名称', '前缀', '状态', '过期时间', '模型白名单', '最近使用', '创建时间', '操作']}>
+              {d.data.map((k) => (
+                <tr key={k.id}>
+                  <td><Link to={`/usage/keys/${encodeURIComponent(k.id)}`}>{k.name}</Link></td>
+                  <td><code>{k.prefix}</code></td>
+                  <td><StatusBadge status={k.status} label={statusLabel(k.status)} /></td>
+                  <td>{expiryText(k.expires_at)}</td>
+                  <td title={k.allowlist.join(', ')}>
+                    {k.allowlist.length === 0 ? (
+                      <span className="badge badge-warn">空（不能调用）</span>
+                    ) : (
+                      `${k.allowlist.length} 个：${truncate(k.allowlist.join(', '), 32)}`
+                    )}
+                  </td>
+                  <td>{fmtTime(k.last_used_at)}</td>
+                  <td>{fmtTime(k.created_at)}</td>
+                  <td className="cell-actions">
+                    <button type="button" className="btn-ghost" onClick={() => setEditing(k)}>编辑</button>
+                    <button type="button" className="btn-ghost" onClick={() => void toggle(k)} disabled={busy}>
+                      {k.status === 'active' ? '禁用' : '启用'}
+                    </button>
+                    <button type="button" className="btn-danger" onClick={() => setRevoking(k)}>吊销…</button>
+                  </td>
+                </tr>
+              ))}
+            </DataTable>
+          </Section>
+        )}
+      </AsyncView>
+
+      <Section title="禁用与吊销的区别">
+        <ul className="plain-list">
+          <li>禁用：可恢复（只是临时停用），列表标红，该 Key 的请求返回 401。</li>
+          <li>吊销：终局，不可恢复；界面需要二次确认。</li>
+          <li>合并成一个「删除」会让用户不敢用这个功能，而留着一把不再使用的 Key 才是安全事件。</li>
+        </ul>
+      </Section>
+
+      {revoking && (
+        <ConfirmDialog
+          open
+          title={`确认吊销 Key ${revoking.name}`}
+          impact={[
+            `Key ${revoking.prefix} 立即失效，使用它的请求返回 401`,
+            '此操作不可恢复；需要新 Key 请重新创建',
+            `该 Key 的白名单：${revoking.allowlist.join(', ') || '空'}`
+          ]}
+          irreversibility="不可恢复：被吊销的 Key 无法重新启用。"
+          targetName={revoking.name}
+          inputLabel="请输入 Key 名称以确认"
+          confirmLabel="确认吊销"
+          busy={busy}
+          error={error}
+          onCancel={() => setRevoking(null)}
+          onConfirm={async () => {
+            setBusy(true)
+            setError(null)
+            try {
+              await revokeKey(revoking.id)
+              setRevoking(null)
+              q.reload()
+            } catch (e) {
+              setError(e)
+            } finally {
+              setBusy(false)
+            }
+          }}
+        />
+      )}
+    </PageFrame>
+  )
+}
+
+// ── 创建（一次性展示）──────────────────────────────────────────────────
+
+export function KeyNewPage({ def }: PageProps) {
+  const navigate = useNavigate()
+  const models = useApi(() => listAvailableModels(), [])
+  const [name, setName] = useState('')
+  const [expiry, setExpiry] = useState('')
+  const [allowlist, setAllowlist] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<unknown>(null)
+  const [created, setCreated] = useState<ApiKeyCreated | null>(null)
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault()
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await createKey({ name, expires_at: expiryToISO(expiry), allowlist })
+      setCreated(r.data)
+    } catch (e2) {
+      setError(e2)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (created) {
+    return (
+      <OneTimeSecret
+        title="API Key 已创建"
+        secret={created.plaintext}
+        description="这是唯一一次显示完整 Key。列表此后只显示前缀；服务端只保存哈希，任何页面都不会再显示它。"
+        filename={`api-key-${created.key.name || 'key'}.txt`}
+        doneLabel="完成并返回列表"
+        onDone={() => navigate('/usage/keys', { replace: true })}
+      />
+    )
+  }
+
+  return (
+    <PageFrame def={def} actions={<Link to="/usage/keys">返回列表</Link>}>
+      <Banner tone="muted" title="新建的 Key 默认白名单为空">
+        白名单为空时这把 Key 无法发起任何请求（默认拒绝）。额度与速率属于账户，表单里不出现额度字段。
+      </Banner>
+      <form className="form-card" onSubmit={onSubmit}>
+        <Field label="名称" required hint="你自己认得出的名字，例如「本地调试」。">
+          <input value={name} onChange={(e) => setName(e.target.value)} required />
+        </Field>
+        <Field label="过期时间" hint="留空 = 永不过期">
+          <input type="datetime-local" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
+        </Field>
+        <div className="field-block">
+          <span className="field-label">模型白名单</span>
+          <span className="field-hint">只能收窄，不能超出所属组的授权；不勾选 = 拒绝所有调用。</span>
+          <AsyncView state={models} loadingRows={3}>
+            {(d) => <AllowlistPicker models={d.data} value={allowlist} onChange={setAllowlist} />}
+          </AsyncView>
+        </div>
+        <FormError error={error} />
+        <button type="submit" className="btn-primary" disabled={busy || !name.trim()}>
+          {busy ? '正在创建…' : '创建 Key'}
+        </button>
+      </form>
+      <Section title="创建之后">
+        <ul className="plain-list">
+          <li>明文只出现一次；请立刻复制或下载，并勾选「我已保存」。</li>
+          <li>调用时用 <code>Authorization: Bearer &lt;key&gt;</code>；模型名只能用抽象模型名。</li>
+          <li>额度是账户级的：多建 Key 不会增加额度。</li>
+        </ul>
+      </Section>
+    </PageFrame>
+  )
+}
+
+// ── 详情 ───────────────────────────────────────────────────────────────
+
+export function KeyDetailPage({ def }: PageProps) {
+  const { id = '' } = useParams<{ id: string }>()
+  const q = useApi(() => getKey(id), [id])
+  const usage = useApi(() => getUsageOverview(), [])
+  const logs = useApi(() => listUsageLogs({ key_id: id, limit: 20 }), [id])
+  const [revoking, setRevoking] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<unknown>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const key = q.data
+
+  if (!key) {
+    return (
+      <PageFrame def={def}>
+        <AsyncView state={q} loadingRows={4}>{() => <p>加载中…</p>}</AsyncView>
+      </PageFrame>
+    )
+  }
+
+  async function toggle() {
+    setBusy(true)
+    setError(null)
+    try {
+      await setKeyEnabled(key!.id, key!.status !== 'active')
+      setNotice(key!.status === 'active' ? 'Key 已禁用' : 'Key 已启用')
+      q.reload()
+    } catch (e) {
+      setError(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <PageFrame def={def} actions={<Link to="/usage/keys">返回列表</Link>}>
+      <FormError error={error} />
+      {notice && <Banner tone="ok">{notice}</Banner>}
+
+      <Section title="Key 信息">
+        <KeyValues
+          items={[
+            { label: '名称', value: key.name },
+            { label: '前缀', value: <code>{key.prefix}</code> },
+            { label: '状态', value: <StatusBadge status={key.status} label={statusLabel(key.status)} /> },
+            { label: '过期时间', value: expiryText(key.expires_at) },
+            { label: '创建时间', value: fmtTime(key.created_at) },
+            { label: '最近使用', value: fmtTime(key.last_used_at) },
+            {
+              label: '模型白名单',
+              value:
+                key.allowlist.length === 0 ? (
+                  <span className="badge badge-warn">空（不能调用）</span>
+                ) : (
+                  key.allowlist.map((m) => (
+                    <span key={m} className="badge badge-muted"><code>{m}</code></span>
+                  ))
+                )
+            }
+          ]}
+        />
+        <p className="muted">
+          白名单默认空（默认拒绝）：如果不勾选任何模型，这把 Key 的请求会直接失败。
+          额度与速率属于整个账户，不在这把 Key 上。
+        </p>
+      </Section>
+
+      <Section title="账户额度（只读）" hint="额度是账户级的：改这里改不动额度，进度条在「用量与配额」页。">
+        <AsyncView state={usage} loadingRows={2}>
+          {(u) => (
+            <>
+              {u.dimensions.length === 0 ? (
+                <p className="muted">账户没有设置任何额度维度。</p>
+              ) : (
+                <ul className="plain-list">
+                  {u.dimensions.map((d) => (
+                    <li key={d.unit}>
+                      {d.unit === 'request' ? '请求次数' : d.unit === 'token' ? 'Token' : 'Credits'}（
+                      {d.period === 'day' ? '日' : '月'}）：{fmtNum(d.used)} / {fmtNum(d.limit)}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="muted">
+                速率：RPM {u.rpm_limit === -1 ? '不限' : fmtNum(u.rpm_limit)} · TPM{' '}
+                {u.tpm_limit === -1 ? '不限' : fmtNum(u.tpm_limit)} · 并发{' '}
+                {u.max_concurrency === -1 ? '不限' : fmtNum(u.max_concurrency)}
+              </p>
+              <p>
+                <Link to="/usage">查看完整用量</Link>
+              </p>
+            </>
+          )}
+        </AsyncView>
+      </Section>
+
+      <Section title="最近 20 次调用" hint="只含抽象模型名，不含真实模型与贡献者归因。">
+        <AsyncView state={logs} loadingRows={3}>
+          {(d) =>
+            d.data.length === 0 ? (
+              <p className="muted">还没有调用记录。</p>
+            ) : (
+              <DataTable headers={['时间', '抽象模型', '状态', '错误码', '输入 / 输出 token']}>
+                {d.data.map((l) => (
+                  <tr key={l.id}>
+                    <td>{fmtTime(l.ts)}</td>
+                    <td><code>{l.abstract_model}</code></td>
+                    <td><StatusBadge status={l.ok ? 'ok' : 'error'} label={l.ok ? '成功' : '失败'} /></td>
+                    <td>{l.error_code ?? '—'}</td>
+                    <td>{fmtNum(l.input_tokens ?? 0)} / {fmtNum(l.output_tokens ?? 0)}</td>
+                  </tr>
+                ))}
+              </DataTable>
+            )
+          }
+        </AsyncView>
+      </Section>
+
+      <Section title="生命周期">
+        <div className="inline-links">
+          <button type="button" className="btn-ghost" onClick={() => void toggle()} disabled={busy}>
+            {key.status === 'active' ? '禁用这把 Key' : '启用这把 Key'}
+          </button>
+          <button type="button" className="btn-danger" onClick={() => setRevoking(true)}>吊销…</button>
+          <Link to={`/usage/logs`}>查看全部调用日志</Link>
+        </div>
+        <p className="muted">禁用可恢复；吊销不可恢复。吊销后这把 Key 的请求立即 401。</p>
+      </Section>
+
+      <ConfirmDialog
+        open={revoking}
+        title={`确认吊销 Key ${key.name}`}
+        impact={[`Key ${key.prefix} 立即失效`, '不可恢复', '名下的调用历史保留（审计需要）']}
+        irreversibility="不可恢复：吊销后无法重新启用。"
+        targetName={key.name}
+        inputLabel="请输入 Key 名称以确认"
+        confirmLabel="确认吊销"
+        busy={busy}
+        error={error}
+        onCancel={() => setRevoking(false)}
+        onConfirm={async () => {
+          setBusy(true)
+          setError(null)
+          try {
+            await revokeKey(key.id)
+            setRevoking(false)
+            q.reload()
+          } catch (e) {
+            setError(e)
+          } finally {
+            setBusy(false)
+          }
+        }}
+      />
+    </PageFrame>
+  )
+}
