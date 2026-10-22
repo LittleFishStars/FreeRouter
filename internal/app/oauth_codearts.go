@@ -208,7 +208,7 @@ var fallbackNames = [][2]string{
 	{"codearts", "华为云 CodeArts"}, {"gemini", "Google Gemini"}, {"accio", "Accio"},
 	{"minimax", "MiniMax"}, {"cline", "Cline"}, {"qoder", "Qoder"},
 	{"loomy", "Loomy"}, {"raccoon", "Raccoon"}, {"lobsterai", "LobsterAI"},
-	{"trae", "TRAE"}, {"autoclaw", "AutoClaw"}, {"astudio", "Astudio"},
+	{"trae", "TRAE"}, {"autoclaw", "AutoClaw"},
 	{"officeace", "OfficeAce（华为云）"}, {"zcode", "ZCode"},
 }
 
