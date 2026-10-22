@@ -92,5 +92,6 @@ func (s *Server) HandleV1Messages(w http.ResponseWriter, r *http.Request) {
 		inbound:           adapterFor(ir.ProtocolAnthropic),
 		anthropicShape:    true,
 		maxTokensRequired: true,
+		traceRequested:    wantsTrace(r),
 	}, requestID)
 }

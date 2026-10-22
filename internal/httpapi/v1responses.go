@@ -12,6 +12,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -382,15 +383,22 @@ func (s *Server) HandleV1Responses(w http.ResponseWriter, r *http.Request) {
 
 	// 非流式走 proxyOnce 逐候选；出站编码是 Responses 形状——与
 	// proxyV1 的「入站方言出站」不同，这里出站方言是我们自做的 Responses。
-	cands, cerr := s.v1Candidates().Candidates(r.Context(), req.Model)
+	cs := s.v1Candidates()
+	cands, cerr := cs.Candidates(r.Context(), req.Model, *req)
+	if errors.Is(cerr, ErrModelNotFound) {
+		// 与 proxyV1 同口径：模型不可见 → 404 而不是 503。
+		s.writeV1Error(w, "model_not_found", "模型不存在", requestID)
+		return
+	}
 	if cerr != nil || len(cands) == 0 {
 		s.writeV1Error(w, "no_candidate", "当前无可用上游候选", requestID)
 		return
 	}
-	for _, cand := range cands {
-		if s.proxyResponsesOnce(r.Context(), w, *req, cand, requestID) {
-			return
-		}
+	// 与 proxyV1 共享候选循环骨架（切换预算与冷却回传单点实现）。
+	if s.switchCandidates(r.Context(), w, requestID, cs, cands, func(cand Candidate) bool {
+		return s.proxyResponsesOnce(r.Context(), w, *req, cand, requestID)
+	}) {
+		return
 	}
 	s.writeV1Error(w, "upstream_unavailable", "所有上游候选均失败", requestID)
 }

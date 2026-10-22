@@ -68,10 +68,25 @@ func (f *fakeUpstream) Call(ctx context.Context, cand Candidate, req ir.Request,
 // 为什么单独一个类型：不是每个测试都需要捕获——基线 fake 保持最小面。
 type fakeCandidates struct {
 	models map[string][]Candidate
+	// notFound 非空时所有请求都返回 ErrModelNotFound（M6 接线：跑
+	// 「真实模型名/不存在模型 → 404」契约，替代 M5 的 isRealModelName
+	// 前置判定路径）。
+	notFound bool
+	// failOn 非空时记录每次上游失败回传（CandidateFailureNotifier）。
+	failed []string
 }
 
-func (f *fakeCandidates) Candidates(ctx context.Context, model string) ([]Candidate, error) {
+func (f *fakeCandidates) Candidates(ctx context.Context, model string, _ ir.Request) ([]Candidate, error) {
+	if f.notFound {
+		return nil, ErrModelNotFound
+	}
 	return f.models[model], nil
+}
+
+// NotifyCandidateFailure 让 fake 也满足 CandidateFailureNotifier——
+// 契约测试据此断言「失败候选确实被回传」（冷却账本入口）。
+func (f *fakeCandidates) NotifyCandidateFailure(cand Candidate) {
+	f.failed = append(f.failed, cand.UpstreamModelID)
 }
 
 // fakeCatalog 是 ModelCatalog 的内存实现。

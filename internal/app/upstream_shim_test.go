@@ -52,7 +52,7 @@ func TestContractCandidatesHit(t *testing.T) {
 	}
 	cs := &realModelCandidates{models: src}
 
-	cands, err := cs.Candidates(context.Background(), "deepseek-v4.1")
+	cands, err := cs.Candidates(context.Background(), "deepseek-v4.1", ir.Request{})
 	if err != nil {
 		t.Fatalf("查询失败：%v", err)
 	}
@@ -75,11 +75,11 @@ func TestContractCandidatesHit(t *testing.T) {
 	}
 
 	// 精确匹配：别的模型名不命中。
-	if c, _ := cs.Candidates(context.Background(), "deepseek-v4.1-flash"); len(c) != 1 {
+	if c, _ := cs.Candidates(context.Background(), "deepseek-v4.1-flash", ir.Request{}); len(c) != 1 {
 		t.Errorf("flash 应命中 1 个，got %d", len(c))
 	}
 	// 不存在的模型：空切片（不是 error）。
-	c, err := cs.Candidates(context.Background(), "no-such-model")
+	c, err := cs.Candidates(context.Background(), "no-such-model", ir.Request{})
 	if err != nil || len(c) != 0 {
 		t.Errorf("不存在模型应返回空+nil err，got %d/%v", len(c), err)
 	}
@@ -90,7 +90,7 @@ func TestContractCandidatesHit(t *testing.T) {
 func TestContractCandidatesEmptyNoCandidate(t *testing.T) {
 	// 空目录：空候选不报错（空是合法状态——自举未跑）。
 	cs := &realModelCandidates{models: &fakeRealModelSource{}}
-	c, err := cs.Candidates(context.Background(), "x")
+	c, err := cs.Candidates(context.Background(), "x", ir.Request{})
 	if err != nil || len(c) != 0 {
 		t.Fatalf("空目录应空候选 nil err：%d/%v", len(c), err)
 	}
@@ -99,7 +99,7 @@ func TestContractCandidatesEmptyNoCandidate(t *testing.T) {
 	cs2 := &realModelCandidates{models: &fakeRealModelSource{
 		models: []store.RealModel{{ID: 1, UpstreamID: 99, UpstreamModelID: "x", Status: store.RealModelActive}},
 	}}
-	if c, err := cs2.Candidates(context.Background(), "x"); err != nil || len(c) != 0 {
+	if c, err := cs2.Candidates(context.Background(), "x", ir.Request{}); err != nil || len(c) != 0 {
 		t.Fatalf("悬空外键应跳过：%d/%v", len(c), err)
 	}
 
@@ -108,7 +108,7 @@ func TestContractCandidatesEmptyNoCandidate(t *testing.T) {
 		models: []store.RealModel{{ID: 1, UpstreamID: 5, UpstreamModelID: "x", Status: store.RealModelActive}},
 		ups:    []store.Upstream{{ID: 5, Kind: "weird"}},
 	}}
-	if c, err := cs3.Candidates(context.Background(), "x"); err != nil || len(c) != 0 {
+	if c, err := cs3.Candidates(context.Background(), "x", ir.Request{}); err != nil || len(c) != 0 {
 		t.Fatalf("未知 kind 应跳过：%d/%v", len(c), err)
 	}
 
