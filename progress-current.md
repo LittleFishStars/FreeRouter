@@ -18,7 +18,7 @@ M0–M9 主干全部落地：
 | M7 管理面 | ✅ | 45 端点（internal/app/console_routes.go） |
 | M8 贡献与 sidecar | ✅ | hub 深路径装载实测、贡献四态判定、撤销墓碑、stderr 遮蔽 |
 | M9 界面 | ✅ | 46 路由（IA 4.1–4.5）、四态、二次确认、权限派生导航、46/46 真机 smoke |
-| M10 加固 | ⏳ | 脚本已合（security-checklist/backup/restore/smoke + docker/systemd），待实跑验收 |
+| M10 加固 | ✅ 实跑通过 | 安全基线 C1–C12 全 PASS（S2/S8/S11 按设计 SKIP）；在线 VACUUM INTO 备份 + dry-run 三重断言 + 真恢复演练（删库→恢复→200→迁移4条）；`--verify-store` 自检；空库→setup init→登录→会话恢复全流程；umask 0077 根治库文件 0644 |
 
 ## 在途 / 待办
 
@@ -26,7 +26,7 @@ M0–M9 主干全部落地：
 |---|---|---|
 | code-review 复验（verification_writer、settle_bridge、routing、M9） | code-review | 排队 |
 | 贡献测试 WAL 断言强化 + 遮蔽正则左边界 | contrib-sidecar | 返工中 |
-| M10 实跑：安全基线 12 项、备份/恢复演练、空库初始化全流程 | Lead | 未开始 |
+| M10 实跑 | Lead | ✅ 完成（压测与 govulncheck 留 CI） |
 | 结算 `ResolvedCredentialID` 留空（待 M8 凭据回传） | Lead 集成 | 登记 |
 | `config.sidecar.deps_root` → sidecar 子进程 env 接线 | Lead | 登记（当前自动枚举可用） |
 | 租户/贡献者/注册端点 docs/api 分册定稿 | 文档待办 | 登记 |
