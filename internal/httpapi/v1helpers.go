@@ -61,7 +61,6 @@ func isStreamRequest(r *http.Request, body []byte) bool {
 	return false
 }
 
-
 // wantsTrace 判定请求是否要路由诊断（x-fr-trace: 1）。
 //
 // 为什么只在值为 1 时开：trace 头含候选池结构与上游模型 id（管理端可见

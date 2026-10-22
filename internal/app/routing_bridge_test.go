@@ -245,3 +245,224 @@ func TestContractRoutingFillsTrace(t *testing.T) {
 		t.Fatalf("trace 过短：%s", raw)
 	}
 }
+
+// 9. 有意为之的 fail-open 契约化（code-review 巡检建议）：
+// 目录没有 tools 能力字段时，带工具的请求必须放行到上游而不是全池 503。
+//
+// 这条测试保护的是一个**有意的非对称**：tools 未知→放行（失败形态是上游
+// 400，客户端拿到准确错误）；context 未知→剔除（失败形态是静默截断，
+// 不可逆且不可归因）。两者的差别只存在于注释里时，它迟早会被某个
+// 「顺手统一一下」的改动抹平——所以钉成契约。
+func TestContractRoutingToolsUnknownFailsOpen(t *testing.T) {
+	a := newRoutingTestApp(t)
+	ctx := context.Background()
+	win := int64(128000)
+	up, err := a.store.Repos().Models.UpsertUpstream(ctx, "selfhosted", "u-tools", "https://example.com/v1", nil, true)
+	if err != nil {
+		t.Fatalf("建上游失败: %v", err)
+	}
+	// modalities 不含 image、efforts 未给——目录能给的都给了；tools 字段
+	// 在数据模型里根本不存在（探测未落地）。
+	rm, err := a.store.Repos().Models.UpsertRealModel(ctx, store.RealModel{
+		UpstreamID: up, UpstreamModelID: "model-tools", ContextWindow: &win,
+		Modalities: pstr(`["text"]`),
+	})
+	if err != nil {
+		t.Fatalf("落库失败: %v", err)
+	}
+	amID, err := a.store.Repos().Models.CreateAbstractModel(ctx, store.AbstractModel{
+		Name: "tooled", DisplayName: "tooled", Status: store.ModelActive, CapabilityMode: "strict",
+	})
+	if err != nil {
+		t.Fatalf("建抽象模型失败: %v", err)
+	}
+	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
+		{AbstractModelID: amID, RealModelID: rm},
+	}); err != nil {
+		t.Fatalf("设候选失败: %v", err)
+	}
+
+	cands, err := newRoutingCandidates(a).Candidates(ctx, "tooled", ir.Request{
+		Tools: []ir.ToolDef{{Name: "calc"}},
+	})
+	if err != nil {
+		t.Fatalf("候选查询不该报错: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("tools 能力未知时应 fail-open 放行（交给上游判），得到 %d 条候选", len(cands))
+	}
+}
+
+// 10. 请求需要图片而候选只有 text → 模态过滤剔除（对照组：与 9 组成一对，
+// 证明桥层确实在按画像过滤，而不是恒放行一切）。
+func TestContractRoutingImageNeedFiltersOut(t *testing.T) {
+	a := newRoutingTestApp(t)
+	ctx := context.Background()
+	win := int64(128000)
+	up, err := a.store.Repos().Models.UpsertUpstream(ctx, "selfhosted", "u-img", "https://example.com/v1", nil, true)
+	if err != nil {
+		t.Fatalf("建上游失败: %v", err)
+	}
+	rm, err := a.store.Repos().Models.UpsertRealModel(ctx, store.RealModel{
+		UpstreamID: up, UpstreamModelID: "text-only", ContextWindow: &win,
+		Modalities: pstr(`["text"]`),
+	})
+	if err != nil {
+		t.Fatalf("落库失败: %v", err)
+	}
+	amID, _ := a.store.Repos().Models.CreateAbstractModel(ctx, store.AbstractModel{
+		Name: "imgless", DisplayName: "imgless", Status: store.ModelActive, CapabilityMode: "strict",
+	})
+	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
+		{AbstractModelID: amID, RealModelID: rm},
+	}); err != nil {
+		t.Fatalf("设候选失败: %v", err)
+	}
+
+	req := ir.Request{Messages: []ir.Message{{
+		Role:  ir.RoleUser,
+		Parts: []ir.Part{ir.TextPart{Text: "看图"}, ir.ImagePart{}},
+	}}}
+	cands, err := newRoutingCandidates(a).Candidates(ctx, "imgless", req)
+	if err != nil {
+		t.Fatalf("候选查询不该报错: %v", err)
+	}
+	if len(cands) != 0 {
+		t.Fatalf("请求带图片而候选只有 text，应被模态过滤剔除，得到 %d 条", len(cands))
+	}
+}
+
+// pstr 是本文件的字符串指针帮手（JSON 列以 *string 存 NULL 语义）。
+func pstr(s string) *string { return &s }
+
+//  11. 渠道的两级来源（01-catalog.md §2.3）：模型级 real_models.channel
+//     压过上游行级兜底。
+//
+// 这条锁的是「权威来源」这件事本身。上游行级渠道是管理员的运营命名
+// （upstreams.name / sidecar://provider），而一个 provider 里往往能拉
+// 多个厂商的模型——把上游名当权威渠道，会让「按渠道分组」「按渠道约束
+// 过滤」全部分错。0002 迁移让模型级渠道落库后，权威就该落在模型行上。
+func TestContractRoutingChannelPrefersModelColumn(t *testing.T) {
+	a := newRoutingTestApp(t)
+	win := int64(128000)
+	ctx := context.Background()
+
+	// 上游名叫 "test-u-chan"，若按旧口径渠道就是这个名字；
+	// 约束要求的是模型级派生渠道 "deepseek"，两者必然分道扬镳。
+	amID, rmID := seedModel(t, a, "chan", "deepseek/deepseek-chat", &win, "")
+	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
+		{AbstractModelID: amID, RealModelID: rmID,
+			ConstraintJSON: pstr(`{"channel_scope":{"mode":"include","channels":["deepseek"]}}`)},
+	}); err != nil {
+		t.Fatalf("设候选失败: %v", err)
+	}
+
+	// 先确认落库面：channel 已由仓储从限定名首段派生。
+	rm, err := a.store.Repos().Models.GetRealModel(ctx, rmID)
+	if err != nil {
+		t.Fatalf("读真实模型失败: %v", err)
+	}
+	if rm.Channel == nil || *rm.Channel != "deepseek" {
+		t.Fatalf("仓储应派生 channel=deepseek，得到 %v", rm.Channel)
+	}
+
+	// 桥层必须把模型级渠道喂给路由，而不是回落到上游名。
+	br := newAbstractModelBridge(a)
+	info, err := br.GetRealModel(ctx, rmID)
+	if err != nil {
+		t.Fatalf("桥读失败: %v", err)
+	}
+	if info.Channel != "deepseek" {
+		t.Fatalf("桥应取模型级渠道 deepseek，得到 %q", info.Channel)
+	}
+	cs := newRoutingCandidates(a)
+	cands, err := cs.Candidates(ctx, "chan", ir.Request{})
+	if err != nil {
+		t.Fatalf("不应报错: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("按模型级渠道 include=deepseek 应命中 1 条候选，得到 %d", len(cands))
+	}
+}
+
+// 12. aggregate 排除与渠道来源彻底解耦（01-catalog.md §5 + §2.3）。
+//
+// 剔除判据是 upstream_model_id 首段（aggregate/ 前缀），与渠道无关。
+// 这条锁两件事：
+//   - 渠道名恰好叫 "aggregate" 的普通模型**不该**被误剔——那只是
+//     管理员起的名字，不是模型归类；
+//   - 真实前缀是 aggregate/* 的模型，即使渠道列有值也照样被剔。
+//
+// 两条合起来证明剔除判据不读渠道。code-review 巡检发现的
+// 「第二道闸是死代码」正是这个解耦没做到时的产物：旧代码判
+// Channel=="aggregate"，而渠道列里根本产不出这个值（它是模型名
+// 前缀），于是那道闸恒假；修复后判据与存储层 SQL 同源。
+func TestContractRoutingAggregateExcludedRegardlessOfChannel(t *testing.T) {
+	a := newRoutingTestApp(t)
+	win := int64(128000)
+	ctx := context.Background()
+	models := a.store.Repos().Models
+
+	// 上游就名叫 "aggregate"；模型用裸 id（派生不出渠道 → channel
+	// 留 NULL → 桥层回落到上游名 → 渠道恰好是 "aggregate"）。
+	up, err := models.UpsertUpstream(ctx, "selfhosted", "aggregate", "https://example.com/v1", nil, true)
+	if err != nil {
+		t.Fatalf("建上游失败: %v", err)
+	}
+	rmPlain, err := models.UpsertRealModel(ctx, store.RealModel{
+		UpstreamID: up, UpstreamModelID: "plain-model", ContextWindow: &win,
+	})
+	if err != nil {
+		t.Fatalf("建真实模型失败: %v", err)
+	}
+	amPlain, err := models.CreateAbstractModel(ctx, store.AbstractModel{
+		Name: "named-agg", DisplayName: "named-agg",
+		Status: store.ModelActive, CapabilityMode: "strict",
+	})
+	if err != nil {
+		t.Fatalf("建抽象模型失败: %v", err)
+	}
+	if err := models.SetCandidates(ctx, amPlain, []store.Candidate{
+		{AbstractModelID: amPlain, RealModelID: rmPlain},
+	}); err != nil {
+		t.Fatalf("设候选失败: %v", err)
+	}
+
+	// 前置条件：模型级渠道确实缺失，桥层兜底后渠道 == "aggregate"。
+	rm, err := models.GetRealModel(ctx, rmPlain)
+	if err != nil {
+		t.Fatalf("读真实模型失败: %v", err)
+	}
+	if rm.Channel != nil {
+		t.Fatalf("裸 id 不该派生渠道，得到 %v", *rm.Channel)
+	}
+	br := newAbstractModelBridge(a)
+	info, err := br.GetRealModel(ctx, rmPlain)
+	if err != nil {
+		t.Fatalf("桥读失败: %v", err)
+	}
+	if info.Channel != "aggregate" {
+		t.Fatalf("渠道缺失时应回落到上游名 aggregate，得到 %q", info.Channel)
+	}
+
+	// 渠道叫 aggregate 的普通模型必须活着。
+	cs := newRoutingCandidates(a)
+	cands, err := cs.Candidates(ctx, "named-agg", ir.Request{})
+	if err != nil {
+		t.Fatalf("不应报错: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("渠道叫 aggregate 不等于聚合模型，应保留 1 条候选，得到 %d", len(cands))
+	}
+
+	// 真实前缀是 aggregate/* 的模型必须被剔（渠道无关）。
+	amReal, _ := seedModel(t, a, "real-agg", "aggregate/pool-model", &win, "")
+	_ = amReal
+	cands, err = cs.Candidates(ctx, "real-agg", ir.Request{})
+	if err != nil {
+		t.Fatalf("不应报错: %v", err)
+	}
+	if len(cands) != 0 {
+		t.Fatalf("聚合模型必须被剔除，得到 %d 条候选", len(cands))
+	}
+}
