@@ -64,10 +64,8 @@ export default function ReviewPage({ def }: PageProps) {
     setApproveError(null)
     try {
       await approvePendingAccount(approving.id, {
-        group_id: groupId,
-        quota_unit: quotaUnit,
-        quota_limit: Number(quotaLimit),
-        quota_period: quotaPeriod
+        groups: [groupId],
+        quota: { unit: quotaUnit, limit: Number(quotaLimit), period: quotaPeriod }
       })
       setApproving(null)
       pending.reload()

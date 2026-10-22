@@ -15,6 +15,7 @@ import {
   getChain,
   listAbstractModels,
   listRealModels,
+  patchAbstractModel,
   putCandidates,
   putDeprecation
 } from '../../api/endpoints'
@@ -288,7 +289,7 @@ export function DeprecationPage({ def }: PageProps) {
         migration_doc: migrationDoc || undefined,
         note: note || undefined,
         ...(deprecatedAt ? { deprecated_at: Math.floor(new Date(deprecatedAt).getTime() / 1000) } : {}),
-        ...(sunsetAt ? { sunset_at: sunsetAt } : {})
+        ...(sunsetAt ? { sunset_at: Math.floor(new Date(sunsetAt).getTime() / 1000) } : {})
       }
       await putDeprecation(id, body)
       setNotice('弃用配置已保存；该模型对外进入「已弃用」，仍接受请求')
@@ -306,10 +307,8 @@ export function DeprecationPage({ def }: PageProps) {
     setBusy(true)
     setError(null)
     try {
-      await putDeprecation(id, {
-        status: 'disabled',
-        replacement_model_id: replacement || ''
-      })
+      // 停用是 PATCH status=disabled；deprecated 只能走 /deprecation 且单向
+      await patchAbstractModel(id, { status: 'disabled' })
       setNotice('模型已设为停用：对外立即 404 / 410 Gone')
       setConfirming(null)
       modelQ.reload()
@@ -375,8 +374,8 @@ export function DeprecationPage({ def }: PageProps) {
           <Field label="Deprecation 时间" hint="RFC 9745 Structured Field Date（本地时间转换后提交 epoch）">
             <input type="datetime-local" value={deprecatedAt} onChange={(e) => setDeprecatedAt(e.target.value)} />
           </Field>
-          <Field label="Sunset 时间" hint="RFC 8594 HTTP-date；可选，不设 = 永久兼容壳">
-            <input value={sunsetAt} onChange={(e) => setSunsetAt(e.target.value)} placeholder="Sun, 30 Jun 2026 23:59:59 UTC" />
+          <Field label="Sunset 时间" hint="可选；不设 = 永久兼容壳（本地时间转换后提交 epoch）">
+            <input type="datetime-local" value={sunsetAt} onChange={(e) => setSunsetAt(e.target.value)} />
           </Field>
         </div>
         <Field label="迁移文档链接" hint={'用于 Link: rel="deprecation"。'}>

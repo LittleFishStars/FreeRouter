@@ -10,6 +10,7 @@
 import {
   deleteWrite,
   getBlob,
+  getEnvelope,
   getList,
   getOne,
   PATHS,
@@ -175,8 +176,10 @@ export function createAccount(body: {
 }
 
 export function resetAccountPassword(id: string, password?: string) {
+  // 不给 password 时让服务端生成一次性随机值（generate），并吊销旧会话
   return postWrite<AdminAccount>(`${PATHS.adminAccounts}/${seg(id)}/password`, {
-    password: password || undefined
+    ...(password ? { password } : { generate: true }),
+    revoke_sessions: true
   })
 }
 
@@ -253,7 +256,8 @@ export function putGroupModels(id: string, models: string[]) {
 }
 
 export function putGroupPolicies(id: string, policies: GroupPolicies) {
-  return putWrite<GroupPolicies>(`${PATHS.adminGroups}/${seg(id)}/policies`, policies)
+  // 端点载荷是 {policies: 文档原文}（docs/api/02-admin.md 6：整文档替换）
+  return putWrite<GroupPolicies>(`${PATHS.adminGroups}/${seg(id)}/policies`, { policies })
 }
 
 export function addGroupMembers(id: string, accountIds: string[]) {
@@ -320,15 +324,24 @@ export function patchAbstractModel(
     capability_mode?: string
     capabilities?: ModelCapabilities
     strategy?: string[]
+    /** 停用 / 恢复（弃用走 /deprecation，单向） */
+    status?: 'active' | 'disabled'
   }
 ) {
   return patchWrite<AdminAbstractModel>(`${PATHS.adminAbstractModels}/${seg(id)}`, body)
 }
 
-export function getCandidates(id: string) {
-  return getOne<{ candidates: Candidate[] }>(
-    `${PATHS.adminAbstractModels}/${seg(id)}/candidates`
+/**
+ * 候选集读取。
+ * 契约（docs/api/02-admin.md 8.2）没有单列 GET candidates 端点；管理面把
+ * 候选挂在抽象模型详情的 `candidates` 字段上（与 data 并列）。这里读详情，
+ * 让页面在「只有详情端点」的版本上也能工作。
+ */
+export async function getCandidates(id: string): Promise<{ candidates: Candidate[] }> {
+  const env = await getEnvelope<{ data: AdminAbstractModel; candidates?: Candidate[] }>(
+    `${PATHS.adminAbstractModels}/${seg(id)}`
   )
+  return { candidates: env.candidates ?? [] }
 }
 
 export function putCandidates(id: string, candidates: Candidate[]) {

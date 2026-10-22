@@ -106,11 +106,14 @@ export interface PendingAccount {
 }
 
 export interface ApproveInput {
-  group_id: string
+  /** 批准必须指定组（服务端要求非空数组） */
+  groups: string[]
   /** 账户级额度（唯一一份，量词是"每人"） */
-  quota_unit: 'request' | 'token' | 'credit'
-  quota_limit: number
-  quota_period: 'day' | 'month'
+  quota: {
+    unit: 'request' | 'token' | 'credit'
+    limit: number
+    period: 'day' | 'month'
+  }
 }
 
 // ── 管理面：组 ─────────────────────────────────────────────────────────
@@ -271,8 +274,8 @@ export interface DeprecationInput {
   replacement_model_id: string
   /** epoch 秒（契约例子 "@1688169599" 的数值形态） */
   deprecated_at?: number
-  /** RFC 8594 HTTP-date */
-  sunset_at?: string
+  /** Sunset 时间：服务端 DTO 用 epoch 秒（与文档里的 RFC 8594 HTTP-date 表述不一致，以 DTO 为准） */
+  sunset_at?: number
   migration_doc?: string
   note?: string
 }

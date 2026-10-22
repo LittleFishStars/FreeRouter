@@ -236,6 +236,11 @@ export async function getOne<T>(path: string): Promise<T> {
   return env.data
 }
 
+/** GET 但不拆封：有些端点在 data 旁边带附加字段（如抽象模型详情的 candidates）。 */
+export function getEnvelope<T>(path: string): Promise<T> {
+  return request<T>(path)
+}
+
 /** POST 写：返回 {data, audit_id}。 */
 export function postWrite<T>(path: string, body?: unknown): Promise<WriteEnvelope<T>> {
   return request<WriteEnvelope<T>>(path, { method: 'POST', body })
