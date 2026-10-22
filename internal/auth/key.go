@@ -214,36 +214,30 @@ func (m *KeyManager) Create(ctx context.Context, s Subject, name string) (*Creat
 // keyCreationPolicy 一次读组，返回（能否建 Key，Key 数量上限）。
 //
 // 合并规则（03-groups.md §3/§4）：
-//   - CanCreateKey 是放开类布尔：deny 优先——任一所属组显式 false 即禁；
-//     未设（nil）不参与，全未设 = 允许（默认组兜底“至少一组有策略”的不变式）。
+//   - CanCreateKey 是放开类布尔：**fail-closed**（lead 裁决 2026-10-22）——
+//     任一所属组 false **或未设** 即禁；全部显式 true 才允许。默认组要让人
+//     建 Key，管理员必须在默认组上显式设 can_create_key=true（03-groups §5
+//     把"缺口变 fail-open"列为要防的事故）。
 //   - MaxKeys 是放开类数值：取**最大值**（定案），非 min；无组设置时
 //     落配置默认 DefaultMaxKeysPerAccount。
 func (m *KeyManager) keyCreationPolicy(ctx context.Context, accountID string) (bool, int, error) {
 	if m.stores.Policies == nil {
-		return true, m.policy.DefaultMaxKeysPerAccount, nil
+		// 无策略仓储 = 装配未完成：fail-closed **拒绝**建 Key。
+		// 放行等于"没接组策略 = 全员可建"，正是 03-groups §5 要防的缺口。
+		return false, m.policy.DefaultMaxKeysPerAccount, nil
 	}
 	groups, err := m.stores.Policies.GroupsForAccount(ctx, accountID)
 	if err != nil {
 		return false, 0, err
 	}
-	canCreate := true
-	best := 0
-	seen := false
-	for _, g := range groups {
-		if g.CanCreateKey != nil && !*g.CanCreateKey {
-			canCreate = false
-		}
-		if g.MaxKeys != nil {
-			seen = true
-			if *g.MaxKeys > best {
-				best = *g.MaxKeys
-			}
-		}
+	// 合并**只有一条路径**：与 EffectiveModels 共用 MergeGroupPolicies，
+	// 避免同包内两份布尔判据漂移（lead 裁决：两处共享一个判据表达式）。
+	eff := MergeGroupPolicies(groups)
+	limit := m.policy.DefaultMaxKeysPerAccount
+	if eff.MaxKeys != nil {
+		limit = *eff.MaxKeys
 	}
-	if !seen {
-		return canCreate, m.policy.DefaultMaxKeysPerAccount, nil
-	}
-	return canCreate, best, nil
+	return eff.CanCreateKey, limit, nil
 }
 
 // countAgainstKeyQuota 统计占配额的数量。

@@ -260,10 +260,15 @@ func (a *AuthzService) AccountUsable(ctx context.Context, accountID string, requ
 // EffectivePolicy 是一个账户全部所属组合并后的策略快照。
 type EffectivePolicy struct {
 	// 放开类
-	VisibleModels  []string // ∪ 各组抽象模型（稳定排序）
-	CanCreateKey   bool     // 布尔 deny 优先：任一组显式 false 即 false
-	AllowlistWiden bool     // 同上
-	MaxKeys        *int     // 放开类数值：多组取**最大值**；nil = 无组设置（落默认值）
+	VisibleModels []string // ∪ 各组抽象模型（稳定排序）
+	// 布尔放开类 = **fail-closed**（lead 裁决 2026-10-22，与
+	// store.ComposeEffectivePolicy 的 allGroupsAllow 同判据）：
+	// 任一组 false **或未设** → false；全部组显式 true → true；无组 → false。
+	// 旧实现「初值 true、只有显式 false 才翻」是 fail-open，与 03-groups
+	// §5「缺口最容易变成 fail-open」要防的事故同形，已废。
+	CanCreateKey   bool
+	AllowlistWiden bool
+	MaxKeys        *int // 放开类数值：多组取**最大值**；nil = 无组设置（落默认值）
 	// 限制类：逐键取 min；键不存在于结果 = 所有组都未设 = Unlimited。
 	Quotas         map[QuotaKey]int64
 	ModelQuotas    map[ModelQuotaKey]int64
@@ -290,12 +295,14 @@ func (e *EffectivePolicy) Quota(q QuotaKey) (int64, bool) {
 // 不能因为"它也是个上限"就错拿 min——那会让加一个小配额组顺带压掉建 Key 能力。
 func MergeGroupPolicies(groups []GroupPolicy) *EffectivePolicy {
 	eff := &EffectivePolicy{
-		CanCreateKey:   true,
-		AllowlistWiden: true,
-		Quotas:         make(map[QuotaKey]int64),
-		ModelQuotas:    make(map[ModelQuotaKey]int64),
+		// fail-closed：布尔从 false 起，ALL(显式 true) 才翻真（判据见
+		// allGroupsAllow——与 store 的 allGroupsAllow 是同一句话）。
+		Quotas:      make(map[QuotaKey]int64),
+		ModelQuotas: make(map[ModelQuotaKey]int64),
 	}
 	seenModels := make(map[string]bool)
+	// 逐组布尔：记录"该组是否全部显式 true"。初值 false = 无组即 false。
+	canCreateOK, widenOK := len(groups) > 0, len(groups) > 0
 
 	for i := range groups {
 		g := &groups[i]
@@ -307,12 +314,12 @@ func MergeGroupPolicies(groups []GroupPolicy) *EffectivePolicy {
 				eff.VisibleModels = append(eff.VisibleModels, mdl)
 			}
 		}
-		// 布尔开关：deny 优先——任何一组显式禁止即禁止；未设（nil）不参与。
-		if g.CanCreateKey != nil && !*g.CanCreateKey {
-			eff.CanCreateKey = false
+		// 布尔开关（fail-closed）：任一组的值为 nil（未设）或 false 即永久 false。
+		if !allGroupsAllowBool(g.CanCreateKey) {
+			canCreateOK = false
 		}
-		if g.KeyAllowlistWiden != nil && !*g.KeyAllowlistWiden {
-			eff.AllowlistWiden = false
+		if !allGroupsAllowBool(g.KeyAllowlistWiden) {
+			widenOK = false
 		}
 		// Key 数量上限：放开类数值取**最大值**。
 		if g.MaxKeys != nil {
@@ -347,9 +354,22 @@ func MergeGroupPolicies(groups []GroupPolicy) *EffectivePolicy {
 		eff.Pools = append(eff.Pools, g.Pools...)
 	}
 
+	eff.CanCreateKey = canCreateOK
+	eff.AllowlistWiden = widenOK
 	sort.Strings(eff.VisibleModels)
 	return eff
 }
+
+// allGroupsAllowBool 是布尔放开类的**唯一判据表达式**（lead 裁决：与
+// store/effective_policy.go 的 allGroupsAllow 同一语义，两处共享这句话）：
+//
+//	nil 或 false → 不允许；显式 true → 允许。
+//	调用侧对全部所属组做 AND；空组列表 → 不允许（fail-closed）。
+//
+// 为什么 auth 不直接 import store 的那份：依赖方向（store 是持久层，
+// auth 不 import 它）；两份是同一算法对两个输入形状的适配器，判据
+// 表达式逐字一致，评审对 diff 只看这一句。
+func allGroupsAllowBool(v *bool) bool { return v != nil && *v }
 
 // minPtr 取"两个已设值里更严（更小）的那个"；nil 表示该来源未设置。
 // 显式 Unlimited（-1 及一切负数）同样视为"不构成闸"，不参与。

@@ -229,6 +229,86 @@ func (a *StoreAdapter) TryDebit(ctx context.Context, dc DebitContext) error {
 	return nil
 }
 
+// Credit 对合计行 + 命中模型行 + 组池做**无条件记账**（终态结算，
+// store.CreditQuota 语义）。与 TryDebit 的区别：不做闸门判定——
+// 结算时额度可能已越过上限（预扣估计偏差 + 并发），那是
+// 05-storage 7.4"本周期总量可能超上限"的既定结果；少扣方向可接受，
+// 但**必须记账**（不记会让对账与额度护栏同时失真）。无行 = 该维度
+// 不限 = 跳过（与 TryDebit 的无行语义一致）。
+func (a *StoreAdapter) Credit(ctx context.Context, cc CreditContext) error {
+	if a.quotas == nil {
+		return auth.Errorf(auth.CodeInternal, nil, "StoreAdapter 缺少 QuotaRepo")
+	}
+	accID, err := parseID(cc.AccountID, "account")
+	if err != nil {
+		return err
+	}
+	mids := []int64{store.TotalScope}
+	if cc.AbstractModelID != store.TotalScope {
+		if cc.AbstractModelID < 0 {
+			return auth.Errorf(auth.CodeInternal, nil, "模型 id 非法 %d", cc.AbstractModelID)
+		}
+		mids = append(mids, cc.AbstractModelID)
+	}
+	// 账户行：每 (mid, unit, period) 记一次（CreditQuota 内部逐条 upsert）。
+	for _, mid := range mids {
+		var credits []store.QuotaCredit
+		for _, up := range []struct{ unit, period string }{
+			{"request", "day"}, {"request", "month"},
+			{"token", "day"}, {"token", "month"},
+			{"credit", "day"}, {"credit", "month"},
+		} {
+			cost, ok := cc.Cost.costFor(up.unit)
+			if !ok || cost == 0 {
+				continue
+			}
+			credits = append(credits, store.QuotaCredit{
+				OwnerID:         accID,
+				AbstractModelID: mid,
+				Unit:            store.QuotaUnit(up.unit),
+				Period:          store.QuotaPeriod(up.period),
+				Cost:            cost,
+			})
+		}
+		if len(credits) > 0 {
+			if err := a.quotas.CreditQuota(ctx, credits, nil); err != nil {
+				return fmt.Errorf("meter adapter: 记账户额度: %w", err)
+			}
+		}
+	}
+	// 组池：同形无条件记账。
+	for _, gid := range cc.GroupIDs {
+		var credits []store.QuotaCredit
+		for _, up := range []struct{ unit, period string }{
+			{"request", "day"}, {"request", "month"},
+			{"token", "day"}, {"token", "month"},
+			{"credit", "day"}, {"credit", "month"},
+		} {
+			cost, ok := cc.Cost.costFor(up.unit)
+			if !ok || cost == 0 {
+				continue
+			}
+			for _, mid := range mids {
+				credits = append(credits, store.QuotaCredit{
+					OwnerID:         gid,
+					AbstractModelID: mid,
+					Unit:            store.QuotaUnit(up.unit),
+					Period:          store.QuotaPeriod(up.period),
+					Cost:            cost,
+				})
+			}
+		}
+		if len(credits) > 0 {
+			if err := a.quotas.CreditQuota(ctx, nil, credits); err != nil {
+				return fmt.Errorf("meter adapter: 记组 %d 池: %w", gid, err)
+			}
+		}
+	}
+	return nil
+}
+
+var _ QuotaLedger = (*StoreAdapter)(nil)
+
 // translateQuota 把 store.ErrQuotaExhausted 翻成 auth 哨兵 + 四元组。
 func translateQuota(qe store.ErrQuotaExhausted, modelID int64, now time.Time) error {
 	e := ErrQuotaExceeded.WithQuota(
