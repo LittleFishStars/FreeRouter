@@ -45,3 +45,18 @@
 
 - 类级提权（step-up）已于设计层废除（2026-10-20）：登录一次即账户全部权限，
   会话 24h 为唯一时效边界。
+- `RelayTransport.Open` 与 `OpenFromPayload` 已删除（2026-10-22）：无生产调用方，
+  且拆完信封拿到的是 OpenAI SSE 而 `relayPayloadToNDJSON` 期望 relay 帧——
+  留着只会让下一个人得到「0 事件 + 协议错」。IR 原生流式面需要时走
+  `Caller.InferStream` + 协议 `NewStreamReader`。
+
+### 验证结论（M10 实跑，2026-10-22）
+
+- 安全基线 C1–C12 全 PASS（脚本 `scripts/security-checklist.sh`）；S2（伪造 XFF）
+  与 S8（429 Retry-After 压测）留 CI，S11 已本机跑 `govulncheck`：**0 可调用漏洞**。
+- 在线 `VACUUM INTO` 备份 + dry-run 三重断言 + 删库恢复演练通过；`--verify-store`
+  自检可用（库不存在时拒绝，避免把空库误判为可用）。
+- 空库 → `POST /api/setup/init` → 登录 → 会话恢复 全流程通过。
+- 轻量压测：16 并发 × 400 请求，**3851 rps / p95 7ms / p99 8.4ms**，RSS +4.4MB
+  （17.8MB → 22.2MB）。
+- TLS `files` 模式实跑：HTTPS 200、HSTS `max-age=31536000`、明文请求被拒（400）。

@@ -45,7 +45,6 @@ package upstream
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -624,34 +623,3 @@ func (s *RelayStream) Stats() StreamStats {
 	return s.stats
 }
 
-// Open 是 relay 类上游的 IR 原生流式入口：经 sidecar infer.stream 拿到载荷后
-// 直接产出 ir.Event。Caller（httpapi 形态的字节流消费面）仍走 InferStream。
-//
-// !! 已知局限（code-review 2026-10-22 指出，保留接口位但**不要新增调用方**）：
-//   - 当前无生产调用方（httpapi 统一走 Caller→InferStream 的字节流面）；
-//   - 拆完信封拿到的是 OpenAI SSE 文本，而 relayPayloadToNDJSON 期望 relay 帧
-//     {"event":..}——即使拆了信封也解不出事件。真要启用，内部应改走
-//     openai.Adapter().NewStreamReader 把 SSE 转 IR。删/改由 M10 后接口整理定。
-func (t *RelayTransport) Open(ctx context.Context, tgt Target, body []byte, stream bool) (Stream, error) {
-	raw, err := t.inferPayload(ctx, tgt, body, stream)
-	if err != nil {
-		return nil, err
-	}
-	// 与 InferStream 同源：信封必须先拆，否则 relayPayloadToNDJSON 看不见 sse 字段，
-	// 会把整个 JSON 当成一帧不可解载荷（实测会报「流在 start 之前结束」）。
-	rc, err := unwrapInferPayload(raw)
-	if err != nil {
-		return nil, err
-	}
-	sse, err := io.ReadAll(rc)
-	if err != nil {
-		return nil, &Error{Class: ErrProtocol, Message: "读取 sidecar 载荷失败: " + err.Error()}
-	}
-	return NewRelayStream(io.NopCloser(bytes.NewReader(relayPayloadToNDJSON(sse)))), nil
-}
-
-// OpenFromPayload 是 Open 的纯函数版：把已经拿到的载荷直接包成流，供装配层
-// 「先取载荷再消费」与契约测试使用。
-func OpenFromPayload(payload []byte) Stream {
-	return NewRelayStreamFromPayload(payload)
-}
