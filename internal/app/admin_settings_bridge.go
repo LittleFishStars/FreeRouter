@@ -26,9 +26,13 @@ import (
 // 付这个代价，其余保持启动期语义。
 
 // runtimeSettingKeys 是允许热改且持久化的键（白名单，未知键拒绝）。
+// 键名是**扁平**的（不带组名前缀）：handler 的 adminSettingKeys 把分组文档
+// 摊平后只取组内键名，PATCH 载荷因此必须用 "registration_enabled" 而不是
+// "security.registration_enabled"（实测带前缀会被判未知键）。当前两组内
+// 键名无重名，摊平不丢信息。
 var runtimeSettingKeys = map[string]bool{
-	"security.registration_enabled":          true,
-	"security.registration_requires_approval": true,
+	"registration_enabled":           true,
+	"registration_requires_approval": true,
 }
 
 type settingsBridge struct {
@@ -114,9 +118,9 @@ func (s *settingsBridge) PatchSettings(ctx context.Context, patch map[string]jso
 	// 事务成功后改内存（顺序不能反：先改内存再失败回滚会让运行态与库不一致）。
 	for k, v := range newVals {
 		switch k {
-		case "security.registration_enabled":
+		case "registration_enabled":
 			s.cfg.Security.RegistrationEnabled = v
-		case "security.registration_requires_approval":
+		case "registration_requires_approval":
 			s.cfg.Security.RegistrationRequiresApproval = v
 		}
 	}

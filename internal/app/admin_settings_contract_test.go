@@ -52,7 +52,7 @@ func TestContractAdminSettingsWired(t *testing.T) {
 	// Patch 白名单：可热改键成功 + 落库 + 改内存；只读键整批拒绝。
 	audit := httpapi.AdminAuditEntry{AccountID: "1", ActingClass: "admin", Result: "ok", Action: "system.settings.patch"}
 	auditID, err := sb.PatchSettings(context.Background(), map[string]json.RawMessage{
-		"security.registration_enabled": json.RawMessage(`false`),
+		"registration_enabled": json.RawMessage(`false`),
 	}, audit)
 	if err != nil {
 		t.Fatalf("PatchSettings 白名单键应成功: %v", err)
@@ -63,13 +63,13 @@ func TestContractAdminSettingsWired(t *testing.T) {
 	if cfg.Security.RegistrationEnabled {
 		t.Fatal("内存配置未被更新（改了但没生效）")
 	}
-	got, err := st.Repos().Settings.Get(context.Background(), "security.registration_enabled")
+	got, err := st.Repos().Settings.Get(context.Background(), "registration_enabled")
 	if err != nil || got != "false" {
 		t.Fatalf("settings 表未持久化: got=%q err=%v", got, err)
 	}
 
 	if _, err := sb.PatchSettings(context.Background(), map[string]json.RawMessage{
-		"limits.default_rpm": json.RawMessage(`120`),
+		"default_rpm": json.RawMessage(`120`),
 	}, audit); err == nil {
 		t.Fatal("只读键（limits.default_rpm）应被拒绝")
 	}
