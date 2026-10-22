@@ -53,6 +53,11 @@ var orderFuncs = map[string]orderKey{
 		if p.TTFTMs < 0 {
 			return 0, false
 		}
+		// 次级键只在 TotalMs 有样本时参与合成；否则 -1 会算出 TTFT*1e6-1，
+		// 比同 TTFT 的真实测量值还小——「总耗时未知」会赢过「已知且很短」。
+		if p.TotalMs < 0 {
+			return float64(p.TTFTMs) * 1e6, true
+		}
 		return float64(p.TTFTMs)*1e6 + float64(min64(p.TotalMs, 999999)), true
 	},
 	// price：Credits 乘数升序。乘数表没有的模型默认 1（不被惩罚的中间态），
@@ -117,7 +122,10 @@ func rankLess(chain []string, a, b Path) (bool, bool) {
 // 03-strategy.md §3.2 待定项，装配层决定是否共享）。
 func Rank(paths []Path, chain []string, rr *RoundRobinCursor) []Path {
 	if len(paths) <= 1 {
-		return paths
+		// 单元素也要返回副本：多元素路径下 Rank 返回的是新切片，若这里
+		// 直接返回入参，调用方会得到「有时可原地改、有时不可」的两种别名
+		// 语义——一旦有人给首元素打 CooledDown 就会改到候选池本体。
+		return append([]Path(nil), paths...)
 	}
 	if len(chain) == 0 {
 		chain = DefaultChain
