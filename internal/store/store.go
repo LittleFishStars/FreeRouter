@@ -88,6 +88,8 @@ type Repos struct {
 	Inbox *InboxRepo
 	// Secrets 上游密钥材料的 AES-GCM 密文读写（task-19）。
 	Secrets *SecretRepo
+	// Settings 运行时开关的 key→JSON 原文（M10 设置页）。
+	Settings *SettingsRepo
 }
 
 // Open 打开主库：建目录 → 打开写池 → 设 PRAGMA → 迁移 → 打开读池 → 载入主密钥。
@@ -332,6 +334,7 @@ func newRepos(s *Store) *Repos {
 	r.Groups = &GroupRepo{db: conn, s: s}
 	r.Inbox = &InboxRepo{db: conn, s: s}
 	r.Secrets = &SecretRepo{db: conn, s: s}
+	r.Settings = &SettingsRepo{s: s}
 	return r
 }
 

@@ -314,6 +314,13 @@ func (a *App) buildAdminDeps() *httpapi.AdminDeps {
 		Verifications: &verificationsBridge{b: b},
 		Audit:         &auditBridge{b: b},
 		Inbox:         &inboxBridge{b: b},
+
+		// M10 补齐的四个触发型依赖：刷新/连通性测试/设置读/设置写与 IP 自检。
+		Refresh:      a.buildRefreshBridge(),
+		UpstreamTest: &upstreamTesterBridge{store: a.store, sidecar: a.sidecar, cfg: a.cfg, httpc: &http.Client{Timeout: 3 * time.Second}},
+		SettingsView: &settingsBridge{b: b, cfg: a.cfg},
+		SettingsPatch: &settingsBridge{b: b, cfg: a.cfg},
+		IPCheck:      &settingsBridge{b: b, cfg: a.cfg},
 	}
 }
 

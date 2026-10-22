@@ -49,6 +49,11 @@ type App struct {
 	// 后台任务（模型目录刷新等）的取消函数，Stop 时统一收回。
 	bgCancel context.CancelFunc
 
+	// modelRefresher 是目录刷新器（sidecar 可用时由 startModelRefresh 建）。
+	// 管理面的 POST /real-models/refresh 复用它同步跑一轮——不另建实例，
+	// 否则两处刷新会争同一条 sidecar 串行管道。
+	modelRefresher *upstream.ModelRefresher
+
 	// HTTP 服务器（装配好全部中间件与路由的）。
 	server *httpapi.Server
 
@@ -151,6 +156,9 @@ func (a *App) startModelRefresh(ctx context.Context) {
 		a.store, a.sidecar,
 		a.cfg.Upstream.Relay.ModelRefreshInterval.Std(), a.log,
 		refreshHooksFor(a.store, a.log))
+	// 存到 App 上：管理面「手动刷新」要复用同一个实例（两处刷新会争
+	// 同一条 sidecar 串行管道，各建一个会让并发刷新互相超时）。
+	a.modelRefresher = refresher
 	refresher.Start(ctx)
 }
 
