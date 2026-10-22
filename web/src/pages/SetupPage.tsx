@@ -31,7 +31,7 @@ export default function SetupPage({ def }: { def: import('../routes').PageDef })
   }, [])
 
   if (status === 'checking') return <PageFrame def={def}><p className="placeholder-note">正在检查初始化状态…</p></PageFrame>
-  if (status === 'done') return <Navigate to="/login" replace state={{ inited: true, from: location.state }} />
+  if (status === 'done') return <Navigate to="/login" replace state={{ inited: true, from: (location.state as { from?: string } | null)?.from }} />
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
