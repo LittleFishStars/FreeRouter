@@ -70,6 +70,15 @@ func (f *sessFakeStore) UpdatePasswordHash(_ context.Context, id, hash string) e
 	return nil
 }
 
+// SetMustChangePassword：auth.AccountRepository 的「一次性口令」标志写面。
+// 假体里按 id 记录，覆盖强制改密窗口的契约测试。
+func (f *sessFakeStore) SetMustChangePassword(_ context.Context, id string, must bool) error {
+	if a, ok := f.byID[id]; ok {
+		a.MustChangePassword = must
+	}
+	return nil
+}
+
 func (f *sessFakeStore) CreateSession(_ context.Context, s *auth.Session) error {
 	f.sessions[fmt.Sprintf("%x", s.TokenHash)] = s
 	return nil

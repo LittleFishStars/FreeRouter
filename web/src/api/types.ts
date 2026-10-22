@@ -37,6 +37,12 @@ export interface Session {
   acting_class?: AccountClass
   session_id?: string
   expires_at?: string
+  /**
+   * true = 当前口令是一次性口令（首启随机生成/管理员重置）：
+   * 改密前除会话/登出/改密外的控制台接口全 403 password_change_required。
+   * 登录响应与会话响应都带这个字段。
+   */
+  must_change_password?: boolean
   /** 后端当前未返回；pending 判定一旦上线，这里即可驱动 /pending 强制跳转。 */
   status?: AccountStatus
 }

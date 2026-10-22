@@ -86,6 +86,17 @@ func (f *fakeStore) UpdatePasswordHash(_ context.Context, accountID, argonHash s
 	return nil
 }
 
+func (f *fakeStore) SetMustChangePassword(_ context.Context, accountID string, must bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a, ok := f.accounts[accountID]
+	if !ok {
+		return ErrNotFound
+	}
+	a.MustChangePassword = must
+	return nil
+}
+
 // ---- SessionRepository ----
 
 func (f *fakeStore) CreateSession(_ context.Context, s *Session) error {

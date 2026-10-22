@@ -165,6 +165,11 @@ type Account struct {
 	RPMLimit       int   // 请求数/分钟；-1 不限；0 全拒
 	TPMLimit       int64 // token/分钟；同上
 	MaxConcurrency int   // 在途数；同上
+
+	// MustChangePassword 表示当前口令是一次性口令（系统自举随机生成，
+	// 或管理员重置时生成）：登录后必须先改密并补全资料，其它控制台接口
+	// 一律 403 password_change_required。它是账户事实，不随会话变化。
+	MustChangePassword bool
 }
 
 // HasClass 报告账户是否持有某个类。
@@ -240,6 +245,9 @@ type Principal struct {
 	Classes     ClassSet
 	ActingClass Class
 	Kind        CredentialKind
+	// MustChangePassword 从账户实时读入：会话不过期，但账户可能被管理员
+	// 重置成一次性口令——强制改密要求必须每次校验都重新判定。
+	MustChangePassword bool
 
 	SessionID string // Kind == session 时非空
 	KeyID     string // Kind == apikey 时非空

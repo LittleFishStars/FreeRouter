@@ -75,6 +75,10 @@ type Server struct {
 	IdleTimeout          Duration `yaml:"idle_timeout"`
 	MaxBodyBytes         int64    `yaml:"max_body_bytes"`
 	ShutdownGrace        Duration `yaml:"shutdown_grace"`
+	// AutoOpenBrowser 控制首启随机口令创建后的浏览器自动打开。
+	// 只在监听地址是回环时生效（与服务端部署场景无关）；
+	// 无桌面环境的服务器上 xdg-open 失败会被忽略，不影响启动。
+	AutoOpenBrowser bool `yaml:"auto_open_browser"`
 }
 
 // TLS 见 §2.2。acme 本版不支持，配置校验直接拒绝。
@@ -128,11 +132,11 @@ type Relay struct {
 
 // Sidecar 见 §2.6。
 type Sidecar struct {
-	Enabled        bool     `yaml:"enabled"`
-	NodePath       string   `yaml:"node_path"`
-	Entry          string   `yaml:"entry"`
-	IPC            string   `yaml:"ipc"` // 固定 stdio
-	HubPath        string   `yaml:"hub_path"`
+	Enabled  bool   `yaml:"enabled"`
+	NodePath string `yaml:"node_path"`
+	Entry    string `yaml:"entry"`
+	IPC      string `yaml:"ipc"` // 固定 stdio
+	HubPath  string `yaml:"hub_path"`
 	// DepsRoot 是 DSH 安装目录（B 层依赖根），空 = sidecar 自行枚举
 	//（PATH 里的 dsh → 系统安装位 → nvm/用户级）。显式配置用于容器/多版本共存。
 	DepsRoot       string   `yaml:"deps_root"`
@@ -168,6 +172,7 @@ func Default() *Config {
 			IdleTimeout:          Duration(120 * time.Second),
 			MaxBodyBytes:         32 << 20, // 32 MiB
 			ShutdownGrace:        Duration(30 * time.Second),
+			AutoOpenBrowser:      true,
 		},
 		TLS: TLS{Mode: "off"},
 		Security: Security{
@@ -211,7 +216,7 @@ func Default() *Config {
 			StartupTimeout: Duration(20 * time.Second),
 		},
 		Store: Store{
-			Path:                 "data/freerouter.db",
+			Path: "data/freerouter.db",
 			// 默认放到仓库/工作目录根（与库 data/ 分开目录——05-storage §8.2
 			// 要求主密钥不得与库同目录，安全基线 C6 会检查）。
 			// 生产建议显式设成 /etc/freerouter/master.key 或环境变量注入的路径。

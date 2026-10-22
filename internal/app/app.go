@@ -59,6 +59,12 @@ type App struct {
 
 	// 贡献流程服务（M8）：惰性构造，无状态，可被控制台/管理面复用。
 	contribution *upstream.ContributionService
+
+	// bootstrap 是首次启动自动创建管理员的凭据（已初始化时为 nil）。
+	// main 用它打印一次性口令 banner；密码本身不进日志。
+	bootstrap *BootstrapResult
+	// bootstrapPasswordFile 是首启口令的落盘路径（改密成功后删）。
+	bootstrapPasswordFile string
 }
 
 // Options 控制装配行为（测试用得上的注入点）。
@@ -69,6 +75,9 @@ type Options struct {
 	Logger *slog.Logger
 	// SidecarStarter 覆盖 sidecar 拉起（测试注入 fake；nil 用 dshprovider.Start）。
 	SidecarStarter func(ctx context.Context, opts dshprovider.Options) (*dshprovider.Client, error)
+	// DisableBootstrap 关闭首启自举（测试专用）：让 Setup 不自动建管理员，
+	// 以保留「空库 + 向导」这条路径的契约测试。生产永远不设。
+	DisableBootstrap bool
 }
 
 // Setup 按启动序列装配整个进程（06-runtime.md：配置→迁移→初始化向导判定
@@ -101,6 +110,14 @@ func Setup(ctx context.Context, opts Options) (*App, error) {
 
 	a := &App{cfg: cfg, log: log, store: st}
 
+	// 第 3 步（前置）：首启自举。库中 0 账户时随机生成口令、建首个 admin
+	// 并写 initial-password.txt；main 拿到结果后打印 banner。失败即终：
+	// 一个建不出首个管理员的实例没有可用路径（向导仍可兜底，但说明库坏了）。
+	if !opts.DisableBootstrap {
+		if err := a.bootstrapAdmin(ctx); err != nil {
+			return nil, fmt.Errorf("app: 首次初始化失败: %w", err)
+		}
+	}
 	// 第 5 步：sidecar。失败降级（不阻塞）。
 	if cfg.Sidecar.Enabled {
 		starter := opts.SidecarStarter

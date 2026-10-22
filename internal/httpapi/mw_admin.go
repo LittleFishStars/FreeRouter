@@ -178,6 +178,13 @@ func (s *Server) mwAdmin() func(http.Handler) http.Handler {
 					"会话不存在或已过期，请重新登录", nil)
 				return
 			}
+			// 强制改密闸（与 mwSession 同一口径）：管理面不经过 mwSession，
+			// 所以闸必须在这里再判一次，否则一次性口令会话能直接改全站配置。
+			if p.MustChangePassword {
+				writeError(w, http.StatusForbidden, "password_change_required",
+					"首次登录必须先修改口令并补全账户信息", nil)
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(
 				r.Context(), ctxKeySessionPrincipal, p)))
 		})

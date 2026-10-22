@@ -7,7 +7,7 @@
 // 未接入时页面走「尚未接入」态。
 
 import { useState, type FormEvent } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import {
   getAccountSessions,
@@ -101,9 +101,16 @@ export default function AccountPage({ def }: PageProps) {
 export function PasswordPage({ def }: PageProps) {
   const { session, setSession } = useSession()
   const navigate = useNavigate()
+  const location = useLocation()
+  // 首启随机口令/管理员重置后进入的「强制改密」模式：口令是系统给的，
+  // 用户必须先换成自己的（可顺带补全显示名），服务端也有同一道闸。
+  const firstLogin =
+    session?.must_change_password === true ||
+    (location.state as { firstLogin?: boolean } | null)?.firstLogin === true
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
   const [confirm, setConfirm] = useState('')
+  const [displayName, setDisplayName] = useState('')
   const [error, setError] = useState<unknown>(null)
   const [fieldError, setFieldError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -124,7 +131,11 @@ export function PasswordPage({ def }: PageProps) {
     }
     setBusy(true)
     try {
-      await putAccountPassword({ current_password: current, new_password: next })
+      await putAccountPassword({
+        current_password: current,
+        new_password: next,
+        ...(firstLogin && displayName.trim() ? { display_name: displayName.trim() } : {})
+      })
       // 后端在改密时吊销全部会话；本地也必须清掉会话缓存并回登录页
       setSession(null)
       navigate('/login', { replace: true, state: { passwordChanged: true } })
@@ -137,11 +148,18 @@ export function PasswordPage({ def }: PageProps) {
 
   return (
     <PageFrame def={def}>
-      <Banner tone="warn" title="改密会吊销全部会话">
-        包括你当前正在使用的这个会话。提交成功后需要重新登录；其它设备上的登录会立即失效。
-      </Banner>
+      {firstLogin ? (
+        <Banner tone="warn" title="首次登录：必须修改初始口令">
+          当前口令是系统随机生成的（已显示在启动终端和 data/initial-password.txt 中）。
+          请换成你自己的口令，并可顺手补全显示名；完成后需要用新口令重新登录。
+        </Banner>
+      ) : (
+        <Banner tone="warn" title="改密会吊销全部会话">
+          包括你当前正在使用的这个会话。提交成功后需要重新登录；其它设备上的登录会立即失效。
+        </Banner>
+      )}
       <form className="form-card" onSubmit={onSubmit}>
-        <Field label="当前口令" required>
+        <Field label={firstLogin ? '初始口令' : '当前口令'} required>
           <input
             type="password"
             value={current}
@@ -150,6 +168,16 @@ export function PasswordPage({ def }: PageProps) {
             autoComplete="current-password"
           />
         </Field>
+        {firstLogin && (
+          <Field label="显示名" hint="可选；留空则保持当前显示名。">
+            <input
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder={session.display_name}
+              autoComplete="nickname"
+            />
+          </Field>
+        )}
         <Field label="新口令" required hint="至少 12 位。">
           <input
             type="password"
@@ -171,12 +199,14 @@ export function PasswordPage({ def }: PageProps) {
         </Field>
         <FormError error={error} />
         <button type="submit" className="btn-primary" disabled={busy}>
-          {busy ? '正在提交…' : '改密并登出全部会话'}
+          {busy ? '正在提交…' : firstLogin ? '保存并重新登录' : '改密并登出全部会话'}
         </button>
       </form>
-      <p>
-        <Link to="/account">返回账户概览</Link>
-      </p>
+      {!firstLogin && (
+        <p>
+          <Link to="/account">返回账户概览</Link>
+        </p>
+      )}
     </PageFrame>
   )
 }

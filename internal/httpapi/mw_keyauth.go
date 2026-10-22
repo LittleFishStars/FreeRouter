@@ -106,5 +106,15 @@ func isNonKeyPath(p string) bool {
 			return true
 		}
 	}
-	return false
+	// 非 API/协议路径（控制台静态页与 SPA 资源）不是 Key 面：
+	// keyAuth 是全局 r.Use，若不豁免，浏览器打开 "/" 会直接 401，
+	// 整个控制台前端无法加载（实测踩到）。
+	//
+	// 只用两个前缀判定而不是枚举静态文件：前端产物文件名带 hash，
+	// 枚举必然漏；而 "/api/*" 与 "/v1/*" 之外没有任何需要 Key 的端点
+	// （未知路径最终落到 JSON 404，不会变成“无鉴权的 API”）。
+	return !strings.HasPrefix(p, "/api/") &&
+		p != "/api" &&
+		!strings.HasPrefix(p, "/v1/") &&
+		p != "/v1"
 }

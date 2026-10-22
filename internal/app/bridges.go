@@ -89,6 +89,9 @@ func accountToAuth(a *store.Account) *auth.Account {
 		Username:    a.Username,
 		Classes:     classes,
 		Status:      auth.AccountStatus(a.Status),
+		// 强制改密是账户事实：会话校验要每次读它，漏译会让「首启随机口令」
+		// 变成可长期使用的凭据。
+		MustChangePassword: a.MustChangePassword,
 		// CreatedAt 用零值：store 行有这列，但 Key 鉴权路径不消费它，
 		// 显式声明「知道有、故意不译」——比静默漏译可审。
 		CreatedAt: time.Time{},

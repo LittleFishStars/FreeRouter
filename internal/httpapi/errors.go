@@ -54,6 +54,9 @@ var errorTypes = map[string]errorType{
 	"not_found":           typeNotFound,
 	"conflict":            typeConflict,
 	"too_many_attempts":   typeRateLimit,
+	// password_change_required：首启随机口令/管理员重置后，改密前触达
+	// 其它控制台接口（docs/api/02-admin §2 的强制改密窗口）。
+	"password_change_required": typePermission,
 
 	// HTTP 层：405 与 415 复用 invalid_request（§4「为什么复用」），
 	// 把 param 填成方法名 / Content-Type。

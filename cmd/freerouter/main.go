@@ -27,7 +27,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -123,11 +125,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// 步骤 3：初始化向导判定。
-	// 尚无管理员账户时服务只能绑回环：否则任何先到的人都能把自己建成管理员。
-	// M0 还没有库，因此这里以「未初始化」为前提做端口检查，M3 接库后按实际账户数判定。
+	// 首次启动会自动创建管理员并随机口令（app.bootstrapAdmin）：口令只出现在
+	// 本机终端 banner 与数据目录的 initial-password.txt。监听非回环时必须提醒
+	// 运维把首启口令当作一次性凭据保护——它尚未被改成个人口令。
 	if !cfg.IsLoopbackListen() {
-		log.Warn("尚未创建管理员账户，但监听地址不是回环地址；"+
-			"初始化完成前请勿把该端口暴露到不可信网络",
+		log.Warn("监听地址非回环：首启管理员口令只出现在本机终端与数据目录口令文件中，"+
+			"请确认该端口仅对可信网络开放，并在首次登录后立即改密",
 			"listen", cfg.Server.Listen)
 	}
 
@@ -171,9 +174,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// 步骤 3（真判定）：初始化向导。已建管理员账户且监听非回环→提醒；
 	// 未初始化且非回环→强警告（M0 只有警告，deny 语义在 config.Validate）。
 	if !cfg.IsLoopbackListen() {
-		log.Warn("监听地址非回环：初始化完成前请勿把该端口暴露到不可信网络", "listen", cfg.Server.Listen)
+		log.Warn("监听地址非回环：首启口令是一串随机值，请确认访问者都是可信运维",
+			"listen", cfg.Server.Listen)
 	}
-
 	var shuttingDown atomic.Bool
 
 	srv := &http.Server{
@@ -191,6 +194,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	log.Info("开始监听", "listen", ln.Addr().String(), "tls", cfg.TLS.Mode)
+
+	// 首启横幅：一次性口令只在这里与 initial-password.txt 出现，不进日志。
+	// 必须在 Serve 之前打印（用户拿到口令时服务已可访问）；浏览器打开
+	// 放在延迟启动里，避免在监听完成前请求到一个拒绝连接。
+	if br := application.Bootstrap(); br != nil {
+		br.ListenURL = consoleURL(cfg, ln)
+		fmt.Fprint(stdout, application.BootstrapBanner())
+		if cfg.Server.AutoOpenBrowser && cfg.IsLoopbackListen() {
+			go openBrowser(br.ListenURL)
+		}
+	}
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -276,4 +290,49 @@ func verifyStore(configPath string) error {
 	fmt.Printf("存储校验通过：迁移 %d 条、关键表 %d 张、主密钥可用（%s）\n",
 		rep.Migrations, len(rep.Tables), cfg.Store.Path)
 	return nil
+}
+
+// consoleURL 推导控制台入口地址（首启 banner 与自动弹浏览器用）。
+//
+// public_url 优先（反代/域名场景）；否则从实际监听的地址取端口，
+// 通配监听（0.0.0.0 / ::）换成本机回环——浏览器打开 0.0.0.0 不可用。
+func consoleURL(cfg *config.Config, ln net.Listener) string {
+	scheme := "http"
+	if strings.EqualFold(cfg.TLS.Mode, "files") {
+		scheme = "https"
+	}
+	if cfg.Server.PublicURL != "" {
+		return strings.TrimRight(cfg.Server.PublicURL, "/") + "/"
+	}
+	host, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		return scheme + "://" + ln.Addr().String() + "/"
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return scheme + "://" + net.JoinHostPort(host, port) + "/"
+}
+
+// openBrowser 在首启时打开控制台页面（仅回环监听 + 配置开启时调用）。
+//
+// 失败静默：服务器/容器里没有 xdg-open 是常态，终端 banner 已经给了 URL，
+// 一个“打不开浏览器”的错误不该在启动日志里制造噪音。
+func openBrowser(url string) {
+	time.Sleep(600 * time.Millisecond) // 让 Serve 先就位，避免连接被拒
+	var name string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		name, args = "open", []string{url}
+	case "windows":
+		name, args = "rundll32", []string{"url.dll,FileProtocolHandler", url}
+	default:
+		name, args = "xdg-open", []string{url}
+	}
+	cmd := exec.Command(name, args...)
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	_ = cmd.Process.Release()
 }

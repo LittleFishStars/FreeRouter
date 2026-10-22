@@ -24,6 +24,19 @@
 
 ### 变更（运维需感知）
 
+- **首次启动改为进程自动生成随机口令并创建管理员**（2026-10-23 定案）：
+  旧行为是浏览器打开 `/setup` 由用户填显示名与口令；新行为是启动时生成 20 字符
+  随机口令、创建 `admin`（`{admin, tenant}`），把口令打印在终端 banner 并写入
+  数据目录 `initial-password.txt`（0600），默认（且仅回环监听时）自动打开控制台。
+  口令是**一次性**的：登录后除 `/api/auth/session`、`/api/auth/logout`、
+  `/api/account/password`、`/api/account/profile` 外的控制台接口一律
+  `403 password_change_required`，改密成功后口令文件自动删除并吊销全部会话。
+  管理员重置他人口令同样会进入强制改密窗口。`/setup` 向导保留作为兜底
+  （例如账户表被手工清空）。
+  新增配置 `server.auto_open_browser`（默认 `true`）；迁移 `0006` 新增
+  `accounts.must_change_password`（`NOT NULL DEFAULT 0`，存量账户不受影响）。
+- 控制台静态页与 SPA 资源不再经过 Key 鉴权链（旧行为下浏览器打开 `/` 直接
+  `401 invalid_api_key`，前端根本加载不了）；`/v1/*` 与 `/api/*` 不变。
 - **`limits.default_tpm` 默认值 `0 → -1`，且「不限」的表示从 `0` 迁移到 `-1`**
   （2026-10-20 定案，与 `accounts` 速率列同一套哨兵：`-1` = 不限、`0` = 全拒）。
   升级后若你的旧配置写了 `default_tpm: 0`，行为会从「不限」变为「全拒」——

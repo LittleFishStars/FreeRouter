@@ -69,9 +69,19 @@ export interface PageQuery {
 
 // ── 账户自助 ───────────────────────────────────────────────────────────
 
-/** 暂定：POST /api/account/password，改密即吊销全部会话。 */
-export function putAccountPassword(body: { current_password: string; new_password: string }) {
-  return postWrite<{ ok: boolean }>(PATHS.accountPassword, body)
+/**
+ * POST /api/account/password。改密即吊销全部会话（含当前），必须重新登录。
+ * display_name 可选：首启强制改密时一并补全（写失败不影响改密结果）。
+ */
+export function putAccountPassword(body: {
+  current_password: string
+  new_password: string
+  display_name?: string
+}) {
+  return postWrite<{ ok: boolean; display_name_updated?: boolean }>(
+    PATHS.accountPassword,
+    body
+  )
 }
 
 export interface AccountSession {

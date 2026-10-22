@@ -34,15 +34,15 @@ var errAdminNotImplemented = fmt.Errorf("admin 桥占位：%w", httpapi.ErrAdmin
 // accountToAdmin 把 store.Account 翻成管理面 DTO（id 编码 + 类转字符串数组）。
 func accountToAdmin(a *store.Account) *httpapi.AdminAccount {
 	out := &httpapi.AdminAccount{
-		ID:           encodeID(idcode.Account, a.ID),
-		DisplayName:  a.DisplayName,
-		Username:     a.Username,
-		Status:       string(a.Status),
-		Groups:       []string{}, // ListAccounts 填充；GetAccount 也聚合
-		RPMLimit:     a.RPMLimit,
-		TPMLimit:     a.TPMLimit,
+		ID:             encodeID(idcode.Account, a.ID),
+		DisplayName:    a.DisplayName,
+		Username:       a.Username,
+		Status:         string(a.Status),
+		Groups:         []string{}, // ListAccounts 填充；GetAccount 也聚合
+		RPMLimit:       a.RPMLimit,
+		TPMLimit:       a.TPMLimit,
 		MaxConcurrency: a.MaxConcurrency,
-		CreatedAt:    a.CreatedAt,
+		CreatedAt:      a.CreatedAt,
 	}
 	if a.LastLoginAt != nil {
 		out.LastLoginAt = a.LastLoginAt
@@ -361,6 +361,11 @@ func (ab *accountsBridge) ResetPassword(ctx context.Context, id, passwordHash st
 	var auditID string
 	err = ab.b.st.WithTx(ctx, func(tx *store.Repos) error {
 		if err := tx.Accounts.UpdatePasswordHash(ctx, nid, passwordHash); err != nil {
+			return err
+		}
+		// 管理员重置出来的是一次性口令（界面回显一次）：下次登录必须先改密，
+		// 否则同一串会随聊天/工单长期留存成为共享凭据。
+		if err := tx.Accounts.SetMustChangePassword(ctx, nid, true); err != nil {
 			return err
 		}
 		if revoke {

@@ -85,6 +85,9 @@ func (s *Server) handleAuthLogin(deps *AuthDeps) http.HandlerFunc {
 		if p, verr := deps.Sess.Validate(r.Context(), is.Token, ""); verr == nil {
 			resp["display_name"] = p.DisplayName
 			resp["classes"] = p.Classes.Sorted()
+			// 首启随机口令/管理员重置后为 true：前端据此直跳改密页，
+			// 服务端仍有 mwSession 的强制闸兜底。
+			resp["must_change_password"] = p.MustChangePassword
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}
@@ -133,6 +136,8 @@ func (s *Server) handleAuthSession() http.HandlerFunc {
 			"classes":      p.Classes.Sorted(),
 			"acting_class": p.ActingClass,
 			"session_id":   p.SessionID,
+			// 强制改密窗口：前端路由守卫与顶栏提示的输入。
+			"must_change_password": p.MustChangePassword,
 		})
 	}
 }

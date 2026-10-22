@@ -46,6 +46,13 @@ type AccountRepository interface {
 	// 这一条写能力；全字段覆盖会让鉴权层拥有改额度、改状态的能力，而那些属于
 	// 管理面（AccountService）的写域，混在一处就没法按方法粒度审计与限制了。
 	UpdatePasswordHash(ctx context.Context, accountID, argonHash string) error
+
+	// SetMustChangePassword 设置/清除「首次登录必须改密」标志。
+	//
+	// 与 UpdatePasswordHash 拆开的原因：置位方（系统自举/管理员重置）与
+	// 清除方（本人改密成功）是两个不同的事件，合并进哈希写入会让调用点
+	// 无法表达「这次写哈希是给人用的还是给一次性口令用的」。
+	SetMustChangePassword(ctx context.Context, accountID string, must bool) error
 }
 
 // SessionRepository 是会话的读写接口。

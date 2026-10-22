@@ -78,10 +78,37 @@ func (s *Server) mwSession(sessMgr *auth.SessionManager) func(http.Handler) http
 					"会话不存在或已过期，请重新登录", nil)
 				return
 			}
+			// 强制改密闸：首启/重置的一次性口令在改密前只能触达
+			// 「看会话 / 登出 / 改密」三个端点。其余控制台 API（包括
+			// 管理面与 Key 面）一律 403——前端守卫可被绕过，
+			// 服务端闸才是强制。
+			if p.MustChangePassword && !mustChangeAllowedPath(r.URL.Path) {
+				writeError(w, http.StatusForbidden, "password_change_required",
+					"首次登录必须先修改口令并补全账户信息", nil)
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(
 				r.Context(), ctxKeySessionPrincipal, p)))
 		})
 	}
+}
+
+// mustChangeAllowedPath 是「强制改密期间仍可访问」的最小路径集。
+//
+// 为什么只有四个：改密本身（POST /api/account/password）、看当前会话
+// （前端渲染改密页要 display_name）、登出（用户想换账号），以及资料更新
+// （首次页同时补全显示名，PATCH /api/account/profile）。其余端点
+// 一律要求先改密——包括“查看管理面”这种看起来无害的读：能读全站
+// 账户的会话没有理由在一串随机口令仍然有效时存在。
+func mustChangeAllowedPath(path string) bool {
+	switch path {
+	case "/api/auth/session",
+		"/api/auth/logout",
+		"/api/account/password",
+		"/api/account/profile":
+		return true
+	}
+	return false
 }
 
 // needsCSRFCheck 报告该方法是否需要 CSRF 自定义头检查。
@@ -231,4 +258,14 @@ func (s *Server) ConsoleHandlerSetupStatus(deps *SetupDeps) http.HandlerFunc {
 // ConsoleHandlerSetupInit 导出初始化 handler。
 func (s *Server) ConsoleHandlerSetupInit(deps *SetupDeps) http.HandlerFunc {
 	return s.handleSetupInit(deps)
+}
+
+// ConsoleHandlerAccountPassword 导出账户改密 handler（挂会话中间件下）。
+func (s *Server) ConsoleHandlerAccountPassword(deps *AccountPasswordDeps) http.HandlerFunc {
+	return s.handleAccountPassword(deps)
+}
+
+// ConsoleHandlerAccountProfile 导出账户资料 handler（挂会话中间件下）。
+func (s *Server) ConsoleHandlerAccountProfile(deps *AccountPasswordDeps) http.HandlerFunc {
+	return s.handleAccountProfile(deps)
 }

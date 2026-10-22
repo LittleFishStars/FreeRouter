@@ -239,6 +239,21 @@ function PendingGate() {
   return null
 }
 
+/** 强制改密窗口全局让路：任何入口（含「/」与需登录的页面）都先落到
+ *  /account/password。页面级由 RequirePage 处理，这里补 requires:
+ *  'none' 的入口与登录后直接落地的情况；服务端 mwSession/mwAdmin 同闸。 */
+function MustChangeGate() {
+  const { session } = useSession()
+  const location = useLocation()
+  const navigate = useNavigate()
+  useEffect(() => {
+    if (session?.must_change_password && location.pathname !== '/account/password') {
+      navigate('/account/password', { replace: true, state: { firstLogin: true } })
+    }
+  }, [session, location.pathname, navigate])
+  return null
+}
+
 /** 路由表条目 → <Route>。IA 的 :id 参数与 react-router 语法一致，原样透传。 */
 function toRoute(p: PageDef) {
   const El = p.element
@@ -260,6 +275,7 @@ function Shell() {
         <Sidebar unread={unread} />
         <main className="content">
           <PendingGate />
+          <MustChangeGate />
           <Routes>
             {PAGES.map(toRoute)}
             {/* catch-all：未匹配路由与非法 /error/:code 共用 404 页；

@@ -54,6 +54,10 @@ type Account struct {
 	RPMLimit       int64
 	TPMLimit       int64
 	MaxConcurrency int64
+	// MustChangePassword 表示当前口令是系统生成的一次性口令：登录后必须先
+	// 在控制台改密（并补全账户信息）才能使用其它 API。列 NOT NULL DEFAULT 0，
+	// 由 0006 迁移引入；与 auth.Account 的同名字段一一对应。
+	MustChangePassword bool
 }
 
 // AccountAuth 是认证路径专用的形状：带 password_hash 与 recovery_code_hash。
@@ -109,10 +113,12 @@ func (r *AccountRepo) CreateAccount(ctx context.Context, a AccountAuth, classes 
 
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO accounts(display_name, username, password_hash, status,
-		                      recovery_code_hash, created_at, last_login_at, note)
-		 VALUES(?,?,?,?,?,?,?,?)`,
+		                      recovery_code_hash, created_at, last_login_at, note,
+		                      must_change_password)
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
 		a.DisplayName, a.Username, a.PasswordHash, string(status),
-		a.RecoveryCodeHash, createdAt, a.LastLoginAt, a.Note)
+		a.RecoveryCodeHash, createdAt, a.LastLoginAt, a.Note,
+		boolToInt(a.MustChangePassword))
 	if err != nil {
 		return 0, fmt.Errorf("store: 创建账户失败: %w", err)
 	}
@@ -135,21 +141,22 @@ func (r *AccountRepo) CreateAccount(ctx context.Context, a AccountAuth, classes 
 func (r *AccountRepo) GetAccount(ctx context.Context, id int64) (*Account, error) {
 	row := r.db.QueryRowContext(ctx,
 		`SELECT id, display_name, username, status, created_at, last_login_at, note,
-		        rpm_limit, tpm_limit, max_concurrency
+		        rpm_limit, tpm_limit, max_concurrency, must_change_password
 		   FROM accounts WHERE id = ?`, id)
 
 	var a Account
 	var status string
+	var mustChange int
 	if err := row.Scan(&a.ID, &a.DisplayName, &a.Username, &status,
 		&a.CreatedAt, &a.LastLoginAt, &a.Note,
-		&a.RPMLimit, &a.TPMLimit, &a.MaxConcurrency); err != nil {
+		&a.RPMLimit, &a.TPMLimit, &a.MaxConcurrency, &mustChange); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("store: 读取账户 %d 失败: %w", id, err)
 	}
 	a.Status = AccountStatus(status)
-
+	a.MustChangePassword = mustChange != 0
 	classes, err := r.classesOf(ctx, id)
 	if err != nil {
 		return nil, err
@@ -176,20 +183,22 @@ func (r *AccountRepo) GetAccountAuth(ctx context.Context, username string) (*Acc
 	row := r.db.QueryRowContext(ctx,
 		`SELECT id, display_name, username, password_hash, status,
 		        recovery_code_hash, created_at, last_login_at, note,
-		        rpm_limit, tpm_limit, max_concurrency
+		        rpm_limit, tpm_limit, max_concurrency, must_change_password
 		   FROM accounts WHERE username = ?`, username)
 
 	var a AccountAuth
 	var status string
+	var mustChange int
 	if err := row.Scan(&a.ID, &a.DisplayName, &a.Username, &a.PasswordHash, &status,
 		&a.RecoveryCodeHash, &a.CreatedAt, &a.LastLoginAt, &a.Note,
-		&a.RPMLimit, &a.TPMLimit, &a.MaxConcurrency); err != nil {
+		&a.RPMLimit, &a.TPMLimit, &a.MaxConcurrency, &mustChange); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("store: 读取认证信息失败: %w", err)
 	}
 	a.Status = AccountStatus(status)
+	a.MustChangePassword = mustChange != 0
 
 	classes, err := r.classesOf(ctx, a.ID)
 	if err != nil {
@@ -274,6 +283,44 @@ func (r *AccountRepo) UpdatePasswordHash(ctx context.Context, id int64, hash str
 		return fmt.Errorf("store: 更新密码失败: %w", err)
 	}
 	return requireAffected(res, "账户", id)
+}
+
+// SetMustChangePassword 设置/清除「首次登录必须改密」标志。
+//
+// 为什么单独一个方法：该标志的置位与密码写入是两件事——系统自举/管理员重置
+// 生成一次性口令时置位，本人改密成功时清除；把两个动作塞进 UpdatePasswordHash
+// 会让「谁改的口令」与「谁被要求改」在调用点无法区分。
+func (r *AccountRepo) SetMustChangePassword(ctx context.Context, id int64, must bool) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE accounts SET must_change_password = ? WHERE id = ?`, boolToInt(must), id)
+	if err != nil {
+		return fmt.Errorf("store: 更新改密标志失败: %w", err)
+	}
+	return requireAffected(res, "账户", id)
+}
+
+// UpdateDisplayName 改显示名（账户自助的资料补全）。
+//
+// 显示名不承担唯一性（01-accounts.md），所以不做冲突检查；空串在此拒绝——
+// 「没有称呼」不是合法状态，调用方应给默认值（例如用户名）。
+func (r *AccountRepo) UpdateDisplayName(ctx context.Context, id int64, displayName string) error {
+	if displayName == "" {
+		return errors.New("store: display_name 不得为空")
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE accounts SET display_name = ? WHERE id = ?`, displayName, id)
+	if err != nil {
+		return fmt.Errorf("store: 更新显示名失败: %w", err)
+	}
+	return requireAffected(res, "账户", id)
+}
+
+// boolToInt 把布尔转成 SQLite 的 0/1（列上无布尔类型）。
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // TouchLastLogin 记录最近登录时间。

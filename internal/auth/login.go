@@ -389,11 +389,18 @@ func (s *LoginService) ChangePassword(ctx context.Context, p *Principal, oldPw, 
 	if err := s.hasher.ValidatePassword(newPw); err != nil {
 		return err // 长度不足等返回 invalid_request：这是本人路径，不涉防枚举
 	}
+	// AccountByID 是**不含 password_hash** 的通用读模型（01-accounts 的
+	// 刻意最小化）；验证旧口令必须再走 AccountByUsername 这条带 hash 的
+	// 认证读路径——否则 Verify 拿到空串，所有人的"旧口令"都判错。
 	acct, err := s.stores.Accounts.AccountByID(ctx, p.AccountID)
 	if err != nil {
 		return err
 	}
-	ok, _, _ := s.hasher.Verify(acct.PasswordHash, oldPw)
+	withHash, err := s.stores.Accounts.AccountByUsername(ctx, acct.Username)
+	if err != nil {
+		return err
+	}
+	ok, _, _ := s.hasher.Verify(withHash.PasswordHash, oldPw)
 	if !ok {
 		return ErrInvalidCredentials
 	}
@@ -402,6 +409,11 @@ func (s *LoginService) ChangePassword(ctx context.Context, p *Principal, oldPw, 
 		return Errorf(CodeInternal, err, "计算新密码哈希")
 	}
 	if err := s.stores.Accounts.UpdatePasswordHash(ctx, acct.ID, fresh); err != nil {
+		return err
+	}
+	// 改密成功 = 一次性口令已被替换，强制改密要求随之解除。
+	// 这一步失败必须上报：否则用户改完密仍被困在「先改密」的循环里。
+	if err := s.stores.Accounts.SetMustChangePassword(ctx, acct.ID, false); err != nil {
 		return err
 	}
 	keep := ""
@@ -438,6 +450,10 @@ func (s *LoginService) ResetPassword(ctx context.Context, actor Subject, account
 	if err := s.stores.Accounts.UpdatePasswordHash(ctx, acct.ID, fresh); err != nil {
 		return "", err
 	}
+	// 重置出来的是一次性口令：下次登录必须先换成自己的口令。
+	if err := s.stores.Accounts.SetMustChangePassword(ctx, acct.ID, true); err != nil {
+		return "", err
+	}
 	// 管理员重置吊销**全部**会话（无保留分支，文档 §4 表格定案）。
 	if err := s.sess.LogoutAll(ctx, acct.ID, ""); err != nil {
 		return "", err
@@ -445,16 +461,24 @@ func (s *LoginService) ResetPassword(ctx context.Context, actor Subject, account
 	return oneTime, nil
 }
 
-// generateOneTimePassword 生成一次性密码：20 字符 base62（≈119 位熵）。
+// GenerateOneTimePassword 生成一次性口令：20 字符 base62（≈119 位熵）。
 //
+// 除管理员重置外，实例首次启动的自举随机口令也走这里——两处用同一套
+// 字符集与长度，运维看到的口令形态一致。
 // 为什么不复用 Key 的 43 字符：一次性密码会被复制粘贴进登录框，
 // 长度首先服务于"抄得动"；119 位对在线爆破（有锁定护栏）已是绝对余量。
 // 它必须过 ≥12 字符策略——20 > 12，天然满足。
+func GenerateOneTimePassword() (string, error) { return generateOneTimePassword(rand.Reader) }
+
 func (s *LoginService) generateOneTimePassword() (string, error) {
+	return generateOneTimePassword(s.randSrc)
+}
+
+func generateOneTimePassword(src io.Reader) (string, error) {
 	const otpLen = 20
 	out := make([]byte, 0, otpLen)
 	for len(out) < otpLen {
-		n, err := rand.Int(s.randSrc, big.NewInt(int64(len(base62Alphabet))))
+		n, err := rand.Int(src, big.NewInt(int64(len(base62Alphabet))))
 		if err != nil {
 			return "", Errorf(CodeInternal, err, "生成一次性密码")
 		}

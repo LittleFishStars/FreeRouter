@@ -87,6 +87,14 @@ func (s authLoginStores) UpdatePasswordHash(ctx context.Context, accountID, hash
 	return s.accounts.UpdatePasswordHash(ctx, nid, hash)
 }
 
+func (s authLoginStores) SetMustChangePassword(ctx context.Context, accountID string, must bool) error {
+	nid, err := parseID(accountID)
+	if err != nil {
+		return err
+	}
+	return s.accounts.SetMustChangePassword(ctx, nid, must)
+}
+
 func (s authLoginStores) CreateSession(ctx context.Context, sess *auth.Session) error {
 	nid, err := parseID(sess.AccountID)
 	if err != nil {
@@ -304,11 +312,40 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	r.Post("/api/account/keys/{id}/revoke", sessMW(a.server.HandleAccountKeyRevoke(keysDeps)).(http.HandlerFunc))
 	r.Post("/api/account/keys/{id}/rotate", sessMW(a.server.HandleAccountKeyRotate(keysDeps)).(http.HandlerFunc))
 
+	// 账户自助面（首启强制改密）：改密端点不挂额外鉴权，但必须在 mwSession
+	// 之下——强制改密窗口内的白名单判定在 mwSession 里按路径放行。
+	acctDeps := &httpapi.AccountPasswordDeps{
+		Login:             deps.login,
+		Profile:           accountProfileBridge{accounts: a.store.Repos().Accounts},
+		OnPasswordChanged: a.removeBootstrapPasswordFile,
+	}
+	r.Post("/api/account/password", sessMW(a.server.ConsoleHandlerAccountPassword(acctDeps)).(http.HandlerFunc))
+	r.Patch("/api/account/profile", sessMW(a.server.ConsoleHandlerAccountProfile(acctDeps)).(http.HandlerFunc))
+
 	// 管理面（M7）：45 端点整组挂 /api/admin，组级中间件 mwAdmin。
 	// 先 AttachAdmin 再 Mount：Server 的 deps 注册表按实例键，挂载时取。
 	a.server.AttachAdmin(a.buildAdminDeps())
 	a.server.MountAdminRoutes(r)
 }
+
+// accountProfileBridge 实现 httpapi.AccountProfileStore（显示名写面）。
+//
+// 账号 id 从会话主体来（十进制字符串）→ parseID → store 的 int64 主键。
+// 为什么不直接拿 Principal 里的编码 id：认证面（auth）不认 idcode，
+// 两个面在装配层翻译是既有约定（与 authLoginStores 完全相同）。
+type accountProfileBridge struct {
+	accounts *store.AccountRepo
+}
+
+func (b accountProfileBridge) UpdateDisplayName(ctx context.Context, accountID, displayName string) error {
+	nid, err := parseID(accountID)
+	if err != nil {
+		return err
+	}
+	return b.accounts.UpdateDisplayName(ctx, nid, displayName)
+}
+
+var _ httpapi.AccountProfileStore = accountProfileBridge{}
 
 // buildAdminDeps 组装管理面依赖（M7 装配）。
 //
@@ -336,11 +373,11 @@ func (a *App) buildAdminDeps() *httpapi.AdminDeps {
 		Inbox:         &inboxBridge{b: b},
 
 		// M10 补齐的四个触发型依赖：刷新/连通性测试/设置读/设置写与 IP 自检。
-		Refresh:      a.buildRefreshBridge(),
-		UpstreamTest: &upstreamTesterBridge{store: a.store, sidecar: a.sidecar, cfg: a.cfg, httpc: &http.Client{Timeout: 3 * time.Second}},
-		SettingsView: &settingsBridge{b: b, cfg: a.cfg},
+		Refresh:       a.buildRefreshBridge(),
+		UpstreamTest:  &upstreamTesterBridge{store: a.store, sidecar: a.sidecar, cfg: a.cfg, httpc: &http.Client{Timeout: 3 * time.Second}},
+		SettingsView:  &settingsBridge{b: b, cfg: a.cfg},
 		SettingsPatch: &settingsBridge{b: b, cfg: a.cfg},
-		IPCheck:      &settingsBridge{b: b, cfg: a.cfg},
+		IPCheck:       &settingsBridge{b: b, cfg: a.cfg},
 	}
 }
 
