@@ -44,11 +44,14 @@ const NAV_ORDER: NavGroup[] = ['public', 'account', 'admin', 'usage', 'contribut
 function Sidebar({ unread }: { unread: number }) {
   const { session } = useSession()
   const classes = session?.classes ?? []
-  const visible = NAV_ORDER.filter((g) => {
-    if (!session) return g === 'public' // 未登录：公共区（登录/注册是页面动作，不做导航项）
-    if (g === 'account') return true
-    return navVisible(g, classes)
-  })
+  const pendingOnly = session?.status === 'pending'
+  const visible = pendingOnly
+    ? []
+    : NAV_ORDER.filter((g) => {
+        if (!session) return g === 'public' // 未登录：公共区（登录/注册是页面动作，不做导航项）
+        if (g === 'account') return true
+        return navVisible(g, classes)
+      })
 
   return (
     <nav className="sidenav" aria-label="一级导航">
@@ -66,7 +69,7 @@ function Sidebar({ unread }: { unread: number }) {
                       pathname 不变 → 导航点击无反应（code-review 严重 1）。 */}
                   <NavLink
                     to={p.path}
-                    end={p.path === '/'}
+                    end
                     className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
                   >
                     {p.title}
@@ -87,7 +90,10 @@ function Sidebar({ unread }: { unread: number }) {
           </div>
         )
       })}
-      {session && session.classes.length === 0 && (
+      {pendingOnly && (
+        <p className="nav-empty">审核期间只能访问「待审核」页；审核通过后这里会出现可用入口。</p>
+      )}
+      {!pendingOnly && session && session.classes.length === 0 && (
         <p className="nav-empty">你的账户尚未获得任何权限类。等待管理员审核通过后即可调用模型。</p>
       )}
     </nav>

@@ -213,14 +213,24 @@ export function findParentPage(path: string): PageDef | undefined {
   return candidates[0]
 }
 
-/** 面包屑链：从一级导航标签 → 祖先页面标题 → 当前页标题。 */
+/**
+ * 面包屑链：一级导航标签 → 祖先页面标题 → 当前页标题。
+ * 只向上追溯到第一个「本身在一级导航里的父页面」为止，避免把 -admin
+ * 这种默认落点当成所有子页面的父级（那会读成「管理 / 审核队列 / 账户列表」）。
+ */
 export function breadcrumbTrail(def: PageDef): string[] {
+  if (def.nav) return [NAV_LABELS[def.nav], def.title]
   const chain: string[] = [def.title]
   let cur = findParentPage(def.path)
+  let navLabel: string | undefined
   while (cur) {
     chain.unshift(cur.title)
+    if (cur.nav) {
+      navLabel = NAV_LABELS[cur.nav]
+      break
+    }
     cur = findParentPage(cur.path)
   }
-  if (def.nav) chain.unshift(NAV_LABELS[def.nav])
+  if (navLabel) chain.unshift(navLabel)
   return chain
 }

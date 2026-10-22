@@ -105,7 +105,7 @@ export function UnavailableState({ what, retry }: { what: string; retry?: () => 
 /** 错误态：错误码 + 人话 + 请求 ID + 重试（docs/ui/06-design.md 4）。 */
 export function ErrorState({ error, retry }: { error: unknown; retry?: () => void }) {
   if (isUnavailable(error)) {
-    return <UnavailableState what="此页依赖的接口" retry={retry} />
+    return <UnavailableState what="此页依赖" retry={retry} />
   }
   const msg = error instanceof Error ? error.message : String(error)
   const code = error instanceof ApiError ? error.code : 'unknown_error'
