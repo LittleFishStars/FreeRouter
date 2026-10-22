@@ -80,7 +80,9 @@ sidecar:
 store:
   path: "data/freerouter.db"
   # 主密钥与库分开存放，权限 0600，且永不入库。
-  master_key_file: ""
+  # 主密钥：必须与库**不同目录**（05-storage §8.2，安全基线 C6 会检查）。
+  # 默认 master.key 落在工作目录根；生产建议 /etc/freerouter/master.key。
+  master_key_file: "master.key"
   busy_timeout: "5s"
   backup_dir: "data/backups"
   audit_retain_days: 0 # 0 表示永久保留

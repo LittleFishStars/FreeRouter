@@ -233,7 +233,7 @@ CGNAT 登录的管理员，却挡不住已拿到凭据的攻击者。
 | 键 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `store.path` | string | `/var/lib/freerouter/freerouter.db` | |
-| `store.master_key_file` | string | — | `0600`，**与库分开存放** |
+| `store.master_key_file` | string | `master.key`（工作目录根） | `0600`，**与库分开存放**（安全基线 C6 检查目录关系）；生产建议 `/etc/freerouter/master.key` |
 | `store.busy_timeout` | duration | `5s` | |
 | `store.backup_dir` | string | `/var/lib/freerouter/backups` | |
 | `store.audit_retain_days` | int | `0` | **0 = 永久保留**；非 0 时删除必须走归档通道（见 [05-storage.md](../architecture/05-storage.md) 8.3） |

@@ -212,7 +212,10 @@ func Default() *Config {
 		},
 		Store: Store{
 			Path:                 "data/freerouter.db",
-			MasterKeyFile:        "",
+			// 默认放到仓库/工作目录根（与库 data/ 分开目录——05-storage §8.2
+			// 要求主密钥不得与库同目录，安全基线 C6 会检查）。
+			// 生产建议显式设成 /etc/freerouter/master.key 或环境变量注入的路径。
+			MasterKeyFile:        "master.key",
 			BusyTimeout:          Duration(5 * time.Second),
 			BackupDir:            "data/backups",
 			AuditRetainDays:      0,
