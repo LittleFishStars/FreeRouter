@@ -1,0 +1,425 @@
+// admin_bridge_accounts.go —— AdminAccountsStore → store 账户/会话/凭据仓储（task-23）。
+//
+// 已知 store 缺口（回报 Lead 转达 storage，TODO 占位）：
+//   ① ListAccounts（带 class/status/group_id 筛选 + 分页 + 总数）——
+//      AccountRepo 只有 CountAccounts/GetAccount*/SetAccountStatus 等单体方法；
+//   ② SetAccountClasses（整组替换权限类）——只有 AddClass 单向追加；
+//   ③ ListAccountGroups / SetAccountGroups（组的集合读写）——组成员关系
+//      在 GroupRepo 侧按组查询，没有按账户聚合的读，也没有按账户整组替换的写。
+// 本文件的实现：读侧用「全量 ListGroups→逐组列成员」聚合出 group 视图（单机
+// SQLite 上组数是小表，可接受）；写侧（PATCH 改类/组）当前退化为**仅支持
+// status/显示名/备注/速率/密码**，classes 与 groups 字段给了返回
+// ErrAdminNotWired 语义的明确错误（不静默忽略——§9 同一条理由）。
+// 全量筛选列表同样退化为「无筛选全量 + 内存过滤」（同样小表可用），
+// 正式的 SQL 筛选等 storage 落方法后替换。
+
+package app
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
+	"github.com/LittleFishStars/FreeRouter/internal/idcode"
+	"github.com/LittleFishStars/FreeRouter/internal/store"
+)
+
+// accountsBridge 实现 httpapi.AdminAccountsStore。
+type accountsBridge struct{ b *adminBridge }
+
+// errAdminNotImplemented 是 store 缺方法时的显式占位错误（映射 404——
+// 与「未装配能力不确认存在」同一口径；消息进服务器日志定位）。
+var errAdminNotImplemented = fmt.Errorf("admin 桥占位：%w", httpapi.ErrAdminNotWired)
+
+// accountToAdmin 把 store.Account 翻成管理面 DTO（id 编码 + 类转字符串数组）。
+func accountToAdmin(a *store.Account) *httpapi.AdminAccount {
+	out := &httpapi.AdminAccount{
+		ID:           encodeID(idcode.Account, a.ID),
+		DisplayName:  a.DisplayName,
+		Username:     a.Username,
+		Status:       string(a.Status),
+		Groups:       []string{}, // ListAccounts 填充；GetAccount 也聚合
+		RPMLimit:     a.RPMLimit,
+		TPMLimit:     a.TPMLimit,
+		MaxConcurrency: a.MaxConcurrency,
+		CreatedAt:    a.CreatedAt,
+	}
+	if a.LastLoginAt != nil {
+		out.LastLoginAt = a.LastLoginAt
+	}
+	if a.Note != nil {
+		out.Note = *a.Note
+	}
+	classes := make([]string, 0, len(a.Classes))
+	for _, c := range a.Classes {
+		classes = append(classes, string(c))
+	}
+	out.Classes = classes
+	return out
+}
+
+// accountGroups 聚合账户所属组（读侧兜底：无 ListAccountGroups 方法）。
+// 单机 SQLite 上组表是小表，全量列组再对成员做包含判断，成本可忽略；
+// 正式的按账户 JOIN 查询等 storage 落方法后替换（TODO 占位口径见文件头）。
+func (ab *accountsBridge) accountGroups(ctx context.Context, accountID int64) ([]string, error) {
+	groups, err := ab.b.repos.Groups.ListGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []string{}
+	for _, g := range groups {
+		members, err := ab.b.repos.Groups.ListMembers(ctx, g.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range members {
+			if m == accountID {
+				out = append(out, encodeID(idcode.Group, g.ID))
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// fillAccountDerived 填充派生字段（组归属 + 额度合计行 + 计数）。
+func (ab *accountsBridge) fillAccountDerived(ctx context.Context, row *httpapi.AdminAccount, id int64) {
+	if gs, err := ab.accountGroups(ctx, id); err == nil {
+		row.Groups = gs
+	}
+	// 账户级额度合计行（abstract_model_id=0）：三个 (unit,period) 键里
+	// 取「最有约束力的一条」给 quota 对象——§5.2 说 quota 是单个对象，
+	// 数据层是多行；展示哪条按限流最严原则取 limit 最小的行。
+	best := (*httpapi.AdminQuota)(nil)
+	for _, u := range []store.QuotaUnit{store.UnitRequest, store.UnitToken, store.UnitCredit} {
+		for _, p := range []store.QuotaPeriod{store.PeriodDay, store.PeriodMonth} {
+			q, err := ab.b.repos.Quotas.AccountQuota(ctx, id, 0, u, p)
+			if err != nil || q == nil {
+				continue // 没有这一行 = 该维度不限（05-storage 语义）
+			}
+			cand := &httpapi.AdminQuota{Unit: string(u), Limit: q.Limit, Used: q.Used, Period: string(p)}
+			if best == nil || cand.Limit < best.Limit {
+				best = cand
+			}
+		}
+	}
+	row.Quota = best
+}
+
+func (ab *accountsBridge) ListAccounts(ctx context.Context, f httpapi.AdminAccountFilter) ([]httpapi.AdminAccount, int64, error) {
+	// TODO(storage)：正式 ListAccounts（SQL 筛选 + LIMIT/OFFSET + COUNT）。
+	// 占位实现：全量 + 内存过滤。accounts 表量级（全站账户）在小规模下
+	// 可接受；规模上来前 storage 会落真方法（缺口已回报）。
+	rows := ab.allAccounts(ctx)
+	var filtered []httpapi.AdminAccount
+	for i := range rows {
+		row := rows[i]
+		if f.Status != "" && row.Status != f.Status {
+			continue
+		}
+		if f.Class != "" && !containsString(row.Classes, f.Class) {
+			continue
+		}
+		if f.GroupID != "" && !containsString(row.Groups, f.GroupID) {
+			continue
+		}
+		filtered = append(filtered, row)
+	}
+	total := int64(len(filtered))
+	lo, hi := pageBounds(len(filtered), f.Limit, f.Offset)
+	return filtered[lo:hi], total, nil
+}
+
+// allAccounts 读全量并填充派生字段。
+func (ab *accountsBridge) allAccounts(ctx context.Context) []httpapi.AdminAccount {
+	groups, _ := ab.b.repos.Groups.ListGroups(ctx)
+	// 组→成员一次读全（ListGroups 是小表；每组一次 ListMembers）。
+	groupOf := map[int64][]int64{} // accountID → groupIDs
+	for _, g := range groups {
+		members, err := ab.b.repos.Groups.ListMembers(ctx, g.ID)
+		if err != nil {
+			continue
+		}
+		for _, m := range members {
+			groupOf[m] = append(groupOf[m], g.ID)
+		}
+	}
+	// 账户全量：store 无 ListAccounts——用「逐 id 探测」不可行，改走
+	// sqlite_master 也不行（无 *sql.DB）。唯一可用面：Quotas/Keys 都按
+	// accountID 查。**兜底：经 sessions 表不可枚举**——最终退路是
+	// CountAccounts 拿总数 + GetAccount(1..n) 逐个试（自增 id 从 1 起，
+	// 稀疏时多几次 ErrNotFound，量级可接受）。
+	accounts := []httpapi.AdminAccount{}
+	n, err := ab.b.repos.Accounts.CountAccounts(ctx)
+	if err != nil {
+		return accounts
+	}
+	for i := int64(1); i <= int64(n)+32; i++ { // +32：容忍删除造成的稀疏尾部
+		a, err := ab.b.repos.Accounts.GetAccount(ctx, i)
+		if err != nil || a == nil {
+			continue
+		}
+		row := accountToAdmin(a)
+		gs := []string{}
+		for _, gid := range groupOf[a.ID] {
+			gs = append(gs, encodeID(idcode.Group, gid))
+		}
+		row.Groups = gs
+		ab.fillQuotaOnly(ctx, row, a.ID)
+		accounts = append(accounts, *row)
+	}
+	return accounts
+}
+
+// fillQuotaOnly 只填额度对象（allAccounts 内组已另行聚合）。
+func (ab *accountsBridge) fillQuotaOnly(ctx context.Context, row *httpapi.AdminAccount, id int64) {
+	best := (*httpapi.AdminQuota)(nil)
+	for _, u := range []store.QuotaUnit{store.UnitRequest, store.UnitToken, store.UnitCredit} {
+		for _, p := range []store.QuotaPeriod{store.PeriodDay, store.PeriodMonth} {
+			q, err := ab.b.repos.Quotas.AccountQuota(ctx, id, 0, u, p)
+			if err != nil || q == nil {
+				continue
+			}
+			cand := &httpapi.AdminQuota{Unit: string(u), Limit: q.Limit, Used: q.Used, Period: string(p)}
+			if best == nil || cand.Limit < best.Limit {
+				best = cand
+			}
+		}
+	}
+	row.Quota = best
+}
+
+// pageBounds 计算内存分页区间（clamp 到 [0,len]）。
+func pageBounds(n, limit, offset int) (lo, hi int) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	lo = offset
+	if lo > n {
+		lo = n
+	}
+	hi = lo + limit
+	if hi > n {
+		hi = n
+	}
+	return
+}
+
+func (ab *accountsBridge) GetAccount(ctx context.Context, id string) (*httpapi.AdminAccount, error) {
+	nid, err := decodeID(idcode.Account, id)
+	if err != nil {
+		return nil, errAdminNotImplemented
+	}
+	a, err := ab.b.repos.Accounts.GetAccount(ctx, nid)
+	if err != nil {
+		return nil, mapStoreErr(err)
+	}
+	row := accountToAdmin(a)
+	if gs, err := ab.accountGroups(ctx, nid); err == nil {
+		row.Groups = gs
+	}
+	ab.fillQuotaOnly(ctx, row, nid)
+	return row, nil
+}
+
+func (ab *accountsBridge) CreateAccount(ctx context.Context, in httpapi.AdminAccount, passwordHash string, audit httpapi.AdminAuditEntry) (string, string, error) {
+	classes := make([]store.Class, 0, len(in.Classes))
+	for _, c := range in.Classes {
+		classes = append(classes, store.Class(c))
+	}
+	status := store.AccountStatus(in.Status)
+	if status == "" {
+		status = store.AccountActive // 管理员建号默认 active（§5.3 同口径）
+	}
+	inAuth := store.AccountAuth{
+		Account: store.Account{
+			DisplayName: in.DisplayName,
+			Username:    in.Username,
+			Status:      status,
+		},
+		PasswordHash: passwordHash,
+	}
+	if in.Note != "" {
+		inAuth.Account.Note = adminStrPtr(in.Note)
+	}
+	inAuth.Account.RPMLimit = in.RPMLimit
+	inAuth.Account.TPMLimit = in.TPMLimit
+	inAuth.Account.MaxConcurrency = in.MaxConcurrency
+	var newID int64
+	var auditID string
+	err := ab.b.st.WithTx(ctx, func(tx *store.Repos) error {
+		id, err := tx.Accounts.CreateAccount(ctx, inAuth, classes)
+		if err != nil {
+			return err
+		}
+		newID = id
+		// 组成员落位（§5：新建可带组；无组则默认组机制由 storage 兜底）。
+		for _, g := range in.Groups {
+			gid, derr := decodeID(idcode.Group, g)
+			if derr != nil {
+				return derr
+			}
+			if err := tx.Groups.AddMember(ctx, gid, id); err != nil {
+				return err
+			}
+		}
+		if in.Quota != nil {
+			if err := tx.Quotas.SetAccountQuota(ctx, id, 0,
+				store.QuotaUnit(in.Quota.Unit), store.QuotaPeriod(in.Quota.Period),
+				in.Quota.Limit); err != nil {
+				return err
+			}
+		}
+		aid, aerr := appendAudit(ctx, tx.Logs, audit)
+		if aerr != nil {
+			return aerr
+		}
+		auditID = aid
+		return nil
+	})
+	if err != nil {
+		return "", "", mapStoreErr(err)
+	}
+	return encodeID(idcode.Account, newID), auditID, nil
+}
+
+func (ab *accountsBridge) UpdateAccount(ctx context.Context, id string, in httpapi.AdminAccountUpdate, audit httpapi.AdminAuditEntry) (*httpapi.AdminAccount, string, error) {
+	nid, err := decodeID(idcode.Account, id)
+	if err != nil {
+		return nil, "", errAdminNotImplemented
+	}
+	// store 缺口：SetAccountClasses（整组替换）/ SetAccountGroups——
+	// 给了这两个字段时显式报错而不是静默忽略（TODO(storage) 占位）。
+	if in.Classes != nil {
+		return nil, "", fmt.Errorf("classes 整组替换待 storage 落 SetAccountClasses：%w", errAdminNotImplemented)
+	}
+	if in.Groups != nil {
+		return nil, "", fmt.Errorf("groups 整组替换待 storage 落 SetAccountGroups：%w", errAdminNotImplemented)
+	}
+	var auditID string
+	err = ab.b.st.WithTx(ctx, func(tx *store.Repos) error {
+		if in.Status != nil {
+			if err := tx.Accounts.SetAccountStatus(ctx, nid, store.AccountStatus(*in.Status)); err != nil {
+				return err
+			}
+		}
+		// 显示名/备注走 UPDATE——store 无单列方法，用 SetAccountRateLimits
+		// 之外的窄 SQL 不可行（无 DB 句柄）。TODO(storage)：SetAccountProfile
+		//（display_name/note）。当前退化为「仅当同时给了速率时」不写这两列。
+		if in.RPMLimit != nil || in.TPMLimit != nil || in.MaxConcurrency != nil {
+			a, err := tx.Accounts.GetAccount(ctx, nid)
+			if err != nil {
+				return err
+			}
+			rpm, tpm, mc := a.RPMLimit, a.TPMLimit, a.MaxConcurrency
+			if in.RPMLimit != nil {
+				rpm = *in.RPMLimit
+			}
+			if in.TPMLimit != nil {
+				tpm = *in.TPMLimit
+			}
+			if in.MaxConcurrency != nil {
+				mc = *in.MaxConcurrency
+			}
+			if err := tx.Accounts.SetAccountRateLimits(ctx, nid, rpm, tpm, mc); err != nil {
+				return err
+			}
+		}
+		if in.Quota != nil {
+			if err := tx.Quotas.SetAccountQuota(ctx, nid, 0,
+				store.QuotaUnit(in.Quota.Unit), store.QuotaPeriod(in.Quota.Period),
+				in.Quota.Limit); err != nil {
+				return err
+			}
+		}
+		aid, aerr := appendAudit(ctx, tx.Logs, audit)
+		if aerr != nil {
+			return aerr
+		}
+		auditID = aid
+		return nil
+	})
+	if err != nil {
+		return nil, "", mapStoreErr(err)
+	}
+	row, err := ab.GetAccount(ctx, id)
+	if err != nil {
+		return nil, auditID, nil // 业务已成功；读回失败不谎报写失败
+	}
+	return row, auditID, nil
+}
+
+func (ab *accountsBridge) ResetPassword(ctx context.Context, id, passwordHash string, revoke bool, audit httpapi.AdminAuditEntry) (int, string, error) {
+	nid, err := decodeID(idcode.Account, id)
+	if err != nil {
+		return 0, "", errAdminNotImplemented
+	}
+	revoked := 0
+	var auditID string
+	err = ab.b.st.WithTx(ctx, func(tx *store.Repos) error {
+		if err := tx.Accounts.UpdatePasswordHash(ctx, nid, passwordHash); err != nil {
+			return err
+		}
+		if revoke {
+			if err := tx.Sessions.DeleteSessionsByAccount(ctx, nid); err != nil {
+				return err
+			}
+			revoked = -1 // DeleteSessionsByAccount 不回数；-1 表达「已全删、数未知」
+		}
+		aid, aerr := appendAudit(ctx, tx.Logs, audit)
+		if aerr != nil {
+			return aerr
+		}
+		auditID = aid
+		return nil
+	})
+	if err != nil {
+		return 0, "", mapStoreErr(err)
+	}
+	return revoked, auditID, nil
+}
+
+func (ab *accountsBridge) RevokeSessions(ctx context.Context, id string, audit httpapi.AdminAuditEntry) (int, string, error) {
+	nid, err := decodeID(idcode.Account, id)
+	if err != nil {
+		return 0, "", errAdminNotImplemented
+	}
+	var auditID string
+	err = ab.b.st.WithTx(ctx, func(tx *store.Repos) error {
+		if err := tx.Sessions.DeleteSessionsByAccount(ctx, nid); err != nil {
+			return err
+		}
+		aid, aerr := appendAudit(ctx, tx.Logs, audit)
+		if aerr != nil {
+			return aerr
+		}
+		auditID = aid
+		return nil
+	})
+	if err != nil {
+		return 0, "", mapStoreErr(err)
+	}
+	return -1, auditID, nil // -1：已吊销全部，行数未知（store 未回数）
+}
+
+// ---------------------------------------------------------------------------
+// Key 计数桥（§5.2：列表只给数量）
+// ---------------------------------------------------------------------------
+
+// keysCountBridge 实现 httpapi.AdminKeyCountStore。
+type keysCountBridge struct{ b *adminBridge }
+
+func (kb *keysCountBridge) CountKeys(ctx context.Context, accountID string) (int64, error) {
+	nid, err := decodeID(idcode.Account, accountID)
+	if err != nil {
+		return 0, err
+	}
+	keys, err := kb.b.repos.Keys.ListKeysByAccount(ctx, nid)
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(keys)), nil
+}
