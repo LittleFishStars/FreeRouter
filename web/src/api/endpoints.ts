@@ -6,6 +6,10 @@
 // 管理面路径与字段严格对照 docs/api/02-admin.md；租户面与贡献者面在
 // docs/api 尚无分册（只有 UI 分册的字段清单），路径暂按 REST 形状定，
 // 函数上方都标了「暂定」。后端未接入时页面走「接口尚未接入」态。
+//
+// DTO 权威：管理面的请求/响应字段以 internal/httpapi/mw_admin.go 的
+// Admin* DTO 为准（docs/api/02-admin.md 描述契约语义；两者冲突时先按
+// DTO 落码，并把冲突回报 Lead）。UI 分册不定义接口字段，别拿 IA 当契约改。
 
 import {
   deleteWrite,
