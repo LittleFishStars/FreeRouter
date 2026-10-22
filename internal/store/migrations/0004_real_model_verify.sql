@@ -30,14 +30,25 @@
 -- 已有行是「目录刷新落下来的」，它们确实跑过判定吗？没有——但 sidecar 的
 -- 判定函数对无指纹返回 unverified（默认放行语义），所以存量行的真实状态
 -- 就是「按无指纹规则处理过」。把 DEFAULT 设成 unverified 而非 NULL，等于
--- 声明「凡在池中的行都至少过过一遍判定」——这正是 refresh 联动的实际行为
--- （applyVerification 对本轮见到的每一条都跑）。真正的 NULL 只会出现在
--- 装配了 verification 但尚未跑第一轮的窗口期，或人工直插的行。
+-- 声明「凡在池中的行都至少过过一遍判定」——但必须注意：这条语义只有在**存在写入方**
+-- 时才成立。0004 落地时刷新联动尚无写回实现，存量与新增行会停在 DEFAULT 上；
+-- task-3 已补 upstream.StoreVerificationWriter（→ ModelRepo.SetRealModelVerification）
+-- 作为唯一写入路径，巡检「三列无写入方」的阻塞项由此消解。
+--
+-- **NULL 与 'unverified' 的区分落在 verify_source/verify_detail 上**（verify_status
+-- 因 NOT NULL DEFAULT 永远有值）：
+--   verify_source IS NULL       = 从未鉴定（连判定入口都没走到）；
+--   verify_source = 'builtin_vN' 且状态为 unverified = 跑过判定但无参考指纹（进复检队列）。
+-- 真正的 NULL 窗口只剩「装配了 verification 但尚未跑第一轮」或人工直插的行。
 
 ALTER TABLE real_models ADD COLUMN verify_status TEXT NOT NULL DEFAULT 'unverified'
     CHECK (verify_status IN ('verified','suspect','unverified','trusted'));
 ALTER TABLE real_models ADD COLUMN verify_detail TEXT;
 ALTER TABLE real_models ADD COLUMN verify_source TEXT;
+-- verify_source 的文本形态由 Go 侧**唯一映射点** upstream.VerifySourceOf(version)
+-- 生成（builtin_v1 / builtin_v2…）。列类型是 TEXT 而不是 INTEGER：版本标识要能与
+-- 未来的其他来源（external_yaml/v2、人工 trusted）区分。改映射格式时同步该函数
+-- 与本注释，不要在装配层另写 fmt.Sprintf。
 
 -- 按指纹库版本圈重判范围（05-verification §6.2）：指纹库升级后
 -- 「哪些行是旧版判的」要一条 SQL 就能回答；不建索引——这是低频运维查询，
