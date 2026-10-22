@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -48,6 +49,17 @@ type Server struct {
 	authChain *authChainDeps
 	// consoleRoutes 是控制台面路由注册回调（SetConsoleRoutes 注入）。
 	consoleRoutes func(r chi.Router)
+
+	// webUI 是控制台前端的静态处理器（SetWebUI 注入 internal/webui.Handler()）。
+	//
+	// 为什么要注入而不是在 httpapi 里 import webui：httpapi 不该知道「前端产物
+	// 有没有被构建」这件事——那是构建形态（go:build webui_dist）的职责，注入点
+	// 在装配层。httpapi 只负责把非 API 路径交给它。
+	webUI http.Handler
+	// webUIBuilt 报告注入的是真实前端产物还是「未构建」占位页。
+	// 运维要能一眼分辨「忘了 pnpm build 就重新编译」——那是本项目
+	// 最容易出现的部署态错误，而两种情况页面都能打开。
+	webUIBuilt bool
 }
 
 // New 构造服务器。deps.Logger 为 nil 时使用默认 logger。
@@ -109,7 +121,14 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/v1/models", s.HandleV1Models)
 	}
 
-	r.NotFound(s.handleNotFound)
+	// 兜底路由：注入了前端时，非 API 路径交给 SPA（HashRouter 也受益——
+	// 前端产物里的 index.html 必须在任意入口 URL 上可达）；/api/* 与 /v1/*
+	// 仍然回 JSON 404，理由见 SetWebUI 注释。
+	if s.webUI != nil {
+		r.NotFound(s.handleWebUIOrNotFound)
+	} else {
+		r.NotFound(s.handleNotFound)
+	}
 	r.MethodNotAllowed(s.handleMethodNotAllowed)
 
 	return r
@@ -133,6 +152,26 @@ func (s *Server) SetAuthChain(keyAuth, rate, quota func(http.Handler) http.Handl
 // 会随管理面膨胀（用户/组/审计……），回调让装配层一次组完闭包依赖。
 func (s *Server) SetConsoleRoutes(fn func(r chi.Router)) {
 	s.consoleRoutes = fn
+}
+
+// SetWebUI 注入控制台前端处理器（装配层 internal/app 调用）。
+//
+// 只在兜底路径上生效（NotFound 分流）；/api/* 与 /v1/* 下的 404 必须是
+// JSON——否则调用方拿到 index.html 会误以为端点存在、只是响应坏了。
+func (s *Server) SetWebUI(h http.Handler, built bool) {
+	s.webUI = h
+	s.webUIBuilt = built
+}
+
+// handleWebUIOrNotFound 按路径前缀分流：API 面走 JSON 404，其余交给前端。
+func (s *Server) handleWebUIOrNotFound(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.Path
+	if p == "/api" || strings.HasPrefix(p, "/api/") ||
+		p == "/v1" || strings.HasPrefix(p, "/v1/") {
+		s.handleNotFound(w, r)
+		return
+	}
+	s.webUI.ServeHTTP(w, r)
 }
 
 // MiddlewareKeyAuth/Rate/Quota 是三中间件的导出包装——装配层
@@ -173,6 +212,8 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		"version": version.Version,
 		"commit":  version.Commit,
 		"built":   version.BuildTime,
+		// ui_built=false 表示二进制里没有前端产物（看到的是占位页）。
+		"ui_built": s.webUIBuilt,
 	})
 }
 

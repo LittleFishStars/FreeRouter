@@ -98,10 +98,10 @@ type Security struct {
 // Limits 见 §2.4。额度类 0 = 不可用（默认拒绝）；速率类 -1 = 不限、0 = 全拒
 // （与 accounts 速率列同一套哨兵，2026-10-20 定案）。
 type Limits struct {
-	DefaultDailyTokens    int64    `yaml:"default_daily_tokens"`   // 0 = 不可用
-	DefaultMonthlyTokens  int64    `yaml:"default_monthly_tokens"` // 0 = 不可用
-	DefaultRPM            int      `yaml:"default_rpm"`            // -1 = 不限
-	DefaultTPM            int64    `yaml:"default_tpm"`            // -1 = 不限
+	DefaultDailyTokens    int64    `yaml:"default_daily_tokens"`    // 0 = 不可用
+	DefaultMonthlyTokens  int64    `yaml:"default_monthly_tokens"`  // 0 = 不可用
+	DefaultRPM            int      `yaml:"default_rpm"`             // -1 = 不限
+	DefaultTPM            int64    `yaml:"default_tpm"`             // -1 = 不限
 	DefaultMaxConcurrency int      `yaml:"default_max_concurrency"` // -1 = 不限
 	DefaultKeysPerAccount int      `yaml:"default_keys_per_account"`
 	GlobalDailyTokens     int64    `yaml:"global_daily_tokens"` // 0 = 不熔断
@@ -138,12 +138,12 @@ type Sidecar struct {
 
 // Store 见 §2.7。
 type Store struct {
-	Path                  string   `yaml:"path"`
-	MasterKeyFile         string   `yaml:"master_key_file"`
-	BusyTimeout           Duration `yaml:"busy_timeout"`
-	BackupDir             string   `yaml:"backup_dir"`
-	AuditRetainDays       int      `yaml:"audit_retain_days"`
-	RequestLogRetainDays  int      `yaml:"request_log_retain_days"`
+	Path                 string   `yaml:"path"`
+	MasterKeyFile        string   `yaml:"master_key_file"`
+	BusyTimeout          Duration `yaml:"busy_timeout"`
+	BackupDir            string   `yaml:"backup_dir"`
+	AuditRetainDays      int      `yaml:"audit_retain_days"`
+	RequestLogRetainDays int      `yaml:"request_log_retain_days"`
 }
 
 // Log 是文档配置表未列出的实现补充段：日志级别与格式。

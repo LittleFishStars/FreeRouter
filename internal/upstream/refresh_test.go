@@ -153,9 +153,18 @@ func stRows(t *testing.T, st *store.Store, res RefreshResult, provider string) {
 	if chat.Efforts == nil || *chat.Efforts != `["low","high"]` {
 		t.Errorf("efforts = %v，期望 [\"low\",\"high\"] 原文", chat.Efforts)
 	}
+	// 渠道落库（01-catalog.md §2.3）：aggregate/auto 的渠道段是 aggregate，
+	// 裸 id 的 deepseek-chat 派不出渠道 → NULL。两层（ModelOwnedBy → 仓储兜底）
+	// 都拿不出时就是 NULL，不回退上游名——回退会让 channel 列混两种语义。
 	agg := byID["aggregate/auto"]
 	if agg.DisplayName != "aggregate/auto" {
 		t.Errorf("display_name = %q，期望回退到 upstream_model_id", agg.DisplayName)
+	}
+	if agg.Channel == nil || *agg.Channel != "aggregate" {
+		t.Errorf("aggregate/auto 渠道 = %v，期望 aggregate", agg.Channel)
+	}
+	if chat.Channel != nil {
+		t.Errorf("deepseek-chat 渠道应为空（裸 id 派不出），实际 = %q", *chat.Channel)
 	}
 	if agg.ContextWindow != nil || agg.Modalities != nil {
 		t.Errorf("缺省字段应为 NULL，实际 = %+v", agg)

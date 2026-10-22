@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -115,6 +116,11 @@ func (c *Client) ProvidersList(ctx context.Context) ([]ProviderInfo, error) {
 }
 
 // ModelInfo 对应 models.list({provider}) 的条目。
+//
+// 渠道语义（docs/models/01-catalog.md §2.3）：hub 的 `owned_by` 是**权威来源**
+// ——限定名里的渠道段取自它。本结构保留该字段但**不做任何派生填充**：
+// wire 上 hub 不给就保持空串（当前实测 hub 的 listModels 确实不给 owned_by），
+// 调用方需要渠道时走 ModelOwnedBy()（它把「权威值」与「派生值」显式区分开）。
 type ModelInfo struct {
 	UpstreamModelID string `json:"upstreamModelId"`
 	DisplayName     string `json:"displayName"`
@@ -122,6 +128,59 @@ type ModelInfo struct {
 	ContextWindow *int     `json:"contextWindow"`
 	Modalities    []string `json:"modalities"`
 	Efforts       []string `json:"efforts"`
+	// OwnedBy 是上游报告的权威渠道标识（OpenAI 兼容 `owned_by` 字段）。
+	// 为空 = hub 未给（当前实测如此），**不代表渠道为空**——请调 ModelOwnedBy()
+	// 拿「权威值或派生值」的渠道串，并读它返回的 Authoritative/Derived 标记。
+	OwnedBy string `json:"ownedBy"`
+}
+
+// ModelOwnedByResult 是渠道解析结果（权威值与派生值的显式区分）。
+//
+// 为什么带标记而不是只回 string：派生值（从 `渠道/模型` 前缀切出）与权威值
+// （hub 的 owned_by）在**可信度**上完全不同——派生只与 id 前缀一致，挡不住
+// 「冒用别人的渠道前缀」。调用方（落 excluded_from_candidates、按渠道禁用、
+// 归因展示）做决策时必须知道手上是哪种，否则派生值会被当成权威用。
+type ModelOwnedByResult struct {
+	// Channel 是渠道标识；派生值取自 id 前缀；裸 id 无前缀且 hub 未给时为空串。
+	Channel string
+	// Authoritative=true 表示 Channel 来自 hub 的 owned_by
+	//（权威值，01-catalog.md §2.3 的映射来源）。
+	Authoritative bool
+	// Derived=true 表示 Channel 从 upstreamModelId 的 `渠道/模型` 前缀**派生**——
+	// 它只证明「id 前缀自称该渠道」，不是上游的权威声明。
+	Derived bool
+}
+
+// ModelOwnedBy 解析一条目录条目的渠道（任务要求：hub 给 owned_by 则直用，
+// 否则从 `渠道/模型` 前缀派生，并在类型与注释里写明「这是派生值不是权威值」）。
+//
+// 为什么不只提供 string 返回：调用方若只拿到字符串就分不出权威/派生
+// （01-catalog.md §2.3 明确 owned_by 是权威来源）；把标记做成返回类型的一部分，
+// 「拿派生值当权威用」就从口头约定变成编译期可见的字段。
+//
+// 派生规则：upstreamModelId 形如 `渠道/模型`（如 `deepseek-official/deepseek-v4.1`、
+// `aggregate/auto`）时取第一个斜杠前段为渠道；无斜杠的裸 id（如 `gpt-4o`）
+// 返回空串——**不 panic、不猜测**（猜一个渠道名比留空更危险：它会被当成权威值
+// 参与 excluded_from_candidates 与渠道禁用决策）。
+//
+// 权威值也不做规范化：hub 给什么就是什么（01-catalog.md「原样存，不改写」，
+// 渠道段同理；大小写/别名对齐不替上游做）。
+func (m ModelInfo) ModelOwnedBy() ModelOwnedByResult {
+	if ch := strings.TrimSpace(m.OwnedBy); ch != "" {
+		return ModelOwnedByResult{Channel: ch, Authoritative: true}
+	}
+	// 派生路径：只切第一个斜杠前的段（provider/渠道名不含斜杠——与
+	// upstream/relay.go 的 splitProviderModel 同一约定）。
+	id := m.UpstreamModelID
+	for i := 0; i < len(id); i++ {
+		if id[i] == '/' {
+			if i == 0 {
+				return ModelOwnedByResult{} // 前导斜杠 = 畸形 id，不猜
+			}
+			return ModelOwnedByResult{Channel: id[:i], Derived: true}
+		}
+	}
+	return ModelOwnedByResult{} // 裸 id + 无权威值 = 渠道不可知
 }
 
 type modelsParams struct {

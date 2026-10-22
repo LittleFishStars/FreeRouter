@@ -76,8 +76,26 @@ func TestContractOpenCreatesSchema(t *testing.T) {
 	}
 }
 
+// embeddedMigrationCount 返回 embed 里的迁移条数。
+// 为什么不在断言里写死数字：新增一条迁移会让"迁移数变了"与"迁移被重复应用"
+// 两种失败长得一模一样（行数对不上），而修法完全相反——前者是预期，后者是 bug。
+// 读真实来源，失败信息才有区分度。
+func embeddedMigrationCount(t *testing.T) int {
+	t.Helper()
+	ms, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("读嵌入迁移失败: %v", err)
+	}
+	if len(ms) == 0 {
+		t.Fatal("嵌入迁移集为空")
+	}
+	return len(ms)
+}
+
 // TestContractMigrationIdempotent 覆盖验收项「迁移幂等」：
-// 同一份库反复 Open 不应重复应用迁移，也不应报错；schema_migrations 只有一条 0001。
+// 同一份库反复 Open 不应重复应用迁移，也不应报错；schema_migrations 行数恒等于
+// embed 里的迁移数（不是写死 1——新增 0002 后再写死 1 会把"迁移数变了"误报成
+// "迁移被重复应用"，两种失败长得一样但修法相反）。
 func TestContractMigrationIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "freerouter.db")
@@ -92,7 +110,7 @@ func TestContractMigrationIdempotent(t *testing.T) {
 		}
 		return s
 	}
-
+	wantMigrations := embeddedMigrationCount(t)
 	// 第一轮：建表 + 写一条数据。
 	s1 := open()
 	if _, err := s1.Repos().Accounts.CreateAccount(context.Background(),
@@ -119,8 +137,9 @@ func TestContractMigrationIdempotent(t *testing.T) {
 			`SELECT COUNT(1) FROM schema_migrations`).Scan(&rows); err != nil {
 			t.Fatalf("查询迁移表失败: %v", err)
 		}
-		if rows != 1 {
-			t.Errorf("第 %d 轮 schema_migrations 行数 = %d，期望 1（迁移被重复应用）", i, rows)
+		if rows != wantMigrations {
+			t.Errorf("第 %d 轮 schema_migrations 行数 = %d，期望 %d（迁移被重复应用）",
+				i, rows, wantMigrations)
 		}
 		if err := s.Close(); err != nil {
 			t.Fatalf("Close 失败: %v", err)
@@ -779,20 +798,35 @@ func TestContractMigrationBackup(t *testing.T) {
 	s.Close()
 
 	// ② 伪造"有历史 + 有待应用"：备份触发条件是 len(applied)>0 且 pending 非空
-	//（migrate.go：全新库不备份空壳）。做法：删掉 0001 记录使 pending={0001}，
-	// 同时插一条 version=2 假记录使 applied 非空。0001 重放靠文件内 IF NOT EXISTS 幂等。
+	//（migrate.go：全新库不备份空壳）。做法：插一条 version=9999 假记录，再删掉
+	//**版本最小**的那条真实记录。
+	//
+	// 两条约束写死在这里是为了不随迁移增长而失真：
+	// ① 假记录取 9999 —— version=2 就是 0002_real_model_channel，插重号会撞
+	//    UNIQUE 让这条测试失真（它的价值全在"备份确实被触发"）。
+	// ② 删除取 MIN(version) —— 0001 整份是 IF NOT EXISTS，重放幂等；而最新的
+	//    0002 含 ALTER TABLE ADD COLUMN，SQLite **没有** ADD COLUMN IF NOT EXISTS，
+	//    重放必然 duplicate column。按 MIN 删是"删掉仍可安全重放的那条"，
+	//    按 MAX 删会让测试随新增迁移逐步失效。
+	//    （真机上不会出现"列已在但版本行丢了"：DDL 与版本行同事务，崩溃即回滚。）
+	//
+	// 假版本号取 9999 而不是 2：真表里 version=2 就是 0002_real_model_channel，
+	// 插重号会撞 UNIQUE 让这条测试失真——它的价值全在"备份确实被触发"。
+	// 删除按 MAX(version) 而不是写死 1：同理，新增迁移后写死版本号会让这条测试
+	// 悄悄退化成"只重放 0001"，掩盖 0002 的幂等问题。
 	s2, err := Open(ctx, Options{Path: opts().Path, MasterKeyFile: keyPath})
 	if err != nil {
 		t.Fatalf("二轮 Open 失败: %v", err)
 	}
 	if _, err := s2.writeDB.ExecContext(ctx,
-		`INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES(2,'future','x',?)`,
+		`INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES(9999,'future','x',?)`,
 		now()); err != nil {
 		t.Fatalf("插入假迁移记录失败: %v", err)
 	}
 	if _, err := s2.writeDB.ExecContext(ctx,
-		`DELETE FROM schema_migrations WHERE version = 1`); err != nil {
-		t.Fatalf("删除 0001 记录失败: %v", err)
+		`DELETE FROM schema_migrations
+		  WHERE version = (SELECT MIN(version) FROM schema_migrations WHERE version < 9999)`); err != nil {
+		t.Fatalf("删除最早真实迁移记录失败: %v", err)
 	}
 	s2.Close()
 
@@ -802,7 +836,7 @@ func TestContractMigrationBackup(t *testing.T) {
 	}
 	s3, err := Open(ctx, opts())
 	if err != nil {
-		// 0001 全是 IF NOT EXISTS，重放幂等；这里若失败说明迁移器的幂等假设破了。
+		// 重放的是 0001（整份 IF NOT EXISTS）；若这里失败说明迁移器的幂等假设破了。
 		t.Fatalf("三轮 Open 失败（重放 0001 应当因 IF NOT EXISTS 幂等）: %v", err)
 	}
 	defer s3.Close()

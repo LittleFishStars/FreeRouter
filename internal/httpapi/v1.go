@@ -18,6 +18,7 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
 	"github.com/LittleFishStars/FreeRouter/internal/ir/anthropic"
 	"github.com/LittleFishStars/FreeRouter/internal/ir/openai"
+	"github.com/LittleFishStars/FreeRouter/internal/routing"
 )
 
 // ---------------------------------------------------------------------------
@@ -35,13 +36,82 @@ type Candidate struct {
 	Display string
 	// Adapter 是该候选使用的 IR 协议适配器（决定 EncodeRequest 目标方言）。
 	Adapter ir.Adapter
+	// ID 是 real_models 行 ID（M6 接线加）：上游失败时回传给
+	// CandidateFailureNotifier（冷却账本按它记账）。0 = 来源不提供
+	//（测试 fake/旧候选源），冷却跳过。
+	ID int64
 }
 
 // CandidateSource 产出候选序列：按顺序尝试，耗尽即 no_candidate（503）。
 // 返回空切片 = 该模型无可用候选。为什么是接口：M5 用 real_models 直连，
 // M6 换抽象模型策略引擎——调用方（本文件编排骨架）不感知来源。
+//
+// M6 接线变更：加 req 参数——候选过滤/排序需要请求画像（能力需求/上下文
+// 长度/思考档位），这些只有请求本身知道；实现方自己从 ir.Request 提取，
+// 本包不预先猜字段（与 routing.RequestProfile 的提取口径归实现方）。
+// 返回 ErrModelNotFound 时本面板改写 404（抽象模型不存在/真实名防泄露），
+// 其余 error 只记日志并按无候选处理。
 type CandidateSource interface {
-	Candidates(ctx context.Context, model string) ([]Candidate, error)
+	Candidates(ctx context.Context, model string, req ir.Request) ([]Candidate, error)
+}
+
+// ErrModelNotFound 是 CandidateSource 的 404 信号（M6 接线：抽象模型
+// 解析失败——名字不存在/disabled/真实模型名防泄露，02-abstract.md §6.2）。
+// 为什么哨兵而不是错误码字段：面板只需要「404 还是无候选 503」一比特，
+// errors.Is 一条判定最短路径，不需要为它养一个结构化错误类型。
+var ErrModelNotFound = errors.New("v1: model_not_found")
+
+// CandidateFailureNotifier 是候选源的可选扩展：上游调用失败（未吐内容、
+// 将切换下一候选）时回传该候选，供实现方记冷却（routing.Cooldowns）。
+// 接口断言可选而不是并入 CandidateSource：M5 的 realModelCandidates
+// 不需要它，强制实现会污染所有测试 fake。
+type CandidateFailureNotifier interface {
+	NotifyCandidateFailure(cand Candidate)
+}
+
+// traceSink 是 x-fr-trace 的诊断通道（M6 接线）：CandidateSource 实现
+// 方从 ctx 取出并把 BuildTrace 产物塞进来（可 nil=调用方没要 trace）。
+// 为什么经 ctx 而不是改 Candidates 签名：trace 是诊断功能不是契约，
+// 加进签名会让所有 fake 与调用点都背一个几乎恒 nil 的返回值。
+// 键类型未导出——外部只能经 WithV1Trace/TraceFromV1 使用。
+type traceCtxKey struct{}
+
+// traceSink 收集最近一次 Candidates 的路由诊断（并发安全由「每请求一个
+// sink」保证——ctx 是请求作用域的）。
+type traceSink struct{ trace *routing.Trace }
+
+// WithV1Trace 在 ctx 上挂诊断 sink（x-fr-trace: 1 时 proxyV1 调用）。
+func WithV1Trace(ctx context.Context) context.Context {
+	return context.WithValue(ctx, traceCtxKey{}, &traceSink{})
+}
+
+// FillV1Trace 让候选源实现方（装配层）回填本次请求的路由诊断。
+//
+// 未挂 sink（没要 trace）时静默丢弃——trace 是诊断功能，不做契约。
+func FillV1Trace(ctx context.Context, t *routing.Trace) {
+	if s := traceSinkFrom(ctx); s != nil {
+		s.trace = t
+	}
+}
+
+// V1TraceFrom 取回填的路由诊断（未挂 sink 或未回填 → nil）。
+//
+// 与 FillV1Trace 对称：装配层/诊断代码用它读回「这次请求为什么这么路由」。
+//
+// **同步消费假设**：返回的是同一个 *routing.Trace 指针，生命周期绑定在请求
+// ctx 上。必须在处理请求的 goroutine 内读出；不得跨 goroutine 持有（例如下
+// 游标给异步 access log），否则与回填方竞争（code-review 巡检建议）。
+func V1TraceFrom(ctx context.Context) *routing.Trace {
+	if s := traceSinkFrom(ctx); s != nil {
+		return s.trace
+	}
+	return nil
+}
+
+// traceSinkFrom 取诊断 sink（未挂返回 nil——实现方据此跳过收集）。
+func traceSinkFrom(ctx context.Context) *traceSink {
+	s, _ := ctx.Value(traceCtxKey{}).(*traceSink)
+	return s
 }
 
 // UpstreamCall 是一次上游调用的结果。非流式：Body 为完整响应体；
@@ -56,6 +126,10 @@ type UpstreamCall struct {
 }
 
 // Upstream 执行一次对候选的上游调用（04-sidecar.md：真实实现经 sidecar）。
+//
+// 注意：httpapi 不感知 routing 的画像类型（routing.RequestProfile）——
+// 请求画像的裁剪归候选源（它同时看到入站请求与候选集），这样 routing 的
+// 画像字段增删只改桥一处，不用同步改三个端点。
 type Upstream interface {
 	Call(ctx context.Context, cand Candidate, req ir.Request, stream bool) (*UpstreamCall, error)
 }
@@ -163,6 +237,9 @@ type proxyReq struct {
 	// maxTokensRequired=true 时缺失 max_tokens 报 400（Anthropic 契约 §6.1：
 	// 必填且不补默认——补默认值是帮客户端掩盖成本预算的错误）。
 	maxTokensRequired bool
+	// traceRequested=true 时请求带了 X-FR-Trace: 1，proxyV1 挂诊断
+	// sink 并把路由 trace 落到 X-FR-Trace 响应头（M6 接线）。
+	traceRequested bool
 }
 
 // errPayload 是从上游/解码层提出来的结构化错误（code+message 已就位）。
@@ -331,19 +408,58 @@ func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxy
 	return true
 }
 
+// v1SwitchBudgetMs 是候选切换的总时长预算（M6 接线）。
+//
+// 为什么 5s：与 routing.DefaultMaxSwitches=3 同属「一批候选同时坏」的
+// 防御——次数上限限制打击面，时长上限避免用户干等（客户端重试比我们
+// 内部慢慢换路体验好）。数字写在装配层（本包）：routing 明确把
+// MaxDurationMs 定为装配参数（strategy.go 注释），协议语义层不养第二个常量。
+const v1SwitchBudgetMs = 5000
+
 // proxyV1 是三端点共享的编排入口。
 // 失败切换：按 CandidateSource 顺序逐候选尝试；流式路径一旦
 // streamOnce 返回 true（已吐可见内容）即不可回退（C7）。
-// upstream/candidates 为 nil 时（Lead 尚未接线）直接 no_candidate——
-// 面板先落地，接线后协议面立即生效。
+//
+// M6 接线三件事：
+//   - 候选源返回 ErrModelNotFound → 404 model_not_found（抽象模型
+//     不可见/不存在/真实模型名防泄露，02-abstract §6.2）；
+//   - 切换预算走 routing.SwitchBudget.CanSwitch（次数+时长双上限；
+//     传 visibleWritten=false 是对事实的忠实描述——本循环只在
+//     「未吐可见内容」的窗口里换路）；
+//   - 候选失败回传 CandidateFailureNotifier（冷却账本），trace 经
+//     ctx sink 落到 X-FR-Trace 响应头。
+//
+// upstream/candidates 为 nil 时直接 no_candidate（未接线是部署态）。
 func (s *Server) proxyV1(ctx context.Context, w http.ResponseWriter, pr proxyReq, requestID string) {
+	if pr.traceRequested {
+		// sink 必须在调候选源之前挂上：trace 由候选源在排序完成后
+		// 经 ctx 回填（routing.BuildTrace 的产物）。
+		ctx = WithV1Trace(ctx)
+	}
+	cs := s.v1Candidates()
 	var cands []Candidate
-	if s.v1Candidates() != nil {
+	if cs != nil {
 		var err error
-		cands, err = s.v1Candidates().Candidates(ctx, pr.req.Model)
-		if err != nil {
+		cands, err = cs.Candidates(ctx, pr.req.Model, pr.req)
+		switch {
+		case errors.Is(err, ErrModelNotFound):
+			// 模型不可见 → 404（客户端动作是「换模型」，与 503 的
+			// 「稍后重试」必须分开——03-errors.md §3.1）。
+			if pr.anthropicShape {
+				s.writeV1AnthropicError(w, "model_not_found", "模型不存在", requestID)
+			} else {
+				s.writeV1Error(w, "model_not_found", "模型不存在", requestID)
+			}
+			writeV1Trace(w, ctx)
+			return
+		case err != nil:
 			s.log.Warn("v1 candidate source error", "request_id", requestID, "error", err)
 		}
+	}
+	if pr.traceRequested {
+		// 必须在任何 WriteHeader 之前落头：流式路径在 streamOnce 的
+		// setSSEHeaders 里就写了响应头，晚了就丢。
+		writeV1Trace(w, ctx)
 	}
 	if len(cands) == 0 {
 		// 无候选 → 503 no_candidate（03-errors.md §3.1；客户端动作是
@@ -356,28 +472,50 @@ func (s *Server) proxyV1(ctx context.Context, w http.ResponseWriter, pr proxyReq
 		return
 	}
 
-	for i, cand := range cands {
+	// 候选循环骨架与 responses 端点共享（预算/冷却回传单点实现）。
+	// 返回 true = 已写出响应（成功或已吐内容），不再写错误体。
+	// 候选循环的终局响应统一由骨架写（成功走 attempt、失败走 onExhausted）——
+	// 调用点是无条件顺序调用，见 runCandidates 的注释。
+	s.runCandidates(ctx, w, requestID, cs, cands, func(cand Candidate) bool {
 		if pr.req.Stream {
 			if s.streamOnce(ctx, w, pr, cand, requestID) {
-				return // 已开流：成功或已吐内容，不切
+				return true // 已开流：成功或已吐内容，不切
 			}
 			// 未吐可见内容：换下一个候选（C7 唯一切换窗口）
-			s.log.Info("v1 stream candidate failed, switching", "request_id", requestID, "attempt", i+1)
-			continue
+			s.log.Info("v1 stream candidate failed, switching", "request_id", requestID, "candidate", cand.Display)
+			return false
 		}
 		if s.proxyOnce(ctx, w, pr, cand, requestID) {
+			return true
+		}
+		s.log.Info("v1 candidate failed, switching", "request_id", requestID, "candidate", cand.Display)
+		return false
+	}, func() {
+		// 全部候选失败（或预算耗尽）且未吐内容：对外 502 upstream_unavailable
+		//（03-errors.md：上游都不可用；客户端可重试）。
+		if pr.anthropicShape {
+			s.writeV1AnthropicError(w, "upstream_unavailable", "所有上游候选均失败", requestID)
 			return
 		}
-		s.log.Info("v1 candidate failed, switching", "request_id", requestID, "attempt", i+1)
-	}
+		s.writeV1Error(w, "upstream_unavailable", "所有上游候选均失败", requestID)
+	})
+}
 
-	// 全部候选失败且未吐内容：对外 502 upstream_unavailable
-	//（03-errors.md：上游都不可用；客户端可重试）。
-	if pr.anthropicShape {
-		s.writeV1AnthropicError(w, "upstream_unavailable", "所有上游候选均失败", requestID)
+// writeV1Trace 把候选源回填的路由诊断落到 X-FR-Trace 响应头。
+//
+// 未要 trace（无 sink）或候选源未回填（M5 直连源）时静默跳过——
+// trace 是诊断功能不是契约，缺了不该影响请求结果。
+func writeV1Trace(w http.ResponseWriter, ctx context.Context) {
+	sink := traceSinkFrom(ctx)
+	if sink == nil || sink.trace == nil {
 		return
 	}
-	s.writeV1Error(w, "upstream_unavailable", "所有上游候选均失败", requestID)
+	v, err := sink.trace.HeaderValue()
+	if err != nil {
+		// 编码失败是内部缺陷：trace 缺失不影响请求，记日志即可。
+		return
+	}
+	w.Header().Set("X-FR-Trace", v)
 }
 
 // adapters 全局缓存：Adapter() 零值可用，包级单例避免每请求分配。
@@ -461,4 +599,48 @@ func writeV1ErrorSafe(w http.ResponseWriter, code, message, requestID string) {
 		Error:     v1ErrorBody{Message: message, Type: ir.CodeToErrorType(code), Param: nil, Code: code},
 		RequestID: requestID,
 	})
+}
+
+// runCandidates 是候选循环的共享骨架（proxyV1 与 responses 端点复用）。
+//
+// 预算与冷却回传只在这里实现一次——两份循环会漂移，而「切换上限」
+// 是 C7 红线的一部分（换路次数失控会把一批候选同时坏放大成对上游的
+// 小规模打击，03-strategy.md §4.5）。
+//
+// **为什么无返回值**（code-review 建议（b），2026-10-22）：上一版返回
+// bool（true = 响应已写完、调用方必须立即 return）把这层语义推给了调用方，
+// 而「true 就 return」与 Go 惯用法（err==nil 继续）相反——本人就反判过一次，
+// 症状是成功响应后再追加一段 502 JSON，只有契约测试能发现。现改为骨架
+// 负责写完全部终局响应（成功由 attempt 写、失败由骨架写 502），调用点是
+// 无条件顺序调用，反判在形状上不再可能。
+//
+// attempt 返回 true 表示已写出响应（成功，或已吐可见内容后失败），
+// 骨架据此终止循环。cands 为空不写任何东西——空候选由调用方写
+// no_candidate（它需要自己的错误形状：anthropic 形态与 OpenAI 形态不同）。
+func (s *Server) runCandidates(ctx context.Context, w http.ResponseWriter, requestID string,
+	cs CandidateSource, cands []Candidate, attempt func(Candidate) bool, onExhausted func()) {
+	start := time.Now()
+	var notifier CandidateFailureNotifier
+	if n, ok := cs.(CandidateFailureNotifier); ok {
+		notifier = n
+	}
+	budget := routing.SwitchBudget{MaxDurationMs: v1SwitchBudgetMs}
+	for i, cand := range cands {
+		if i > 0 {
+			budget.ElapsedMs = time.Since(start).Milliseconds()
+			if !budget.CanSwitch(false, i) {
+				s.log.Warn("v1 switching budget exhausted",
+					"request_id", requestID, "attempted", i, "elapsed_ms", budget.ElapsedMs)
+				onExhausted()
+				return
+			}
+		}
+		if attempt(cand) {
+			return
+		}
+		if notifier != nil {
+			notifier.NotifyCandidateFailure(cand)
+		}
+	}
+	onExhausted()
 }

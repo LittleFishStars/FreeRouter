@@ -78,6 +78,11 @@ type CandidateDecl struct {
 	Weight int64
 }
 
+// aggregateChannel 是上游的聚合渠道段名（01-catalog.md §5）：
+// 它下的条目默认不进候选集——上游自己的一层策略与我们的策略层重叠后
+// 无法归因（两层都做策略，出问题时没有单一归因点）。
+const aggregateChannel = "aggregate"
+
 // RealModelInfo 是 real_models 行的路由读面（01-catalog.md §2.2 子集）。
 type RealModelInfo struct {
 	ID              int64
@@ -90,7 +95,7 @@ type RealModelInfo struct {
 	ContextWindow          *int64 // nil = 未知（01-catalog.md §2.3 已知空缺）
 	Modalities             []string
 	Efforts                []string
-	Status                 string // "normal" | "missing"
+	Status                 string // "active" | "missing" | "disabled"（05-storage.md DDL）
 	ExcludedFromCandidates bool   // aggregate/* 默认 true（01-catalog.md §5）
 	UpstreamEnabled        bool
 }
@@ -286,13 +291,27 @@ func (res *Resolver) expandCandidates(ctx context.Context, m *AbstractModel) ([]
 		if err != nil {
 			return nil, nil, fmt.Errorf("routing: 查询真实模型 %d: %w", d.RealModelID, err)
 		}
-		if rm == nil || rm.Status != "normal" || rm.ExcludedFromCandidates || !rm.UpstreamEnabled {
+		// status 值域以存储 DDL 为准（05-storage.md §4：
+		// CHECK (status IN ('active','missing','disabled'))）；01-catalog.md
+		// 里的 normal 是语义概念（「目录里活着」），落到库里就是 active。
+		// 早期按 "normal" 判定会把全部候选剔成空池——这是装配时实测到的
+		// 口径冲突，以 DDL 为事实源修正。
+		if rm == nil || rm.Status != "active" || rm.ExcludedFromCandidates || !rm.UpstreamEnabled {
 			continue
 		}
-		// aggregate/* 排除双保险：excluded_from_candidates 是目录刷新器写
-		// 的（默认 true），这里再按渠道名判一道——刷新器 bug/手工改库把标志
-		// 清掉时，路由层仍然守住 §5 的红线。
-		if rm.Channel == "aggregate" {
+		// aggregate/* 排除的第二道闸（01-catalog.md §5）。
+		//
+		// 判据是 upstream_model_id 的首斜杠段（aggregate/xxx），与第一道闸
+		// （UpsertRealModel 的 SQL 前缀判定）同源。两道的数据源不同但**判据
+		// 表达式必须同源**：早期这里判的是渠道名 == "aggregate"，而渠道名由
+		// upstream 行的 base_url/provider 推出，永远产不出 "aggregate"——
+		// 那不是冗余保险，是恒假的死代码（code-review 巡检发现），它给的
+		// 是虚假安全感：注释写着「刷新器 bug 时路由层兜底」，实际兜不住。
+		//
+		// 现在两道都判模型 id 前缀：手工改库把 excluded_from_candidates 清成
+		// 0 时，这道仍挡住（这才是双保险的用途）；而渠道名判据即便将来
+		// 有渠道语义变化（channel/channel_source 两列落地）也不必动这里。
+		if ch, _, ok := strings.Cut(rm.UpstreamModelID, "/"); ok && ch == aggregateChannel {
 			continue
 		}
 		out = append(out, *rm)
