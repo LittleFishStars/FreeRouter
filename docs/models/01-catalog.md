@@ -154,7 +154,7 @@ real_models {
 
 **为什么不做实时推送**：轮询 + 登录时拉未读计数已经能满足这个需求，而推送引入连接管理、重发、离线补发一整套机制——它的复杂度远高于它省下的那几十秒。
 
-**幂等要求**：同一个 `(kind, related_id)` 在未读期间**不重复写**，否则每轮刷新都会新增一条，一天就是上百条。读到同一变动第二次时只更新 `detail_json` 里的最新值，不新建行（`severity` 只升不降——后来的 `info` 不得覆盖已有的 `error`）。落库由 `ux_admin_inbox_uniq_open` 部分唯一索引 + `ON CONFLICT ... WHERE read_at IS NULL DO UPDATE` 实现（0003 迁移）。
+**幂等要求**：同一个 `(kind, related_id)` 在未读期间**不重复写**，否则每轮刷新都会新增一条，一天就是上百条。读到同一变动第二次时只更新 `detail_json` 里的最新值，不新建行（`severity` 只升不降——后来的 `info` 不得覆盖已有的 `error`）。落库由 `ux_admin_inbox_open` 部分唯一索引 + `ON CONFLICT ... WHERE read_at IS NULL DO UPDATE` 实现（0003 迁移）；`severity` 的秩表达式在 `repo_inbox.go` 单一来源，写入与排序共用。
 
 > **词表权威**：本表的 `kind` / `severity` 取值与 [../security/06-audit.md](../security/06-audit.md) 3.1 一致（`severity` 为 `info` / `warning` / `error`）。`admin_inbox` 表建在 0001 里，而**已发布的迁移文件不可修改**（`migrate.go` 校验每个迁移的 sha256，改注释会让已有库拒绝启动），因此 0001 里那行 `info|warning|critical` 的注释是**过时措辞**——真正的执法点是 `store` 层的枚举校验，见 06-audit 3.1 的"执法点"段。
 
