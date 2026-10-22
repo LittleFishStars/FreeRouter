@@ -452,7 +452,14 @@ func (a *AuthzService) EffectiveModels(ctx context.Context, accountID, keyID str
 		return nil, err
 	}
 	if len(allow) == 0 {
-		return nil, nil // 默认拒绝：空白名单交集必空
+		// 未设置白名单 = **不额外收窄** = 组授权全集。
+		// 为什么不是"默认拒绝"：Key 白名单的职责是收窄（05-keys §4「只能从
+		// 账户可访问的抽象模型里收窄」），不是兜底的拒绝闸——账户级的默认拒绝
+		// 已由额度承担（daily=0 → 不可用）。把"未设"解释成空集会让每一把新签的
+		// Key 在管理员逐一配白名单之前完全不可用（实测 401 之外的 404 全表）。
+		out := make([]string, 0, len(eff.VisibleModels))
+		out = append(out, eff.VisibleModels...)
+		return out, nil
 	}
 	vis := make(map[string]bool, len(eff.VisibleModels))
 	for _, m := range eff.VisibleModels {

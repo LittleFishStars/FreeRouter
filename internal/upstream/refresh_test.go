@@ -78,7 +78,13 @@ func openRefreshFixture(t *testing.T) (*store.Store, *ModelRefresher, *fakeCatal
 	}
 
 	fake := &fakeCatalog{catalog: map[string][]dshprovider.ModelInfo{}}
-	r := NewModelRefresher(st, fake, time.Minute, nil)
+	r := NewModelRefresher(st, fake, time.Minute, nil).
+		// vendor/selfhosted 走 HTTP 目录：测试里给空目录（合法应答 = 无行无失败）。
+		// 不注入的话本轮会把它算成「未接目录刷新」失败——那是生产装配的事，
+		// 不是刷新器语义。
+		WithHTTPModels(func(ctx context.Context, u store.Upstream) ([]dshprovider.ModelInfo, error) {
+			return nil, nil
+		})
 	return st, r, fake, "fake_provider"
 }
 
@@ -112,8 +118,8 @@ func TestContractRefreshUpsertsCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("刷新失败: %v", err)
 	}
-	if res.Upstreams != 1 || res.Models != 3 {
-		t.Errorf("结果 = %+v，期望 Upstreams=1 Models=3", res)
+	if res.Upstreams != 2 || res.Models != 3 {
+		t.Errorf("结果 = %+v，期望 Upstreams=2（relay+vendor）Models=3", res)
 	}
 
 	stRows(t, st, res, provider)
@@ -364,7 +370,8 @@ func TestContractRefreshOnlyRelay(t *testing.T) {
 	st, r, fake, _ := openRefreshFixture(t)
 	ctx := context.Background()
 
-	// vendor 上游给目录也没用——刷新器不应调用它。
+	// vendor 上游走 HTTP（夹具里 httpModels 给空目录）——它与 relay 都会参与遍历；
+	// 这里断言"disabled 的不参与"，所以期望 = relay(enabled) + vendor(enabled) = 2。
 	fake.setCatalog("openai", seedCatalog())
 	// 一个 disabled 的 relay。
 	if _, err := st.Repos().Models.UpsertUpstream(ctx, "relay", "disabled_provider", "sidecar://disabled_provider", nil, false); err != nil {
@@ -375,8 +382,8 @@ func TestContractRefreshOnlyRelay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("刷新失败: %v", err)
 	}
-	if res.Upstreams != 1 {
-		t.Errorf("参与上游数 = %d，期望 1（只有 relay 且 enabled）", res.Upstreams)
+	if res.Upstreams != 2 {
+		t.Errorf("参与上游数 = %d，期望 2（relay + vendor，enabled 的）", res.Upstreams)
 	}
 	if fake.callCount() != 1 {
 		t.Errorf("models.list 调用 = %d 次，期望 1 次（vendor/disabled 跳过）", fake.callCount())
