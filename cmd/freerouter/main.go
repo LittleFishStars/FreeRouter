@@ -36,6 +36,7 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/app"
 	"github.com/LittleFishStars/FreeRouter/internal/config"
 	"github.com/LittleFishStars/FreeRouter/internal/logging"
+	"github.com/LittleFishStars/FreeRouter/internal/store"
 	"github.com/LittleFishStars/FreeRouter/internal/version"
 )
 
@@ -54,6 +55,7 @@ type options struct {
 	configPath  string
 	printConfig bool
 	checkConfig bool
+	verifyStore bool
 	showVersion bool
 }
 
@@ -64,6 +66,7 @@ func parseFlags(args []string, stderr io.Writer) (*options, error) {
 	fs.StringVar(&opts.configPath, "config", "", "配置文件路径（YAML）；缺省只用默认值 + FR_ 环境变量")
 	fs.BoolVar(&opts.printConfig, "print-config", false, "打印生效配置（含环境变量覆盖）后退出")
 	fs.BoolVar(&opts.checkConfig, "check-config", false, "只校验配置与端口可用性，不启动服务")
+	fs.BoolVar(&opts.verifyStore, "verify-store", false, "只做存储自检（库可开/迁移齐/关键表全/主密钥可用）后退出")
 	fs.BoolVar(&opts.showVersion, "version", false, "打印版本后退出")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "freerouter — 把多个 AI Agent 免费额度池化成一个共享路由\n\n用法：\n  freerouter [选项]\n\n选项：\n")
@@ -134,6 +137,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 			scheme = "https"
 		}
 		fmt.Fprintf(stdout, "配置有效：%s://%s\n", scheme, cfg.Server.Listen)
+		return 0
+	}
+
+	// 存储自检（M10 恢复演练验收项）：库可开、迁移齐、关键表全、主密钥可用。
+	// 为什么单独一个开关而不是启动时总做：启动路径要快，而运维需要在「不提供服务」
+	// 的前提下确认备份恢复出来的库真能用（restore.sh 也提示跑这一步）。
+	if opts.verifyStore {
+		if err := verifyStore(opts.configPath); err != nil {
+			fmt.Fprintf(stderr, "存储校验失败：%v\n", err)
+			return 1
+		}
 		return 0
 	}
 
@@ -222,4 +236,44 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// sidecar 关闭时可能回写最后一批用量——06-runtime §8.1 顺序）。
 	log.Info("已关闭")
 	return 0
+}
+
+// verifyStore 做一次只读自检：库可开、迁移齐、关键表全、主密钥可用。
+//
+// 三项都通过才算 PASS——Open 本身会跑迁移并加载主密钥，所以「能开」已经
+// 覆盖了「迁移可执行 + 主密钥可读」；Verify 再补上「关键表真的在」。
+// 失败时报具体缺哪张表，而不是笼统的“库坏了”：恢复演练里运维要知道
+// 是备份不完整还是主密钥不匹配。
+func verifyStore(configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("读配置: %w", err)
+	}
+	// 库不存在时直接报错：store.Open 会自动建库并跑迁移，若这里也“通过”，
+	// 恢复演练就会把「备份没恢复成功、现场是个新空库」误判成通过。
+	if _, err := os.Stat(cfg.Store.Path); err != nil {
+		return fmt.Errorf("库文件不存在 %s（本开关用于校验已有/恢复后的库；首次启动会建库）: %w",
+			cfg.Store.Path, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	st, err := store.Open(ctx, store.Options{
+		Path:          cfg.Store.Path,
+		MasterKeyFile: cfg.Store.MasterKeyFile,
+		BusyTimeout:   cfg.Store.BusyTimeout.Std(),
+		ReadConns:     2,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	rep, err := st.Verify(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("存储校验通过：迁移 %d 条、关键表 %d 张、主密钥可用（%s）\n",
+		rep.Migrations, len(rep.Tables), cfg.Store.Path)
+	return nil
 }

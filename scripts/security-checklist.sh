@@ -530,7 +530,8 @@ c12() {
   local tmpd snap ic sm missing="" t
   tmpd="$(mktemp -d)"
   snap="$tmpd/verify.sqlite"
-  trap 'rm -rf "$tmpd"' RETURN
+  # trap 用单引号会延迟到 RETURN 时才展开 $tmpd，而它是 local，函数返回时已出作用域（set -u 下报「tmpd: 未绑定的变量」并丢掉清理）。用双引号立即展开路径。
+  trap "rm -rf '$tmpd'" RETURN
   # mode=ro：自检绝不打写锁；busy_timeout 让并发写时快速失败而不是挂住。
   if ! sqlite3 -cmd ".timeout 3000" "file:$db?mode=ro" "VACUUM INTO '$snap'" >/dev/null 2>&1; then
     record C12 FAIL "备份可恢复" "VACUUM INTO 失败（写锁未释放或库损坏）：$db"; return
