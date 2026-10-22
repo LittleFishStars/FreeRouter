@@ -28,6 +28,22 @@
     `recovery-code` 状态与 regenerate（每次生成覆盖旧码）；
   - pending/contributor 账户不进默认组（组成员要求 tenant 类，03-groups §9）；
     组的落位发生在审批通过时。
+- **供应商 OAuth 贡献（CodeArts）落地**（2026-10-23）：按 PLAN §5.5「登录与凭据
+  续期必须复用 providers-hub 实现」的定案，从 `deepseek-harness-codearts`
+  （Apache-2.0，gitee.com/iJetLi/deepseek-harness-codearts）提取 OAuth 组件移植进
+  `sidecar/providers/codearts/`（PKCE + DPoP + 华为 STS 换取 + SDK-HMAC-SHA256 签名，
+  **不引入 jose**，用 node:crypto 实现同一套 ES256/DPoP）。
+  - sidecar 新方法：`oauth.authorize` / `oauth.exchange` / `oauth.refresh`；
+    换取失败给 `E_OAUTH_EXCHANGE_FAILED`（原文上抛，界面能说清"授权码过期"这类原因）。
+  - 主进程：`POST /api/contributions/oauth/{provider}`（公共区，返回 authorize_url）与
+    `GET /oauth/callback`（供应商按「端口 + 固定路径」构造，必须挂根路径；成功后
+    302 到 `/#/contribute/callback?accepted=…`）。PKCE verifier 与 DPoP 私钥放在
+    进程内一次性表（10 分钟 TTL），不进 Cookie、不落库。
+  - 凭据落库走既有链路（上游行 enabled=false + AES-GCM 密文 + 凭据行），
+    OAuth 路径先停在 pending/unverified（未探测前不进候选池，01-flow 5.2）；
+    未登录贡献自动建 contributor 账户并发放一次性恢复码。
+  - `/api/contributions/providers` 改为真实列表（已移植供应商 + API Key 型），
+    不可用时带 `unavailable_reason`；未移植的 provider 发起授权返回 404。
 
 - M0 骨架：配置（YAML + `FR_` 环境变量覆盖）、L1 中间件链（请求 ID / 安全头 / 可信代理 / body 上限）、
   `/healthz` `/readyz` `/api/version`、优雅关闭；`make contract` 契约测试门禁。

@@ -56,6 +56,22 @@ FreeRouter 的上游供给有两个来源：平台自己配的官方 key（`owne
 | 供应商账号（OAuth 型） | **用任意用过的账号登录即可回来** | 提示"用任意用过的账号登录即可回来" |
 | 纯 Key 型（没有可识别的账号身份） | 一次性展示**恢复码** | 即刻展示，且说明"只显示这一次" |
 
+## 2.1 实现状态（2026-10-23）
+
+| 贡献方式 | 状态 | 说明 |
+|---|---|---|
+| API Key（OpenAI 兼容端点） | ✅ 已实现 | 提交即探测（L0 + HTTP 可达性/鉴权/目录），失败也保留记录 |
+| 供应商 OAuth · CodeArts | ✅ 已实现 | PKCE + DPoP + 华为 STS 换取，实现移植自 `deepseek-harness-codearts`（见 `sidecar/providers/README.md`） |
+| 供应商 OAuth · 其余 provider | ⏳ 未移植 | `oauth.*` 方法对未移植 provider 返回 `E_NOT_IMPLEMENTED`；发起端点返回 404，界面上不出现入口 |
+
+**为什么 OAuth 只在 sidecar 里做**：PLAN §5.5 —— 这些供应商的授权与续期细节只有
+providers-hub 的实现覆盖过；用 Go 重写是另一个量级的工程，且必然在每次上游改版后
+重新逆向。主进程只做编排（发 URL、收回调、落库），协议细节全在 Node 侧。
+
+**OAuth 贡献的落库状态**：拿到凭据后立即落库（上游行 `enabled=false` + AES-GCM 密文
++ 凭据行），状态停在 `pending/unverified`。这与 §5.2「落库与可调用分开」一致——
+未通过目录探测的凭据不进候选池；探测通过后由鉴定流水线把上游行打开。
+
 ### 3.1 为什么 OAuth 型不需要恢复码
 
 OAuth 型贡献在提交时**已经拿到了一个可验证的外部身份**（`provider` + `external_id`）。用户下次用同一个人账号登录时，我们能在库里按 `UNIQUE(provider, external_id)` 找到他贡献过的那条凭据，从而定位到那个匿名账户——**身份是现成的，不需要另发凭证**。

@@ -31,6 +31,7 @@ import path from 'node:path';
 import * as hub from './hub.mjs';
 import * as dshCredentials from './credentials.mjs';
 import { redactLine } from './redact.mjs';
+import * as codearts from './providers/codearts/codearts.mjs';
 
 const SIDECAR_VERSION = '0.1.0';
 
@@ -322,6 +323,65 @@ const METHODS = {
     // 如实报未实现，而不是发一个不带鉴权的请求再让上游回 401（那会把配置问题伪装成上游故障）。
     throw new SidecarError('E_NOT_IMPLEMENTED',
       `credits.query 的余额端点需要 ${provider} 的账号对象（DSH 账号池），sidecar 暂无账号池替身`);
+  },
+
+  // —— 供应商 OAuth 贡献（docs/contributions/01-flow.md）————————————
+  // 为什么由 sidecar 承担：PLAN §5.5 定案「17 家供应商的 OAuth 与静默续期不可能重写，
+  // 必须复用 providers-hub 的实现」。codearts 的实现按提取计划移植进
+  // sidecar/providers/codearts/（PKCE + DPoP + STS 换取，无外部 npm 依赖），
+  // 其余 provider 待逐家移植；未移植的 provider 在此显式报 E_NOT_IMPLEMENTED，
+  // 而不是让界面拿一个必然失败的按钮。
+  'oauth.authorize': async ({ provider, port }) => {
+    if (!provider) throw new SidecarError('E_BAD_REQUEST', 'provider 不能为空');
+    if (provider !== 'codearts') {
+      throw new SidecarError('E_NOT_IMPLEMENTED', `${provider} 的 OAuth 授权尚未移植（当前已支持：codearts）`);
+    }
+    // 端口归主进程：它知道服务实际监听在哪。这里只校验形状。
+    // 凭据在 Go 侧密封存储，sidecar 不落盘（红线①：只读 DSH 凭据，不写）。
+    let r;
+    try {
+      r = await codearts.authorize({ port });
+    } catch (e) {
+      throw new SidecarError('E_OAUTH_AUTHORIZE_FAILED', String(e && e.message ? e.message : e), false);
+    }
+    return {
+      authorize_url: r.authorize_url,
+      ticket_id: r.ticket_id,
+      // state 内含 PKCE verifier 与 DPoP 私钥：主进程必须加密保管，回调时原样送回。
+      state: JSON.stringify(r.state),
+      expires_in: 600,
+    };
+  },
+
+  'oauth.exchange': async ({ provider, code, state }) => {
+    if (provider !== 'codearts') {
+      throw new SidecarError('E_NOT_IMPLEMENTED', `${provider} 的 OAuth 换取尚未移植（当前已支持：codearts）`);
+    }
+    if (!code) throw new SidecarError('E_BAD_REQUEST', 'code 不能为空');
+    if (!state) throw new SidecarError('E_BAD_REQUEST', 'state 不能为空');
+    try {
+      return await codearts.exchange({ code, state });
+    } catch (e) {
+      // 换取失败几乎都是上游给的「可执行原因」（授权码过期/已被用过/回调地址不匹配）。
+      // 用专用码 + 原文上抛，界面才有话说；E_INTERNAL 会把这类原因藏起来。
+      throw new SidecarError('E_OAUTH_EXCHANGE_FAILED', String(e && e.message ? e.message : e), false);
+    }
+  },
+
+  'oauth.refresh': async ({ provider, credential }) => {
+    if (provider !== 'codearts') {
+      throw new SidecarError('E_NOT_IMPLEMENTED', `${provider} 的 OAuth 续期尚未移植（当前已支持：codearts）`);
+    }
+    if (!credential) throw new SidecarError('E_BAD_REQUEST', 'credential 不能为空');
+    try {
+      return await codearts.refresh({ credential });
+    } catch (e) {
+      // refresh_token 终态：主进程据此把凭据标成 expired 并停止续期。
+      if (e && e.name === 'RefreshTokenExpiredError') {
+        throw new SidecarError('E_REFRESH_TOKEN_EXPIRED', String(e.message), false);
+      }
+      throw e;
+    }
   },
 
   // —— 推理方法（03-upstream.md §3.1：relay 的生成请求必须经 provider adapter）——

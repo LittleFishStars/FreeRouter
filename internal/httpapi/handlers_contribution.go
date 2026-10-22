@@ -42,6 +42,8 @@ type ContributionDeps struct {
 	Hasher    *auth.PasswordHasher
 	// Sess 用于「带 Cookie 提交」时识别已登录贡献者；nil = 视为未登录。
 	Sess *auth.SessionManager
+	// OAuth 是供应商 OAuth 列表来源（Providers）。nil = 只列 API Key 型。
+	OAuth ProviderOAuth
 }
 
 // ContributionSubmitter 是贡献提交链路的窄接口（装配桥包装 ContributionService）。
@@ -101,17 +103,32 @@ type ContributionCredentialRow struct {
 }
 
 // HandleContributeProviders GET /api/contributions/providers（公开）。
+//
+// 列表 = 已接入的供应商 OAuth（可用性由 sidecar 与移植状态决定）+ API Key 型
+// （恒可用：它只需要一个 OpenAI 兼容端点）。不可用的供应商**照列**并带
+// unavailable_reason：界面上要显示「为什么不能用」而不是凭空少一个入口。
 func (s *Server) HandleContributeProviders(deps *ContributionDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"data": []map[string]any{
-				{
-					"id":        "api-key",
-					"name":      "OpenAI 兼容端点（API Key）",
-					"available": true,
-				},
-			},
+		rows := make([]map[string]any, 0, 4)
+		if deps != nil && deps.OAuth != nil {
+			for _, c := range deps.OAuth.Providers(r.Context()) {
+				row := map[string]any{
+					"id":        c.ID,
+					"name":      c.Name,
+					"available": c.Available,
+				}
+				if !c.Available && c.UnavailableReason != "" {
+					row["unavailable_reason"] = c.UnavailableReason
+				}
+				rows = append(rows, row)
+			}
+		}
+		rows = append(rows, map[string]any{
+			"id":        "api-key",
+			"name":      "OpenAI 兼容端点（API Key）",
+			"available": true,
 		})
+		writeJSON(w, http.StatusOK, map[string]any{"data": rows})
 	}
 }
 

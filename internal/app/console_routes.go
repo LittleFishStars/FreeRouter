@@ -373,6 +373,20 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 		Hasher:    auth.NewPasswordHasher(a.cfg.Security.PasswordMinLength),
 		Sess:      deps.sess,
 	}
+	// 供应商 OAuth：发起（会话面，返回 authorize_url）+ 回调（裸路径，302 回前端）。
+	// 回调路径由供应商按「端口 + /oauth/callback」构造，不能改到 /api 下。
+	oauthDeps := &httpapi.OAuthDeps{
+		OAuth: newOAuthBridge(a.store, a.sidecar, deps.sess,
+			newContributionBridge(a.store, a.Contribution(), a.cfg.Limits.DefaultKeysPerAccount)),
+		Port: listenPort(a.cfg.Server.Listen),
+	}
+	contribDeps.OAuth = oauthDeps.OAuth
+	// 发起授权**不挂会话**：贡献入口在公共区（docs/ui/02-public.md 第 6 节「贡献即
+	// 生效、未登录可用」）。这里只生成一个 URL，不产生任何凭据；归属账户在回调时
+	// 才确定（带 Cookie 用当前账户，否则自动建 contributor）。
+	r.Post("/api/contributions/oauth/{provider}", a.server.HandleContributeOAuthStart(oauthDeps))
+	r.Get("/oauth/callback", a.server.HandleOAuthCallback(oauthDeps))
+
 	r.Get("/api/contributions/providers", a.server.HandleContributeProviders(contribDeps))
 	r.Post("/api/contributions", a.server.HandleContributeSubmit(contribDeps))
 	r.Post("/api/contributions/recovery", a.server.HandleContributeRecovery(contribDeps))
