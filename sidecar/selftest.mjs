@@ -109,11 +109,16 @@ await test('hasProvider：按前缀段匹配（不含值）', () => {
 });
 
 // —— 4 遮蔽 ——
-await test('redactLine：Bearer / query code / JSON token / sk- 前缀', () => {
+// 两个方向都要钉：真敏感值必须遮；排障字段（错误码/状态名/请求 id）必须留。
+// 与 Go 侧 TestContractRedactLineTable 是同一组语义（跨语言副本），改一边必须同步另一边。
+await test('redactLine：敏感值（Bearer/Basic/code/JSON token/裸 key/sk-）必须遮', () => {
   const cases = [
     ['Authorization: Bearer sk-abcdefgh12345678', 'abcdefgh12345678'],
+    ['Authorization: Basic dXNlcjpwYXNzd29yZA==', 'dXNlcjpwYXNzd29yZA=='],
     ['GET /cb?code=abcd1234efgh&state=ok', 'abcd1234efgh'],
+    ['GET /v1/models?key=abcd1234efgh', 'abcd1234efgh'],
     ['{"access_token":"eyJhbGciOiJIUzI1NiJ9"}', 'eyJhbGciOiJIUzI1NiJ9'],
+    ['password=hunter2hunter2', 'hunter2hunter2'],
     ['key=sk-1234567890abcdef', '1234567890abcdef'],
   ];
   for (const [input, secret] of cases) {
@@ -123,10 +128,32 @@ await test('redactLine：Bearer / query code / JSON token / sk- 前缀', () => {
   }
 });
 
+await test('redactLine：排障字段（error_code / status_code / E_ 错误码）不得被遮', () => {
+  const cases = [
+    ['{"error_code":"upstream_unavailable","message":"上游 502"}', 'upstream_unavailable'],
+    ['error_code=model_not_found request_id=abc', 'model_not_found'],
+    ['upstream_error code=no_candidate', 'no_candidate'],
+    ['code=E_DEPENDENCY_MISSING method=infer.stream', 'E_DEPENDENCY_MISSING'],
+    ['status_code=503 upstream=http', '503'],
+  ];
+  for (const [input, keep] of cases) {
+    const out = redactLine(input);
+    assert.ok(out.includes(keep), `排障字段被误遮：${input} → ${out}（应保留 ${keep}）`);
+  }
+});
+
+await test('redactLine：JSON 遮后仍可解析（引号配对保留）', () => {
+  const out = redactLine('{"access_token":"ya29.A0AfH6SMBx","refresh_token":"1//0gXyzAbc"}');
+  const parsed = JSON.parse(out); // 解析失败会直接抛出
+  assert.equal(parsed.access_token, '***');
+  assert.equal(parsed.refresh_token, '***');
+});
+
 await test('redactLine：幂等 + 截断（截断后仍不含尾部的秘密）', () => {
   const once = redactLine('Authorization: Bearer sk-abcdefgh12345678');
   assert.equal(redactLine(once), once);
-  const long = 'x'.repeat(100) + 'sk-abcdefgh12345678' + 'y'.repeat(4000);
+  // 分隔符是必须的：真实日志里 key 不会直接粘在字母后面（`token:sk-...`、`"key":"sk-..."`）。
+  const long = 'x'.repeat(100) + ' ' + 'sk-abcdefgh12345678' + 'y'.repeat(4000);
   const out = redactLine(long, 256);
   assert.ok(out.length <= 300, '长度应被截断');
   assert.equal(out.includes('sk-abcdefgh12345678'), false);
