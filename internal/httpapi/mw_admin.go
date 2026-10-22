@@ -614,6 +614,10 @@ type AdminUpstreamStore interface {
 	// 定案值 sidecar://<name>（0001 NOT NULL + task-12 定案），改出 relay
 	// 时若现值是定案值则清空并由桥报错要求先补端点（不静默留个 sidecar://）。
 	SetUpstreamKind(ctx context.Context, id, kind string, audit AdminAuditEntry) (*AdminUpstream, string, error)
+	// SetUpstreamSecret 写入/替换该上游的密钥材料（AES-GCM 加密入库）。
+	// 为什么不在 CreateUpstream 里顺带写：改名/改端点与改密钥是两类操作，
+	// 混在一个方法里会让「只改名字」也触发密钥重写；且创建时通常还没有 id。
+	SetUpstreamSecret(ctx context.Context, id, plaintext string, audit AdminAuditEntry) (auditID string, err error)
 }
 
 // AdminUpstreamTester 是连通性测试（装配 upstream 层的探测能力）。

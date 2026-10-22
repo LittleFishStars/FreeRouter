@@ -649,6 +649,18 @@ func (f *upstreamsFake) UpdateUpstream(ctx context.Context, id string, in AdminU
 	return &cp, auditID, err
 }
 
+func (f *upstreamsFake) SetUpstreamSecret(ctx context.Context, id, plaintext string, audit AdminAuditEntry) (string, error) {
+	u, ok := f.byID[id]
+	if !ok {
+		return "", ErrAdminUpstreamNotFound
+	}
+	if plaintext == "" {
+		return "", fmt.Errorf("%w: 密钥不能为空", ErrAdminConflict)
+	}
+	u.SecretPresent = true
+	return f.audit.Append(ctx, audit)
+}
+
 func (f *upstreamsFake) SetUpstreamKind(ctx context.Context, id, kind string, audit AdminAuditEntry) (*AdminUpstream, string, error) {
 	u, ok := f.byID[id]
 	if !ok {

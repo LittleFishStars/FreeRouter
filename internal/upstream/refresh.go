@@ -68,6 +68,11 @@ type ModelRefresher struct {
 	// hooks 是 task-16 的可选联动（鉴定写回 + inbox 通知）。
 	// nil = 纯刷新（M1 行为，NewModelRefresher 旧签名构造出的就是它）。
 	hooks *RefreshHooks
+	// httpModels 是 vendor/selfhosted 的目录拉取入口（可选注入）。
+	// relay 走 sidecar 的 source；vendor/selfhosted 是 HTTP 端点，得自己发
+	// GET {base}/models 并带密钥。nil 时非 relay 上游明确报「不支持刷新」，
+	// 而不是拿 sidecar 去拉一个 HTTP 端点（那会得到误导性的 provider 未知错误）。
+	httpModels func(ctx context.Context, u store.Upstream) ([]dshprovider.ModelInfo, error)
 }
 
 // NewModelRefresher 构造刷新器。interval<=0 时用 DefaultModelRefreshInterval；
@@ -118,7 +123,9 @@ func (r *ModelRefresher) RefreshOnce(ctx context.Context) (RefreshResult, error)
 	}
 
 	for _, u := range ups {
-		if !u.Enabled || u.Kind != "relay" {
+		// relay 走 sidecar；vendor/selfhosted 走 HTTP（refreshUpstream 内分派）。
+		// 旧实现只刷新 relay，导致这两类上游永远进不了目录、抽象模型无候选可展开。
+		if !u.Enabled {
 			continue
 		}
 		res.Upstreams++
@@ -140,7 +147,19 @@ func (r *ModelRefresher) RefreshOnce(ctx context.Context) (RefreshResult, error)
 // refreshUpstream 刷新单个上游：拉目录 → 逐条 upsert → 标记消失模型。
 // 返回落库的模型条数。
 func (r *ModelRefresher) refreshUpstream(ctx context.Context, u store.Upstream) (int, error) {
-	models, err := r.source.ModelsList(ctx, u.Name)
+	var models []dshprovider.ModelInfo
+	var err error
+	if u.Kind == "relay" {
+		if r.source == nil {
+			err = fmt.Errorf("sidecar 未运行：relay 上游的目录无法拉取（不影响 vendor/selfhosted）")
+		} else {
+			models, err = r.source.ModelsList(ctx, u.Name)
+		}
+	} else if r.httpModels != nil {
+		models, err = r.httpModels(ctx, u)
+	} else {
+		err = fmt.Errorf("该上游类型（%s）未接目录刷新（vendor/selfhosted 需要 HTTP 目录拉取）", u.Kind)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("upstream: 拉取模型目录失败: %w", err)
 	}
@@ -377,3 +396,12 @@ func (r *ModelRefresher) runLoop(ctx context.Context) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// WithHTTPModels 注入 vendor/selfhosted 的目录拉取实现。
+//
+// 为什么用 With 而不是改构造签名：旧构造（NewModelRefresher）被 M1 的测试
+// 与回退路径依赖，加一个可选注入不破坏它们。
+func (r *ModelRefresher) WithHTTPModels(fn func(ctx context.Context, u store.Upstream) ([]dshprovider.ModelInfo, error)) *ModelRefresher {
+	r.httpModels = fn
+	return r
+}

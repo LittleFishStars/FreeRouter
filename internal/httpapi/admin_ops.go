@@ -208,6 +208,10 @@ func (s *Server) handleAdminUpstreamsCreate(deps *AdminDeps) http.HandlerFunc {
 			Name    string `json:"name"`
 			BaseURL string `json:"base_url,omitempty"`
 			Enabled *bool  `json:"enabled,omitempty"`
+			// APIKey 是可选的一次性写入：创建后立即加密入库，**任何读接口
+			// 都不返回**（05-keys §3 只回一次的口径同样适用于上游密钥）。
+			// relay 类上游不需要（凭据在 DSH），vendor/selfhosted 通常需要。
+			APIKey string `json:"api_key,omitempty"`
 		}
 		if _, ok := adminDecodeBoth(w, r, &body); !ok {
 			return
@@ -237,7 +241,23 @@ func (s *Server) handleAdminUpstreamsCreate(deps *AdminDeps) http.HandlerFunc {
 			return
 		}
 		u.ID = id
-		adminWriteOK(w, http.StatusCreated, renderAdminUpstream(&u), auditID)
+		// 密钥材料：创建后立即写（加密在 store 层，桥只转交明文一次）。
+		// 失败不回滚上游行：先有上游再有密钥是合法中间态（运营补密钥即可），
+		// 但必须在响应里明说——否则前端会以为密钥已生效。
+		secretWritten := false
+		if strings.TrimSpace(body.APIKey) != "" {
+			if _, serr := deps.Upstreams.SetUpstreamSecret(r.Context(), id, body.APIKey,
+				adminBaseAudit(p, r, "upstream.secret_set", "upstream:"+body.Name, "ok")); serr != nil {
+				mapAdminError(w, serr, "上游密钥")
+				return
+			}
+			secretWritten = true
+		}
+		resp := renderAdminUpstream(&u)
+		// renderAdminUpstream 返回结构体（响应形状是编译期固定的契约）；
+		// 密钥是否写入通过 SecretPresent 字段表达（与详情接口同源）。
+		resp.SecretPresent = secretWritten
+		adminWriteOK(w, http.StatusCreated, resp, auditID)
 	}
 }
 

@@ -797,3 +797,24 @@ func (ib *inboxBridge) MarkReadBatch(ctx context.Context, ids []string, readBy s
 	}
 	return int(updated), auditID, nil
 }
+
+// SetUpstreamSecret 写入/替换上游密钥材料（AES-GCM 加密由 store 层做）。
+//
+// 为什么明文只在这里出现一次：加密与落库都在 store.PutSecret 内完成，
+// 桥不缓存明文、不记日志、不回显——与 API Key 的「只回一次」同口径。
+func (ub *upstreamsBridge) SetUpstreamSecret(ctx context.Context, id, plaintext string, audit httpapi.AdminAuditEntry) (string, error) {
+	uid, err := decodeID(idcode.Upstream, id)
+	if err != nil {
+		return "", fmt.Errorf("%w: 上游 id 形状非法", httpapi.ErrAdminNotFound)
+	}
+	var auditID string
+	err = ub.b.st.WithTx(ctx, func(tx *store.Repos) error {
+		if _, err := tx.Secrets.PutSecret(ctx, uid, []byte(plaintext)); err != nil {
+			return err
+		}
+		var aerr error
+		auditID, aerr = appendAudit(ctx, tx.Logs, audit)
+		return aerr
+	})
+	return auditID, err
+}

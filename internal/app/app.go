@@ -143,7 +143,10 @@ func (a *App) sidecarOptions() dshprovider.Options {
 // sidecar 不可用时不启动——刷新失败本来就不阻塞，但没有 sidecar 时
 // 每 10 分钟空转一轮只是浪费日志。
 func (a *App) startModelRefresh(ctx context.Context) {
-	if a.sidecar == nil || !a.cfg.Upstream.Relay.Enabled {
+	// 不再要求 sidecar 存在：vendor/selfhosted 的目录走 HTTP，与 sidecar 无关。
+	// sidecar 为 nil 时 relay 类上游会得到明确的「sidecar 未运行」错误，
+	// 其余类型照常刷新（这是「一个可选组件不该拖垮核心功能」的同一条纪律）。
+	if a.cfg == nil {
 		return
 	}
 	// 装配点：CatalogSource 由 dshprovider.Client 天然满足（task-7 设计）；
@@ -155,7 +158,8 @@ func (a *App) startModelRefresh(ctx context.Context) {
 	refresher := upstream.NewModelRefresherWithHooks(
 		a.store, a.sidecar,
 		a.cfg.Upstream.Relay.ModelRefreshInterval.Std(), a.log,
-		refreshHooksFor(a.store, a.log))
+		refreshHooksFor(a.store, a.log)).
+		WithHTTPModels(a.fetchHTTPModels)
 	// 存到 App 上：管理面「手动刷新」要复用同一个实例（两处刷新会争
 	// 同一条 sidecar 串行管道，各建一个会让并发刷新互相超时）。
 	a.modelRefresher = refresher
