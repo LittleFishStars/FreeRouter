@@ -470,6 +470,40 @@ func TestContractEncoderStateStartedVisible(t *testing.T) {
 	}
 }
 
+// TestContractEncoderStateI6ErrorThenOnlyDone 锁 I6：error 之后只允许 done。
+// 为什么必须测：上游在错误帧后继续发 delta 时，若照写会与已写出的错误帧自相矛盾
+// （客户端表现为“报错后又来内容”），而旧实现 Accept 只判 I4/I5，这条一直漏网。
+func TestContractEncoderStateI6ErrorThenOnlyDone(t *testing.T) {
+	var st ir.EncoderState
+	st.MarkWritten(ir.Event{Type: ir.EvStart})
+	// 错误帧本身允许写出（写入前 Accept 判定时 errored 尚未置位）。
+	if !st.Accept(ir.Event{Type: ir.EvError, Err: &ir.Error{Code: "upstream_error", Message: "boom"}}) {
+		t.Fatal("error 帧本身应允许写出")
+	}
+	st.MarkWritten(ir.Event{Type: ir.EvError, Err: &ir.Error{Code: "upstream_error", Message: "boom"}})
+
+	// error 之后一切非 done 事件都拒绝。
+	for _, ev := range []ir.Event{
+		{Type: ir.EvTextDelta, Text: "late"},
+		{Type: ir.EvThinkingDelta, Text: "late"},
+		{Type: ir.EvToolCallStart, Call: &ir.ToolCallPart{Idx: 0}},
+		{Type: ir.EvUsage, Usage: &ir.Usage{InputTokens: ir.Ptr(1)}},
+	} {
+		if st.Accept(ev) {
+			t.Fatalf("I6：error 之后 %s 应被拒绝", ev.Type)
+		}
+	}
+	// done 仍允许（作为流终结）。
+	if !st.Accept(ir.Event{Type: ir.EvDone}) {
+		t.Fatal("I6：error 之后的 done 应允许")
+	}
+	st.MarkWritten(ir.Event{Type: ir.EvDone})
+	// done 之后按 I5 全拒。
+	if st.Accept(ir.Event{Type: ir.EvDone}) {
+		t.Fatal("I5：done 之后的 done 也应拒绝")
+	}
+}
+
 // ---- tool_call 重组规则（02-ir.md §6.2）----
 
 func TestContractToolCallReassemblyRules(t *testing.T) {

@@ -336,6 +336,8 @@ func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyR
 // 返回 true 表示已经开始向客户端写字节（此后不可再切候选——C7）；
 // 返回 false 表示失败且未吐任何可见内容（可安全换候选）。
 func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxyReq, cand Candidate, reqID string) bool {
+	// 起点用于 TTFT 计算：必须在编码/上游握手之前取，否则首包延迟被低估。
+	start := time.Now()
 	upOpt := ir.EncodeOptions{
 		UpstreamModel: cand.UpstreamModelID,
 		RequestID:     reqID,
@@ -390,11 +392,16 @@ func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxy
 			// TTFT 记录的是「第一段可见内容」而非首帧字节——start 壳帧
 			// 不算（02-ir.md §5.3 同理：可见内容才是客户端感知的开始）。
 			ttft = time.Now()
-			s.log.Info("v1 stream ttft", "request_id", reqID, "ttft_ms", ttft.UnixMilli())
+			// 上报的是**耗时**（相对函数入口的毫秒数），不是 Unix 绝对毫秒——
+			// 旧实现直接写 ttft.UnixMilli()，得到 1.7e12 量级的绝对时间戳，
+			// 看板上会误判成“首包延迟十几亿毫秒”。
+			s.log.Info("v1 stream ttft", "request_id", reqID, "ttft_ms", ttft.Sub(start).Milliseconds())
 			first = false
 		}
 	}
-	if streamErr != nil && streamErr.Error() != "EOF" {
+	// 用 errors.Is 而非字符串比较判断流结束：reader 一旦用 %w 包裹 EOF，
+	// 字符串"EOF"不再匹配，会把正常收尾误报为流中失败并给客户端多吐一个错误帧。
+	if streamErr != nil && !errors.Is(streamErr, io.EOF) {
 		// 流中失败：已吐内容后不能改状态码（§4.2），只能写错误事件帧。
 		// 出站方言的错误帧形状由各 StreamWriter 自理（openai=data:{"error":…}，
 		// anthropic=event: error）。
