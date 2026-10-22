@@ -283,6 +283,38 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	// 窗口内没有可鉴权主体），窗口判定在 handler 内（先 409 后验参数）。
 	r.Get("/api/setup/status", a.server.ConsoleHandlerSetupStatus(setupDeps))
 	r.Post("/api/setup/init", a.server.ConsoleHandlerSetupInit(setupDeps))
+
+	// 管理面（M7）：45 端点整组挂 /api/admin，组级中间件 mwAdmin。
+	// 先 AttachAdmin 再 Mount：Server 的 deps 注册表按实例键，挂载时取。
+	a.server.AttachAdmin(a.buildAdminDeps())
+	a.server.MountAdminRoutes(r)
+}
+
+// buildAdminDeps 组装管理面依赖（M7 装配）。
+//
+// 为什么在装配层组装而不是 httpapi 包内自带：AdminDeps 的每个字段都是
+// **窄接口**（Accounts/Groups/Keys/...），实现方是 store 仓储；httpapi 不认识
+// store，装配层是唯一同时认识两边的位置。这与 v1/会话面的切法一致。
+//
+// 缺字段（Refresh/UpstreamTest/SettingsPatch/IPCheck）暂不接：它们的实现
+// 依赖刷新器实例与上游连通性测试，属 M10 后续整理；留 nil 时对应端点返回
+// 未实现而不是 panic（handler 侧判空）。
+func (a *App) buildAdminDeps() *httpapi.AdminDeps {
+	b := newAdminBridge(a.store)
+	authDeps := a.buildConsoleAuth()
+	return &httpapi.AdminDeps{
+		Sess:          authDeps.sess,
+		Hasher:        auth.NewPasswordHasher(a.cfg.Security.PasswordMinLength),
+		Accounts:      &accountsBridge{b: b},
+		Groups:        &groupsBridge{b: b},
+		Keys:          &keysCountBridge{b: b},
+		Credentials:   &credentialsBridge{b: b},
+		Models:        &modelsBridge{b: b},
+		Upstreams:     &upstreamsBridge{b: b},
+		Verifications: &verificationsBridge{b: b},
+		Audit:         &auditBridge{b: b},
+		Inbox:         &inboxBridge{b: b},
+	}
 }
 
 // chiRouter 是 chi.Router 的本地别名（SetConsoleRoutes 回调签名）。
