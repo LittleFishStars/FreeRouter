@@ -1,0 +1,105 @@
+# FreeRouter —— Docker Compose 部署（形态 B，生产推荐）
+#
+# 用法（在仓库根执行；文件在 deploy/docker/ 下，路径都以仓库根为基准）：
+#   docker compose -f deploy/docker/compose.yaml up -d
+#   docker compose -f deploy/docker/compose.yaml logs -f
+#   docker compose -f deploy/docker/compose.yaml down
+#
+# 前置（缺任何一条都会以「服务起来但功能残废」的形态失败，不是启动失败）：
+#   1. /etc/freerouter/master.key  —— 0600、32 字节、属主 uid 10001。生成：
+#      sudo mkdir -p /etc/freerouter && sudo head -c 32 /dev/urandom | base64 > /etc/freerouter/master.key
+#      ⚠ base64 后是 44 字节，长度校验会拒绝（masterkey.go 要求**精确 32 字节**）。
+#      正确写法：sudo head -c 32 /dev/urandom > /etc/freerouter/master.key && sudo chmod 600 ...
+#      （02-deploy.md §3 里那条 base64 示例与实现不符，已在 §12.4 给出修正）
+#   2. 可选 /etc/freerouter/config.yaml —— 不给就全靠下面的 FR_ 环境变量。
+#   3. providers-hub 目录本机可读（relay 上游需要；缺则贡献功能不可用，转发不受影响）。
+#
+# ── 为什么 network_mode: host ──────────────────────────────────────
+# 02-deploy.md §1.3：OAuth 浏览器回调端口由各 provider 自己决定（trae 固定 18080），
+# 写不进一张事先固定的 ports 映射表；同时默认形态下 server.listen 要直接落在宿主 IP。
+# 共用宿主网络栈一次解决这两件事。**代价**：bridge + ports 的隔离没了，
+# 所以本文件把其余隔离手段拉满（read_only / cap_drop / no-new-privileges / 非 root）。
+# host 网络下 ports: 会被忽略并造成误解，故不写 ports（与 §5 一致）。
+#
+# ── 为什么默认只监听 127.0.0.1 ─────────────────────────────────────
+# 01-security §2 + 02-deploy §4：初始化完成前只允许回环，切公网是部署者的**显式动作**。
+# 要对外就改 FR_SERVER_LISTEN（并想清楚 tls.mode / insecure_public_listen）。
+
+services:
+  freerouter:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        # 版本信息注入（与 Makefile 同源）；CI 里覆盖成 git describe 的结果。
+        VERSION: ${FR_VERSION:-dev}
+        COMMIT: ${FR_COMMIT:-unknown}
+        BUILD_TIME: ${FR_BUILD_TIME:-unknown}
+    image: freerouter:local
+    container_name: freerouter
+    network_mode: host
+    restart: unless-stopped
+
+    # ── 非 root（01-security §7）──
+    # 与 Dockerfile 的 USER 10001:10001 一致；这里再声明一次是因为 bind mount 的
+    # 宿主目录属主必须能被这个 uid 写，写死数字让「宿主 chown 成什么」有唯一答案。
+    user: "10001:10001"
+
+    # ── 只读根文件系统 + 仅数据目录可写 ──
+    # 进程需要写的只有：数据库目录（含 -wal/-shm）、备份目录、/tmp。
+    # 根文件系统可写在这里没有任何正当用途；容器被拿下时能改的东西越少越好。
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777   # 1777 是标准 /tmp 语义：Go 的 os.TempDir 会往里写
+
+    # ── capability 全掉 ──
+    # 绑 1024 以下端口不需要（默认 8080），写文件不需要，加载模块不需要。
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true    # 堵 setuid 提权：cap 掉全了也不给 exec 一个带 cap 的 binary 的机会
+
+    volumes:
+      # 数据目录：库 + 备份。**这是唯一需要写的挂载**。
+      # 宿主机先 `sudo mkdir -p /var/lib/freerouter && sudo chown 10001:10001 /var/lib/freerouter && sudo chmod 750 /var/lib/freerouter`
+      - ${FR_DATA_DIR:-/var/lib/freerouter}:/var/lib/freerouter
+      # 配置：只读。
+      - ${FR_CONFIG_HOST:-/etc/freerouter/config.yaml}:/etc/freerouter/config.yaml:ro
+      # 主密钥：只读，且**与数据目录不同路径**（05-storage.md 8.2 分开存放）。
+      # 用 secrets 也可以，但 host 网络 + bind mount 的单机形态下这条更直观。
+      - ${FR_MASTER_KEY_HOST:-/etc/freerouter/master.key}:/run/secrets/master.key:ro
+
+    environment:
+      # 监听：默认回环。要对外改成 "0.0.0.0:8080" 或本机 IP，并同时确认
+      # tls.mode / insecure_public_listen 的组合（02-deploy §2.1/§2.2）。
+      FR_SERVER_LISTEN: "${FR_SERVER_LISTEN:-127.0.0.1:8080}"
+      FR_STORE_PATH: /var/lib/freerouter/freerouter.db
+      FR_STORE_BACKUP_DIR: /var/lib/freerouter/backups
+      # 主密钥路径指向挂载点，**不是**数据目录里的某个文件。
+      FR_STORE_MASTER_KEY_FILE: /run/secrets/master.key
+      FR_SIDECAR_ENTRY: /opt/freerouter/sidecar/index.mjs
+      FR_SIDECAR_NODE_PATH: node
+      FR_LOG_FORMAT: json
+      FR_LOG_LEVEL: "${FR_LOG_LEVEL:-info}"
+      # providers-hub：宿主目录只读挂进来（见下面 volumes 追加），缺则 relay 不可用。
+      FR_SIDECAR_HUB_PATH: "${FR_SIDECAR_HUB_PATH:-}"
+      # DSH 登录态目录（provider 凭据在宿主侧，容器只读访问）。
+      FR_DSH_HOME: "${FR_DSH_HOME:-}"
+
+    # 需要 relay 上游时取消注释（宿主 providers-hub 与 DSH 数据只读进来）：
+    #   - ${FR_HUB_DIR:-/opt/dsh/profiles/web/node_modules/dsh-providers-hub}:/opt/freerouter/hub:ro
+    #   - ${FR_DSH_HOME:-$HOME/.local/share/dsh}:/dsh:ro
+    # 并在 environment 里设 FR_SIDECAR_HUB_PATH=/opt/freerouter/hub、FR_DSH_HOME=/dsh。
+
+    # 资源上限（02-deploy §10）：多租户 4 GiB / 自用 256 MiB。
+    # 不写 limit 的话，被 OOM 杀掉的顺序由内核决定——那会随机杀掉你的库而不是别人的。
+    deploy:
+      resources:
+        limits:
+          memory: ${FR_MEM_LIMIT:-1g}
+          cpus: "${FR_CPU_LIMIT:-2}"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"   # 日志轮转（01-security §7「不无限增长」）
