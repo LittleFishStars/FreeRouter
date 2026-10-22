@@ -1,0 +1,719 @@
+// contribution.go —— 贡献流程接凭据（M8，docs/contributions/01-flow.md 5 节、
+// 02-credentials.md 5/6 节、models/05-verification.md 5 节）。
+//
+// 一次提交的完整链路（全部在本文件内编排，存储与探测都是窄接口）：
+//
+//	提交（provider + base_url + key + 声称模型）
+//	  → L0 形式校验（本地，秒级；廉价闸门）
+//	  → key 指纹 = external_id（纯 Key 型没有外部身份，用它做幂等与撞身份键）
+//	  → 落库：upstreams 行 + upstream_secrets（AES-GCM 密文）+ upstream_credentials(pending)
+//	  → 探测：GET {base_url}/models（余额端点未接，见 credits.query 的说明）
+//	  → 判定四态 → 入池（active）或拒绝（disabled，保留行与证据）
+//	  → 贡献者可一键撤销（status=disabled + 销毁密文）
+//
+// 三条不能破的边界：
+//  1. **明文只在内存里**：密文经 ContributionStore.PutSecret 落库（AES-GCM 在 store 侧），
+//     本文件不保留明文的第二份；错误信息一律脱敏（redactText）；
+//  2. **无人工审核**：判定只由这里的两段自动判定给出（01-flow 5.1）；
+//  3. **status 与 verify_status 正交**（02-credentials 5.1）：status 回答「能不能被调用」，
+//     verify_status 回答「声称是否相符」。混用会让可恢复的问题变成不可恢复的删除。
+package upstream
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/LittleFishStars/FreeRouter/internal/store"
+)
+
+// —— 错误 ——
+
+// ErrContributionRejected 表示判定为「拒绝入池」（不是程序错误）。
+//
+// 为什么用哨兵错误而不是只靠 Outcome：调用方（控制台/API）需要把「业务拒绝」与
+// 「系统故障」分开——前者给贡献者可执行的原因（01-flow 7 节），后者要重试。
+var ErrContributionRejected = errors.New("upstream: 贡献被拒绝入池")
+
+// ErrContributionForbidden 越权撤销（不是本人也不是管理员）。
+var ErrContributionForbidden = errors.New("upstream: 无权撤销该凭据")
+
+// —— 窄接口（写域铁律：功能包定义接口面，装配层钉实现） ——
+
+// ContributionStore 是贡献流程对存储的最小写面。
+//
+// 为什么是这些方法而不是 *store.Store：一次提交只碰三张表（upstreams / upstream_secrets /
+// upstream_credentials），把这五个动作列出来，装配层换实现（内存 fake、未来分库）时
+// 不需要重读一遍 store 的全部 API。
+//
+// 幂等读（ListCredentials）也在这里：撞 UNIQUE(provider, external_id) 时要区分
+// 「同一账户重复提交」（幂等接受）与「另一个账户提交同一身份」（拒绝），
+// 而 store 侧没有 by-external-id 的读，用 owner+provider 列再筛是现有的能力。
+type ContributionStore interface {
+	UpsertUpstream(ctx context.Context, kind, name, baseURL string, ownerAccountID *int64, enabled bool) (int64, error)
+	PutSecret(ctx context.Context, upstreamID int64, plaintext []byte) (int64, error)
+	DeleteSecret(ctx context.Context, secretID int64) error
+	CreateCredential(ctx context.Context, ownerAccountID int64, provider, externalID, label, secretRef string) (int64, error)
+	SetCredentialStatus(ctx context.Context, id int64, status store.CredentialStatus) error
+	MarkVerified(ctx context.Context, credentialID int64, status store.VerifyStatus, evidence string) error
+	LookupCredential(ctx context.Context, id int64) (*store.Credential, error)
+	ListCredentials(ctx context.Context, f store.CredentialFilter) ([]store.Credential, error)
+	// ListUpstreams / UpdateUpstream 是撤销的必要读面：
+	// **候选池的入口是 upstreams.enabled + real_models 可见性**，不是凭据 status
+	// （realModelCandidates 走 ListVisibleRealModels + ListUpstreams）。
+	// 所以「撤销立即生效」必须把上游行一起停掉，只改 credential.status 是假的撤销。
+	ListUpstreams(ctx context.Context) ([]store.Upstream, error)
+	UpdateUpstream(ctx context.Context, id int64, name, baseURL string, enabled bool) error
+}
+
+// ProbeInput 是一次探测的输入。APIKey 只在本进程内存里流转。
+type ProbeInput struct {
+	Provider     string
+	BaseURL      string
+	APIKey       string
+	ClaimedModel string
+}
+
+// ProbeOutput 是一次探测的结果。Detail 必须是**可给贡献者看**的脱敏文本。
+type ProbeOutput struct {
+	// Reachable 是否连上了端点（连接层）。
+	Reachable bool
+	// AuthOK 端点是否接受这把 key（401/403 → false）。
+	AuthOK bool
+	// Models 目录里的模型 id（拿不到目录时为空）。
+	Models []string
+	// UsedModels 声称模型在目录中的命中（宁可空也不猜）。
+	UsedModels []string
+	// Detail 脱敏后的证据（进 verify_detail 与给贡献者的原因）。
+	Detail string
+	// Latency 探测耗时（排障用，不进证据文本）。
+	Latency time.Duration
+}
+
+// CredentialProbe 探测一次「这把 key 能不能调、声称的模型在不在」。
+//
+// 为什么接口而不是直接发 HTTP：判定要与**怎么探测**解耦——测试要能构造
+// 「401 / 目录缺模型 / 无目录 / 连不上」四种结果而不开端口；将来接 sidecar 的
+// models.list（hub adapter）时也只是换一个实现。
+type CredentialProbe interface {
+	Probe(ctx context.Context, in ProbeInput) (ProbeOutput, error)
+}
+
+// —— 选项与构造 ——
+
+// ContributionOptions 是贡献服务的可调参数。
+type ContributionOptions struct {
+	// FailThreshold 是「连续失败自动禁用」的阈值（≤0 取 5）。
+	//
+	// 为什么是 5：单次失败可能只是上游抖动（一次 502 不代表凭据坏了），而 5 次连续
+	// 失败已经足以排除「偶发」——再放行下去就是把用户的请求持续打到一条坏通道上。
+	FailThreshold int
+	// Now 可注入的时间源（测试用）。
+	Now func() time.Time
+}
+
+// ContributionService 编排提交 / 撤销 / 失败计数。
+type ContributionService struct {
+	store  ContributionStore
+	probe  CredentialProbe
+	opt    ContributionOptions
+	mu     sync.Mutex
+	fails  map[int64]int // credentialID → 连续失败次数（仅进程内；重启即清零）
+	lastAt map[int64]time.Time
+}
+
+// NewContributionService 构造服务。probe 为 nil 时用 HTTPProbe（默认实现）。
+func NewContributionService(st ContributionStore, probe CredentialProbe, opt ContributionOptions) *ContributionService {
+	if probe == nil {
+		probe = HTTPProbe{Client: &http.Client{Timeout: 15 * time.Second}}
+	}
+	if opt.FailThreshold <= 0 {
+		opt.FailThreshold = 5
+	}
+	if opt.Now == nil {
+		opt.Now = time.Now
+	}
+	return &ContributionService{
+		store: st, probe: probe, opt: opt,
+		fails:  make(map[int64]int),
+		lastAt: make(map[int64]time.Time),
+	}
+}
+
+// —— 提交 ——
+
+// Submission 是一次贡献提交。
+//
+// OwnerAccountID 必填：**匿名贡献也先建账户**（contributor 类是零权限容器，
+// 见 01-flow 2.2）——账户创建属于 auth 包，本服务只负责「有账户之后的凭据链路」。
+type Submission struct {
+	OwnerAccountID int64
+	Provider       string
+	// BaseURL 是 OpenAI 兼容端点根（如 https://api.example.com/v1）。
+	BaseURL string
+	// APIKey 是明文；只在本次调用内存活。
+	APIKey string
+	// ClaimedModel 是贡献者声称该 key 提供的模型（可空：空则不判定「相符」，
+	// 只做可达性与鉴权，判定落在 unverified）。
+	ClaimedModel string
+	// Label 是给贡献者认领用的可读标签（如 "我的魔搭 key"）。
+	Label string
+	// Kind 是上游类型：vendor（公网端点）或 selfhosted（自建/本机）。
+	// 空则按 BaseURL 判定（回环 → selfhosted，其余 → vendor）。
+	Kind string
+}
+
+// Outcome 是一次提交的结果（可以直接回给控制台）。
+type Outcome struct {
+	CredentialID int64
+	Status       store.CredentialStatus
+	VerifyStatus store.VerifyStatus
+	Evidence     string
+	// InPool 是否进了候选池（status == active）。
+	InPool bool
+	// Reused 表示命中「同一账户重复提交同一身份」的幂等路径（没有新建行）。
+	Reused bool
+}
+
+// Submit 走完 L0 → 落库 → 探测 → 判定 的完整链路。
+//
+// 返回 (Outcome, nil) 表示「流程走完」（可能是入池，也可能是拒绝——看 Outcome.InPool）；
+// 只有**程序/存储故障**才返回 error。这个区分让调用方能对两种失败给出不同的 UI：
+// 拒绝要给可执行原因，故障要提示重试。
+func (s *ContributionService) Submit(ctx context.Context, sub Submission) (Outcome, error) {
+	if err := validateSubmission(sub); err != nil {
+		return Outcome{}, err
+	}
+	kind := sub.Kind
+	if kind == "" {
+		kind = defaultKindFor(sub.BaseURL)
+	}
+	// L0 的远端地址校验复用 Target 的出站边界（§9.3）：vendor 必须 https，回环 http 放行。
+	if err := ValidateTarget(Target{Kind: Kind(kind), BaseURL: sub.BaseURL}); err != nil {
+		return Outcome{}, fmt.Errorf("upstream: 端点地址不合法：%w", err)
+	}
+
+	fingerprint := KeyFingerprint(sub.APIKey)
+	// 幂等：同一账户 + 同一 provider + 同一 key 指纹 = 同一条贡献。
+	// 为什么用指纹而不是「查 key 明文」：明文不进库，等价判定只能靠稳定派生值。
+	if existing, ok, err := s.findOwned(ctx, sub.OwnerAccountID, sub.Provider, fingerprint); err != nil {
+		return Outcome{}, err
+	} else if ok {
+		verify := existing.VerifyStatus
+		if verify == "" {
+			verify = store.VerifyUnverified
+		}
+		evidence := decodeEvidence(existing.VerifyDetail)
+		return Outcome{
+			CredentialID: existing.ID,
+			Status:       store.CredentialStatus(existing.Status),
+			VerifyStatus: verify,
+			Evidence:     evidence,
+			InPool:       existing.Status == string(store.CredActive),
+			Reused:       true,
+		}, nil
+	}
+
+	// 落库：upstreams 行（承载 base_url 与归属）+ 密文 + 凭据行。
+	// 顺序为什么是 upstreams → secret → credential：credential.secret_ref 指向上一步的
+	// secret id，而 secret 又必须有 upstreams 行（upstream_secrets.upstream_id 有外键）。
+	upstreamName := contributeUpstreamName(sub.Provider, fingerprint)
+	baseURL := strings.TrimRight(sub.BaseURL, "/")
+	// enabled=false 先建：**未通过判定的凭据绝不能可调用**（01-flow 5.2「落库与可调用分开」）。
+	// 判定入池后再把这一行打开——这是「入池」的唯一实现手段（见接口注释）。
+	upstreamID, err := s.store.UpsertUpstream(ctx, kind, upstreamName, baseURL, &sub.OwnerAccountID, false)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("upstream: 建贡献上游行失败：%w", err)
+	}
+	secretID, err := s.store.PutSecret(ctx, upstreamID, []byte(sub.APIKey))
+	if err != nil {
+		return Outcome{}, fmt.Errorf("upstream: 加密写入凭据失败：%w", err)
+	}
+	// secretRef 用密文行 id 的字符串形态（Assembly 的 secretSource 按它解密；
+	// 02-credentials 6.4 的「引用形式」待定项在这里先钉成 id，换成字符串前缀时只改这两处）。
+	secretRef := fmt.Sprintf("%d", secretID)
+
+	credID, err := s.store.CreateCredential(ctx, sub.OwnerAccountID, sub.Provider, fingerprint,
+		sanitizeLabel(sub.Label, sub.APIKey), secretRef)
+	if err != nil {
+		// 建行失败要把刚写的密文收回去，避免留下「无主的密钥材料」。
+		// 删不掉也不阻塞主错误（密文行没有凭据指向，取不到 upstream 归属）。
+		_ = s.store.DeleteSecret(context.WithoutCancel(ctx), secretID)
+		return Outcome{}, fmt.Errorf("upstream: 建凭据行失败：%w", err)
+	}
+
+	// 探测：网络/鉴权/目录。HTTPProbe 的错误只表达「探测本身跑不了」（如非法 URL），
+	// 连不上是 ProbeOutput.Reachable=false 而不是 error —— 它是判定输入，不是故障。
+	out, probeErr := s.probe.Probe(ctx, ProbeInput{
+		Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, ClaimedModel: sub.ClaimedModel,
+	})
+	status, verify, evidence := judgeProbe(sub.ClaimedModel, out, probeErr)
+
+	// 写回判定。两步分开写（status 与 verify_status 不同列），失败要能各自归因。
+	if err := s.store.SetCredentialStatus(ctx, credID, status); err != nil {
+		return Outcome{}, fmt.Errorf("upstream: 写凭据状态失败：%w", err)
+	}
+	if err := s.store.MarkVerified(ctx, credID, verify, evidence); err != nil {
+		return Outcome{}, fmt.Errorf("upstream: 写鉴定结论失败：%w", err)
+	}
+	res := Outcome{
+		CredentialID: credID, Status: status, VerifyStatus: verify,
+		Evidence: evidence, InPool: status == store.CredActive,
+	}
+	if !res.InPool {
+		// 拒绝不是 error：凭据行保留（02-credentials 7 节「失败了也保留记录」——
+		// 它是申诉、复核与惯犯识别的证据），上游行保持 enabled=false（不可调用）。
+		return res, nil
+	}
+	// 入池：打开上游行。这一步失败必须报错——否则会出现「凭据说 active 但实际不可调用」
+	// 的假状态，而调用方已经收到了成功应答。
+	if err := s.store.UpdateUpstream(ctx, upstreamID, upstreamName, baseURL, true); err != nil {
+		return Outcome{}, fmt.Errorf("upstream: 入池（启用上游行）失败：%w", err)
+	}
+	return res, nil
+}
+
+// contributeUpstreamName 是贡献上游行的名字（确定性，撤销时靠它反查 upstream id）。
+// 为什么把指纹前缀编进名字：upstream_credentials 的读面不含 upstream id，
+// 而 store 没有 by-credential 的 upstream 查询——确定性命名的反查是现有能力内最稳的做法。
+func contributeUpstreamName(provider, fingerprint string) string {
+	short := fingerprint
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return fmt.Sprintf("%s-contrib-%s", provider, short)
+}
+
+// findOwned 在同一账户的凭据里找 external_id 命中项（幂等判定的读面）。
+func (s *ContributionService) findOwned(ctx context.Context, owner int64, provider, externalID string) (*store.Credential, bool, error) {
+	rows, err := s.store.ListCredentials(ctx, store.CredentialFilter{
+		OwnerAccountID: &owner, Provider: provider, Limit: 500,
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("upstream: 查已有贡献失败：%w", err)
+	}
+	for i := range rows {
+		if rows[i].ExternalID == externalID {
+			return &rows[i], true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+// validateSubmission 是 L0 的本地部分（不花钱、不发请求）。
+//
+// 「廉价闸门」的意义（05-verification 4.2）：它必须便宜到「全部贡献必经」，
+// 所以只挡结构性垃圾——空字段、明显不是 URL、明显不是 key、标签里含 key。
+func validateSubmission(sub Submission) error {
+	if sub.OwnerAccountID <= 0 {
+		return errors.New("upstream: 贡献必须归属某个账户（匿名贡献也先建 contributor 账户）")
+	}
+	if strings.TrimSpace(sub.Provider) == "" {
+		return errors.New("upstream: provider 不能为空")
+	}
+	if strings.TrimSpace(sub.BaseURL) == "" {
+		return errors.New("upstream: base_url 不能为空")
+	}
+	u, err := url.Parse(sub.BaseURL)
+	if err != nil || u.Host == "" {
+		return errors.New("upstream: base_url 不是合法 URL")
+	}
+	key := strings.TrimSpace(sub.APIKey)
+	if key == "" {
+		return errors.New("upstream: key 不能为空")
+	}
+	if len(key) < 8 {
+		return errors.New("upstream: key 太短（<8 字节），不可能是有效凭据")
+	}
+	// 标签不得包含 key 本身（02-credentials 3.2：用户会把 key 粘进标签）。
+	if sub.Label != "" && strings.Contains(sub.Label, key) {
+		return errors.New("upstream: 标签不得包含明文 key")
+	}
+	if len(sub.Label) > 200 {
+		return errors.New("upstream: 标签过长（>200 字节）")
+	}
+	return nil
+}
+
+// defaultKindFor 按地址推断上游类型：回环/局域网自建 → selfhosted，其余 → vendor。
+// 为什么允许 http 只给 selfhosted：validate.go 的出站边界就是这样定的
+// （公网明文 http 会把凭据暴露在链路上）。
+func defaultKindFor(baseURL string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return string(KindVendor)
+	}
+	host := u.Hostname()
+	if host == "localhost" || strings.HasPrefix(host, "127.") || host == "::1" || strings.HasPrefix(host, "10.") ||
+		strings.HasPrefix(host, "192.168.") {
+		return string(KindSelfHosted)
+	}
+	return string(KindVendor)
+}
+
+// sanitizeLabel 兜底清掉标签里的密钥形态（用户可能粘贴 sk-xxx）。
+func sanitizeLabel(label, key string) string {
+	l := strings.TrimSpace(label)
+	if l == "" {
+		l = "贡献凭据"
+	}
+	if key != "" {
+		l = strings.ReplaceAll(l, key, "***")
+	}
+	if len(l) > 200 {
+		l = l[:200]
+	}
+	return l
+}
+
+// KeyFingerprint 是纯 Key 型的 external_id（稳定、不可逆、等值判定用）。
+//
+// 为什么不用明文或简单哈希前缀：撞 UNIQUE(provider, external_id) 是**跨账户**的
+// 撞身份判定（02-credentials 4.1），拼一个可被枚举的前缀会让「我猜你用的 key」成为
+// 攻击面。sha256 前 16 字节足够区分且不可逆。
+func KeyFingerprint(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return "key_" + hex.EncodeToString(sum[:16])
+}
+
+// —— 判定 ——
+
+// judgeProbe 把探测结果映射成 (status, verify_status, evidence)。
+//
+// 判定表（05-verification 5.1 + 02-credentials 5.2 的库内枚举）：
+//
+//	连不上              → disabled + unverified（L0 不通过：端点都不通，谈不上「相符」）
+//	401/403             → disabled + unverified（凭据无效；给可执行原因）
+//	有目录且声称模型命中 → active   + verified
+//	有目录但声称模型缺失 → disabled + suspect  （冒充/填错；给证据，不含探针细节）
+//	无目录（404/非 JSON）→ active   + unverified （冷门模型默认放行，进复检队列）
+//
+// 为什么「无目录」放行而不是拒绝：05-verification 5.2 的整段论证——「库里没有」不等于
+// 「可疑」，误杀成本高于误放，且有运行时健康与定时复检兜底。
+func judgeProbe(claimed string, out ProbeOutput, probeErr error) (store.CredentialStatus, store.VerifyStatus, string) {
+	if probeErr != nil {
+		return store.CredDisabled, store.VerifyUnverified,
+			evidenceJSON("L0", "探测无法执行："+redactText(probeErr.Error()))
+	}
+	if !out.Reachable {
+		return store.CredDisabled, store.VerifyUnverified,
+			evidenceJSON("L0", "端点不可达："+redactText(firstNonEmpty(out.Detail, "连接失败")))
+	}
+	if !out.AuthOK {
+		return store.CredDisabled, store.VerifyUnverified,
+			evidenceJSON("L0", "上游拒绝鉴权（401/403）："+redactText(firstNonEmpty(out.Detail, "鉴权失败")))
+	}
+	claimed = strings.TrimSpace(claimed)
+	if claimed == "" {
+		return store.CredActive, store.VerifyUnverified,
+			evidenceJSON("L0", "可达且鉴权通过；未声明模型，记为未鉴定并进复检队列")
+	}
+	for _, m := range out.UsedModels {
+		if m == claimed {
+			return store.CredActive, store.VerifyVerified,
+				evidenceJSON("L1", "声称模型在目录中命中："+claimed)
+		}
+	}
+	if len(out.Models) == 0 {
+		return store.CredActive, store.VerifyUnverified,
+			evidenceJSON("L1", "端点未提供模型目录；声称模型 "+claimed+" 暂无法比对，已放行并进入复检队列")
+	}
+	// 有目录但不含声称模型：这是「冒充」的最强信号（05-verification 3 节的强信号之一）。
+	// 证据只说「不在目录」与目录条数，**不列我们的探针细节**（5.3 的脱敏要求）。
+	return store.CredDisabled, store.VerifySuspect,
+		evidenceJSON("L1", fmt.Sprintf("声称模型 %s 不在上游目录（目录共 %d 条）", claimed, len(out.Models)))
+}
+
+// evidenceJSON 生成 verify_detail 的 JSON（见 0001_init.sql 的列注释：证据会演化，
+// 用 JSON 才能不迁移地补信号）。
+func evidenceJSON(stage, detail string) string {
+	b, err := json.Marshal(map[string]any{"stage": stage, "detail": detail})
+	if err != nil {
+		return `{"stage":"` + stage + `","detail":"证据序列化失败"}`
+	}
+	return string(b)
+}
+
+// decodeEvidence 从 verify_detail JSON 里取出 detail（幂等路径回给贡献者的原因）。
+func decodeEvidence(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	var v struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return "" // 坏 JSON 不当证据外发（可能是旧格式）
+	}
+	return v.Detail
+}
+
+// —— 撤销 ——
+
+// RevokeActor 是撤销的发起人。
+type RevokeActor struct {
+	// AccountID 是操作者账户；IsAdmin=true 时不受归属限制。
+	AccountID int64
+	IsAdmin   bool
+}
+
+// Revoke 撤销一条贡献凭据：status=disabled + 销毁密文。
+//
+// 为什么撤销要**删密文**而不是只改状态：
+//   - 贡献者对「收回自己的账号」的承诺是可验证的（01-flow 7 节/02-credentials 5.3）；
+//     只改状态意味着密钥材料还在库里，一旦状态被误改回 active 就能再次被调用；
+//   - 留行不留钥：`requests.resolved_credential_id` 的归因链靠**行**，不靠密文。
+//
+// 为什么 status 用 disabled 而不是文档建议的 revoked：库里的 CHECK 枚举
+// （pending/active/invalid/expired/disabled）没有 revoked（02-credentials 5.2 与 DDL
+// 的已知张力，已在 repo_verification.go 记录）。disabled 是「不可调用且可留痕」的唯一落点。
+func (s *ContributionService) Revoke(ctx context.Context, credentialID int64, actor RevokeActor) error {
+	cred, err := s.store.LookupCredential(ctx, credentialID)
+	if err != nil {
+		return fmt.Errorf("upstream: 撤销前读凭据失败：%w", err)
+	}
+	if !actor.IsAdmin && actor.AccountID != cred.OwnerAccountID {
+		return ErrContributionForbidden
+	}
+
+	// 撤销的三步都与「立即生效 + 不可再用」有关，缺一不可：
+	//   1. 上游行 enabled=false —— 唯一能把凭据移出候选池的开关；
+	//   2. 覆盖密文为随机墓碑 —— 密钥材料不可恢复（等价于销毁，且不需要 store 的删行接口）；
+	//   3. credential.status=disabled —— 留痕：为什么这条不可用了（行不删，归因链要它）。
+	up, found, err := s.findContributeUpstream(ctx, cred.Provider, cred.ExternalID)
+	if err != nil {
+		return err
+	}
+	if found {
+		if err := s.store.UpdateUpstream(ctx, up.ID, up.Name, up.BaseURL, false); err != nil {
+			return fmt.Errorf("upstream: 撤销（停用上游行）失败：%w", err)
+		}
+		// 随机墓碑：写入后原密文被替换，明文不再可解（GCM 认证会失败 → 调用方拿到 ErrSecretDecrypt，
+		// 与「密文坏了」同一处置：告警 + 重新提交）。
+		tomb := make([]byte, 32)
+		if _, err := rand.Read(tomb); err != nil {
+			return fmt.Errorf("upstream: 撤销（生成墓碑）失败：%w", err)
+		}
+		if _, err := s.store.PutSecret(ctx, up.ID, []byte("revoked:"+hex.EncodeToString(tomb))); err != nil {
+			return fmt.Errorf("upstream: 撤销（销毁密钥材料）失败：%w", err)
+		}
+	}
+	if err := s.store.SetCredentialStatus(ctx, credentialID, store.CredDisabled); err != nil {
+		return fmt.Errorf("upstream: 撤销（写状态）失败：%w", err)
+	}
+	s.clearFailures(credentialID)
+	return nil
+}
+
+// findContributeUpstream 按「确定性名字」反查贡献上游行。
+// 找不到不是错误：历史数据/改名后的行可能对不上，此时仍执行状态撤销并保留痕迹。
+func (s *ContributionService) findContributeUpstream(ctx context.Context, provider, externalID string) (store.Upstream, bool, error) {
+	want := contributeUpstreamName(provider, externalID)
+	ups, err := s.store.ListUpstreams(ctx)
+	if err != nil {
+		return store.Upstream{}, false, fmt.Errorf("upstream: 撤销前查上游行失败：%w", err)
+	}
+	for _, u := range ups {
+		if u.Name == want {
+			return u, true, nil
+		}
+	}
+	return store.Upstream{}, false, nil
+}
+
+// —— 连续失败自动禁用 ——
+
+// RecordFailure 记一次调用失败；连续达到阈值时把凭据移出候选（disabled）。
+//
+// 返回值 (禁用了没有, 当前连续失败数, 错误)。
+//
+// 为什么计数器在内存而不是库：这是**运行时熔断状态**（01-catalog 7 节的口径），
+// 不是账本——它每成功一次就清零，持久化只会带来「重启后还在冷却」的假状态。
+// 重启丢失的代价是「最多再放 5 次失败进来」，而持久化带来的代价是状态机泄漏。
+func (s *ContributionService) RecordFailure(ctx context.Context, credentialID int64, reason string) (bool, int, error) {
+	s.mu.Lock()
+	s.fails[credentialID]++
+	n := s.fails[credentialID]
+	threshold := s.opt.FailThreshold
+	s.lastAt[credentialID] = s.opt.Now()
+	s.mu.Unlock()
+
+	if n < threshold {
+		return false, n, nil
+	}
+	// 达到阈值：写 disabled + suspect 证据（复检失败 → 移出候选，05-verification 7.3）。
+	if err := s.store.SetCredentialStatus(ctx, credentialID, store.CredDisabled); err != nil {
+		return false, n, fmt.Errorf("upstream: 连续失败后禁用凭据失败：%w", err)
+	}
+	ev := evidenceJSON("health",
+		fmt.Sprintf("连续失败 %d 次（阈值 %d），已移出候选；最后一次原因：%s", n, threshold, redactText(reason)))
+	if err := s.store.MarkVerified(ctx, credentialID, store.VerifySuspect, ev); err != nil {
+		return true, n, fmt.Errorf("upstream: 连续失败后写证据失败：%w", err)
+	}
+	return true, n, nil
+}
+
+// RecordSuccess 清零连续失败计数（成功即复位，01-catalog 7 节的健康复位）。
+func (s *ContributionService) RecordSuccess(credentialID int64) {
+	s.clearFailures(credentialID)
+}
+
+// Failures 返回当前连续失败次数（只读，测试与展示用）。
+func (s *ContributionService) Failures(credentialID int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.fails[credentialID]
+}
+
+func (s *ContributionService) clearFailures(credentialID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.fails, credentialID)
+	delete(s.lastAt, credentialID)
+}
+
+// —— 默认探测实现 ——
+
+// HTTPProbe 是 OpenAI 兼容端点的默认探测：GET {base}/models。
+//
+// 为什么是 /models：它是唯一**无 token 成本**的鉴权+目录双信号端点
+// （05-verification 4.2 要求 L0 便宜到"全部必经"）。生成类探针要花钱，
+// 属于 L1/L2，不在本文件。
+type HTTPProbe struct {
+	// Client 允许注入（测试用 httptest；生产用带超时的默认 client）。
+	Client *http.Client
+}
+
+// modelsResponse 是 /v1/models 的最小读面（OpenAI 兼容；多余字段忽略）。
+type modelsResponse struct {
+	Data []struct {
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
+// Probe 发一次 GET /models。
+//
+// 错误只表达「这次探测没法跑」（非法 URL、构造请求失败）；
+// 网络失败与 4xx 都是**判定输入**（Reachable/AuthOK 为 false），不是 error——
+// 它们决定凭据能不能进池，而不是服务是否故障。
+func (p HTTPProbe) Probe(ctx context.Context, in ProbeInput) (ProbeOutput, error) {
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	endpoint := strings.TrimRight(in.BaseURL, "/") + "/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return ProbeOutput{}, fmt.Errorf("构造探测请求失败：%w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	// 鉴权头由探测自己带：明文 key 只在这一行出现（不进日志、不进错误）。
+	req.Header.Set("Authorization", "Bearer "+in.APIKey)
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	out := ProbeOutput{Latency: time.Since(start)}
+	if err != nil {
+		out.Reachable = false
+		out.Detail = redactText(err.Error())
+		return out, nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out.Reachable = true
+
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		out.AuthOK = true
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		out.AuthOK = false
+		out.Detail = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		return out, nil
+	case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed:
+		// 没有 /models：仍算鉴权通过吗？不能——404 可能来自未鉴权的通用兜底。
+		// 保守起见按「未验证」处理：Reachable=true + AuthOK=true 但目录为空，
+		// 判定落到 unverified（放行 + 复检），这是文档允许的冷门路径。
+		out.AuthOK = true
+		out.Detail = fmt.Sprintf("端点未提供 /models（HTTP %d）", resp.StatusCode)
+		return out, nil
+	default:
+		// 5xx/429：上游暂时不可用，不是「凭据无效」也不是「冒充」。
+		// 判成不可达会让一次上游抖动直接杀一条凭据——所以只记证据，交给调用方决定重试。
+		out.AuthOK = resp.StatusCode < 400
+		out.Detail = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		return out, nil
+	}
+
+	// 只读 1MiB：目录响应可能很大，超过就是异常（防内存放大）。
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		out.Detail = "读取目录响应失败：" + redactText(err.Error())
+		return out, nil
+	}
+	var mr modelsResponse
+	if err := json.Unmarshal(body, &mr); err != nil {
+		// 非 JSON（有些端点 /models 返回 HTML 或纯文本）：按「无目录」处理，
+		// 判定走 unverified 放行——不因为「格式不认识」拒绝一个可能是好的凭据。
+		out.Detail = "目录响应不是 OpenAI 兼容 JSON"
+		return out, nil
+	}
+	for _, m := range mr.Data {
+		if m.ID == "" {
+			continue
+		}
+		out.Models = append(out.Models, m.ID)
+		if in.ClaimedModel != "" && m.ID == in.ClaimedModel {
+			out.UsedModels = append(out.UsedModels, m.ID)
+		}
+	}
+	return out, nil
+}
+
+// —— 小工具 ——
+
+// redactText 脱敏错误文本（与 sidecar 的 redact.mjs 同组模式）。
+//
+// 为什么在 Go 侧也要做一遍：上游错误正文常回显 key 前缀（02-credentials 6.4 明确要求
+// 过滤后才进日志/证据）。这里只处理最常见的三种形态，宁可多遮。
+func redactText(s string) string {
+	out := s
+	// Authorization: Bearer xxx
+	out = bearerRE.ReplaceAllString(out, "$1 ***")
+	// ?code= / "access_token": / api_key= 形态
+	out = kvRE.ReplaceAllString(out, "$1***")
+	// 裸 sk- 前缀
+	out = skRE.ReplaceAllString(out, "$1***")
+	if len(out) > 512 {
+		out = out[:512] + "…"
+	}
+	return out
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+var (
+	bearerRE = mustRegexp(`(?i)(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}`)
+	// RE2 不支持反向引用，所以引号不配对（两端一起吃掉）。
+	kvRE = mustRegexp(`(?i)((?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?code|client[_-]?secret|secret|token|code)["']?\s*[=:]\s*)["']?[A-Za-z0-9._~+/=-]{8,}["']?`)
+	skRE = mustRegexp(`(sk-)[A-Za-z0-9_-]{8,}`)
+)
+
+// mustRegexp 是包内的 regexp.MustCompile（常量模式不该在 init 之外有机会 panic）。
+func mustRegexp(expr string) *regexp.Regexp { return regexp.MustCompile(expr) }
