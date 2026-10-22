@@ -57,9 +57,9 @@ import (
 // 领域；两处各写一份必然漂移。装配层把 store 仓储钉到这些接口上。
 //
 // 允许为 nil 的可选字段（Refresh/UpstreamTest/SettingsView/SettingsPatch/
-// IPCheck）：与 auth.Stores 同理——nil 表达"这条路径未装配"，用到时
-// 返回 503 not_ready（部署态先例，不发明新码）而不是 panic；强制实现
-// 空方法只会诱导出假成功的假体。
+// IPCheck）：与 auth.Stores 同理——nil 表达"这条路径未装配"，用到时统一
+// 返回 404 + not_found（lead 裁决：未上线的功能不确认其存在，与 §2.2 同一
+// 哲学），而不是 panic；强制实现空方法只会诱导出假成功的假体。
 type AdminDeps struct {
 	// Sess 是会话校验器（与控制台复用同一个 SessionManager——同一套
 	// 会话存储与 TTL；admin 检查发生在 Validate 之后）。
@@ -139,9 +139,10 @@ func (s *Server) mwAdmin() func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			deps := s.adminDeps()
 			if deps == nil || deps.Sess == nil {
-				// 未装配是部署态缺陷，不是权限问题——但也不能放行。
-				writeError(w, http.StatusInternalServerError, "internal_error",
-					"管理面未装配", nil)
+				// 整个管理面未接线（lead 忘了 AttachAdmin）：按 §2.2 哲学
+				// 对外统一 404（不确认管理面存在），真因只进服务器日志。
+				s.log.Error("admin surface used without AttachAdmin")
+				writeError(w, http.StatusNotFound, "not_found", "接口不存在", nil)
 				return
 			}
 			// CSRF 第二道（与 mwSession 同一判据：SameSite=Lax + 自定义头）。
@@ -314,10 +315,9 @@ var ErrAdminConflict = errors.New("admin-api: conflict")
 // 落点必须存在）。桥用 errors.Is 包装 store 的同名哨兵。
 var ErrAdminDefaultGroupProtected = errors.New("admin-api: default group protected")
 
-// ErrAdminNotWired 表达"该能力未装配"（→ 501）。
-// 为什么不干脆不注册路由：端点表是契约的一部分，注册了路由但能力未接，
-// 返回"该能力本轮未装配"比 404"接口不存在"更诚实，也不会与 §2.2 的
-// 404 探测语义混在一起。
+// ErrAdminNotWired 是桥可选用的哨兵：能力存在但未接线 → 404 not_found
+// （lead 裁决 2026-10-22：未上线一律不确认存在，与真 404 逐字节同形）。
+// 注：03-errors §4 没有 501 行，501+invalid_request 的语义错配已由裁决消灭。
 var ErrAdminNotWired = errors.New("admin-api: capability not wired")
 
 // AdminKeyCountStore 是 Key 数量读（列表只给数量——§5.2）。
@@ -959,11 +959,9 @@ func mapAdminError(w http.ResponseWriter, err error, resource string) {
 	case errors.Is(err, ErrAdminConflict):
 		writeError(w, http.StatusConflict, "conflict", "与现有资源冲突（唯一约束或状态不允许）", nil)
 	case errors.Is(err, ErrAdminNotWired):
-		// 未装配 = 部署态，与 handleReadyz 的 503 + not_ready 同一先例
-		// （errors.go 已登记该码；code-review 指出 501+invalid_request 语义
-		// 错配——invalid_request 的客户端动作是"改请求"，而改了也没用。
-		// 若 lead 裁决改用其它口径，只需改这一处与 need()）。
-		writeError(w, http.StatusServiceUnavailable, "not_ready", "该能力本轮未装配", nil)
+		// lead 裁决（2026-10-22）：未上线能力一律 404 + not_found——与 §2.2
+		// 同一哲学（不确认其存在），文案与 handleNotFound/mwAdmin 逐字节同形。
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在", nil)
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", "管理面存储操作失败", nil)
 	}
@@ -1227,14 +1225,13 @@ func adminCursorAndLimit(w http.ResponseWriter, r *http.Request) (limit, offset 
 // 请求体，测试断言的是"落库值=给定值"，不需要推进时钟。
 func adminEpochNow() int64 { return time.Now().UTC().Unix() }
 
-// need 检查某条能力是否装配，缺失统一写 501。
+// need 检查某条能力是否装配，缺失统一写 404 not_found（lead 裁决：未上线
+// 的功能不确认存在，与真 404 逐字节同形——name 只进服务器日志供排障）。
 // 为什么每个 handler 都要判：AdminDeps 的字段允许 nil（未装配≠程序错误），
 // 但用到时才炸就把 nil 解引用变成 panic——中间件挡不住这个。
 func (d *AdminDeps) need(w http.ResponseWriter, name string, ok bool) bool {
 	if !ok {
-		// 未装配能力统一 503 + not_ready（与 mapAdminError 的 ErrAdminNotWired
-		// 同一口径：部署态错误先例，不发明新码、不用 501+invalid_request）。
-		writeError(w, http.StatusServiceUnavailable, "not_ready", name+" 未装配", nil)
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在", nil)
 		return false
 	}
 	return true

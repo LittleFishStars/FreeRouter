@@ -3,7 +3,7 @@
 // 真实模型：
 //   GET    /api/admin/real-models               列表（status/hidden/source/upstream_id 筛选）
 //   GET    /api/admin/real-models/{id}          详情
-//   POST   /api/admin/real-models/refresh       触发目录刷新（能力可 nil → 501）
+//   POST   /api/admin/real-models/refresh       触发目录刷新（能力未接 → 404）
 //   PATCH  /api/admin/real-models/{id}         改显示名/分组/能力元数据/隐藏/排序
 //   POST   /api/admin/real-models/{id}/exclude  排除/恢复候选资格（body.excluded）
 //
@@ -43,21 +43,21 @@ import (
 )
 
 func (s *Server) mountAdminModels(r chi.Router, deps *AdminDeps) {
-	r.Get("/api/admin/real-models", s.handleAdminRealModelsList(deps))
-	r.Post("/api/admin/real-models/refresh", s.handleAdminRealModelsRefresh(deps))
-	r.Get("/api/admin/real-models/{id}", s.handleAdminRealModelDetail(deps))
-	r.Patch("/api/admin/real-models/{id}", s.handleAdminRealModelPatch(deps))
-	r.Post("/api/admin/real-models/{id}/exclude", s.handleAdminRealModelExclude(deps))
+	r.Get("/real-models", s.handleAdminRealModelsList(deps))
+	r.Post("/real-models/refresh", s.handleAdminRealModelsRefresh(deps))
+	r.Get("/real-models/{id}", s.handleAdminRealModelDetail(deps))
+	r.Patch("/real-models/{id}", s.handleAdminRealModelPatch(deps))
+	r.Post("/real-models/{id}/exclude", s.handleAdminRealModelExclude(deps))
 
-	r.Get("/api/admin/abstract-models", s.handleAdminAbstractModelsList(deps))
-	r.Post("/api/admin/abstract-models", s.handleAdminAbstractModelCreate(deps))
-	r.Get("/api/admin/abstract-models/{id}", s.handleAdminAbstractModelDetail(deps))
-	r.Patch("/api/admin/abstract-models/{id}", s.handleAdminAbstractModelPatch(deps))
-	r.Put("/api/admin/abstract-models/{id}/candidates", s.handleAdminAbstractCandidatesPut(deps))
-	r.Post("/api/admin/abstract-models/{id}/dry-run", s.handleAdminAbstractDryRun(deps))
-	r.Get("/api/admin/abstract-models/{id}/chain", s.handleAdminAbstractChain(deps))
-	r.Put("/api/admin/abstract-models/{id}/deprecation", s.handleAdminAbstractDeprecation(deps))
-	r.Get("/api/admin/abstract-models/{id}/references", s.handleAdminAbstractReferences(deps))
+	r.Get("/abstract-models", s.handleAdminAbstractModelsList(deps))
+	r.Post("/abstract-models", s.handleAdminAbstractModelCreate(deps))
+	r.Get("/abstract-models/{id}", s.handleAdminAbstractModelDetail(deps))
+	r.Patch("/abstract-models/{id}", s.handleAdminAbstractModelPatch(deps))
+	r.Put("/abstract-models/{id}/candidates", s.handleAdminAbstractCandidatesPut(deps))
+	r.Post("/abstract-models/{id}/dry-run", s.handleAdminAbstractDryRun(deps))
+	r.Get("/abstract-models/{id}/chain", s.handleAdminAbstractChain(deps))
+	r.Put("/abstract-models/{id}/deprecation", s.handleAdminAbstractDeprecation(deps))
+	r.Get("/abstract-models/{id}/references", s.handleAdminAbstractReferences(deps))
 }
 
 // realModelIDParam / abstractModelIDParam：idcode 前缀校验（lead 裁决①，
@@ -157,8 +157,8 @@ func (s *Server) handleAdminRealModelDetail(deps *AdminDeps) http.HandlerFunc {
 // handleAdminRealModelsRefresh POST /api/admin/real-models/refresh。
 //
 // 触发 upstream 域的刷新（sidecar models.list → upsert）；结果原样回显
-// 桥给的统计（新增/消失/变更计数）。未接刷新器 → 501（不是 404——
-// 路由存在、能力未装配，见 ErrAdminNotWired 注释）。
+// 桥给的统计（新增/消失/变更计数）。未接刷新器 → 404 + not_found
+// （lead 裁决：未上线能力不确认存在，与真 404 同形）。
 func (s *Server) handleAdminRealModelsRefresh(deps *AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if deps == nil || !deps.need(w, "目录刷新器", deps.Refresh != nil) {
@@ -579,7 +579,7 @@ func (s *Server) handleAdminAbstractCandidatesPut(deps *AdminDeps) http.HandlerF
 
 // handleAdminAbstractDryRun POST /abstract-models/{id}/dry-run。
 //
-// 最小可用版（任务书允许 501 或最小实现）：不重放历史流量（那需要
+// 最小可用版：不重放历史流量（那需要
 // requests 表的读能力，本轮 AdminModelStore 不含），而是对**当前声明
 // 候选集**做静态干跑——每条候选按 available_instances 判断有没有凭据
 // 支撑、按替代链是否可达 active 判断路由终局。这恰好覆盖 §8.3 想防的
@@ -717,7 +717,11 @@ func adminWalkChain(ctx context.Context, store AdminModelStore, from string) ([]
 			}
 			return chain, len(chain) - 1, cur, false, err
 		}
-		if m.ReplacementName == nil || *m.ReplacementName == "" || m.Status != "deprecated" {
+		// 跟边**不看 status**（防御性口径）：replacement 边在 active 节点上
+		// 是"绕库写"的坏配置——运行时 resolveChain 不消费它，但保存校验与
+		// 预览必须看得见它，否则环检测兜底形同虚设（§8.4 环检测留着的理由
+		// 就是"配置路径可能被绕过"）。判据本身仍是同一个"重访即环"。
+		if m.ReplacementName == nil || *m.ReplacementName == "" {
 			return chain, len(chain) - 1, cur, false, nil
 		}
 		next := *m.ReplacementName
@@ -920,17 +924,24 @@ func (s *Server) handleAdminAbstractDeprecation(deps *AdminDeps) http.HandlerFun
 			adminFail(w, "replacement_model_id", fmt.Errorf("替代目标能力不及原模型，不合格项：%s", strings.Join(failing, ", ")))
 			return
 		}
-		// 校验 3：环检测——从目标继续沿**已有**链走，若回访 cur 即新边
-		// cur→target 将成环（visited 口径同 adminWalkChain/resolveChain）。
-		_, _, _, cycle, werr := adminWalkChain(ctx, deps.Models, target.Name)
+		// 校验 3：环检测——新边 cur→target 成环 ⟺ 从 target 沿既有边能走回
+		// cur（"重访即环"判据与 adminWalkChain/resolveChain 同一份实现）。
+		// 走不动的环在结构上已被校验 1 挡住（目标必须 active），这里兜的是
+		// 绕库写出来的边（active 节点上也可能存在 replacement 指向）。
+		names, _, _, _, werr := adminWalkChain(ctx, deps.Models, target.Name)
 		if werr != nil {
 			mapAdminError(w, werr, "替代链")
 			return
 		}
-		if cycle {
-			loopPath, _, _, _, _ := adminWalkChain(ctx, deps.Models, cur.Name)
-			// cur.Name 的链此时含 cur→target→…→cur；回显闭环。
-			adminFail(w, "replacement_model_id", fmt.Errorf("保存该弃用配置将成环：%s（链上必须全部 active 终点，§8.4 环检测拒绝）", strings.Join(loopPath, " → ")))
+		reaches := false
+		for _, n := range names {
+			if n == cur.Name {
+				reaches = true
+				break
+			}
+		}
+		if reaches {
+			adminFail(w, "replacement_model_id", fmt.Errorf("保存该弃用配置将成环：%s → %s（§8.4 环检测拒绝，回显环路径）", cur.Name, strings.Join(names, " → ")))
 			return
 		}
 		if in.DeprecatedAt == nil {

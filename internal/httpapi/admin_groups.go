@@ -30,16 +30,16 @@ import (
 )
 
 func (s *Server) mountAdminGroups(r chi.Router, deps *AdminDeps) {
-	r.Get("/api/admin/groups", s.handleAdminGroupsList(deps))
-	r.Post("/api/admin/groups", s.handleAdminGroupsCreate(deps))
-	r.Get("/api/admin/groups/{id}", s.handleAdminGroupDetail(deps))
-	r.Patch("/api/admin/groups/{id}", s.handleAdminGroupPatch(deps))
-	r.Delete("/api/admin/groups/{id}", s.handleAdminGroupDelete(deps))
-	r.Post("/api/admin/groups/{id}/duplicate", s.handleAdminGroupDuplicate(deps))
-	r.Put("/api/admin/groups/{id}/models", s.handleAdminGroupModelsPut(deps))
-	r.Put("/api/admin/groups/{id}/policies", s.handleAdminGroupPoliciesPut(deps))
-	r.Post("/api/admin/groups/{id}/members", s.handleAdminGroupMembersAdd(deps))
-	r.Delete("/api/admin/groups/{id}/members/{accountID}", s.handleAdminGroupMemberRemove(deps))
+	r.Get("/groups", s.handleAdminGroupsList(deps))
+	r.Post("/groups", s.handleAdminGroupsCreate(deps))
+	r.Get("/groups/{id}", s.handleAdminGroupDetail(deps))
+	r.Patch("/groups/{id}", s.handleAdminGroupPatch(deps))
+	r.Delete("/groups/{id}", s.handleAdminGroupDelete(deps))
+	r.Post("/groups/{id}/duplicate", s.handleAdminGroupDuplicate(deps))
+	r.Put("/groups/{id}/models", s.handleAdminGroupModelsPut(deps))
+	r.Put("/groups/{id}/policies", s.handleAdminGroupPoliciesPut(deps))
+	r.Post("/groups/{id}/members", s.handleAdminGroupMembersAdd(deps))
+	r.Delete("/groups/{id}/members/{accountID}", s.handleAdminGroupMemberRemove(deps))
 }
 
 // groupIDParam 解组路径参数：idcode 前缀校验（lead 裁决①——拿 acc_1 打

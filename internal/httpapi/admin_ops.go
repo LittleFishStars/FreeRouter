@@ -5,7 +5,7 @@
 //   POST   /api/admin/upstreams              新建（kind/base_url 组合校验 §9 表）
 //   PATCH  /api/admin/upstreams/{id}         改名称、base_url、启用（kind 出现即 400）
 //   POST   /api/admin/upstreams/{id}/kind    变更调用形态（§9 独立端点，界面 🔒）
-//   POST   /api/admin/upstreams/{id}/test    连通性测试（能力 nil → 503 not_ready）
+//   POST   /api/admin/upstreams/{id}/test    连通性测试（能力 nil → 404 not_found）
 // 凭据：
 //   GET    /api/admin/credentials            列表（owner/provider/verify_status/status）
 //   GET    /api/admin/credentials/{id}       详情（**无明文**——DTO 无该字段）
@@ -57,41 +57,41 @@ const relayBaseURLPrefix = "sidecar://"
 
 func (s *Server) mountAdminOps(r chi.Router, deps *AdminDeps) {
 	// 上游
-	r.Get("/api/admin/upstreams", s.handleAdminUpstreamsList(deps))
-	r.Post("/api/admin/upstreams", s.handleAdminUpstreamsCreate(deps))
-	r.Get("/api/admin/upstreams/{id}", s.handleAdminUpstreamDetail(deps))
-	r.Patch("/api/admin/upstreams/{id}", s.handleAdminUpstreamPatch(deps))
-	r.Post("/api/admin/upstreams/{id}/kind", s.handleAdminUpstreamKind(deps))
-	r.Post("/api/admin/upstreams/{id}/test", s.handleAdminUpstreamTest(deps))
+	r.Get("/upstreams", s.handleAdminUpstreamsList(deps))
+	r.Post("/upstreams", s.handleAdminUpstreamsCreate(deps))
+	r.Get("/upstreams/{id}", s.handleAdminUpstreamDetail(deps))
+	r.Patch("/upstreams/{id}", s.handleAdminUpstreamPatch(deps))
+	r.Post("/upstreams/{id}/kind", s.handleAdminUpstreamKind(deps))
+	r.Post("/upstreams/{id}/test", s.handleAdminUpstreamTest(deps))
 
 	// 凭据
-	r.Get("/api/admin/credentials", s.handleAdminCredentialsList(deps))
-	r.Get("/api/admin/credentials/{id}", s.handleAdminCredentialDetail(deps))
-	r.Post("/api/admin/credentials/{id}/suspend", s.handleAdminCredentialSuspend(deps))
-	r.Post("/api/admin/credentials/{id}/ban", s.handleAdminCredentialBan(deps))
-	r.Post("/api/admin/credentials/{id}/notify", s.handleAdminCredentialNotify(deps))
+	r.Get("/credentials", s.handleAdminCredentialsList(deps))
+	r.Get("/credentials/{id}", s.handleAdminCredentialDetail(deps))
+	r.Post("/credentials/{id}/suspend", s.handleAdminCredentialSuspend(deps))
+	r.Post("/credentials/{id}/ban", s.handleAdminCredentialBan(deps))
+	r.Post("/credentials/{id}/notify", s.handleAdminCredentialNotify(deps))
 
 	// 鉴定
-	r.Get("/api/admin/verifications", s.handleAdminVerificationsList(deps))
-	r.Get("/api/admin/verifications/{id}", s.handleAdminVerificationDetail(deps))
-	r.Post("/api/admin/verifications/{id}/override", s.handleAdminVerificationOverride(deps))
+	r.Get("/verifications", s.handleAdminVerificationsList(deps))
+	r.Get("/verifications/{id}", s.handleAdminVerificationDetail(deps))
+	r.Post("/verifications/{id}/override", s.handleAdminVerificationOverride(deps))
 
 	// 审计：静态 /export 先于 /{id}（chi 字面量优先，注册顺序兜可读性）
-	r.Get("/api/admin/audit", s.handleAdminAuditList(deps))
-	r.Get("/api/admin/audit/export", s.handleAdminAuditExport(deps))
-	r.Get("/api/admin/audit/{id}", s.handleAdminAuditDetail(deps))
+	r.Get("/audit", s.handleAdminAuditList(deps))
+	r.Get("/audit/export", s.handleAdminAuditExport(deps))
+	r.Get("/audit/{id}", s.handleAdminAuditDetail(deps))
 
 	// 设置
-	r.Get("/api/admin/settings", s.handleAdminSettingsGet(deps))
-	r.Patch("/api/admin/settings", s.handleAdminSettingsPatch(deps))
-	r.Post("/api/admin/settings/ip-check", s.handleAdminSettingsIPCheck(deps))
+	r.Get("/settings", s.handleAdminSettingsGet(deps))
+	r.Patch("/settings", s.handleAdminSettingsPatch(deps))
+	r.Post("/settings/ip-check", s.handleAdminSettingsIPCheck(deps))
 
 	// 收件箱：/count 同理先于 /{id}
-	r.Get("/api/admin/inbox", s.handleAdminInboxList(deps))
-	r.Get("/api/admin/inbox/count", s.handleAdminInboxCount(deps))
-	r.Post("/api/admin/inbox/read", s.handleAdminInboxReadBatch(deps))
-	r.Get("/api/admin/inbox/{id}", s.handleAdminInboxDetail(deps))
-	r.Patch("/api/admin/inbox/{id}", s.handleAdminInboxPatch(deps))
+	r.Get("/inbox", s.handleAdminInboxList(deps))
+	r.Get("/inbox/count", s.handleAdminInboxCount(deps))
+	r.Post("/inbox/read", s.handleAdminInboxReadBatch(deps))
+	r.Get("/inbox/{id}", s.handleAdminInboxDetail(deps))
+	r.Patch("/inbox/{id}", s.handleAdminInboxPatch(deps))
 }
 
 // idParamValid 通用路径 id 校验：前缀对、可解码。

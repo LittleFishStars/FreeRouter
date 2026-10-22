@@ -31,20 +31,22 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 )
 
 // mountAdminAccounts 注册账户面路由。
 func (s *Server) mountAdminAccounts(r chi.Router, deps *AdminDeps) {
-	r.Get("/api/admin/accounts", s.handleAdminAccountsList(deps))
-	r.Post("/api/admin/accounts", s.handleAdminAccountsCreate(deps))
+	r.Get("/accounts", s.handleAdminAccountsList(deps))
+	r.Post("/accounts", s.handleAdminAccountsCreate(deps))
 	// 静态路径先注册：chi 的字面量段优先级高于 {id}，"pending" 不会被
 	// /accounts/{id} 吞掉（注册顺序再兜一层可读性）。
-	r.Get("/api/admin/accounts/pending", s.handleAdminAccountsPending(deps))
-	r.Post("/api/admin/accounts/pending/{id}/approve", s.handleAdminAccountApprove(deps))
-	r.Get("/api/admin/accounts/{id}", s.handleAdminAccountDetail(deps))
-	r.Patch("/api/admin/accounts/{id}", s.handleAdminAccountPatch(deps))
-	r.Post("/api/admin/accounts/{id}/password", s.handleAdminAccountPassword(deps))
-	r.Post("/api/admin/accounts/{id}/sessions/revoke", s.handleAdminAccountRevokeSessions(deps))
+	r.Get("/accounts/pending", s.handleAdminAccountsPending(deps))
+	r.Post("/accounts/pending/{id}/approve", s.handleAdminAccountApprove(deps))
+	r.Get("/accounts/{id}", s.handleAdminAccountDetail(deps))
+	r.Patch("/accounts/{id}", s.handleAdminAccountPatch(deps))
+	r.Post("/accounts/{id}/password", s.handleAdminAccountPassword(deps))
+	r.Post("/accounts/{id}/sessions/revoke", s.handleAdminAccountRevokeSessions(deps))
 }
 
 // handleAdminAccountsList GET /api/admin/accounts?class=&status=&group_id=。
@@ -128,6 +130,16 @@ func adminFilterStatusValid(st string) bool {
 	return false
 }
 
+// accountIDParam 解 /accounts/{id} 路径参数：idcode 前缀校验（lead 裁决①）。
+func accountIDParam(w http.ResponseWriter, r *http.Request) (string, bool) {
+	raw := chi.URLParam(r, "id")
+	if _, err := idcode.Decode(idcode.Account, raw); err != nil {
+		adminWriteParamErr(w, "id", "账户 id 形状非法（期望 acc_<数字>）")
+		return "", false
+	}
+	return raw, true
+}
+
 // handleAdminAccountDetail GET /api/admin/accounts/{id}：详情只给行字段
 // 与两个计数，结构上没有能携带 Key/凭据列表的字段（§5.2）。
 func (s *Server) handleAdminAccountDetail(deps *AdminDeps) http.HandlerFunc {
@@ -135,7 +147,10 @@ func (s *Server) handleAdminAccountDetail(deps *AdminDeps) http.HandlerFunc {
 		if deps == nil || !deps.need(w, "账户存储", deps.Accounts != nil) {
 			return
 		}
-		id := chi.URLParam(r, "id")
+		id, ok := accountIDParam(w, r)
+		if !ok {
+			return
+		}
 		row, err := deps.Accounts.GetAccount(r.Context(), id)
 		if err != nil {
 			mapAdminError(w, err, "账户")
@@ -282,9 +297,8 @@ func (s *Server) handleAdminAccountPatch(deps *AdminDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		id := chi.URLParam(r, "id")
-		if id == "" {
-			adminWriteParamErr(w, "id", "缺少账户 id")
+		id, ok := accountIDParam(w, r)
+		if !ok {
 			return
 		}
 		var in AdminAccountUpdate
@@ -354,7 +368,7 @@ func (s *Server) handleAdminAccountPassword(deps *AdminDeps) http.HandlerFunc {
 			return
 		}
 		// 同给或同不给都是歧义：显式二选一，别猜管理员想要哪个。
-		if (body.Password == "") == body.Generate {
+		if (body.Password != "") == body.Generate {
 			adminWriteParamErr(w, "password", "password 与 generate 必须恰好给一个")
 			return
 		}
@@ -405,7 +419,10 @@ func (s *Server) handleAdminAccountRevokeSessions(deps *AdminDeps) http.HandlerF
 		if !ok {
 			return
 		}
-		id := chi.URLParam(r, "id")
+		id, ok := accountIDParam(w, r)
+		if !ok {
+			return
+		}
 		audit := adminBaseAudit(p, r, "session.revoke", "account:"+id, "ok")
 		n, auditID, err := deps.Accounts.RevokeSessions(r.Context(), id, audit)
 		if err != nil {
@@ -459,7 +476,10 @@ func (s *Server) handleAdminAccountApprove(deps *AdminDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		id := chi.URLParam(r, "id")
+		id, ok := accountIDParam(w, r)
+		if !ok {
+			return
+		}
 		var body struct {
 			Groups *[]string   `json:"groups,omitempty"`
 			Quota  *AdminQuota `json:"quota,omitempty"`
