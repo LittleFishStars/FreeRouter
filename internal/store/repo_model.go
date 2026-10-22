@@ -73,6 +73,21 @@ type RealModel struct {
 	Source                 string
 	LastSeenAt             *int64
 	MissingSince           *int64
+	// —— 目录侧鉴定三列（task-24，0004 迁移）。字段名是 sidecar
+	// VerificationWriter 接口的消费契约，不得改名。
+	//
+	// 与凭据侧（upstream_credentials.verify_*）回答不同的问题：那边是
+	// L1（这把 key 是不是它声称的模型，挂贡献流程）；这边是目录条目与
+	// 指纹表的比对结果。挂 real_models 而不是凭据行，否则一条凭据服务
+	// N 个模型时互相覆盖，前一个模型的 suspect 证据被冲掉（数据丢失）。
+	VerifyStatus VerifyStatus // NOT NULL DEFAULT 'unverified'（四态与凭据行同形，共用类型）
+	// VerifyDetail 是判定 evidence 原文（纯文本，不强制 JSON）。
+	VerifyDetail *string
+	// VerifySource 是指纹库版本标识（如 builtin_v1）。
+	// **NULL = 从未鉴定（连参考指纹都没有）；'unverified' = 跑过判定但无指纹**
+	// （已进复检队列）。两者运维动作不同：前者无可重判，后者指纹库升级后
+	// 要重跑。混用会让复检队列白跑或漏跑。
+	VerifySource *string
 }
 
 // Candidate 是抽象模型的一个候选。
@@ -334,20 +349,23 @@ func (r *ModelRepo) ListCandidates(ctx context.Context, abstractModelID int64) (
 const realModelColumns = `id, upstream_id, upstream_model_id, display_name, group_name, channel,
                           context_window, modalities, efforts, status, hidden,
                           excluded_from_candidates, sort_order, source,
-                          last_seen_at, missing_since`
+                          last_seen_at, missing_since, verify_status, verify_detail, verify_source`
 
 func scanRealModel(sc interface{ Scan(...any) error }) (*RealModel, error) {
 	var m RealModel
 	var status string
+	var verifyStatus string
 	var hidden, excluded int
 	if err := sc.Scan(&m.ID, &m.UpstreamID, &m.UpstreamModelID, &m.DisplayName, &m.GroupName, &m.Channel,
 		&m.ContextWindow, &m.Modalities, &m.Efforts, &status, &hidden,
-		&excluded, &m.SortOrder, &m.Source, &m.LastSeenAt, &m.MissingSince); err != nil {
+		&excluded, &m.SortOrder, &m.Source, &m.LastSeenAt, &m.MissingSince,
+		&verifyStatus, &m.VerifyDetail, &m.VerifySource); err != nil {
 		return nil, err
 	}
 	m.Status = RealModelStatus(status)
 	m.Hidden = hidden != 0
 	m.ExcludedFromCandidates = excluded != 0
+	m.VerifyStatus = VerifyStatus(verifyStatus)
 	return &m, nil
 }
 
