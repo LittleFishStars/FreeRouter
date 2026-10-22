@@ -1,0 +1,46 @@
+# 这是 deploy/docker/Dockerfile 的**专属** ignore 文件（BuildKit 特性：
+# <Dockerfile 路径>.dockerignore 优先于仓库根 .dockerignore）。
+# 为什么不放仓库根：根 .gitignore/.dockerignore 不在 ops 的写域（铁律），
+# 而 BuildKit 支持把 ignore 文件随 Dockerfile 放在一起——正好落在 deploy/ 下。
+#
+# 目标：构建上下文（仓库根）里只有 web/ cmd/ internal/ sidecar/ go.mod go.sum 会被发上去。
+# 实测仓库根还有 3 GB 的 .cache/、350 MB 的 .worktrees/、43 MB 检出本身——
+# 不排除的话每次 build 都要把它们整包发进 daemon，慢且无谓地放大攻击面
+# （构建上下文=镜像构建期的输入，多余输入没有收益只有风险）。
+
+# 任何构建都不需要的：
+.git
+.gitignore
+.cache
+.worktrees
+tmp
+bin
+dist
+node_modules
+*.log
+.env
+.env.*
+
+# 构建产物自身（镜像内由阶段构建产生，不注入旧的）：
+web/internal
+internal/webui/dist
+web/dist
+web/.pnpm-store
+
+# 数据与本地状态（库里可能含密文，绝不能进构建上下文）：
+data
+*.db
+*.db-wal
+*.db-shm
+
+# 运维文档与部署文件自身（不参与产物，纯为可读性；主密钥永远不出现——
+# 仓库里本就不该有，这里是双保险的显式排除）：
+deploy
+docs
+scripts
+testdata
+CHANGELOG.md
+LICENSE
+Makefile
+README.md
+freerouter
