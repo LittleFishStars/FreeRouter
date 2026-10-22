@@ -61,8 +61,14 @@ FreeRouter 的上游供给有两个来源：平台自己配的官方 key（`owne
 | 贡献方式 | 状态 | 说明 |
 |---|---|---|
 | API Key（OpenAI 兼容端点） | ✅ 已实现 | 提交即探测（L0 + HTTP 可达性/鉴权/目录），失败也保留记录 |
-| 供应商 OAuth · CodeArts | ✅ 已实现 | PKCE + DPoP + 华为 STS 换取，实现移植自 `deepseek-harness-codearts`（见 `sidecar/providers/README.md`） |
-| 供应商 OAuth · 其余 provider | ⏳ 未移植 | `oauth.*` 方法对未移植 provider 返回 `E_NOT_IMPLEMENTED`；发起端点返回 404，界面上不出现入口 |
+| 供应商 OAuth（11 家，开箱可用） | ✅ 已实现 | codearts / accio / minimax / cline / qoder / raccoon / lobsterai / trae / autoclaw / officeace / zcode |
+| 供应商 OAuth（2 家，需配一个第三方凭据） | ✅ 已实现 | gemini（`CMDC_PAK_GOOGLE_CLIENT_SECRET`）、loomy（讯飞 AccessKey 对）。未配置时清单里列出但 `available=false` 并写明要设哪个变量 |
+| 供应商 OAuth（3 家，走 API Key 型） | ➖ 不适用 | modelscope（上游无登录入出接口）、astudio（登录流要自己起本机 HTTP 服务，与 sidecar 不监听端口冲突）、opencode（登录在 adapter 层） |
+
+实现方式：按上游 `deepseek-harness-codearts` 的 tsc 产物做**依赖闭包整体提取**
+（83 个文件，不手抄），由 `sidecar/providers/registry.mjs` 把 15 家的差异收敛成
+三种交互形态（`redirect` / `device_code` / `sms·qr`）。详见
+[../../sidecar/providers/README.md](../../sidecar/providers/README.md)。
 
 **为什么 OAuth 只在 sidecar 里做**：PLAN §5.5 —— 这些供应商的授权与续期细节只有
 providers-hub 的实现覆盖过；用 Go 重写是另一个量级的工程，且必然在每次上游改版后
@@ -75,6 +81,12 @@ providers-hub 的实现覆盖过；用 Go 重写是另一个量级的工程，�
 ### 3.1 为什么 OAuth 型不需要恢复码
 
 OAuth 型贡献在提交时**已经拿到了一个可验证的外部身份**（`provider` + `external_id`）。用户下次用同一个人账号登录时，我们能在库里按 `UNIQUE(provider, external_id)` 找到他贡献过的那条凭据，从而定位到那个匿名账户——**身份是现成的，不需要另发凭证**。
+
+> **当前实现的偏差（诚实记录）**：上面这条依赖「用上游账号登录本站」这条通道
+> （§4 的 `LoginByUpstreamOAuth`），而它**尚未实现**。所以在它落地之前，匿名的
+> OAuth 贡献**也会拿到一次性恢复码**——否则按现在的代码路径，这个账户就真的失联了。
+> 等上游账号登录通道就位后，可以去掉 OAuth 路径上的恢复码发放（保留字段与兑换
+> 入口不删，避免历史账户失去找回手段）。
 
 ### 3.2 为什么纯 Key 型必须给恢复码
 
