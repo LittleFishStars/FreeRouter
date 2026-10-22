@@ -22,3 +22,10 @@ body { margin: 0; font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans
 .login-card { display: flex; flex-direction: column; gap: .4rem; border: 1px solid #ddd; border-radius: 8px; padding: 1.5rem; }
 .login-card input { padding: .4rem; }
 .pagefoot { border-top: 1px solid #ddd; padding: .5rem 1rem; color: #888; font-size: .8rem; }
+
+/* M9 表单与徽章 */
+.form-error { color: #b3261e; margin: .2rem 0; }
+.badge { display: inline-block; background: #eef3fa; border: 1px solid #c5d5ea; border-radius: 10px; padding: 0 .5rem; font-size: .78rem; margin-right: .3rem; }
+.account-info { line-height: 1.9; }
+.inline-form { display: inline; }
+.login-card label { display: flex; flex-direction: column; gap: .2rem; }

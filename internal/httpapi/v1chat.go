@@ -52,14 +52,6 @@ func (s *Server) HandleV1Chat(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Stream = isStreamRequest(r, body)
 
-	// 真实模型名 404：模型解析前先判「请求里的模型名是否是 real_models
-	// 域的 id」——M5 契约（03-milestones：不泄露池结构）。M6 抽象模型
-	// 路由上线后此检查移除。
-	if s.v1Candidates() != nil && isRealModelName(r.Context(), req.Model) {
-		s.writeV1Error(w, "model_not_found", "模型不存在", requestID)
-		return
-	}
-
 	if err := req.Validate(); err != nil {
 		payload := classifyErr(err)
 		s.writeV1Error(w, payload.code, payload.message, requestID)

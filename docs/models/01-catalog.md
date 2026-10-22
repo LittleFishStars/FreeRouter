@@ -49,6 +49,7 @@ real_models {
   upstream_model_id,     -- 上游原样 id，如 "deepseek-official/deepseek-flash"
   display_name,          -- 管理端显示名，默认取上游 name 字段
   group_name,            -- 目录分组（不是权限组，见第 4 节）
+  channel,               -- 模型级渠道（供应商身份）；NULL = 不可知，权威落点见 2.3
   context_window,        -- 上下文窗口
   modalities,            -- 模态，来自上游 input[]
   efforts,               -- 思考档位，来自上游 reasoning.efforts[]
@@ -63,7 +64,7 @@ real_models {
 }
 ```
 
-各字段的落点与总纲第 10 章一致；本篇只补充三个 PLAN 未展开的语义：`group_name`、`hidden`、`excluded_from_candidates`（第 4、5 节）。
+各字段的落点与总纲第 10 章一致；本篇只补充四个 PLAN 未展开的语义：`group_name`、`hidden`、`excluded_from_candidates`、`channel`（第 4、5 节与 2.3）。
 
 ### 2.3 上游目录字段的映射
 
@@ -72,11 +73,25 @@ real_models {
 | 上游字段 | 落到 | 说明 |
 |---|---|---|
 | `id` | `upstream_model_id` | 原样存，不改写 |
-| `owned_by` | 派生 `渠道` | 限定名里的渠道段取自这里 |
+| `owned_by` | `channel`（权威） | 渠道名的权威来源；缺字段时退化为从 `id` 的首斜杠段派生，见下方 |
 | `name` | `display_name` 初值 | 如 `DeepSeek-V4.1-Flash`；可被人工覆盖 |
 | `input[]` | `modalities` | `text` / `image` |
 | `reasoning.efforts[]` | `efforts` | 含 `canonical` 的档位映射（如 `off` ↔ `none`） |
 | *（上游不提供）* | `context_window` | 上游目录样本里没有这个字段，必须另找来源 |
+
+#### 渠道的唯一权威来源
+
+`channel` 是模型级渠道（供应商身份），**落库在 `real_models.channel`**，读取时以此列为权威；它是 `NULL` 时才回落到上游行的 `upstreams.name`（那是管理员填的 provider 名，如 `dsh-provider`，一个 provider 里常常能拉多厂商的模型，当权威会让渠道分组与渠道约束全部分错）。
+
+写入按优先级取三条来源（`store.UpsertRealModel`）：
+
+1. 调用方显式传入（刷新器用 `dshprovider.ModelOwnedBy()` 的结果）；
+2. 从 `id` 的首斜杠段派生（`deepseek-official/deepseek-flash` → `deepseek-official`）；
+3. 都拿不到 → `NULL`（不可知），**不**回落上游级值。
+
+`source='override'`（人工覆盖）的行，刷新时 `channel` 不被改写；`source='auto'` 的行只在入参非 `NULL` 时覆盖，刷新器暂时拿不到渠道时保留旧值（一次上游抖动不该擦掉权威值）。
+
+> **实现事实**：实测 dsh-providers-hub 的 `models.list` **不返回 `owned_by`**（见 `internal/upstream/dshprovider`，commit 851e0b3），所以渠道实际主要来自第 2 条派生路径。
 
 `context_window` 的来源是一处**已知空缺**：
 
@@ -126,12 +141,12 @@ real_models {
 | 变动 | `kind` | `severity` | 为什么算“要人管” |
 |---|---|---|---|
 | 上游新增模型 | `model_added` | `info` | 不一定要处理，但它是“可以开新候选了”的唯一信号 |
-| 上游模型消失 | `model_missing` | `warn` | 直接影响候选可用性（第 6 节巡检的口径） |
-| 上游属性变化（`context_window` / `modalities` / `efforts` / 名称） | `model_changed` | `warn` | 属性变**小**会把候选能力声明拉低（[02-abstract.md](02-abstract.md) 第 5 节取 min/交集），可能导致原本能跑的请求变成被拒 |
-| 渠道整体失联 / 连续失败超阈 | `upstream_down` | `error` | 这是故障，不是变动 |
-| 凭据失效 / 鉴定失败 | `credential_issue` | `error` | 贡献侧故障，影响供给量 |
+| 上游模型消失 | `model_missing` | `warning` | 直接影响候选可用性（第 6 节巡检的口径） |
+| 上游属性变化（`context_window` / `modalities` / `efforts` / 名称） | `model_changed` | `warning` | 属性变**小**会把候选能力声明拉低（[02-abstract.md](02-abstract.md) 第 5 节取 min/交集），可能导致原本能跑的请求变成被拒 |
+| 渠道整体失联 / 连续失败超阈 | `channel_failing` | `error` | 这是故障，不是变动 |
+| 凭据失效 / 鉴定失败 | `credential_invalid` | `error` | 贡献侧故障，影响供给量 |
 | 新账户待审核 | `account_pending` | `info` | `tenant` 类需审核（总纲 2.7） |
-| 组共享池告警 / 全站熔断 | `pool_alert` | `error` | 直接对应服务不可用 |
+| 组共享池耗尽 / 全站预算熔断 | `pool_exhausted` / `global_budget` | `error` | 直接对应服务不可用 |
 
 **为什么区分 `severity`**：待处理事项页的全部价值在于“有限注意力该先放哪”。一律 `info` 会让真正的故障埋在几十条“新模型上线”里；一律 `error` 则会让告警疲劳。
 
@@ -139,7 +154,9 @@ real_models {
 
 **为什么不做实时推送**：轮询 + 登录时拉未读计数已经能满足这个需求，而推送引入连接管理、重发、离线补发一整套机制——它的复杂度远高于它省下的那几十秒。
 
-**幂等要求**：同一个 `(kind, related_id)` 在未读期间**不重复写**，否则每轮刷新都会新增一条，一天就是上百条。读到同一变动第二次时只更新 `detail_json` 里的最新值，不新建行。
+**幂等要求**：同一个 `(kind, related_id)` 在未读期间**不重复写**，否则每轮刷新都会新增一条，一天就是上百条。读到同一变动第二次时只更新 `detail_json` 里的最新值，不新建行（`severity` 只升不降——后来的 `info` 不得覆盖已有的 `error`）。落库由 `ux_admin_inbox_uniq_open` 部分唯一索引 + `ON CONFLICT ... WHERE read_at IS NULL DO UPDATE` 实现（0003 迁移）。
+
+> **词表权威**：本表的 `kind` / `severity` 取值与 [../security/06-audit.md](../security/06-audit.md) 3.1 一致（`severity` 为 `info` / `warning` / `error`）。`admin_inbox` 表建在 0001 里，而**已发布的迁移文件不可修改**（`migrate.go` 校验每个迁移的 sha256，改注释会让已有库拒绝启动），因此 0001 里那行 `info|warning|critical` 的注释是**过时措辞**——真正的执法点是 `store` 层的枚举校验，见 06-audit 3.1 的"执法点"段。
 
 **数据模型**（总纲对齐规范 G）：
 
@@ -178,7 +195,7 @@ admin_inbox(
 
 落地方式：
 
-- 目录刷新时，凡是渠道为 `aggregate` 的条目，`excluded_from_candidates = true`；
+- 目录刷新时，凡是 `upstream_model_id` 首斜杠段为 `aggregate` 的条目（即上游自己的 `aggregate/*`），`excluded_from_candidates = true`——判据取模型 id 前缀而不是 `channel` 列：前缀是上游自己写的，渠道列是派生值，两者在畸形 id 上可能不一致，而 `aggregate` 的语义由上游命名决定；
 - 抽象模型保存候选时（见 [02-abstract.md](02-abstract.md) 第 3 节），若引用的真实模型 `excluded_from_candidates = true` → **保存被拒**，报错必须指出"聚合模型不能作候选"；
 - `aggregate/*` 仍然在目录里可见（22 个），管理员能看、能比较，只是选不了。
 

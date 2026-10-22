@@ -214,11 +214,11 @@ providers-hub 同版本发布。在 Go 里重写等于把一个 14 个 adapter �
 
 | 事件 | `kind` | `severity` | 为什么算需要管理员处理 |
 |---|---|---|---|
-| 目录新增模型 | `upstream_model_added` | `info` | 新模型默认不进任何抽象模型，不告知就等于白发现 |
-| 目录消失模型 | `upstream_model_missing` | `warn` | PLAN 3.6：连续 N 天未出现才标 `missing`，但一旦标上，依赖它的候选就永久失效 |
-| 模型属性变化（上下文 / 模态 / 思考档位） | `upstream_model_changed` | `warn` | 能力守恒是 PLAN 3.4 的下界来源，变了就可能让已有抽象模型的声明失真 |
-| `relay` 连续失败 | `upstream_failing` | `error` | 它一整类都挂了，而管理员看不到 sidecar 内部 |
-| `selfhosted` 端点连不上 / 鉴权失败 | `upstream_failing` | `error` | 管理员自己填的地址，没人会替他发现 |
+| 目录新增模型 | `model_added` | `info` | 新模型默认不进任何抽象模型，不告知就等于白发现 |
+| 目录消失模型 | `model_missing` | `warning` | PLAN 3.6：连续 N 天未出现才标 `missing`，但一旦标上，依赖它的候选就永久失效 |
+| 模型属性变化（上下文 / 模态 / 思考档位） | `model_changed` | `warning` | 能力守恒是 PLAN 3.4 的下界来源，变了就可能让已有抽象模型的声明失真 |
+| `relay` 连续失败 | `channel_failing` | `error` | 它一整类都挂了，而管理员看不到 sidecar 内部 |
+| `selfhosted` 端点连不上 / 鉴权失败 | `channel_failing` | `error` | 管理员自己填的地址，没人会替他发现 |
 
 写入时机是**检测到就立刻写**，不等请求路径上报。理由：`relay` 可能整类零流量
 （管理员还没把任何抽象模型指过去），这时永远等不到“请求失败”，但“目录拉不下来”
@@ -413,8 +413,11 @@ healthy ──(连接类失败窗口超阈值)──▶ cooling ──(冷却到
 15m 保证“坏上游”最多每小时被打 4 次探测，成本可忽略。
 
 **连续失败与恢复都必须写 `admin_inbox`**（ALIGN-SPEC G）：进入 `cooling` 时写一条
-`upstream_failing`（`severity = warn`），从 `cooling` 恢复 `healthy` 时把对应的未读项
-自动标为已读（`read_at` 与 `read_by` 置为 NULL 表示系统已恢复，而非人工确认）。
+`channel_failing`（`severity = error`），从 `cooling` 恢复 `healthy` 时把对应的未读项
+自动标为已读。（**待裁决**：本段原文同时说"标为已读"与"read_at 置为 NULL"，二者互斥——
+`read_at` 非空才是已读。恢复自动消解需要第三种状态位（例如 `read_by = 0` 表示系统消解、
+或新增 `resolved_at` 列），不能靠把 `read_at` 写回 NULL 表达，否则"未读"与"已解决"
+在数据上不可区分。此处只统一词表，语义待用户定，见本轮交付说明。）
 **为什么恢复也要写**：只写坏不写好，管理员打开待处理页看到的全是历史噪声，
 无法判断“现在到底还有几个坏的”。
 

@@ -50,11 +50,19 @@ type AbstractModel struct {
 
 // RealModel 是上游池子里的真实模型（只有管理员可见）。
 type RealModel struct {
-	ID                     int64
-	UpstreamID             int64
-	UpstreamModelID        string
-	DisplayName            string
-	GroupName              *string
+	ID              int64
+	UpstreamID      int64
+	UpstreamModelID string
+	DisplayName     string
+	GroupName       *string
+	// Channel 是模型级渠道（01-catalog.md §2.3：owned_by 派生的那 20 个前缀，
+	// 如 deepseek-official / aggregate / cline）。可为 NULL——vendor/selfhosted
+	// 的目录条目不保证带 `渠道/模型` 形态，派生不出来就是 NULL。
+	//
+	// 为什么不用 GroupName 顶替：group_name 是管理员自由填的「目录分组」
+	// （01-catalog.md:167 人工展示字段，改过即冻结、刷新不覆盖）。渠道是上游
+	// 事实，管理员改个标签不该让"按渠道分组"静默失真。
+	Channel                *string
 	ContextWindow          *int64
 	Modalities             *string // JSON 数组原文
 	Efforts                *string // JSON 数组原文
@@ -323,7 +331,7 @@ func (r *ModelRepo) ListCandidates(ctx context.Context, abstractModelID int64) (
 	return out, nil
 }
 
-const realModelColumns = `id, upstream_id, upstream_model_id, display_name, group_name,
+const realModelColumns = `id, upstream_id, upstream_model_id, display_name, group_name, channel,
                           context_window, modalities, efforts, status, hidden,
                           excluded_from_candidates, sort_order, source,
                           last_seen_at, missing_since`
@@ -332,7 +340,7 @@ func scanRealModel(sc interface{ Scan(...any) error }) (*RealModel, error) {
 	var m RealModel
 	var status string
 	var hidden, excluded int
-	if err := sc.Scan(&m.ID, &m.UpstreamID, &m.UpstreamModelID, &m.DisplayName, &m.GroupName,
+	if err := sc.Scan(&m.ID, &m.UpstreamID, &m.UpstreamModelID, &m.DisplayName, &m.GroupName, &m.Channel,
 		&m.ContextWindow, &m.Modalities, &m.Efforts, &status, &hidden,
 		&excluded, &m.SortOrder, &m.Source, &m.LastSeenAt, &m.MissingSince); err != nil {
 		return nil, err
@@ -388,22 +396,36 @@ func (r *ModelRepo) UpsertRealModel(ctx context.Context, m RealModel) (int64, er
 	//
 	// 渠道前缀只认第一个 `/` 之前的部分，且必须精确等于 aggregate——避免
 	// `aggregate-v2/xxx`、`my_aggregate/x` 这类近似名被误排除。
+	// 渠道（01-catalog.md §2.3）：上游条目不带显式渠道时，从 `渠道/模型` 形态派生。
+	// 调用方（刷新器）拿到 owned_by 后会显式传 Channel，这里只是兜底——两种来源
+	// 落同一列，routing_bridge 因此不必关心某行是从哪条路径来的。
+	// 派生不出来就留 NULL（"上游没说渠道"），不回退到上游级标识：回退会让同一列
+	// 混着"模型级渠道"与"上游名"两种语义。
+	channel := m.Channel
+	if channel == nil {
+		if ch, _, ok := strings.Cut(m.UpstreamModelID, "/"); ok && ch != "" {
+			channel = &ch
+		}
+	}
+
 	excluded := m.ExcludedFromCandidates
 	if !excluded {
 		if ch, _, ok := strings.Cut(m.UpstreamModelID, "/"); ok && ch == aggregateChannel {
 			excluded = true
 		}
 	}
-
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO real_models(upstream_id, upstream_model_id, display_name, group_name,
+		`INSERT INTO real_models(upstream_id, upstream_model_id, display_name, group_name, channel,
 		                         context_window, modalities, efforts, status, hidden,
 		                         excluded_from_candidates, sort_order, source,
 		                         last_seen_at, missing_since)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(upstream_id, upstream_model_id) DO UPDATE SET
 		     display_name   = excluded.display_name,
 		     group_name     = excluded.group_name,
+		     -- channel 是上游事实（不是人工展示字段），随刷新写回；人工解除排除
+		     -- 走 source=override，被下面的 WHERE 挡住，两件事不冲突。
+		     channel        = excluded.channel,
 		     context_window = excluded.context_window,
 		     modalities     = excluded.modalities,
 		     efforts        = excluded.efforts,
@@ -416,7 +438,7 @@ func (r *ModelRepo) UpsertRealModel(ctx context.Context, m RealModel) (int64, er
 		     last_seen_at   = excluded.last_seen_at,
 		     missing_since  = NULL
 		   WHERE real_models.source = 'auto'`,
-		m.UpstreamID, m.UpstreamModelID, m.DisplayName, m.GroupName,
+		m.UpstreamID, m.UpstreamModelID, m.DisplayName, m.GroupName, channel,
 		m.ContextWindow, m.Modalities, m.Efforts, string(status),
 		boolInt(m.Hidden), boolInt(excluded), m.SortOrder, source,
 		seenAt, m.MissingSince)

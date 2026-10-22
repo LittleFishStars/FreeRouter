@@ -41,6 +41,12 @@ const sidecarScheme = "sidecar://"
 
 // upstreamSnapshotTTL 是上游表快照的有效期。
 //
+// 为什么 1s：它管的是**凭据/上游启停的生效窗口**，不是目录刷新周期
+// （目录新鲜度由 upstream.model_refresh_interval 管，10 分钟）。控制台点
+// 「禁用」后新请求最迟 1 秒生效——远小于任何人工或自动化切换的容差；且错
+// 误方向不对称：多放行 1 秒 = 一个请求打到刚禁用的上游（上游拒绝，客户端
+// 可重试），少放行 = 该上游整段 503。
+//
 // 一次请求会为每个候选查一次 GetRealModel（各自要上游 kind/channel），
 // 不加缓存就是 N 次全表 SELECT。1 秒窗口足够覆盖单请求，又短到「刚禁用
 // 的上游」最多晚 1 秒生效——目录刷新是 10 分钟一轮，1 秒的偏差可忽略。
@@ -145,7 +151,7 @@ func (b *abstractModelBridge) GetRealModel(ctx context.Context, id int64) (*rout
 		UpstreamID:             rm.UpstreamID,
 		UpstreamModelID:        rm.UpstreamModelID,
 		UpstreamKind:           u.Kind,
-		Channel:                channelOf(u),
+		Channel:                channelOf(rm.Channel, u),
 		ContextWindow:          rm.ContextWindow,
 		Modalities:             parseJSONList(rm.Modalities),
 		Efforts:                parseJSONList(rm.Efforts),
@@ -175,13 +181,18 @@ func (b *abstractModelBridge) upstreamSnapshot(ctx context.Context) (map[int64]s
 	return snap, nil
 }
 
-// channelOf 取上游的渠道名（01-catalog.md §2.1：限定名的渠道段）。
+// channelOf 取渠道名，两级来源（01-catalog.md §2.3）。
 //
-// relay 的 base_url 是 sidecar://<provider>，provider 名就是渠道名；
-// vendor/selfhosted 的渠道名就是上游行自己的 name（管理员命名）。
-func channelOf(u store.Upstream) string {
-	if rest, ok := strings.CutPrefix(u.BaseURL, sidecarScheme); ok && rest != "" {
-		return rest
+// 权威来源是模型级 real_models.channel（0002 迁移起落库）：由刷新器
+// 写 owned_by 的权威值，拿不到时从限定名「渠道/模型」首段派生。
+// 渠道不可知时该列为 NULL（不是空串）。
+//
+// 上游行级渠道（upstreams.name / sidecar://provider）只作兜底——
+// 它是管理员的运营命名，可能与上游实际归属不一致（一个 provider
+// 里既能拉 deepseek 也能拉 openai 时就是这种情况），所以是次级来源。
+func channelOf(ch *string, u store.Upstream) string {
+	if ch != nil && *ch != "" {
+		return *ch
 	}
 	return u.Name
 }
@@ -317,6 +328,22 @@ func (c *routingCandidates) pathsOf(ctx context.Context, resolved *routing.Resol
 			RealModel:  rm,
 			Constraint: byModel[rm.ID],
 			Caps:       capsOf(rm),
+			// 四个排序键当前都没有数据来源（探测/额度面尚未接线）：
+			// 这里把「无数据」显式写出来，而不是留零值——因为零值语义是
+			// 「有数据且为 0」，会被策略键当成真实测量值参与排序。
+			//
+			// 具体地 TTFTMs 必须显式 -1：routing 的 speed 键判 `TTFTMs < 0`
+			// 为无样本（垫底），零值 0 会被读成「TTFT 0 毫秒的极速模型」
+			// 排到最前（code-review 巡检发现）。默认链 [expiry-first,
+			// balance] 不含 speed 所以当前安全，但管理员一旦把 speed 配
+			// 进链就会命中这个坑。
+			ExpiresAt:       0,     // 到期：0 = 无到期概念（expiresAt 键判 <=0 无键）
+			Balance:         0,     // 余额：值无意义
+			BalanceKnown:    false, // 余额未知 → 无键，垫底
+			TTFTMs:          -1,    // 无样本 → 垫底（不是 0，见上）
+			TotalMs:         -1,    // 同上
+			PriceMultiplier: 1,     // 无价格数据时取基线 1（03-strategy §2.5.2 的「不被惩罚中间态」）
+			CooledDown:      false, // 冷却由 Cooldowns.Apply 统一标注
 		})
 	}
 	return paths
