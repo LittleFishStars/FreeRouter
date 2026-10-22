@@ -84,10 +84,46 @@ func (r *LogRepo) Append(ctx context.Context, e AuditEntry) (int64, error) {
 	return id, nil
 }
 
-// Appendf 是 Append 的薄封装：调用方只有"记一笔"的诉求时不必构造整个结构体。
-func (r *LogRepo) Appendf(ctx context.Context, accountID *int64, action, result string, detail map[string]any) (int64, error) {
-	return r.Append(ctx, AuditEntry{AccountID: accountID, Action: action, Result: result, Detail: detail})
+// Appendf 是管理面的审计写入口（薄封装，带 acting_class）。
+//
+// 为什么 actingClass 是参数而不是 detail 里的一个键（lead 裁决 5）：acting_class
+// 是 audit_log 的**独立列**，PLAN 9.5 要求的「同一账户多重身份时必须能说清是
+// 哪一重做的」靠的就是这一列；塞进 detail JSON 就再也筛不了（JSON 值不可索引）。
+//
+// 为什么不另开一个 AppendAdmin：它与本方法只差一个参数，三份近似方法是漂移
+// 温床（修一处忘两处）。actingClass 传空串 = 身份未定（登录失败这类发生在
+// 确定身份之前的事件），与 AccountID 可空同一语义。
+//
+// action 值域：docs/security/06-audit.md §3 的事件分类表是**闭集合**，新增事件
+// 必须先归入九类之一，否则告警规则覆盖不到它。命名约定 `<类别>.<动作>`
+// （如 key.revoke、group.pool_change），与下面 ActionCategory* 同源。
+// 本层**不校验** action 字符串：校验等于在存储层维护一份全量枚举表，而事件表还
+// 会增长，漂移时反而把合法新事件拒掉——归类约束靠 review 不靠代码。这与
+// kind/severity 不同：那两个是**排序/筛选键**，错一个值就静默失效，必须硬校验。
+func (r *LogRepo) Appendf(ctx context.Context, accountID *int64, actingClass, action, result string, detail map[string]any) (int64, error) {
+	var cls *string
+	if c := strings.TrimSpace(actingClass); c != "" {
+		cls = &c
+	}
+	return r.Append(ctx, AuditEntry{
+		AccountID: accountID, ActingClass: cls, Action: action, Result: result, Detail: detail,
+	})
 }
+
+// ActionCategory* 是审计 action 的九类前缀（06-audit §3 分组标题 → 命名空间）。
+// 导出是为了让管理面拼 action 时引用常量而不是手写字符串：类别名一旦漂移会在
+// 编译期暴露；告警规则按前缀筛（AuditFilter.Action 已支持前缀匹配）。
+const (
+	ActionCategoryAuth     = "auth"     // 认证与会话
+	ActionCategoryAccount  = "account"  // 账户与权限类
+	ActionCategoryGroup    = "group"    // 组（含共享池变更）
+	ActionCategoryKey      = "key"      // API Key
+	ActionCategoryCred     = "cred"     // 凭据（贡献）
+	ActionCategoryAbstract = "abstract" // 抽象模型与弃用
+	ActionCategoryReal     = "real"     // 真实模型与鉴定
+	ActionCategoryQuota    = "quota"    // 请求与额度（安全信号类）
+	ActionCategorySystem   = "system"   // 管理与系统
+)
 
 // AuditFilter 是控制台审计列表的查询条件。零值 = 全量倒序。
 type AuditFilter struct {
