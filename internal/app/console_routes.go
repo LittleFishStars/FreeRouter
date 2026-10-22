@@ -385,6 +385,10 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	// 生效、未登录可用」）。这里只生成一个 URL，不产生任何凭据；归属账户在回调时
 	// 才确定（带 Cookie 用当前账户，否则自动建 contributor）。
 	r.Post("/api/contributions/oauth/{provider}", a.server.HandleContributeOAuthStart(oauthDeps))
+	// session 形态（设备码/二维码/短信）的两条辅助路由：查状态与取消。
+	// 同样不挂会话——发起时可能未登录，归属在落库那一刻才定。
+	r.Post("/api/contributions/oauth/{provider}/poll", a.server.HandleOAuthPoll(oauthDeps))
+	r.Post("/api/contributions/oauth/{provider}/cancel", a.server.HandleOAuthCancel(oauthDeps))
 	r.Get("/oauth/callback", a.server.HandleOAuthCallback(oauthDeps))
 
 	r.Get("/api/contributions/providers", a.server.HandleContributeProviders(contribDeps))

@@ -1,34 +1,81 @@
 # sidecar/providers —— 供应商 OAuth 组件（提取自上游仓库）
 
 PLAN §5.5 定案：17 家供应商的 OAuth 与静默续期「不可能重写，必须复用
-providers-hub 的实现」。此目录就是那条定案的落点——按上游仓库的提取计划，
-把**登录/续期所需的最小实现**移植成 sidecar 可直接 import 的 ESM 模块。
+providers-hub 的实现」。此目录就是那条定案的落点。
 
-| 子目录 | 来源 | 内容 |
+## 来源与许可
+
+| 来源 | 内容 |
+|---|---|
+| [deepseek-harness-codearts](https://gitee.com/iJetLi/deepseek-harness-codearts)（Apache-2.0） | 全部 `*-oauth.js` / `*-auth.js` / `*-product.js` 及其依赖闭包 |
+
+文件是**上游 `tsc` 的编译产物**（`lib/*.js`）按「OAuth 入口的依赖闭包」整体拷过来
+的，不是手抄重写。这样做的理由：这些文件里全是逐个接口逆向出来的常量与请求形状
+（签名算法、PKCE 变体、设备码节奏、脱敏规则），手抄必然引入静默偏差，而偏差的
+表现是「登录成功但推理 401」这类难查故障。
+
+`codearts/` 是唯一手写移植的一家（`oauth.mjs` / `sign.mjs` / `codearts.mjs`）：
+上游用 `jose` 做 ES256，本机部署环境里不保证有这个包，所以改用 `node:crypto`
+实现同一套 DPoP JWS（`dsaEncoding: 'ieee-p1363'`，已用自身公钥验签通过）。
+
+## 目录
+
+```
+providers/
+├── registry.mjs        15 家的统一注册表：把差异收敛成 3 种交互形态
+├── sessions.mjs        授权会话簿记（后台轮询 + TTL）
+├── _shims/             依赖替身（cordis / dsh-credentials / 内存 ctx）
+├── codearts/           手写移植（PKCE + DPoP + STS 换取 + SDK-HMAC 签名）
+├── accio/ cline/ gemini/ lobsterai/ loomy/ minimax/ qoder/ raccoon/ trae/
+│                     上游闭包（每家一个目录，文件名保持上游原样）
+├── autoclaw/ astudio/ modelscope/ officeace/ opencode/ zcode/
+└── ...
+```
+
+## 三种交互形态
+
+注册表把这些差异收敛成三种，**主进程只认这三种**：
+
+| flow | 交互 | 上游例子 |
 |---|---|---|
-| `codearts/` | [deepseek-harness-codearts](https://gitee.com/iJetLi/deepseek-harness-codearts)（Apache-2.0） | `oauth.mjs` PKCE/DPoP/STS 换取；`sign.mjs` 华为 SDK-HMAC-SHA256；`codearts.mjs` sidecar 方法面 |
+| `browser` (redirect) | 给 `authorize_url`，用户浏览器登录，code 回传到 `/oauth/callback` | codearts / gemini / accio / lobsterai / trae |
+| `browser` (session) | 给 URL，但**登录结果由上游自己的端点轮询**（不是我们的回调） | officeace（云侧 code）/ zcode（bigmodel） |
+| `device_code` | 给 `user_code` + `verification_uri`，后台轮询 | minimax / cline / qoder |
+| `sms` / `qr` | 发短信或出二维码，用户回填/扫码后后台轮询 | loomy / autoclaw / raccoon |
 
-## 为什么是「提取」而不是「依赖」
+**关键设计**：上游的 `pollXxx` 是**阻塞 while 循环**（等到用户授权完成才返回）。
+直接挂在 sidecar 的一问一答通道上会卡死（`Call` 超时只有 10 秒）。所以轮询一律
+进 `sessions.mjs` 的后台任务，`oauth.poll` 只查状态、毫秒级返回。
 
-上游包的 `exports` 只导出 `.` 与 `./client`，深路径 import 会随版本漂——而 sidecar
-需要的正是深路径里的 auth 模块。按其提取计划把这几百行拿过来，得到的是一份
-**版本可控、无外部依赖**（不引 jose / jose 被 node:crypto 等价实现替代）的实现。
+## 当前接入状态
+
+已接入 13 家：codearts、gemini、accio、minimax、cline、qoder、loomy、raccoon、
+lobsterai、trae、autoclaw、officeace、zcode。
+
+走「API Key 型贡献」的 3 家（上游没有可脱离 IDE 的 OAuth 登录面）：
+
+| provider | 原因 |
+|---|---|
+| modelscope | `auth` 类只有 `status`/`refresh`/`readCredential`，凭据来自粘贴的 API Key |
+| astudio | 登录流自己起本机 HTTP 服务收回调，与 sidecar「不监听任何端口」红线冲突 |
+| opencode | `auth` 导出的是账号池指纹工具（匿名槽位/代际），登录在 adapter 层 |
 
 ## 移植纪律
 
-1. **常量逐字对齐**：`CLIENT_ID`、`PORTAL_AUTHORIZE_BASE`、`plugin-name/version`、
-   `code_challenge_method=SHA-256`（非 RFC 缩写 S256）都是逆向得到的真实插件值，
-   改动会让 portal 回退到不支持的旧 ticket 流程。
-2. **错误语义照抄**：`invalid_grant` / `ExpiredRefreshToken` 才算 refresh 终态；
-   `InvalidDPoPHeader` 是请求级拒绝，不能把账号标死（上游缺陷史，见其
-   `docs/agent-notes/providers-codearts.md`）。
-3. **不加状态**：模块全为纯函数；跨请求的状态（PKCE verifier / DPoP 私钥）
-   由主进程的内存表保管，sidecar 不落盘、不读 DSH 状态（三条红线不变）。
+1. **不改协议细节**：常量、URL 参数、签名算法、轮询节奏全部保持上游原样。
+   这些是逆向得到的事实，改动会静默失效。
+2. **不加状态**：模块本身无状态；跨请求状态（PKCE verifier / DPoP 私钥 / 设备码）
+   由主进程的内存表或 sidecar 的会话表保管。
+3. **sidecar 不落盘、不监听端口**（红线①③）：需要本机 HTTP 服务的流程
+   （astudio/trae 的原始实现）改为「自己拼 URL + 用主进程的回调路由」。
+4. **错误语义照抄**：`invalid_grant` / `ExpiredRefreshToken` 才算 refresh 终态；
+   `InvalidDPoPHeader` 是请求级拒绝，不能把账号标死。
 
-## 新增一家供应商的步骤
+## 新增一家 provider 的步骤
 
 1. 在上游仓库找到 `<provider>-oauth.ts` / `<provider>-auth.ts`；
-2. 按同样的「去类型 + 去状态」改写进 `providers/<provider>/`；
-3. 在 `sidecar/index.mjs` 的 `oauth.*` 方法里加分支（未移植分支报 `E_NOT_IMPLEMENTED`）；
-4. 主进程 `internal/app/oauth_codearts.go` 的 `Providers()` 增一行，并把 provider
-   特化的落库参数（上游 baseURL / kind）补进 `persist()`。
+2. 用上游 `tsc` 编译，按依赖闭包把 `lib/*.js` 拷进 `providers/<provider>/`；
+3. 把 `@deepseek-ai/cordis` / `@deepseek-ai/dsh-credentials` 改指向 `_shims/`；
+4. 在 `registry.mjs` 加一个 `register('<id>', {...})` 条目（选三种形态之一）；
+5. 需要 product 对象的，把 `<provider>-product.js` 一并拷来；
+6. 在 `sidecar/index.mjs` 无需改动（`oauth.*` 已按注册表分派）。

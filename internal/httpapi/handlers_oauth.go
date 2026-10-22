@@ -29,31 +29,81 @@ import (
 )
 
 // ProviderOAuth 是供应商 OAuth 的窄接口（装配层实现）。
+//
+// 三种交互形态由 sidecar 的注册表收敛成两个动作对：
+//   - redirect：Authorize 返回 authorize_url + state，供应商把 code 回传到
+//     /oauth/callback，主进程再 Callback 换取凭据；
+//   - session：Authorize 返回 session_id，sidecar 在**后台**轮询（设备码/二维码/
+//     短信——上游的 pollXxx 是阻塞循环，不能占用 RPC 通道），主进程用 Poll 查状态，
+//     拿到凭据后落库。
 type ProviderOAuth interface {
 	// Providers 列出可用供应商与不可用原因（可用性由 sidecar 与移植状态决定）。
 	Providers(ctx context.Context) []ProviderChoice
-	// Authorize 生成授权 URL。port 是供应商回调会打到的本机端口。
-	Authorize(ctx context.Context, provider string, port int) (authorizeURL string, err error)
-	// Callback 用回调参数换取凭据并落库。sessionToken 为空 = 未登录贡献。
+	// Authorize 发起授权。phone 仅 sms 形态需要。
+	Authorize(ctx context.Context, in AuthorizeInput) (*AuthorizeResult, error)
+	// Callback 用回调参数换取凭据并落库（redirect 形态）。
 	Callback(ctx context.Context, provider, code, state, sessionToken string) (*OAuthOutcome, error)
+	// Poll 查一次后台会话状态（session 形态）；完成时落库并返回结果。
+	Poll(ctx context.Context, in PollInput) (*PollResult, error)
+}
+
+// AuthorizeInput 是发起授权的入参。
+type AuthorizeInput struct {
+	Provider string
+	Port     int
+	Phone    string
+	// SessionToken 是浏览器可能带的会话 Cookie（贡献归属用；可为空）。
+	SessionToken string
+}
+
+// AuthorizeResult 是发起授权的结果。
+type AuthorizeResult struct {
+	// Mode 是 'redirect' 或 'session'。
+	Mode           string `json:"mode"`
+	AuthorizeURL   string `json:"authorize_url,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+	UserCode       string `json:"user_code,omitempty"`
+	VerificationURI string `json:"verification_uri,omitempty"`
+	QRImageURL     string `json:"qr_image_url,omitempty"`
+	Flow           string `json:"flow,omitempty"`
+	Interval       int    `json:"interval,omitempty"`
+	Message        string `json:"message,omitempty"`
+}
+
+// PollInput 是查询后台授权会话的入参。
+type PollInput struct {
+	Provider     string
+	SessionID    string
+	Code         string // sms 形态：用户回填的验证码
+	SessionToken string
+}
+
+// PollResult 是会话状态。
+type PollResult struct {
+	Status    string `json:"status"` // pending | ok | failed | expired
+	Message   string `json:"message,omitempty"`
+	Outcome   *OAuthOutcome `json:"outcome,omitempty"`
+	Interval  int    `json:"interval,omitempty"`
 }
 
 // ProviderChoice 是一个供应商的可用性。
 type ProviderChoice struct {
 	ID                string
 	Name              string
+	Flow              string
+	Needs             []string
 	Available         bool
 	UnavailableReason string
 }
 
 // OAuthOutcome 是一次 OAuth 贡献的结果。
 type OAuthOutcome struct {
-	Accepted       bool
-	Status         string
-	VerifyStatus   string
-	AccountCreated bool
-	RecoveryCode   string
-	Message        string
+	Accepted       bool   `json:"accepted"`
+	Status         string `json:"status"`
+	VerifyStatus   string `json:"verify_status"`
+	AccountCreated bool   `json:"account_created"`
+	RecoveryCode   string `json:"recovery_code,omitempty"`
+	Message        string `json:"message"`
 }
 
 // OAuthDeps 是 OAuth 端点的依赖。
@@ -95,14 +145,17 @@ func (s *Server) HandleContributeOAuthStart(deps *OAuthDeps) http.HandlerFunc {
 				choice.UnavailableReason, nil)
 			return
 		}
-		authorizeURL, err := deps.OAuth.Authorize(r.Context(), provider, deps.Port)
+		res, err := deps.OAuth.Authorize(r.Context(), AuthorizeInput{
+			Provider:     provider,
+			Port:         deps.Port,
+			Phone:        strings.TrimSpace(r.URL.Query().Get("phone")),
+			SessionToken: cookieValue(r),
+		})
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, "upstream_unavailable", err.Error(), nil)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"data": map[string]any{"authorize_url": authorizeURL},
-		})
+		writeJSON(w, http.StatusOK, map[string]any{"data": res})
 	}
 }
 
@@ -193,4 +246,79 @@ func withHashQuery(target string, params url.Values) string {
 		sep = "&"
 	}
 	return sep + params.Encode()
+}
+
+// cookieValue 取会话 Cookie 明文（没有则空串）。
+func cookieValue(r *http.Request) string {
+	if c, err := r.Cookie(SessionCookieName); err == nil {
+		return c.Value
+	}
+	return ""
+}
+
+// HandleOAuthPoll POST /api/contributions/oauth/{provider}/poll。
+//
+// session 形态（设备码/二维码/短信）的进度查询：前端每隔 interval 秒调一次。
+// 授权完成时 sidecar 交出凭据，这里立刻落库并把结果回给前端（含未登录贡献时的
+// 一次性恢复码）。
+func (s *Server) HandleOAuthPoll(deps *OAuthDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || deps.OAuth == nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "供应商授权未装配", nil)
+			return
+		}
+		provider := chi.URLParam(r, "provider")
+		var body struct {
+			SessionID string `json:"session_id"`
+			Code      string `json:"code"`
+		}
+		if !decodeJSONBody(w, r, &body) {
+			return
+		}
+		if body.SessionID == "" {
+			writeErrorParam(w, http.StatusBadRequest, "invalid_request", "session_id", "缺少 session_id")
+			return
+		}
+		res, err := deps.OAuth.Poll(r.Context(), PollInput{
+			Provider:     provider,
+			SessionID:    body.SessionID,
+			Code:         strings.TrimSpace(body.Code),
+			SessionToken: cookieValue(r),
+		})
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "upstream_unavailable", err.Error(), nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": res})
+	}
+}
+
+// HandleOAuthCancel POST /api/contributions/oauth/{provider}/cancel。
+//
+// 用户关掉授权页时释放 sidecar 的后台轮询（幂等）。
+func (s *Server) HandleOAuthCancel(deps *OAuthDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || deps.OAuth == nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "供应商授权未装配", nil)
+			return
+		}
+		var body struct {
+			SessionID string `json:"session_id"`
+		}
+		if !decodeJSONBody(w, r, &body) {
+			return
+		}
+		c, ok := deps.OAuth.(interface {
+			Cancel(ctx context.Context, sessionID string) error
+		})
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "internal_error", "取消能力未装配", nil)
+			return
+		}
+		if err := c.Cancel(r.Context(), body.SessionID); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
 }

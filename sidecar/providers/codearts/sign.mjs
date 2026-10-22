@@ -56,3 +56,4 @@ export async function signRequestHuawei(ak, sk, securityToken, method, urlStr, b
   // 上实跑通过，勿按规范直觉改成剔除 host。
   headers.set('Authorization', `SDK-HMAC-SHA256 Access=${ak},SignedHeaders=${[...headers.keys()].sort().join(';')},Signature=${signature}`)
   return headers
+}

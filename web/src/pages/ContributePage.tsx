@@ -13,10 +13,13 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
+  cancelOAuthContribution,
   getContributeProviders,
+  pollOAuthContribution,
   startOAuthContribution,
   submitApiKeyContribution,
-  postContributeRecovery
+  postContributeRecovery,
+  type OAuthAuthorize
 } from '../api/endpoints'
 import { useApi } from '../hooks/useApi'
 import OneTimeSecret from '../components/OneTimeSecret'
@@ -117,7 +120,9 @@ export default function ContributePage({ def }: PageProps) {
                     <li key={p.id} className={p.available ? '' : 'provider-unavailable'}>
                       {p.available ? (
                         <Link
-                          to={`/contribute/oauth/${encodeURIComponent(p.id)}`}
+                          to={`/contribute/oauth/${encodeURIComponent(p.id)}${
+                            p.needs?.includes('phone') ? '?needs=phone' : ''
+                          }`}
                           className="provider-link"
                           title={freeConfirmed ? `授权 ${p.name}` : '请先确认无偿声明'}
                           aria-disabled={!freeConfirmed}
@@ -187,40 +192,184 @@ export default function ContributePage({ def }: PageProps) {
   )
 }
 
-// ── 供应商 OAuth 跳转 ─────────────────────────────────────────────────
+// ── 供应商 OAuth（两种形态）─────────────────────────────────────
+//
+// redirect：拿到 authorize_url 就整页跳过去，供应商回调到 /oauth/callback，
+// 302 回 /contribute/callback 展示结果。
+// session：设备码/二维码/短信。sidecar 已在后台轮询，本页按 interval 轮询
+// /poll 展示进度；短信形态多一步：用户回填验证码后一并交给 /poll。
 
 export function ContributeOAuthPage({ def }: PageProps) {
   const { provider = '' } = useParams<{ provider: string }>()
+  const [params] = useSearchParams()
   const [error, setError] = useState<unknown>(null)
   const [starting, setStarting] = useState(true)
+  const [session, setSession] = useState<OAuthAuthorize | null>(null)
+  const [smsCode, setSmsCode] = useState('')
+  const [polling, setPolling] = useState(false)
+  const [phone, setPhone] = useState('')
+  const [result, setResult] = useState<{ ok: boolean; message: string; recoveryCode?: string } | null>(null)
+  const navigate = useNavigate()
 
-  useEffect(() => {
-    let alive = true
-    startOAuthContribution(provider)
+  // 发起（短信形态由页内表单再调一次，故抽成函数）。
+  function start(phone?: string) {
+    setStarting(true)
+    setError(null)
+    startOAuthContribution(provider, phone)
       .then((r) => {
-        if (!alive) return
-        if (r.data.authorize_url) {
-          window.location.assign(r.data.authorize_url)
+        const d = r.data
+        if (d.mode === 'session' && d.session_id) {
+          setSession(d)
+          setStarting(false)
+          return
+        }
+        if (d.authorize_url) {
+          window.location.assign(d.authorize_url) // redirect：本页就此离开
           return
         }
         setError(new Error('服务端没有返回授权地址'))
         setStarting(false)
       })
       .catch((e) => {
-        if (alive) {
-          setError(e)
-          setStarting(false)
-        }
+        setError(e)
+        setStarting(false)
       })
+  }
+
+  useEffect(() => {
+    // 短信形态不自动发起（需要手机号）；其余进页即发起。
+    if (params.get('needs') === 'phone') {
+      setStarting(false)
+      return
+    }
+    start()
+    return () => {
+      // 离开页面时释放 sidecar 的后台轮询（幂等；redirect 路径无会话可取消）。
+      if (session?.session_id) void cancelOAuthContribution(provider, session.session_id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider])
+
+  // session 形态：轮询进度。
+  useEffect(() => {
+    if (!session?.session_id) return
+    let alive = true
+    const tick = async () => {
+      if (polling) return
+      setPolling(true)
+      try {
+        const r = await pollOAuthContribution(provider, {
+          session_id: session.session_id!,
+          ...(smsCode && session.flow === 'sms' ? { code: smsCode } : {})
+        })
+        if (!alive) return
+        const d = r.data
+        if (d.status === 'ok' && d.outcome) {
+          setResult({
+            ok: true,
+            message: d.outcome.message,
+            recoveryCode: d.outcome.recovery_code
+          })
+          return
+        }
+        if (d.status === 'failed' || d.status === 'expired') {
+          setResult({ ok: false, message: d.message ?? '授权未完成' })
+          return
+        }
+      } catch (e) {
+        if (alive) setError(e)
+      } finally {
+        if (alive) setPolling(false)
+      }
+    }
+    const timer = window.setInterval(tick, Math.max(2, session.interval ?? 3) * 1000)
+    void tick()
     return () => {
       alive = false
+      window.clearInterval(timer)
     }
-  }, [provider])
+  }, [session, provider, smsCode, polling])
+
+  // 完成：有恢复码走一次性展示（回跳贡献页），否则直接回贡献页带 query。
+  if (result?.ok && result.recoveryCode) {
+    return (
+      <OneTimeSecret
+        title="贡献成功：请保存恢复码"
+        secret={result.recoveryCode}
+        description="这个账户是用本次授权自动创建的，恢复码是唯一能自助回到它的凭据，只显示一次。"
+        filename="freerouter-recovery-code.txt"
+        onDone={() => navigate('/contribute')}
+      />
+    )
+  }
+  if (result) {
+    return (
+      <PageFrame def={def}>
+        <Banner tone={result.ok ? 'ok' : 'warn'} title={result.ok ? '授权完成' : '授权没有完成'}>
+          {result.message}
+        </Banner>
+        <p>
+          <Link to="/contribute">返回贡献入口</Link>
+        </p>
+      </PageFrame>
+    )
+  }
 
   return (
     <PageFrame def={def}>
-      {starting ? (
-        <LoadingBlock rows={2} label={`正在跳转 ${provider} 授权…`} />
+      {starting && !session ? (
+        <LoadingBlock rows={2} label={`正在发起 ${provider} 授权…`} />
+      ) : !session && params.get('needs') === 'phone' ? (
+        <form
+          className="form-card"
+          onSubmit={(e: FormEvent) => {
+            e.preventDefault()
+            start(phone.trim())
+          }}
+        >
+          <Field label="手机号" required hint="供应商将向该号码发送验证码。">
+            <input value={phone} onChange={(e) => setPhone(e.target.value)} required autoComplete="tel" inputMode="tel" />
+          </Field>
+          <FormError error={error} />
+          <button type="submit" className="btn-primary">发送验证码</button>
+        </form>
+      ) : session ? (
+        <Section title="完成授权" hint="本页会自动检测授权结果，完成后自动继续。">
+          {session.authorize_url && session.flow !== 'qr' && (
+            <p>
+              <a href={session.authorize_url} target="_blank" rel="noreferrer" className="btn-primary" style={{ display: 'inline-block' }}>
+                打开授权页
+              </a>
+            </p>
+          )}
+          {session.flow === 'qr' && session.qr_image_url && (
+            <p>
+              <img src={session.qr_image_url} alt="登录二维码" width={220} height={220} />
+              <span className="block-meta">用手机 App 扫码授权</span>
+            </p>
+          )}
+          {session.user_code && (
+            <p>
+              验证码：<code className="user-code">{session.user_code}</code>
+              <span className="block-meta">在授权页输入该码完成确认</span>
+            </p>
+          )}
+          {session.flow === 'sms' && (
+            <Field label="短信验证码" required hint="收到验证码后填入，本页会自动提交并继续检测。">
+              <input value={smsCode} onChange={(e) => setSmsCode(e.target.value)} autoComplete="one-time-code" inputMode="numeric" />
+            </Field>
+          )}
+          <p className="muted" aria-live="polite">{session.message ?? '等待授权…'}</p>
+          <FormError error={error} />
+          <p>
+            <Link
+              to="/contribute"
+              onClick={() => session.session_id && void cancelOAuthContribution(provider, session.session_id)}
+            >
+              放弃本次授权
+            </Link>
+          </p>
+        </Section>
       ) : (
         <>
           <ErrorState error={error} />

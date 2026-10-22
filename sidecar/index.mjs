@@ -31,7 +31,8 @@ import path from 'node:path';
 import * as hub from './hub.mjs';
 import * as dshCredentials from './credentials.mjs';
 import { redactLine } from './redact.mjs';
-import * as codearts from './providers/codearts/codearts.mjs';
+import * as registry from './providers/registry.mjs';
+import * as oauthSessions from './providers/sessions.mjs';
 
 const SIDECAR_VERSION = '0.1.0';
 
@@ -326,64 +327,119 @@ const METHODS = {
   },
 
   // —— 供应商 OAuth 贡献（docs/contributions/01-flow.md）————————————
-  // 为什么由 sidecar 承担：PLAN §5.5 定案「17 家供应商的 OAuth 与静默续期不可能重写，
-  // 必须复用 providers-hub 的实现」。codearts 的实现按提取计划移植进
-  // sidecar/providers/codearts/（PKCE + DPoP + STS 换取，无外部 npm 依赖），
-  // 其余 provider 待逐家移植；未移植的 provider 在此显式报 E_NOT_IMPLEMENTED，
-  // 而不是让界面拿一个必然失败的按钮。
-  'oauth.authorize': async ({ provider, port }) => {
-    if (!provider) throw new SidecarError('E_BAD_REQUEST', 'provider 不能为空');
-    if (provider !== 'codearts') {
-      throw new SidecarError('E_NOT_IMPLEMENTED', `${provider} 的 OAuth 授权尚未移植（当前已支持：codearts）`);
-    }
-    // 端口归主进程：它知道服务实际监听在哪。这里只校验形状。
-    // 凭据在 Go 侧密封存储，sidecar 不落盘（红线①：只读 DSH 凭据，不写）。
-    let r;
-    try {
-      r = await codearts.authorize({ port });
-    } catch (e) {
-      throw new SidecarError('E_OAUTH_AUTHORIZE_FAILED', String(e && e.message ? e.message : e), false);
-    }
+  // 为什么由 sidecar 承担：PLAN §5.5 定案「17 家供应商的 OAuth 与静默续期不可能
+  // 重写」。15 家的实现已按提取计划移植进 sidecar/providers/，由 registry.mjs
+  // 收敛成三种交互形态（browser / device_code / sms|qr）。
+  //
+  // 关键：轮询一律放**后台会话**（providers/sessions.mjs）——上游的 pollXxx 是
+  // 阻塞循环，直接调用会卡住本通道（Call 超时只有 10 秒）。
+  'oauth.list': async () => {
+    // 主进程据此渲染入口与「不可用原因」。
     return {
-      authorize_url: r.authorize_url,
-      ticket_id: r.ticket_id,
-      // state 内含 PKCE verifier 与 DPoP 私钥：主进程必须加密保管，回调时原样送回。
-      state: JSON.stringify(r.state),
-      expires_in: 600,
-    };
-  },
-
-  'oauth.exchange': async ({ provider, code, state }) => {
-    if (provider !== 'codearts') {
-      throw new SidecarError('E_NOT_IMPLEMENTED', `${provider} 的 OAuth 换取尚未移植（当前已支持：codearts）`);
-    }
-    if (!code) throw new SidecarError('E_BAD_REQUEST', 'code 不能为空');
-    if (!state) throw new SidecarError('E_BAD_REQUEST', 'state 不能为空');
-    try {
-      return await codearts.exchange({ code, state });
-    } catch (e) {
-      // 换取失败几乎都是上游给的「可执行原因」（授权码过期/已被用过/回调地址不匹配）。
-      // 用专用码 + 原文上抛，界面才有话说；E_INTERNAL 会把这类原因藏起来。
-      throw new SidecarError('E_OAUTH_EXCHANGE_FAILED', String(e && e.message ? e.message : e), false);
+      providers: registry.available(),
+      api_key_only: registry.API_KEY_ONLY,
     }
   },
 
-  'oauth.refresh': async ({ provider, credential }) => {
-    if (provider !== 'codearts') {
-      throw new SidecarError('E_NOT_IMPLEMENTED', `${provider} 的 OAuth 续期尚未移植（当前已支持：codearts）`);
+  // 发起授权。redirect 形态返回 {authorize_url, state}；session 形态（设备码/
+  // 二维码/短信）返回 {session_id, authorize_url, user_code, ...} 并已在后台轮询。
+  'oauth.authorize': async ({ provider, port, phone }) => {
+    const entry = registry.get(provider)
+    if (!entry) {
+      throw new SidecarError('E_NOT_IMPLEMENTED',
+        `供应商 ${provider} 的 OAuth 未接入（可改用 API Key 型贡献）`)
     }
-    if (!credential) throw new SidecarError('E_BAD_REQUEST', 'credential 不能为空');
+    // 配置缺失（如未设 OAuth 客户端 secret）：报未配置而不是发一个必然失败的请求。
+    if (entry.unavailable) {
+      throw new SidecarError('E_NOT_CONFIGURED', entry.unavailable)
+    }
     try {
-      return await codearts.refresh({ credential });
-    } catch (e) {
-      // refresh_token 终态：主进程据此把凭据标成 expired 并停止续期。
-      if (e && e.name === 'RefreshTokenExpiredError') {
-        throw new SidecarError('E_REFRESH_TOKEN_EXPIRED', String(e.message), false);
+      if (typeof entry.start === 'function') {
+        const s = await entry.start({ port, phone })
+        return { ...s, mode: 'session' }
       }
-      throw e;
+      const r = await entry.authorize({ port, phone })
+      return { ...r, mode: 'redirect' }
+    } catch (e) {
+      if (e instanceof SidecarError) throw e
+      throw new SidecarError('E_OAUTH_AUTHORIZE_FAILED',
+        String(e && e.message ? e.message : e), false)
     }
   },
 
+  // 回调换取凭据（仅 browser + redirect 形态：主进程收到 code 后调）。
+  'oauth.exchange': async ({ provider, code, state }) => {
+    const entry = registry.get(provider)
+    if (!entry) {
+      throw new SidecarError('E_NOT_IMPLEMENTED', `供应商 ${provider} 的 OAuth 未接入`)
+    }
+    if (typeof entry.exchange !== 'function') {
+      throw new SidecarError('E_BAD_REQUEST', `${provider} 不走回调换取（它是轮询型流程）`)
+    }
+    try {
+      return await entry.exchange({ code, state })
+    } catch (e) {
+      // 换取失败几乎都是上游给的「可执行原因」（授权码过期/已被用过/回调地址
+      // 不匹配）。用专用码 + 原文上抛，界面才有话说。
+      throw new SidecarError('E_OAUTH_EXCHANGE_FAILED',
+        String(e && e.message ? e.message : e), false)
+    }
+  },
+
+  // 查一次后台会话状态（非阻塞）。status: pending | ok | failed | expired | cancelled
+  'oauth.poll': async ({ provider, sessionId, code }) => {
+    if (!sessionId) throw new SidecarError('E_BAD_REQUEST', 'sessionId 不能为空')
+    const s = oauthSessions.get(sessionId)
+    if (!s) {
+      return { status: 'expired', message: '授权会话不存在或已过期，请重新发起' }
+    }
+    if (provider && s.provider !== provider) {
+      throw new SidecarError('E_BAD_REQUEST', '会话与 provider 不匹配')
+    }
+    // 短信形态：用户回填验证码后才真正开始登录。
+    if (typeof code === 'string' && code.length > 0) {
+      const entry = registry.get(s.provider)
+      if (s.status === 'pending' && typeof entry?.submit === 'function' && !s.__submitted) {
+        s.__submitted = true
+        oauthSessions.attachRunner(sessionId, async () =>
+          entry.submit({ code, state: JSON.stringify(s.material ?? {}) }))
+      }
+    }
+    if (s.status === 'failed') {
+      return { status: 'failed', message: s.error ?? '授权失败' }
+    }
+    if (s.status === 'ok' && s.credential !== null) {
+      const cred = typeof s.credential === 'string' ? s.credential : JSON.stringify(s.credential)
+      const expires = s.credential?.expires_at ?? s.credential?.expiresAt ?? ''
+      return { status: 'ok', credential: cred, expires_at: String(expires) }
+    }
+    return oauthSessions.snapshot(s)
+  },
+
+  'oauth.cancel': async ({ sessionId }) => {
+    if (sessionId) oauthSessions.cancel(sessionId) // 幂等：不存在也算取消成功
+    return {}
+  },
+
+  // 静默续期（调度器调用）。未接 refresh 的 provider 报未实现而不是静默失败。
+  'oauth.refresh': async ({ provider, credential }) => {
+    const entry = registry.get(provider)
+    if (!entry) {
+      throw new SidecarError('E_NOT_IMPLEMENTED', `供应商 ${provider} 的 OAuth 未接入`)
+    }
+    if (typeof entry.refresh !== 'function') {
+      throw new SidecarError('E_NOT_IMPLEMENTED', `${provider} 不支持静默续期（上游无 refresh 端点）`)
+    }
+    try {
+      return await entry.refresh({ credential })
+    } catch (e) {
+      if (e && e.name === 'RefreshTokenExpiredError') {
+        throw new SidecarError('E_REFRESH_TOKEN_EXPIRED', String(e.message), false)
+      }
+      throw new SidecarError('E_OAUTH_REFRESH_FAILED',
+        String(e && e.message ? e.message : e), false)
+    }
+  },
   // —— 推理方法（03-upstream.md §3.1：relay 的生成请求必须经 provider adapter）——
   // 调用形状：{ provider, model, body, stream, credentialRef?, apiKey? }
   //   * body 是候选方言已编码的请求体（Go 侧 openai.Adapter 产出）；

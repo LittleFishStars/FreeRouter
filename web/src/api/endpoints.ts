@@ -122,16 +122,71 @@ export interface ContributeProvider {
   name: string
   available: boolean
   unavailable_reason?: string
+  /** 交互形态：browser(跳转) | device_code | sms | qr | api_key */
+  flow?: string
+  /** 发起前需要的参数（如 sms 形态要 phone）。 */
+  needs?: string[]
 }
 
-/** 暂定：GET /api/contributions/providers —— 只列可用供应商，不可用折叠并给原因。 */
+/** GET /api/contributions/providers —— 可用供应商 + 不可用原因 + 交互形态。 */
 export function getContributeProviders() {
   return getList<ContributeProvider>(PATHS.contributeProviders)
 }
 
-/** 暂定：POST /api/contributions/oauth/{provider} —— 返回跳转授权地址。 */
-export function startOAuthContribution(provider: string) {
-  return postWrite<{ authorize_url: string }>(`${PATHS.contributions}/oauth/${seg(provider)}`)
+/**
+ * 发起授权的返回。两种形态由后端（sidecar 注册表）决定：
+ *   redirect —— 给 authorize_url，浏览器跳过去，供应商回调到本站；
+ *   session —— 给 session_id，sidecar 在后台轮询（设备码/二维码/短信），
+ *              前端按 interval 轮询 pollOAuthContribution。
+ */
+export interface OAuthAuthorize {
+  mode: 'redirect' | 'session'
+  authorize_url?: string
+  session_id?: string
+  /** 会话形态：device_code | sms | qr */
+  flow?: string
+  user_code?: string
+  verification_uri?: string
+  qr_image_url?: string
+  interval?: number
+  message?: string
+}
+
+export function startOAuthContribution(provider: string, phone?: string) {
+  const q = phone ? `?phone=${encodeURIComponent(phone)}` : ''
+  return postWrite<OAuthAuthorize>(`${PATHS.contributions}/oauth/${seg(provider)}${q}`)
+}
+
+export interface OAuthPollResult {
+  status: 'pending' | 'ok' | 'failed' | 'expired'
+  message?: string
+  interval?: number
+  outcome?: {
+    accepted: boolean
+    status: string
+    verify_status: string
+    account_created: boolean
+    recovery_code?: string
+    message: string
+  }
+}
+
+/** 查一次后台授权会话（session 形态）。 */
+export function pollOAuthContribution(
+  provider: string,
+  body: { session_id: string; code?: string }
+) {
+  return postWrite<OAuthPollResult>(
+    `${PATHS.contributions}/oauth/${seg(provider)}/poll`,
+    body
+  )
+}
+
+/** 放弃一次后台授权会话（幂等）。 */
+export function cancelOAuthContribution(provider: string, sessionId: string) {
+  return postWrite<{ ok: boolean }>(`${PATHS.contributions}/oauth/${seg(provider)}/cancel`, {
+    session_id: sessionId
+  })
 }
 
 export interface ApiKeyContributionInput {

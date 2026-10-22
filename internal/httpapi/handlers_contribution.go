@@ -117,6 +117,14 @@ func (s *Server) HandleContributeProviders(deps *ContributionDeps) http.HandlerF
 					"name":      c.Name,
 					"available": c.Available,
 				}
+				// flow/needs 决定前端渲染哪种交互（跳转 / 设备码 / 二维码 / 手机号）；
+				// 不发的话前端只能一律当跳转处理，session 形态就永远出不来。
+				if c.Flow != "" {
+					row["flow"] = c.Flow
+				}
+				if len(c.Needs) > 0 {
+					row["needs"] = c.Needs
+				}
 				if !c.Available && c.UnavailableReason != "" {
 					row["unavailable_reason"] = c.UnavailableReason
 				}

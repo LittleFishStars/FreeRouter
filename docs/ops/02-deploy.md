@@ -273,6 +273,28 @@ FR_SERVER_INSECURE_PUBLIC_LISTEN=warn
 # FR_SECURITY_TRUSTED_PROXIES=172.16.0.0/12,10.0.0.0/8
 ```
 
+### 3.1 供应商 OAuth 的第三方凭据
+
+绝大多数 provider 的 OAuth **不需要**任何配置——授权 URL、PKCE、签名算法都在
+sidecar 里（见 [`sidecar/providers/README.md`](../../sidecar/providers/README.md)）。
+只有两家的上游实现依赖「一个 OAuth 客户端凭据」，而那是**别人应用的**凭据，
+本仓库不内置（内置等于把配额与风控算到对方头上）：
+
+```bash
+# Gemini：自建 Google OAuth 客户端（类型选 Desktop），填这两行
+CMDC_PAK_GOOGLE_CLIENT_ID=        # 可选；不填用上游那个公开 client id
+CMDC_PAK_GOOGLE_CLIENT_SECRET=    # 必填才启用 gemini 贡献
+
+# Loomy：自备讯飞星火应用的 AccessKey 对
+LOOMY_ACCESS_KEY_ID=
+LOOMY_ACCESS_KEY_SECRET=          # 必填才启用 loomy 贡献
+```
+
+未配置时该 provider 在 `/api/contributions/providers` 里**仍然列出**，但
+`available=false` 且 `unavailable_reason` 写明要设哪个变量；直接发起授权返回
+`E_NOT_CONFIGURED`。刻意不做「先让你点，失败再说」——那会把配置缺失伪装成
+上游故障（Loomy 未配时上游回的是 `HMAC signature does not match`）。
+
 **主密钥生成**（首次）：
 
 ```bash

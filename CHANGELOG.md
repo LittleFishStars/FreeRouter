@@ -69,6 +69,25 @@
   `accounts.must_change_password`（`NOT NULL DEFAULT 0`，存量账户不受影响）。
 - 控制台静态页与 SPA 资源不再经过 Key 鉴权链（旧行为下浏览器打开 `/` 直接
   `401 invalid_api_key`，前端根本加载不了）；`/v1/*` 与 `/api/*` 不变。
+- **供应商 OAuth 全量移植（15 家）**（2026-10-23）：按上游
+  `deepseek-harness-codearts` 的 `tsc` 产物做依赖闭包整体提取（83 个文件），
+  不手抄——这些文件里全是逆向出的常量与请求形状，手抄会引入静默偏差。
+  - 已接入 13 家：codearts / gemini / accio / minimax / cline / qoder / loomy /
+    raccoon / lobsterai / trae / autoclaw / officeace / zcode；
+  - modelscope / astudio / opencode 走「API Key 型贡献」并给出具体原因
+    （无登录面 / 需要本机 HTTP 服务 / 登录在 adapter 层）；
+  - sidecar 把 15 家的差异收敛成三种交互形态（redirect / device_code / sms·qr），
+    新接口 `oauth.list|authorize|exchange|poll|cancel|refresh`；
+  - **轮询放后台**：上游 `pollXxx` 是阻塞 while 循环，直接占用 10 秒超时的 RPC
+    通道会卡死，所以改为 `sessions.mjs` 的后台会话 + `oauth.poll` 查状态；
+  - 主进程新增 `POST /api/contributions/oauth/{provider}/poll` 与 `/cancel`；
+    前端按 `flow` 渲染三种形态（跳转 / 设备码+轮询 / 二维码或短信回填）。
+  - **不内置第三方凭据**：上游产物里硬编码了 Gemini 的 OAuth client secret 与
+    Loomy 的讯飞 AccessKey，那是别人应用的凭据，内置等于把配额与风控算到
+    对方头上（也会被密钥扫描拦下）。现改为环境变量提供
+    （`CMDC_PAK_GOOGLE_CLIENT_SECRET`、`LOOMY_ACCESS_KEY_ID`/`LOOMY_ACCESS_KEY_SECRET`）；
+    未配置时该 provider 在清单里**列出但标不可用并给出配置方法**，
+    直接发起返回 `E_NOT_CONFIGURED`——而不是发一个必然失败的请求。
 - **`limits.default_tpm` 默认值 `0 → -1`，且「不限」的表示从 `0` 迁移到 `-1`**
   （2026-10-20 定案，与 `accounts` 速率列同一套哨兵：`-1` = 不限、`0` = 全拒）。
   升级后若你的旧配置写了 `default_tpm: 0`，行为会从「不限」变为「全拒」——

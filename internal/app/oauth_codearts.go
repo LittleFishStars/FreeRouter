@@ -1,19 +1,23 @@
 package app
 
-// oauth_codearts.go —— 供应商 OAuth 贡献（CodeArts）的主进程侧装配。
+// oauth_codearts.go —— 供应商 OAuth 贡献（14 家）的主进程侧编排。
 //
 // 链路（docs/contributions/01-flow.md §2 + PLAN §5.5）：
 //
-//	POST /api/contributions/oauth/{provider}          → 生成授权 URL（sidecar 出 PKCE/DPoP）
-//	GET  /oauth/callback?code=&state=                 → 收 code → sidecar 换取 → 凭据入库
+//	POST /api/contributions/oauth/{provider}        → 发起授权（redirect 或 session）
+//	POST /api/contributions/oauth/{provider}/poll   → 查后台会话（session 形态）
+//	GET  /oauth/callback?code=&state=               → 供应商回调（redirect 形态）
 //
-// 为什么换取必须在 sidecar 里做：PLAN §5.5 定案「17 家供应商的 OAuth 与静默续期
-// 不可能重写」，实现已按提取计划移植进 sidecar/providers/codearts/。主进程只做
-// 编排与落库，不持有任何供应商协议细节。
+// 为什么协议在 sidecar：PLAN §5.5 定案「17 家供应商的 OAuth 与静默续期不可能
+// 重写」。15 家的实现已按提取计划移植进 sidecar/providers/，主进程只做编排与落库。
 //
-// 状态（PKCE verifier + DPoP 私钥）必须跨请求保存且**不能落在浏览器可见处**：
-// 这里用进程内一次性表（10 分钟 TTL，take 即删）。为什么不进 Cookie：那等于把
-// 换取凭据所需的秘密交给客户端；不进库：它是短命的中间态，落库只增加泄漏面。
+// 两种形态的差别（由 sidecar 注册表决定，主进程只转发）：
+//   - redirect：sidecar 出 authorize_url + state，供应商把 code 回传到这里，
+//     再交给 sidecar 换取；state（含 PKCE verifier / DPoP 私钥）放进程内一次性表。
+//   - session：设备码/二维码/短信。上游的轮询是**阻塞循环**，会卡住 10 秒超时的
+//     RPC 通道，所以轮询在 sidecar 后台跑，主进程只做状态转发。
+//
+// 三条红线不变：sidecar 不落盘、不读 DSH 状态；凭据由主进程 AES-GCM 密封入库。
 
 import (
 	"context"
@@ -34,10 +38,10 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/upstream/dshprovider"
 )
 
-// oauthStateTTL 是一次授权会话的寿命（与 sidecar 侧 assertState 的 10 分钟同源）。
+// oauthStateTTL 是一次授权会话的寿命（与 sidecar 侧 sessions 的 10 分钟同源）。
 const oauthStateTTL = 10 * time.Minute
 
-// oauthStateStore 是待完成授权的进程内一次性表。
+// oauthStateStore 是 redirect 形态待完成授权的进程内一次性表。
 type oauthStateStore struct {
 	mu    sync.Mutex
 	items map[string]oauthState
@@ -108,23 +112,48 @@ type oauthBridge struct {
 
 var _ httpapi.ProviderOAuth = (*oauthBridge)(nil)
 
-// Providers 返回供应商清单：可用性 = sidecar 在跑 + 方法已移植。
-//
-// 未移植的 provider 不列出来（而不是列一个必然失败的入口）：界面上「一次都
-// 点不通的按钮」比「没有这个按钮」更糟。当前只移植了 codearts。
-func (b *oauthBridge) Providers(ctx context.Context) []httpapi.ProviderChoice {
-	avail, reason := b.availability()
-	return []httpapi.ProviderChoice{{
-		ID:                "codearts",
-		Name:              "华为云 CodeArts",
-		Available:         avail,
-		UnavailableReason: reason,
-	}}
+// sidecarProvider 是 oauth.list 的一行。
+type sidecarProvider struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Flow    string   `json:"flow"`
+	Needs   []string `json:"needs"`
+	APIBase string   `json:"apiBase"`
+	Kind    string   `json:"kind"`
+	// Unavailable 是「配置缺失」的原因（如未设 OAuth 客户端 secret）。
+	// 非空时该 provider 列出但不可用——界面显示原因而不是一个必败的按钮。
+	Unavailable string `json:"unavailable"`
+}
+
+// sidecarList 是 oauth.list 的应答。
+type sidecarList struct {
+	Providers  []sidecarProvider `json:"providers"`
+	APIKeyOnly []struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		Reason string `json:"reason"`
+	} `json:"api_key_only"`
+}
+
+// list 拉一次 sidecar 的 provider 清单。
+func (b *oauthBridge) list(ctx context.Context) (*sidecarList, error) {
+	if ok, _ := b.availability(); !ok {
+		return nil, fmt.Errorf("sidecar 不可用")
+	}
+	raw, err := b.sidecar.Call(ctx, "oauth.list", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	var out sidecarList
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("解析 oauth.list 应答失败: %w", err)
+	}
+	return &out, nil
 }
 
 func (b *oauthBridge) availability() (bool, string) {
 	if b.sidecar == nil {
-		return false, "sidecar 未运行：供应商 OAuth 需要 Node sidecar 出 PKCE/DPoP"
+		return false, "sidecar 未运行：供应商 OAuth 需要 Node sidecar 承载移植后的登录实现"
 	}
 	st := b.sidecar.Status()
 	if !st.Available {
@@ -133,73 +162,127 @@ func (b *oauthBridge) availability() (bool, string) {
 	return true, ""
 }
 
-// Authorize 生成授权 URL 并登记 state。
-func (b *oauthBridge) Authorize(ctx context.Context, provider string, port int) (string, error) {
-	if provider != "codearts" {
-		return "", fmt.Errorf("供应商 %q 的 OAuth 未移植", provider)
-	}
-	if ok, reason := b.availability(); !ok {
-		return "", fmt.Errorf("%s", reason)
-	}
-	raw, err := b.sidecar.Call(ctx, "oauth.authorize", map[string]any{
-		"provider": provider,
-		"port":     port,
-	})
+// Providers 列出全部供应商：sidecar 在 → 用它的清单；不在 → 全部标不可用并给原因。
+//
+// 为什么不可用时仍列出：界面上「这个入口存在但需要 sidecar」比「凭空少 14 个
+// 供应商」更可诊断——用户能自己发现是没起 sidecar。
+func (b *oauthBridge) Providers(ctx context.Context) []httpapi.ProviderChoice {
+	avail, reason := b.availability()
+	list, err := b.list(ctx)
 	if err != nil {
-		return "", err
+		if avail {
+			reason = "读取供应商清单失败：" + err.Error()
+		}
+		return fallbackProviders(avail, reason)
+	}
+	out := make([]httpapi.ProviderChoice, 0, len(list.Providers)+len(list.APIKeyOnly))
+	for _, p := range list.Providers {
+		c := httpapi.ProviderChoice{
+			ID: p.ID, Name: p.Name, Flow: p.Flow, Needs: p.Needs,
+			Available: avail,
+		}
+		switch {
+		case !avail:
+			c.UnavailableReason = reason
+		case p.Unavailable != "":
+			// sidecar 在、但这家缺配置（如没设 OAuth 客户端 secret）。
+			c.Available = false
+			c.UnavailableReason = p.Unavailable
+		}
+		out = append(out, c)
+	}
+	for _, p := range list.APIKeyOnly {
+		out = append(out, httpapi.ProviderChoice{
+			ID: p.ID, Name: p.Name, Flow: "api_key",
+			// 这两家没有可脱离 IDE 的 OAuth 登录面：标不可用并给原因，界面
+			// 就不会渲染一个「点了必失败」的按钮（API Key 型贡献入口始终在）。
+			Available:         false,
+			UnavailableReason: p.Reason + "（请改用下方 API Key 型贡献）",
+		})
+	}
+	return out
+}
+
+// fallbackNames 是 sidecar 不可达时的展示清单（与移植目录一一对应）。
+var fallbackNames = [][2]string{
+	{"codearts", "华为云 CodeArts"}, {"gemini", "Google Gemini"}, {"accio", "Accio"},
+	{"minimax", "MiniMax"}, {"cline", "Cline"}, {"qoder", "Qoder"},
+	{"loomy", "Loomy"}, {"raccoon", "Raccoon"}, {"lobsterai", "LobsterAI"},
+	{"trae", "TRAE"}, {"autoclaw", "AutoClaw"}, {"astudio", "Astudio"},
+	{"officeace", "OfficeAce（华为云）"}, {"zcode", "ZCode"},
+}
+
+func fallbackProviders(avail bool, reason string) []httpapi.ProviderChoice {
+	out := make([]httpapi.ProviderChoice, 0, len(fallbackNames))
+	for _, n := range fallbackNames {
+		out = append(out, httpapi.ProviderChoice{
+			ID: n[0], Name: n[1], Available: avail, UnavailableReason: reason,
+		})
+	}
+	return out
+}
+
+// Authorize 发起授权：redirect 形态登记 state，session 形态直接透传 session_id。
+func (b *oauthBridge) Authorize(ctx context.Context, in httpapi.AuthorizeInput) (*httpapi.AuthorizeResult, error) {
+	if ok, reason := b.availability(); !ok {
+		return nil, fmt.Errorf("%s", reason)
+	}
+	params := map[string]any{"provider": in.Provider, "port": in.Port}
+	if in.Phone != "" {
+		params["phone"] = in.Phone
+	}
+	raw, err := b.sidecar.Call(ctx, "oauth.authorize", params)
+	if err != nil {
+		return nil, err
 	}
 	var res struct {
-		AuthorizeURL string `json:"authorize_url"`
-		State        string `json:"state"`
+		Mode            string `json:"mode"`
+		AuthorizeURL    string `json:"authorize_url"`
+		State           string `json:"state"`
+		SessionID       string `json:"session_id"`
+		UserCode        string `json:"user_code"`
+		VerificationURI string `json:"verification_uri"`
+		QRImageURL      string `json:"qr_image_url"`
+		Flow            string `json:"flow"`
+		Interval        int    `json:"interval"`
+		Message         string `json:"message"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
-		return "", fmt.Errorf("解析授权应答失败: %w", err)
+		return nil, fmt.Errorf("解析授权应答失败: %w", err)
+	}
+	out := &httpapi.AuthorizeResult{
+		Mode: res.Mode, SessionID: res.SessionID, UserCode: res.UserCode,
+		VerificationURI: res.VerificationURI, QRImageURL: res.QRImageURL,
+		Flow: res.Flow, Interval: res.Interval, Message: res.Message,
+	}
+	if res.Mode == "session" {
+		out.AuthorizeURL = res.AuthorizeURL
+		return out, nil
 	}
 	if res.AuthorizeURL == "" {
-		return "", fmt.Errorf("sidecar 未返回 authorize_url")
+		return nil, fmt.Errorf("sidecar 未返回 authorize_url")
 	}
-	nonce := b.states.put(oauthState{provider: provider, sidecarState: res.State})
-	// 把 nonce 拼进 portal 会原样回传的 state 参数。
+	nonce := b.states.put(oauthState{provider: in.Provider, sidecarState: res.State})
 	sep := "&"
 	if !hasQuery(res.AuthorizeURL) {
 		sep = "?"
 	}
-	return res.AuthorizeURL + sep + "state=" + nonce, nil
-}
-
-// sidecarMessage 从 sidecar 错误里取可展示的原文（剥掉错误码前缀）。
-func sidecarMessage(err error) string {
-	var se *dshprovider.Error
-	if errors.As(err, &se) {
-		if se.Message != "" {
-			return se.Message
-		}
-	}
-	return err.Error()
+	out.AuthorizeURL = res.AuthorizeURL + sep + "state=" + nonce
+	return out, nil
 }
 
 // hasQuery 判断 URL 里是否已有查询串。
 func hasQuery(u string) bool {
-	return len(u) > 0 && indexByte(u, '?') >= 0
-}
-
-func indexByte(s string, b byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == b {
-			return i
+	for i := 0; i < len(u); i++ {
+		if u[i] == '?' {
+			return true
 		}
 	}
-	return -1
+	return false
 }
 
-// Callback 用 code 换取凭据并落库。
-//
-// 归属账户：浏览器带有效会话 → 当前账户；否则建 contributor 容器账户
-// （01-flow 2.2：匿名贡献也先建账户，恢复码是唯一回站路径）。
+// Callback 处理 redirect 形态的供应商回调。
 func (b *oauthBridge) Callback(ctx context.Context, provider, code, nonce, sessionToken string) (*httpapi.OAuthOutcome, error) {
-	if provider != "codearts" {
-		return nil, fmt.Errorf("供应商 %q 的 OAuth 未移植", provider)
-	}
 	st, ok := b.states.take(nonce)
 	if !ok {
 		return nil, fmt.Errorf("授权会话不存在或已过期，请重新发起授权")
@@ -216,13 +299,10 @@ func (b *oauthBridge) Callback(ctx context.Context, provider, code, nonce, sessi
 		"state":    st.sidecarState,
 	})
 	if err != nil {
-		// 换取的失败原因是给用户看的（授权码过期/已被用过/回调地址不匹配），
-		// 把 sidecar 错误码那层壳剥掉再上抛，界面才不用解释 "E_OAUTH_EXCHANGE_FAILED"。
 		return nil, fmt.Errorf("换取失败：%s", sidecarMessage(err))
 	}
 	var ex struct {
 		Credential string `json:"credential"`
-		ExpiresAt  string `json:"expires_at"`
 	}
 	if err := json.Unmarshal(raw, &ex); err != nil {
 		return nil, fmt.Errorf("解析换取应答失败: %w", err)
@@ -230,7 +310,60 @@ func (b *oauthBridge) Callback(ctx context.Context, provider, code, nonce, sessi
 	if ex.Credential == "" {
 		return nil, fmt.Errorf("sidecar 未返回凭据")
 	}
+	return b.settle(ctx, provider, ex.Credential, sessionToken)
+}
 
+// Poll 查一次 session 形态的后台会话；完成时落库。
+func (b *oauthBridge) Poll(ctx context.Context, in httpapi.PollInput) (*httpapi.PollResult, error) {
+	if ok, reason := b.availability(); !ok {
+		return nil, fmt.Errorf("%s", reason)
+	}
+	params := map[string]any{"sessionId": in.SessionID}
+	if in.Provider != "" {
+		params["provider"] = in.Provider
+	}
+	if in.Code != "" {
+		params["code"] = in.Code
+	}
+	raw, err := b.sidecar.Call(ctx, "oauth.poll", params)
+	if err != nil {
+		return nil, fmt.Errorf("查询授权状态失败：%s", sidecarMessage(err))
+	}
+	var res struct {
+		Status     string `json:"status"`
+		Message    string `json:"message"`
+		Credential string `json:"credential"`
+		Interval   int    `json:"interval"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return nil, fmt.Errorf("解析轮询应答失败: %w", err)
+	}
+	out := &httpapi.PollResult{Status: res.Status, Message: res.Message, Interval: res.Interval}
+	if res.Status != "ok" {
+		return out, nil
+	}
+	if res.Credential == "" {
+		return &httpapi.PollResult{Status: "failed", Message: "授权完成但未返回凭据"}, nil
+	}
+	o, err := b.settle(ctx, in.Provider, res.Credential, in.SessionToken)
+	if err != nil {
+		return &httpapi.PollResult{Status: "failed", Message: err.Error()}, nil
+	}
+	out.Outcome = o
+	return out, nil
+}
+
+// Cancel 释放 sidecar 的后台会话（幂等）。
+func (b *oauthBridge) Cancel(ctx context.Context, sessionID string) error {
+	if b.sidecar == nil || !b.sidecar.Available() {
+		return nil // sidecar 不在 = 会话早已不存在
+	}
+	_, err := b.sidecar.Call(ctx, "oauth.cancel", map[string]any{"sessionId": sessionID})
+	return err
+}
+
+// settle 把拿到的凭据落到指定归属账户（或新建 contributor），并生成恢复码。
+func (b *oauthBridge) settle(ctx context.Context, provider, credential, sessionToken string) (*httpapi.OAuthOutcome, error) {
 	var owner int64
 	created := false
 	if id, ok := b.sessionAccount(ctx, sessionToken); ok {
@@ -242,14 +375,12 @@ func (b *oauthBridge) Callback(ctx context.Context, provider, code, nonce, sessi
 		}
 		owner, created = id, true
 	}
-
-	credID, err := b.persist(ctx, owner, provider, ex.Credential)
-	if err != nil {
+	if _, err := b.persist(ctx, owner, provider, credential); err != nil {
 		return nil, err
 	}
 	res := &httpapi.OAuthOutcome{
 		// OAuth 凭据已拿到但尚未通过目录探测：按「待鉴定」记录，不入池。
-		// 这是刻意的保守：01-flow 5.2「落库与可调用分开」——没验过的凭据不能进候选池。
+		// 刻意的保守：01-flow 5.2「落库与可调用分开」。
 		Accepted:       false,
 		Status:         string(store.CredPending),
 		VerifyStatus:   string(store.VerifyUnverified),
@@ -261,7 +392,6 @@ func (b *oauthBridge) Callback(ctx context.Context, provider, code, nonce, sessi
 			res.RecoveryCode = code
 		}
 	}
-	_ = credID
 	return res, nil
 }
 
@@ -283,8 +413,8 @@ func (b *oauthBridge) sessionAccount(ctx context.Context, token string) (int64, 
 
 // persist 把 OAuth 凭据写入存储：上游行（enabled=false）+ AES-GCM 密文 + 凭据行。
 //
-// 为什么上游行先建且关闭：未通过判定的凭据绝不能可调用（01-flow 5.2）；
-// 判定通过后由鉴定流水线打开（本期 OAuth 路径先停在 pending）。
+// 上游行的 base_url/kind 来自 sidecar 的 provider 清单（每家推理端点不同）；
+// 拿不到时退回 defaultEndpoint。
 func (b *oauthBridge) persist(ctx context.Context, owner int64, provider, credential string) (int64, error) {
 	fingerprint := upstream.KeyFingerprint(credential)
 	short := fingerprint
@@ -292,13 +422,12 @@ func (b *oauthBridge) persist(ctx context.Context, owner int64, provider, creden
 		short = short[:8]
 	}
 	upstreamName := fmt.Sprintf("%s-oauth-%s", provider, short)
-	// CodeArts 的推理与目录端点同域（snap-access，01-catalog 的 vendor 形态）；
-	// 走 https 公网，不是回环 selfhosted。
-	baseURL := "https://snap-access.cn-north-4.myhuaweicloud.com"
+	kind, baseURL := b.endpointFor(ctx, provider)
 
 	var credID int64
 	err := b.st.WithTx(ctx, func(tx *store.Repos) error {
-		uid, err := tx.Models.UpsertUpstream(ctx, "vendor", upstreamName, baseURL, &owner, false)
+		// 上游行先建且 enabled=false：未通过判定的凭据绝不能可调用。
+		uid, err := tx.Models.UpsertUpstream(ctx, kind, upstreamName, baseURL, &owner, false)
 		if err != nil {
 			return err
 		}
@@ -319,12 +448,49 @@ func (b *oauthBridge) persist(ctx context.Context, owner int64, provider, creden
 	if err != nil {
 		return 0, err
 	}
-	// 判定证据留痕：拿到凭据但尚未探测（本期 OAuth 路径的真实状态）。
 	if err := b.st.Repos().Models.MarkVerified(ctx, credID,
 		store.VerifyUnverified, "oauth: 已获取凭据，等待目录探测"); err != nil {
 		return credID, err
 	}
 	return credID, nil
+}
+
+// endpointFor 取该 provider 的（kind, base_url）。
+func (b *oauthBridge) endpointFor(ctx context.Context, provider string) (string, string) {
+	if list, err := b.list(ctx); err == nil {
+		for _, p := range list.Providers {
+			if p.ID == provider && p.APIBase != "" {
+				kind := p.Kind
+				if kind == "" {
+					kind = "vendor"
+				}
+				return kind, p.APIBase
+			}
+		}
+	}
+	return defaultEndpoint(provider)
+}
+
+// defaultEndpoint 是 sidecar 清单不可用时的兜底。
+//
+// 只有 codearts 有实测过的端点常量；其余给一个**不可解析**的占位域名——
+// 宁缺勿错：写一个看起来对但错的 URL，比写空更难排查。
+func defaultEndpoint(provider string) (string, string) {
+	if provider == "codearts" {
+		return "vendor", "https://snap-access.cn-north-4.myhuaweicloud.com"
+	}
+	return "vendor", "https://oauth-only.invalid"
+}
+
+// sidecarMessage 从 sidecar 错误里取可展示的原文（剥掉错误码前缀）。
+func sidecarMessage(err error) string {
+	var se *dshprovider.Error
+	if errors.As(err, &se) {
+		if se.Message != "" {
+			return se.Message
+		}
+	}
+	return err.Error()
 }
 
 // issueRecoveryFor 生成并落库一次性恢复码（与 API Key 贡献路径同格式）。
