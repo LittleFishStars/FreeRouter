@@ -75,7 +75,7 @@ NDJSON 是一问一答（不能多帧推送），所以 adapter 的 `StreamChunk
 $ node sidecar/selftest.mjs
   ok   parseRefs 只解析 refs 段（records 里的 token 不外泄）
   ...
-  11/11 通过（skip 0）
+  13/13 通过（skip 0）
 
 # 2) 三种入口的原始结论（失败证据）
 $ node -e 'import("file:///home/ylxc/.local/share/dsh/profiles/web/node_modules/dsh-providers-hub/lib/client/jet-hub.js").catch(e=>console.log(e.message))'
@@ -129,7 +129,8 @@ $ echo $?
 - **第 4 帧是红线守卫的活体演示**：`credentials.set` 不存在于映射表 METHODS，且即便收到也返回
   专用码 `E_CREDENTIAL_READONLY` 并打 `[REDLINE]` 审计行。
 - **stdout 只有 NDJSON**：第三方库的 `console.*` 与直写 stdout 全被进程级守护改道 stderr；
-  改道内容在 `toStderr` 里过一遍 `redactLine`（Bearer/code/token/sk- 形态遮蔽）。
+  改道内容在 `toStderr` 里过一遍 `redactLine`（Bearer/Basic/code/token/sk- 形态遮蔽；
+  错误码一类 snake_case 标识符**不遮**——它们回答「为什么失败」，与 Go 侧 `RedactLine` 同一组语义）。
 - **缺 hub 不崩**：hub 不在位时 health 报 `deps.ok=false`，依赖它的方法回 `E_DEPENDENCY_MISSING`；
   主进程的「挂横幅继续」（04-sidecar 5.1）依赖的正是这个行为。
 - 最后一帧 `shutdown` 后进程自行退出（04-sidecar 5.4 步骤 4）。
@@ -152,7 +153,7 @@ $ echo $?
 ## 测试
 
 ```console
-node sidecar/selftest.mjs       # Node 侧自测（11 条；hub 不在位时 hub 相关用例 Skip）
+node sidecar/selftest.mjs       # Node 侧自测（13 条；hub 不在位时 hub 相关用例 Skip）
 make contract                   # Go 侧契约测试（含真 sidecar 冒烟；node 不在 PATH 时自动 Skip）
 ```
 

@@ -112,24 +112,6 @@ func TestContractContributionAnonymousEncrypted(t *testing.T) {
 		t.Fatalf("应入池 verified，得 %+v", res)
 	}
 
-	// —— 加密入库无明文（验收第 3 条）——
-	// 直接搜库文件字节：这是「strings 检查」的机器化版本，比查某一列更严格
-	// （它连 WAL/空闲页/索引里残留的明文都能抓到）。
-	cfg := a.cfg
-	dbBytes, err := os.ReadFile(cfg.Store.Path)
-	if err != nil {
-		t.Fatalf("读库文件失败：%v", err)
-	}
-	if bytes.Contains(dbBytes, []byte(key)) {
-		t.Fatalf("库文件里出现了明文 key（%d 字节库里搜到）——加密入库被破坏", len(dbBytes))
-	}
-	// 主密钥同理不得出现在库里（05-storage 8.2：锁和钥匙不能放同一抽屉）。
-	if mk, err := os.ReadFile(cfg.Store.MasterKeyFile); err == nil && len(mk) > 0 {
-		if bytes.Contains(dbBytes, mk) {
-			t.Fatal("库文件里出现了主密钥——加密等于裸存")
-		}
-	}
-
 	// 凭据行：secret_ref 必须是引用（十进制密文 id），不是明文。
 	cred, err := a.store.Repos().Models.LookupCredential(ctx, res.CredentialID)
 	if err != nil {
@@ -168,6 +150,88 @@ func TestContractContributionAnonymousEncrypted(t *testing.T) {
 	if tok != key {
 		t.Fatalf("secretSource 解出的值不一致")
 	}
+
+	// —— 加密入库无明文（验收第 3 条，code-review 复验后重写）——
+	//
+	// ⚠️ 为什么必须连 -wal/-shm 一起搜：连接开着时，最新写入**还在 WAL 里**
+	// （store 用 WAL 模式；migrate.go:236 自己就写了「WAL 下直接 cp 主库会拿到不含
+	// 最新提交的快照」）。只读主库文件会得到一个 4KB 的库头，任何断言都恒真——
+	// 这就是这条用例上一版的问题：加密实现被改坏它也照样通过。
+	// 所以先搜（主库+wal+shm），再 Close() 触发 checkpoint(TRUNCATE) 后重搜一遍，
+	// 并用「同一块字节里必须能搜到标签」做**正向对照**，证明扫描不是空快照。
+	cfg := a.cfg
+	assertNoSecretInStoreFiles(t, cfg.Store.Path, key)
+
+	// 关闭 store 触发 checkpoint：之后所有已提交数据都在主库里，扫描才覆盖全量。
+	if err := a.store.Close(); err != nil {
+		t.Fatalf("关闭 store 失败：%v", err)
+	}
+	mainDB, wal, shm := readStoreFiles(t, cfg.Store.Path)
+	if len(mainDB) < 64<<10 {
+		t.Fatalf("checkpoint 后主库只有 %d 字节，扫描仍可能是空快照", len(mainDB))
+	}
+	// 正向对照：标签必须真的在库字节里（证明下面「搜不到明文」不是搜了个空文件）。
+	if !bytes.Contains(append(append(mainDB, wal...), shm...), []byte("我的魔搭 key")) {
+		t.Fatal("库里搜不到我们自己写的标签——扫描目标不对，加密断言不可信")
+	}
+	if bytes.Contains(append(append(mainDB, wal...), shm...), []byte(key)) {
+		t.Fatal("checkpoint 后库文件里出现明文 key——加密入库被破坏")
+	}
+	// 主密钥同理不得出现在库里（05-storage 8.2：锁和钥匙不能放同一抽屉）。
+	if mk, err := os.ReadFile(cfg.Store.MasterKeyFile); err == nil && len(mk) > 0 {
+		if bytes.Contains(mainDB, mk) || bytes.Contains(wal, mk) || bytes.Contains(shm, mk) {
+			t.Fatal("库文件里出现了主密钥——加密等于裸存")
+		}
+	}
+}
+
+// readStoreFiles 读主库与 WAL/SHM（存在才读）。
+//
+// 为什么不假设 -wal 一定在：checkpoint(TRUNCATE) 之后 WAL 会被清空/删除；
+// 「存在即读、不存在算空」才能在两种时序下都给出正确结论。
+func readStoreFiles(t *testing.T, dbPath string) (main, wal, shm []byte) {
+	t.Helper()
+	var err error
+	main, err = os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("读主库失败：%v", err)
+	}
+	wal, _ = os.ReadFile(dbPath + "-wal")
+	shm, _ = os.ReadFile(dbPath + "-shm")
+	return main, wal, shm
+}
+
+// assertNoSecretInStoreFiles 断言三处字节里都没有给定密钥。
+func assertNoSecretInStoreFiles(t *testing.T, dbPath, secret string) {
+	t.Helper()
+	if where, size := findSecretInStoreFiles(dbPath, secret); where != "" {
+		t.Fatalf("%s 里出现了明文密钥（%d 字节）——加密入库被破坏", where, size)
+	}
+}
+
+// findSecretInStoreFiles 返回第一个含明文的文件（main/wal/shm）与它的字节数；
+// where 为空串表示未命中。
+//
+// 单独抽出来的理由：扫描器本身要能被测试（见 TestContractStoreByteScanCoversWAL）——
+// 否则「断言恒真」这类问题只会从一种形态变成另一种形态。
+func findSecretInStoreFiles(dbPath, secret string) (where string, size int) {
+	for _, name := range []string{"main", "wal", "shm"} {
+		path := dbPath
+		switch name {
+		case "wal":
+			path = dbPath + "-wal"
+		case "shm":
+			path = dbPath + "-shm"
+		}
+		b, err := os.ReadFile(path)
+		if err != nil || len(b) == 0 {
+			continue // 不存在/空文件：该形态在这台机器上没出现，不算命中
+		}
+		if bytes.Contains(b, []byte(secret)) {
+			return path, len(b)
+		}
+	}
+	return "", 0
 }
 
 // contributeUpstreamOf 找到贡献凭据对应的上游行（名字是确定性的，见 contribution.go）。
@@ -370,5 +434,30 @@ func TestContractCredentialWiringAudit(t *testing.T) {
 	a.logCredentialWiring(0, 0, 0) // 没有需要凭据的上游
 	if buf.Len() != 0 {
 		t.Fatalf("无需凭据时不应有任何输出，实际：%s", buf.String())
+	}
+}
+
+// TestContractStoreByteScanCoversWAL 是扫描器自身的守卫：明文藏在 -wal 里必须被发现。
+//
+// 为什么需要它：上一版「全库字节断言」只读主库，而 WAL 模式下写入还在 -wal 里，
+// 于是断言恒真、实现被改坏也抓不到。修法不能只是「顺手把 -wal 也读一下」——
+// 还要有一条用例钉住「读 WAL」这件事本身，否则将来重构又会悄悄退回去。
+func TestContractStoreByteScanCoversWAL(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "planted.db")
+	const secret = "sk-planted-secret-abcdef123456"
+	if err := os.WriteFile(dbPath, []byte("clean-main-db"), 0o600); err != nil {
+		t.Fatalf("写主库占位失败：%v", err)
+	}
+	if err := os.WriteFile(dbPath+"-wal", []byte("x"+secret+"y"), 0o600); err != nil {
+		t.Fatalf("写 WAL 占位失败：%v", err)
+	}
+	where, size := findSecretInStoreFiles(dbPath, secret)
+	if where != dbPath+"-wal" || size == 0 {
+		t.Fatalf("扫描器漏掉了 WAL 里的明文（where=%q size=%d）——断言会变成假绿", where, size)
+	}
+	// 反向：干净文件不误报。
+	if where, _ := findSecretInStoreFiles(dbPath, "definitely-not-present"); where != "" {
+		t.Fatalf("干净数据被误报为泄露：%s", where)
 	}
 }

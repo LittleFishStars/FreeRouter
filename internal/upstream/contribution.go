@@ -30,12 +30,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/store"
+	"github.com/LittleFishStars/FreeRouter/internal/upstream/dshprovider"
 )
 
 // —— 错误 ——
@@ -437,7 +437,12 @@ func judgeProbe(claimed string, out ProbeOutput, probeErr error) (store.Credenti
 
 // evidenceJSON 生成 verify_detail 的 JSON（见 0001_init.sql 的列注释：证据会演化，
 // 用 JSON 才能不迁移地补信号）。
+//
+// detail 在这里**统一脱敏**，而不是指望每个调用方记得包 redactText：
+// 证据会进库、会回显给贡献者、会被管理端看到——它是泄露面最大的一处，
+// 而「以后新增的失败分支忘了脱敏」是必然会发生的。脱敏幂等，重复调用无副作用。
 func evidenceJSON(stage, detail string) string {
+	detail = redactText(detail)
 	b, err := json.Marshal(map[string]any{"stage": stage, "detail": detail})
 	if err != nil {
 		return `{"stage":"` + stage + `","detail":"证据序列化失败"}`
@@ -681,23 +686,14 @@ func (p HTTPProbe) Probe(ctx context.Context, in ProbeInput) (ProbeOutput, error
 
 // —— 小工具 ——
 
-// redactText 脱敏错误文本（与 sidecar 的 redact.mjs 同组模式）。
+// redactText 脱敏错误文本 —— 直接转调 dshprovider.RedactLine。
 //
-// 为什么在 Go 侧也要做一遍：上游错误正文常回显 key 前缀（02-credentials 6.4 明确要求
-// 过滤后才进日志/证据）。这里只处理最常见的三种形态，宁可多遮。
-func redactText(s string) string {
-	out := s
-	// Authorization: Bearer xxx
-	out = bearerRE.ReplaceAllString(out, "$1 ***")
-	// ?code= / "access_token": / api_key= 形态
-	out = kvRE.ReplaceAllString(out, "$1***")
-	// 裸 sk- 前缀
-	out = skRE.ReplaceAllString(out, "$1***")
-	if len(out) > 512 {
-		out = out[:512] + "…"
-	}
-	return out
-}
+// 为什么不再在本地维护一份正则：同一套「什么算敏感」的规则原先在
+// dshprovider/client.go 与这里各写一份、内容逐字相同（加上 sidecar/redact.mjs 共三处）。
+// 两处 Go 副本迟早漂移，而漂移的表现是「一边遮、一边漏」且没人发现。
+// 现在 Go 侧只有 dshprovider 那一份（该包是 upstream 的子包，方向本就合法：
+// relay.go 早已 import 它），本函数只是语义清晰的转调点。
+func redactText(s string) string { return dshprovider.RedactLine(s) }
 
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
@@ -707,13 +703,3 @@ func firstNonEmpty(vals ...string) string {
 	}
 	return ""
 }
-
-var (
-	bearerRE = mustRegexp(`(?i)(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}`)
-	// RE2 不支持反向引用，所以引号不配对（两端一起吃掉）。
-	kvRE = mustRegexp(`(?i)((?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?code|client[_-]?secret|secret|token|code)["']?\s*[=:]\s*)["']?[A-Za-z0-9._~+/=-]{8,}["']?`)
-	skRE = mustRegexp(`(sk-)[A-Za-z0-9_-]{8,}`)
-)
-
-// mustRegexp 是包内的 regexp.MustCompile（常量模式不该在 init 之外有机会 panic）。
-func mustRegexp(expr string) *regexp.Regexp { return regexp.MustCompile(expr) }

@@ -13,6 +13,7 @@ package dshprovider
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -648,5 +649,67 @@ func TestContractRedactLogLineIdempotent(t *testing.T) {
 	}
 	if strings.Contains(once, "abc...") || strings.Contains(once, "defgh12345678") {
 		t.Errorf("遮蔽不彻底：%q", once)
+	}
+}
+
+// TestContractRedactLineTable 是遮蔽规则的**表驱动契约**（code-review 复验追加）：
+// 真敏感值必须遮，排障字段（错误码/状态名/请求 id）必须留。
+//
+// 为什么用表而不是几条 if：这类模式的最常见回归是「遮多了」或「遮少了」各一半，
+// 单条断言只看一个方向。表里两个方向都钉住，改正则时一跑就知道伤没伤到排障。
+func TestContractRedactLineTable(t *testing.T) {
+	const (
+		bearerTok = "sk-live-abcdefgh12345678"
+		basicTok  = "dXNlcjpwYXNzd29yZA=="
+		oauthCode = "abcd1234efghijkl"
+		accessTok = "ya29.A0AfH6SMBx"
+		refresh   = "1//0gXyzAbcDef"
+	)
+	// 敏感：输出里不得再出现这些值。
+	sensitive := []struct {
+		name, in, secret string
+	}{
+		{"Bearer 头", "Authorization: Bearer " + bearerTok, bearerTok},
+		{"Basic 头（base64 里是 user:pass）", "Authorization: Basic " + basicTok, basicTok},
+		{"OAuth 回调 code=", "GET /callback?code=" + oauthCode + "&state=ok", oauthCode},
+		{"query 裸 key", "GET /v1/models?key=" + oauthCode, oauthCode},
+		{"JSON 双 token", `{"access_token":"` + accessTok + `","refresh_token":"` + refresh + `"}`, accessTok},
+		{"裸 sk- 前缀", "received " + bearerTok, bearerTok},
+		{"password 键", "password=hunter2hunter2", "hunter2hunter2"},
+	}
+	for _, tc := range sensitive {
+		out := RedactLine(tc.in)
+		if strings.Contains(out, tc.secret) {
+			t.Errorf("%s：未遮蔽，输入=%q 输出=%q", tc.name, tc.in, out)
+		}
+	}
+	// 排障字段：必须原样保留（抹掉它们等于把「为什么失败」删了）。
+	preserved := []struct{ name, in, keep string }{
+		{"JSON error_code", `{"error_code":"upstream_unavailable","message":"上游 502"}`, `"upstream_unavailable"`},
+		{"error_code 键值", "error_code=model_not_found request_id=abc", "model_not_found"},
+		{"sidecar 错误帧形态", "upstream_error code=no_candidate", "no_candidate"},
+		{"E_ 错误码", "code=E_DEPENDENCY_MISSING method=infer.stream", "E_DEPENDENCY_MISSING"},
+		{"status_code", "status_code=503 upstream=http", "503"},
+		{"request_id", "request_id=abc error_code=timeout_killed", "request_id=abc"},
+	}
+	for _, tc := range preserved {
+		out := RedactLine(tc.in)
+		if !strings.Contains(out, tc.keep) {
+			t.Errorf("%s：排障字段被误遮，输入=%q 输出=%q（应保留 %q）", tc.name, tc.in, out, tc.keep)
+		}
+	}
+	// JSON 必须仍然可解析（引号配对保留）——否则日志里的错误体就没法看了。
+	out := RedactLine(`{"access_token":"` + accessTok + `","refresh_token":"` + refresh + `"}`)
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("遮蔽后 JSON 不可解析：%q（错误 %v）", out, err)
+	}
+	if parsed["access_token"] != "***" || parsed["refresh_token"] != "***" {
+		t.Errorf("遮后值应为 ***，得 %v", parsed)
+	}
+	// 截断仍在遮蔽之前：超长行必须被截断，且行尾不残留明文。
+	long := strings.Repeat("x", 4096) + bearerTok
+	if got := RedactLine(long); len(got) > stderrLogMaxBytes+len("…")+16 || strings.Contains(got, bearerTok) {
+		t.Errorf("超长行处理不对：len=%d 含明文=%v", len(got), strings.Contains(got, bearerTok))
 	}
 }
