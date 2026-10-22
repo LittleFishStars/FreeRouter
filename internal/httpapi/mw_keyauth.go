@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
 )
@@ -83,5 +84,27 @@ var nonKeyPaths = map[string]bool{
 	"/api/setup/init":   true, // 向导创建：窗口判定在 handler（先 409 后验参）
 }
 
+// nonKeyPrefixes 是**整组**走会话面（而非 Key 面）的路径前缀。
+//
+// 为什么必须有前缀豁免：管理面 45 个端点、账户自助若干端点都用人机会话
+// 鉴权（mwSession / mwAdmin），逐个登记进 nonKeyPaths 既不可维护、也会
+// 在新增端点时漏登记——而漏登记的表现正是「登录了仍然 401 invalid_api_key」
+// （M7 装配实测踩到）。这里只放整组语义明确的会话面，并逐条写明理由；
+// Key 面（/v1/*）的端点仍不在豁免范围内。
+var nonKeyPrefixes = []string{
+	"/api/admin/",   // 管理面：会话 + mwAdmin（45 端点整组）
+	"/api/account/", // 账户自助：会话（改密/会话管理/用量）
+}
+
 // isNonKeyPath 报告该路径是否豁免 Key 鉴权。
-func isNonKeyPath(p string) bool { return nonKeyPaths[p] }
+func isNonKeyPath(p string) bool {
+	if nonKeyPaths[p] {
+		return true
+	}
+	for _, pre := range nonKeyPrefixes {
+		if strings.HasPrefix(p, pre) {
+			return true
+		}
+	}
+	return false
+}
