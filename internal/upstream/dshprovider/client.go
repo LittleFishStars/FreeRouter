@@ -33,6 +33,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -329,16 +330,57 @@ func (c *Client) readLoop(stdout io.Reader) {
 	}
 }
 
+// stderrLogMaxBytes 是进结构化日志的 sidecar stderr 单行上限。
+//
+// 为什么必须有上限：sidecar 的 stdout-guard 会把「任何绕过 console 直写 stdout 的内容」
+// 改道 stderr（典型：第三方库 banner、hub adapter 的调试输出）。这些行可能很长，
+// 也可能带整段 HTML/JSON；整行落进日志既淹没有用信息，也放大泄露面。
+// 512 字节足够保留「哪一类输出、在哪一步」，又不会把日志变成大文件。
+const stderrLogMaxBytes = 512
+
 // drainStderr 把 sidecar 的日志并进主进程日志流。
 // sidecar 的 stdout 只准是 NDJSON，任何人类可读内容都必须从这里出来。
+//
+// 两道处理（都已实测过泄露路径，见 docs/architecture/04-sidecar.md §8）：
+//  1. **截断**到 stderrLogMaxBytes；
+//  2. **遮蔽** Bearer/授权码/token/secret/sk- 形态——sidecar 的 stdout-guard 会把
+//     第三方库的任意输出改道到这里，OAuth 回调 URL 里的 `code=` 完全可能混进来。
+//
+// 环形缓冲里保留**原文**：StderrTail 是排障用的（要看完整错误），且它只在本进程内存里、
+// 不会进日志系统；进结构化日志的那一份才是需要遮蔽的。
 func (c *Client) drainStderr(stderr io.Reader) {
 	sc := bufio.NewScanner(stderr)
 	sc.Buffer(make([]byte, 0, 64<<10), readBufSize)
 	for sc.Scan() {
 		line := sc.Text()
 		c.stderr.push(line)
-		c.log.Debug("sidecar stderr", "line", line)
+		c.log.Debug("sidecar stderr", "line", redactLogLine(line), "raw_bytes", len(line))
 	}
+}
+
+// 遮蔽模式：与 sidecar 侧 sidecar/redact.mjs 是**同一组模式**的两端实现。
+// 两端都要改才叫修完——只改一边等于把泄露点挪了个位置。
+var (
+	logBearerRE = regexp.MustCompile(`(?i)(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}`)
+	// 注意：Go 的 RE2 **不支持反向引用**，所以不能像 JS 那样用 \2 配对引号。
+	// 这里把两端的引号一起吃掉（日志里少一对引号不影响可读性，少遮一个字节才是事故）。
+	logKVRE = regexp.MustCompile(`(?i)((?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?code|client[_-]?secret|secret|token|code)["']?\s*[=:]\s*)["']?[A-Za-z0-9._~+/=-]{8,}["']?`)
+	logSKRE = regexp.MustCompile(`(sk-)[A-Za-z0-9_-]{8,}`)
+)
+
+// redactLogLine 先截断再遮蔽，返回可安全进日志的一行。
+//
+// 顺序为什么是「先截断再遮蔽」：反过来会把 `***` 截掉一半，留下半截密钥前缀——
+// 那比不遮更糟，因为看起来像正常输出。
+func redactLogLine(line string) string {
+	out := line
+	if len(out) > stderrLogMaxBytes {
+		out = out[:stderrLogMaxBytes] + "…"
+	}
+	out = logBearerRE.ReplaceAllString(out, "$1 ***")
+	out = logKVRE.ReplaceAllString(out, "${1}***")
+	out = logSKRE.ReplaceAllString(out, "$1***")
+	return out
 }
 
 // Call 发一个方法调用并等应答。params 为 nil 时字段整个省略。
