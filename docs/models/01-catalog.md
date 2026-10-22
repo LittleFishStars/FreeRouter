@@ -141,12 +141,12 @@ real_models {
 | 变动 | `kind` | `severity` | 为什么算“要人管” |
 |---|---|---|---|
 | 上游新增模型 | `model_added` | `info` | 不一定要处理，但它是“可以开新候选了”的唯一信号 |
-| 上游模型消失 | `model_missing` | `warn` | 直接影响候选可用性（第 6 节巡检的口径） |
-| 上游属性变化（`context_window` / `modalities` / `efforts` / 名称） | `model_changed` | `warn` | 属性变**小**会把候选能力声明拉低（[02-abstract.md](02-abstract.md) 第 5 节取 min/交集），可能导致原本能跑的请求变成被拒 |
-| 渠道整体失联 / 连续失败超阈 | `upstream_down` | `error` | 这是故障，不是变动 |
-| 凭据失效 / 鉴定失败 | `credential_issue` | `error` | 贡献侧故障，影响供给量 |
+| 上游模型消失 | `model_missing` | `warning` | 直接影响候选可用性（第 6 节巡检的口径） |
+| 上游属性变化（`context_window` / `modalities` / `efforts` / 名称） | `model_changed` | `warning` | 属性变**小**会把候选能力声明拉低（[02-abstract.md](02-abstract.md) 第 5 节取 min/交集），可能导致原本能跑的请求变成被拒 |
+| 渠道整体失联 / 连续失败超阈 | `channel_failing` | `error` | 这是故障，不是变动 |
+| 凭据失效 / 鉴定失败 | `credential_invalid` | `error` | 贡献侧故障，影响供给量 |
 | 新账户待审核 | `account_pending` | `info` | `tenant` 类需审核（总纲 2.7） |
-| 组共享池告警 / 全站熔断 | `pool_alert` | `error` | 直接对应服务不可用 |
+| 组共享池耗尽 / 全站预算熔断 | `pool_exhausted` / `global_budget` | `error` | 直接对应服务不可用 |
 
 **为什么区分 `severity`**：待处理事项页的全部价值在于“有限注意力该先放哪”。一律 `info` 会让真正的故障埋在几十条“新模型上线”里；一律 `error` 则会让告警疲劳。
 
@@ -154,7 +154,9 @@ real_models {
 
 **为什么不做实时推送**：轮询 + 登录时拉未读计数已经能满足这个需求，而推送引入连接管理、重发、离线补发一整套机制——它的复杂度远高于它省下的那几十秒。
 
-**幂等要求**：同一个 `(kind, related_id)` 在未读期间**不重复写**，否则每轮刷新都会新增一条，一天就是上百条。读到同一变动第二次时只更新 `detail_json` 里的最新值，不新建行。
+**幂等要求**：同一个 `(kind, related_id)` 在未读期间**不重复写**，否则每轮刷新都会新增一条，一天就是上百条。读到同一变动第二次时只更新 `detail_json` 里的最新值，不新建行（`severity` 只升不降——后来的 `info` 不得覆盖已有的 `error`）。落库由 `ux_admin_inbox_open` 部分唯一索引 + `ON CONFLICT ... WHERE read_at IS NULL DO UPDATE` 实现（0003 迁移）；`severity` 的秩表达式在 `repo_inbox.go` 单一来源，写入与排序共用。
+
+> **词表权威**：本表的 `kind` / `severity` 取值与 [../security/06-audit.md](../security/06-audit.md) 3.1 一致（`severity` 为 `info` / `warning` / `error`）。`admin_inbox` 表建在 0001 里，而**已发布的迁移文件不可修改**（`migrate.go` 校验每个迁移的 sha256，改注释会让已有库拒绝启动），因此 0001 里那行 `info|warning|critical` 的注释是**过时措辞**——真正的执法点是 `store` 层的枚举校验，见 06-audit 3.1 的"执法点"段。
 
 **数据模型**（总纲对齐规范 G）：
 

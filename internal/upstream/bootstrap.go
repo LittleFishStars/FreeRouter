@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/LittleFishStars/FreeRouter/internal/upstream/dshprovider"
 )
@@ -38,11 +39,14 @@ type UpstreamWriter interface {
 
 // AdminNotifier 是 admin_inbox 通知的窄接口（§3.3：目录/健康事件的唯一发现点）。
 //
-// ALIGN-SPEC G：relay 连续失败写 upstream_failing。自举阶段能发的通知有限
-// （目录拉不下来 = warn），实现归装配层；接口为 nil 时跳过通知（不阻塞主流程，
-// §3.3「通知是旁路」）。
+// ALIGN-SPEC G：relay 连续失败写 `channel_failing`（severity=error，
+// 词表唯一权威 = docs/security/06-audit.md §3.1 的 10 值 kind；b701374 裁决
+// 收敛了旧拼写 upstream_failing——store 的 InboxRepo.Append 拒非枚举值，
+// 旧词会经由本包的「通知失败只记日志」静默失败）。
+// 自举阶段能发的通知有限（目录拉不下来），实现归装配层；接口为 nil 时
+// 跳过通知（不阻塞主流程，§3.3「通知是旁路」）。
 type AdminNotifier interface {
-	// NotifyAdminInbox 写一条待处理通知。kind/severity/detail 的口径见 03-upstream.md §3.3 表。
+	// NotifyAdminInbox 写一条待处理通知。kind/severity/detail 的口径见 06-audit.md §3.1。
 	NotifyAdminInbox(ctx context.Context, kind, relatedID, title, detail string, severity string) error
 }
 
@@ -80,6 +84,16 @@ type RelayBootstrapper struct {
 	refresher Refresher
 	notifier  AdminNotifier
 	log       *slog.Logger
+	// notified 是通知的进程内节流表（key = kind|relatedID|title）。
+	// 为什么需要：store 的 Append 去重靠部分索引 `ON CONFLICT(kind, related_id)
+	// WHERE read_at IS NULL AND related_id IS NOT NULL`，而自举失败的两条通知
+	// **拿不到数字行 id**（provider 行还没落库 / 落库本身就失败）——related 为
+	// 空时实现侧转成 nil，部分索引不覆盖 NULL，去重失效；而自举会随启动重试
+	// 与周期重跑，每轮都投就会把待处理页刷成噪声（§3.3：噪声等于没有通知）。
+	// 所以进程内按 (kind, related, title) 只投一次；进程重启后是新表，可以再投
+	// ——重启本身就该让人重新看一眼状态。
+	notified map[string]bool
+	notifMu  sync.Mutex
 }
 
 // Refresher 是目录同步的最小接口（*ModelRefresher 天然满足；窄接口便于单测 fake）。
@@ -90,7 +104,10 @@ type Refresher interface {
 // NewRelayBootstrapper 建自举器。writer 为 nil 时自举只拉目录不落行
 // （装配未接线 store 的降级形态——不报错，写库失败本就只记日志）。
 func NewRelayBootstrapper(source ProviderSource, writer UpstreamWriter, refresher Refresher, notifier AdminNotifier, log *slog.Logger) *RelayBootstrapper {
-	return &RelayBootstrapper{source: source, writer: writer, refresher: refresher, notifier: notifier, log: log}
+	return &RelayBootstrapper{
+		source: source, writer: writer, refresher: refresher, notifier: notifier, log: log,
+		notified: make(map[string]bool),
+	}
 }
 
 // Run 执行一轮自举：providers.list → 落 upstreams → 目录刷新。
@@ -112,7 +129,7 @@ func (b *RelayBootstrapper) Run(ctx context.Context) BootstrapResult {
 	if err != nil {
 		res := BootstrapResult{SkippedReason: "providers.list 失败: " + err.Error()}
 		lg.Warn("relay 自举失败，下轮重试（不阻塞启动）", "error", err)
-		b.notify(ctx, "upstream_failing", "", "relay 自举失败", res.SkippedReason, "warn")
+		b.notify(ctx, InboxKindChannelFailing, "", "relay 自举失败", res.SkippedReason, InboxSeverityError)
 		return res
 	}
 	// 步骤 2：逐 provider 落 upstreams 行（kind='relay', owner=NULL, enabled=true）。
@@ -127,7 +144,7 @@ func (b *RelayBootstrapper) Run(ctx context.Context) BootstrapResult {
 		}
 		if _, err := b.writer.UpsertUpstream(ctx, "relay", p.Provider, RelayBaseURLOf(p.Provider), nil, true); err != nil {
 			lg.Error("relay 自举止写库失败，该 provider 下轮重试", "provider", p.Provider, "error", err)
-			b.notify(ctx, "upstream_failing", p.Provider, "relay 行落库失败", err.Error(), "error")
+			b.notify(ctx, InboxKindChannelFailing, p.Provider, "relay 行落库失败", err.Error(), InboxSeverityError)
 			continue
 		}
 	}
@@ -145,13 +162,28 @@ func (b *RelayBootstrapper) Run(ctx context.Context) BootstrapResult {
 	return res
 }
 
-// notify 发 admin_inbox 通知（§3.3：旁路，失败绝不影响主结果）。
+// notify 发 admin_inbox 通知（§3.3：旁路，失败绝不影响主结果），带进程内节流。
+// 节流理由见 RelayBootstrapper.notified 字段注释：自举类通知没有数字行 id，
+// store 的部分索引去重覆盖不到它们。
 func (b *RelayBootstrapper) notify(ctx context.Context, kind, relatedID, title, detail, severity string) {
 	if b.notifier == nil {
 		return
 	}
+	key := kind + "|" + relatedID + "|" + title
+	b.notifMu.Lock()
+	if b.notified[key] {
+		b.notifMu.Unlock()
+		return
+	}
+	if b.notified == nil {
+		b.notified = make(map[string]bool) // 零值构造兼容（字段表可能是 nil）
+	}
+	b.notified[key] = true
+	b.notifMu.Unlock()
+
 	if err := b.notifier.NotifyAdminInbox(ctx, kind, relatedID, title, detail, severity); err != nil {
 		// 写入失败（库锁/磁盘满）必须落 slog 且不得影响目录刷新本身（§3.3 末段）。
+		// 不回滚节流位：通知失败重试交下一轮/人工，不靠反复投递刷日志。
 		slog.Default().Warn("admin_inbox 通知写入失败（旁路）", "kind", kind, "error", err)
 	}
 }

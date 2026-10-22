@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
 
 // 本文件是 task-16 第 2/3 点：VerificationWriter / InboxWriter 窄接口 +
@@ -33,25 +35,59 @@ type VerificationWriter interface {
 
 // InboxWriter 是 admin_inbox 投递的窄接口（任务第 3 点）。
 //
-// 三事件（03-upstream.md §3.3 表的同源子集 + 05-verification 的 suspect）：
-//   - 新模型出现 upstream_model_added（info）
-//   - 模型消失 upstream_model_missing（warn）
-//   - 鉴定变 suspect upstream_model_suspect（warn——它标在目录里影响可用性判断）
+// 三事件（kind/severity 取自 docs/security/06-audit.md §3.1 的**唯一权威词表**，
+// b701374 裁决；03-upstream.md §3.3 现在只是同一词表的引用视图）：
+//   - 新模型出现 model_added（info）
+//   - 模型消失 model_missing（warning）
+//   - 鉴定变 suspect verification_failed（warning——§3.1 用它覆盖「鉴定 suspect
+//     或复检回归」；它标在目录里影响可用性判断）
 //
-// 去重规则（§3.3：同一 (kind, related_id, title) 在 read_at IS NULL 状态下
-// 不重复插入）归 Lead 的实现侧；本接口只管投递。
+// 去重规则归实现侧（store 的 InboxRepo.Append）：它按
+// `ON CONFLICT(kind, related_id) WHERE read_at IS NULL AND related_id IS NOT NULL`
+// 去重——两个要点对本接口的形状有约束：
+//  1. **related_id 为空串时去重不生效**（部分索引不覆盖 NULL），实现侧会把它传成
+//     nil，那每轮刷新都会新建一条——所以必须给行 id 的就给（三事件都有
+//     real_models.id）；bootstrap 的自举失败没有行 id（provider 还未落库），
+//     它重复投递会刷屏，已在 bootstrap.go 内做进程内节流；
+//  2. 去重键是 (kind, related_id)，**title 不参与**（旧注释写的三元组与实现不符）。
 type InboxWriter interface {
-	// NotifyInbox 投递一条站内通知。kind 事件类型；relatedID 是 real_models.id
-	// 的字符串形态；payloadJSON 是载荷（模型 id/上游/证据等）；severity 取
-	// info/warn/error（03-upstream.md §3.3 表）。
+	// NotifyInbox 投递一条站内通知。kind 事件类型（值域见下方常量）；
+	// relatedID 是关联行 id 的**字符串形态**（real_models.id；空串=无关联行），
+	// 实现侧需转成 *int64（store.Append 收 *int64）；payloadJSON 是载荷（模型 id/
+	// 上游/证据等，store 原样存不校验）；severity 取 info|warning|error
+	//（06-audit.md §3.1，秩递增）；title 不得为空（store 拒空标题）。
 	NotifyInbox(ctx context.Context, kind, relatedID, title, payloadJSON, severity string) error
 }
 
-// inbox 三事件的 kind 常量（03-upstream.md §3.3 表口径）。
+// inbox 三事件的 kind 常量（值域取自 06-audit.md §3.1）。
+//
+// 为什么常量值直接**引用 store 的枚举**而不是重抄一份字符串：
+// store.InboxRepo.Append 按枚举拒非枚举值（severity 是排序键，写错会静默排到
+// 末尾——「看起来能用、实际不可用」那一类），而本包的「通知失败只记日志」
+// 语义会把这种拒绝**吞成静默失败**：管理员收件箱永远收不到模型变动信号。
+// 以前这里重抄了一份（当时 repo_inbox.go 还在 feat/storage 上，引用不到），
+// 两套并列就是下一个漂移源；task-19 合入 main 后改成编译期引用，
+// 词表变了本包自动跟（单一来源）。权威文档仍是 06-audit.md §3.1，
+// store 那份是它的代码化执法点。
+//
+// 为什么接口参数仍用 string（不用 store.InboxKind）：本接口是给装配层
+// 的投递面，窄接口的形状不该绑死实现侧的类型；string→InboxKind 的转换
+// 留给装配桥一行完成（那边本来就要做 relatedID string→*int64）。
 const (
-	InboxKindModelAdded   = "upstream_model_added"   // 目录新增模型（info）
-	InboxKindModelMissing = "upstream_model_missing" // 目录消失模型（warn）
-	InboxKindModelSuspect = "upstream_model_suspect" // 鉴定变 suspect（warn）
+	InboxKindModelAdded   = string(store.InboxModelAdded)         // 目录新增模型（info）
+	InboxKindModelMissing = string(store.InboxModelMissing)       // 目录消失模型（warning）
+	InboxKindModelSuspect = string(store.InboxVerificationFailed) // 鉴定 suspect / 复检回归（warning）
+	// InboxKindChannelFailing：一个渠道/上游连续失败（relay 整类不可用、
+	// selfhosted 端点连不上）。bootstrap.go 的自举失败也走它——severity 取 error。
+	InboxKindChannelFailing = string(store.InboxChannelFailing)
+)
+
+// inbox 的 severity 常量（同样引用 store 枚举；06-audit.md §3.1：固定三值，
+// 列表按 severity DESC, created_at DESC, id DESC 排）。
+const (
+	InboxSeverityInfo    = string(store.SeverityInfo)
+	InboxSeverityWarning = string(store.SeverityWarning)
+	InboxSeverityError   = string(store.SeverityError)
 )
 
 // RefreshHooks 刷新联动的可选依赖集。
@@ -162,7 +198,7 @@ func (h *RefreshHooks) notifySuspect(ctx context.Context, log *slog.Logger, it v
 		"fingerprint_version": FingerprintVersion,
 	})
 	if err := h.Inbox.NotifyInbox(ctx, InboxKindModelSuspect, fmt.Sprint(it.realModelID),
-		"模型鉴定标记 suspect：", string(payload), "warn"); err != nil {
+		"模型鉴定标记 suspect：", string(payload), InboxSeverityWarning); err != nil {
 		log.Warn("upstream: suspect 通知投递失败（旁路）", "model", it.info.UpstreamModelID, "error", err)
 	}
 }
@@ -194,7 +230,7 @@ func (h *RefreshHooks) notifyMissing(ctx context.Context, log *slog.Logger, upst
 		"at":       time.Now().Unix(),
 	})
 	if err := h.Inbox.NotifyInbox(ctx, InboxKindModelMissing, fmt.Sprint(realModelID),
-		"目录消失模型：", string(payload), "warn"); err != nil {
+		"目录消失模型：", string(payload), InboxSeverityWarning); err != nil {
 		log.Warn("upstream: 模型消失通知投递失败（旁路）", "model", model, "error", err)
 	}
 }

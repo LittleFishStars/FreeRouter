@@ -13,10 +13,13 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -350,8 +353,8 @@ func TestContractInboxThreeEvents(t *testing.T) {
 	if len(inbox.notes) != 1 || inbox.notes[0].kind != InboxKindModelSuspect {
 		t.Fatalf("suspect 应投递一条通知：%+v", inbox.notes)
 	}
-	if inbox.notes[0].severity != "warn" {
-		t.Fatalf("suspect 通知 severity 应 warn：%s", inbox.notes[0].severity)
+	if inbox.notes[0].severity != InboxSeverityWarning {
+		t.Fatalf("suspect 通知 severity 应 warning：%s", inbox.notes[0].severity)
 	}
 
 	// added / missing 事件走 relay 刷新路径（fixture 同款）：
@@ -475,3 +478,180 @@ func containsText(s, sub string) bool {
 
 // fmt 保底（错误构造用）。
 var _ = fmt.Sprintf
+
+// ———— 词表契约（06-audit.md §3.1 是唯一权威；b701374 裁决） ————
+
+// auditInboxKinds 是 docs/security/06-audit.md §3.1 表里的 10 个权威 kind
+// 的**文档快照**（手抄）。
+//
+// 为什么手抄表在 store 已有枚举之后**仍然保留**：它现在的作用是交叉校验——
+// inbox.go 的常量已经直接引用 store 枚举（单一来源），于是「upstream 与 store
+// 一致」变成了编译期事实、测不出漂移；真正会漂移的是 **store 与 06-audit 文档**。
+// 下面 TestContractInboxVocabularyMatchesAudit 里的集合相等断言就是抓这个的：
+// storage 若改了自己的枚举而没改文档（或反之），这条会红。
+// 手抄表来源：06-audit.md §3.1 的表体（10 行 kind + severity 三值）。
+var auditInboxKinds = map[string]bool{
+	"account_pending":     true,
+	"model_added":         true,
+	"model_missing":       true,
+	"model_changed":       true,
+	"channel_failing":     true,
+	"credential_invalid":  true,
+	"verification_failed": true,
+	"pool_exhausted":      true,
+	"global_budget":       true,
+	"key_anomaly":         true,
+}
+
+var auditInboxSeverities = map[string]bool{"info": true, "warning": true, "error": true}
+
+// TestContractInboxVocabularyMatchesAudit：本包全部生产者投递的 kind/severity
+// 必须落在 06-audit §3.1 枚举内（三事件 + bootstrap 的 channel_failing）。
+// 这条测试防的是「文档词表又动了一次，而代码静默失败」。
+func TestContractInboxVocabularyMatchesAudit(t *testing.T) {
+	// 常量本身先自证（新增常量忘了对齐会在这里红）。
+	consts := []struct {
+		name, kind, sev string
+	}{
+		{"added", InboxKindModelAdded, InboxSeverityInfo},
+		{"missing", InboxKindModelMissing, InboxSeverityWarning},
+		{"suspect", InboxKindModelSuspect, InboxSeverityWarning},
+		{"failing", InboxKindChannelFailing, InboxSeverityError},
+	}
+	// 集合相等：store 的枚举必须与文档快照完全一致（这条抓的是 storage 侧漂移）。
+	storeKinds := map[string]bool{
+		string(store.InboxAccountPending):     true,
+		string(store.InboxModelAdded):         true,
+		string(store.InboxModelMissing):       true,
+		string(store.InboxModelChanged):       true,
+		string(store.InboxChannelFailing):     true,
+		string(store.InboxCredentialInvalid):  true,
+		string(store.InboxVerificationFailed): true,
+		string(store.InboxPoolExhausted):      true,
+		string(store.InboxGlobalBudget):       true,
+		string(store.InboxKeyAnomaly):         true,
+	}
+	for k := range storeKinds {
+		if !auditInboxKinds[k] {
+			t.Errorf("store 枚举 %q 不在 06-audit §3.1 文档表里（代码漂移了文档没跟上）", k)
+		}
+	}
+	for k := range auditInboxKinds {
+		if !storeKinds[k] {
+			t.Errorf("文档 kind %q 未被 store 枚举收录（执法面漏了这个值）", k)
+		}
+	}
+
+	for _, c := range consts {
+		if !auditInboxKinds[c.kind] {
+			t.Errorf("kind %s=%q 不在 06-audit §3.1 枚举内", c.name, c.kind)
+		}
+		if !auditInboxSeverities[c.sev] {
+			t.Errorf("severity %s=%q 不在枚举内", c.name, c.sev)
+		}
+	}
+
+	// 活体断言：跑一轮真实投递，检查送出去的字符串。
+	fx := openVerifyFixture(t)
+	fx.fake.setCatalog(fx.prov, seedCatalog())
+	r := NewModelRefresherWithHooks(fx.st, fx.fake, time.Minute, nil, fx.hooks)
+	if _, err := r.RefreshOnce(context.Background()); err != nil {
+		t.Fatalf("刷新失败: %v", err)
+	}
+	if len(fx.inbox.notes) == 0 {
+		t.Fatal("应有投递记录")
+	}
+	for _, n := range fx.inbox.notes {
+		if !auditInboxKinds[n.kind] {
+			t.Errorf("投递的 kind=%q 不在枚举内（store 会拒收 → 静默失败）", n.kind)
+		}
+		if !auditInboxSeverities[n.severity] {
+			t.Errorf("投递的 severity=%q 不在枚举内", n.severity)
+		}
+	}
+
+	// bootstrap 路径同样验一次（channel_failing 走 AdminNotifier）。
+	bn := &fakeNotifier{}
+	b := NewRelayBootstrapper(&fakeProviderSource{err: errors.New("sidecar down")},
+		&fakeUpstreamWriter{}, &fakeRefresher{}, bn, nil)
+	b.Run(context.Background())
+	if len(bn.notes) == 0 {
+		t.Fatal("bootstrap 应有通知")
+	}
+	// fakeNotifier 记的是 kind/related/severity 拼接串。
+	if !strings.Contains(bn.notes[0], InboxKindChannelFailing) ||
+		!strings.HasSuffix(bn.notes[0], "/"+InboxSeverityError) {
+		t.Fatalf("bootstrap 通知词表错位：%s", bn.notes[0])
+	}
+}
+
+// TestContractBootstrapNotifyThrottled：同一自举失败重复 Run 只投一条通知。
+// 为什么必须有：自举类通知拿不到数字行 id（provider 行还没落库），store 的
+// Append 用部分索引去重（WHERE related_id IS NOT NULL）覆盖不到它们，
+// 而自举会随启动重试/周期重跑——不节流就会把待处理页刷成噪声
+// （03-upstream.md §3.3：噪声等于没有通知）。
+func TestContractBootstrapNotifyThrottled(t *testing.T) {
+	src := &fakeProviderSource{err: errors.New("sidecar down")}
+	nt := &fakeNotifier{}
+	b := NewRelayBootstrapper(src, &fakeUpstreamWriter{}, &fakeRefresher{}, nt, nil)
+	for i := 0; i < 5; i++ {
+		b.Run(context.Background())
+	}
+	if len(nt.notes) != 1 {
+		t.Fatalf("重复自举失败应只投 1 条通知，got %d：%v", len(nt.notes), nt.notes)
+	}
+	// 不同 title（不同失败原因）不该被节流吞掉——节流键含 title。
+	b.notify(context.Background(), InboxKindChannelFailing, "", "另一个失败", "x", InboxSeverityError)
+	if len(nt.notes) != 2 {
+		t.Fatalf("不同 title 应各自投递，got %d", len(nt.notes))
+	}
+}
+
+// TestContractChannelSourceLoggedNotStored：渠道来源写日志而不写列
+// （lead 裁决 B）。断言两件事：①real_models 无 channel_source 列（若将来有人
+// 补列，本测试与存储层会同时给出信号）；②带权威 owned_by 的目录条目落库后
+// channel 取权威值——来源信息只在日志里。
+func TestContractChannelSourceLoggedNotStored(t *testing.T) {
+	dir := t.TempDir()
+
+	st, err := store.Open(context.Background(), store.Options{
+		Path: filepath.Join(dir, "freerouter.db"), MasterKeyFile: filepath.Join(dir, "m.key"),
+	})
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	if _, err := st.Repos().Models.UpsertUpstream(ctx, "relay", "p1", "sidecar://p1", nil, true); err != nil {
+		t.Fatalf("建上游: %v", err)
+	}
+
+	// ① 列面：channel_source 不存在的断言**只能靠编译期**（store.RealModel 没有
+	// 该字段；store 也不暴露 *sql.DB 给外部做 pragma 查询——这是刻意的封装）。
+	// 所以这里不做运行时列检查：若将来裁决改 A 补了列，下面 ② 的日志断言
+	// 仍然有效，且 refresh.go 的注释会先被更新（那是改列时的必经点）。
+
+	// ② 权威值优先落库（owned_by 压过 id 前缀）。
+	fake := &fakeCatalog{catalog: map[string][]dshprovider.ModelInfo{
+		"p1": {{UpstreamModelID: "aggregate/auto", OwnedBy: "deepseek-official"}},
+	}}
+	// Debug 级才看得到来源行——生产默认 Info 会把它过滤掉（这是 lead 裁决 B 里
+	// 「零成本」的一部分：正常部署不产噪声，要查时把级别调到 debug）。
+	var logs bytes.Buffer
+	r := NewModelRefresher(st, fake, time.Minute,
+		slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	if _, err := r.RefreshOnce(ctx); err != nil {
+		t.Fatalf("刷新失败: %v", err)
+	}
+	rows, err := st.Repos().Models.ListVisibleRealModels(ctx)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("应落 1 行：%d %v", len(rows), err)
+	}
+	if rows[0].Channel == nil || *rows[0].Channel != "deepseek-official" {
+		t.Fatalf("channel 应取权威 owned_by，got %v", rows[0].Channel)
+	}
+	// 来源写进 Debug 日志（裁决 B 的落点）。
+	if !strings.Contains(logs.String(), `channel_source=owned_by`) {
+		t.Fatalf("日志应记渠道来源：\n%s", logs.String())
+	}
+}
