@@ -41,6 +41,12 @@ const sidecarScheme = "sidecar://"
 
 // upstreamSnapshotTTL 是上游表快照的有效期。
 //
+// 为什么 1s：它管的是**凭据/上游启停的生效窗口**，不是目录刷新周期
+// （目录新鲜度由 upstream.model_refresh_interval 管，10 分钟）。控制台点
+// 「禁用」后新请求最迟 1 秒生效——远小于任何人工或自动化切换的容差；且错
+// 误方向不对称：多放行 1 秒 = 一个请求打到刚禁用的上游（上游拒绝，客户端
+// 可重试），少放行 = 该上游整段 503。
+//
 // 一次请求会为每个候选查一次 GetRealModel（各自要上游 kind/channel），
 // 不加缓存就是 N 次全表 SELECT。1 秒窗口足够覆盖单请求，又短到「刚禁用
 // 的上游」最多晚 1 秒生效——目录刷新是 10 分钟一轮，1 秒的偏差可忽略。
@@ -317,6 +323,22 @@ func (c *routingCandidates) pathsOf(ctx context.Context, resolved *routing.Resol
 			RealModel:  rm,
 			Constraint: byModel[rm.ID],
 			Caps:       capsOf(rm),
+			// 四个排序键当前都没有数据来源（探测/额度面尚未接线）：
+			// 这里把「无数据」显式写出来，而不是留零值——因为零值语义是
+			// 「有数据且为 0」，会被策略键当成真实测量值参与排序。
+			//
+			// 具体地 TTFTMs 必须显式 -1：routing 的 speed 键判 `TTFTMs < 0`
+			// 为无样本（垫底），零值 0 会被读成「TTFT 0 毫秒的极速模型」
+			// 排到最前（code-review 巡检发现）。默认链 [expiry-first,
+			// balance] 不含 speed 所以当前安全，但管理员一旦把 speed 配
+			// 进链就会命中这个坑。
+			ExpiresAt:       0,     // 到期：0 = 无到期概念（expiresAt 键判 <=0 无键）
+			Balance:         0,     // 余额：值无意义
+			BalanceKnown:    false, // 余额未知 → 无键，垫底
+			TTFTMs:          -1,    // 无样本 → 垫底（不是 0，见上）
+			TotalMs:         -1,    // 同上
+			PriceMultiplier: 1,     // 无价格数据时取基线 1（03-strategy §2.5.2 的「不被惩罚中间态」）
+			CooledDown:      false, // 冷却由 Cooldowns.Apply 统一标注
 		})
 	}
 	return paths

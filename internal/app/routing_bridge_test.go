@@ -245,3 +245,92 @@ func TestContractRoutingFillsTrace(t *testing.T) {
 		t.Fatalf("trace 过短：%s", raw)
 	}
 }
+
+// 9. 有意为之的 fail-open 契约化（code-review 巡检建议）：
+// 目录没有 tools 能力字段时，带工具的请求必须放行到上游而不是全池 503。
+//
+// 这条测试保护的是一个**有意的非对称**：tools 未知→放行（失败形态是上游
+// 400，客户端拿到准确错误）；context 未知→剔除（失败形态是静默截断，
+// 不可逆且不可归因）。两者的差别只存在于注释里时，它迟早会被某个
+// 「顺手统一一下」的改动抹平——所以钉成契约。
+func TestContractRoutingToolsUnknownFailsOpen(t *testing.T) {
+	a := newRoutingTestApp(t)
+	ctx := context.Background()
+	win := int64(128000)
+	up, err := a.store.Repos().Models.UpsertUpstream(ctx, "selfhosted", "u-tools", "https://example.com/v1", nil, true)
+	if err != nil {
+		t.Fatalf("建上游失败: %v", err)
+	}
+	// modalities 不含 image、efforts 未给——目录能给的都给了；tools 字段
+	// 在数据模型里根本不存在（探测未落地）。
+	rm, err := a.store.Repos().Models.UpsertRealModel(ctx, store.RealModel{
+		UpstreamID: up, UpstreamModelID: "model-tools", ContextWindow: &win,
+		Modalities: pstr(`["text"]`),
+	})
+	if err != nil {
+		t.Fatalf("落库失败: %v", err)
+	}
+	amID, err := a.store.Repos().Models.CreateAbstractModel(ctx, store.AbstractModel{
+		Name: "tooled", DisplayName: "tooled", Status: store.ModelActive, CapabilityMode: "strict",
+	})
+	if err != nil {
+		t.Fatalf("建抽象模型失败: %v", err)
+	}
+	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
+		{AbstractModelID: amID, RealModelID: rm},
+	}); err != nil {
+		t.Fatalf("设候选失败: %v", err)
+	}
+
+	cands, err := newRoutingCandidates(a).Candidates(ctx, "tooled", ir.Request{
+		Tools: []ir.ToolDef{{Name: "calc"}},
+	})
+	if err != nil {
+		t.Fatalf("候选查询不该报错: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("tools 能力未知时应 fail-open 放行（交给上游判），得到 %d 条候选", len(cands))
+	}
+}
+
+// 10. 请求需要图片而候选只有 text → 模态过滤剔除（对照组：与 9 组成一对，
+// 证明桥层确实在按画像过滤，而不是恒放行一切）。
+func TestContractRoutingImageNeedFiltersOut(t *testing.T) {
+	a := newRoutingTestApp(t)
+	ctx := context.Background()
+	win := int64(128000)
+	up, err := a.store.Repos().Models.UpsertUpstream(ctx, "selfhosted", "u-img", "https://example.com/v1", nil, true)
+	if err != nil {
+		t.Fatalf("建上游失败: %v", err)
+	}
+	rm, err := a.store.Repos().Models.UpsertRealModel(ctx, store.RealModel{
+		UpstreamID: up, UpstreamModelID: "text-only", ContextWindow: &win,
+		Modalities: pstr(`["text"]`),
+	})
+	if err != nil {
+		t.Fatalf("落库失败: %v", err)
+	}
+	amID, _ := a.store.Repos().Models.CreateAbstractModel(ctx, store.AbstractModel{
+		Name: "imgless", DisplayName: "imgless", Status: store.ModelActive, CapabilityMode: "strict",
+	})
+	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
+		{AbstractModelID: amID, RealModelID: rm},
+	}); err != nil {
+		t.Fatalf("设候选失败: %v", err)
+	}
+
+	req := ir.Request{Messages: []ir.Message{{
+		Role:  ir.RoleUser,
+		Parts: []ir.Part{ir.TextPart{Text: "看图"}, ir.ImagePart{}},
+	}}}
+	cands, err := newRoutingCandidates(a).Candidates(ctx, "imgless", req)
+	if err != nil {
+		t.Fatalf("候选查询不该报错: %v", err)
+	}
+	if len(cands) != 0 {
+		t.Fatalf("请求带图片而候选只有 text，应被模态过滤剔除，得到 %d 条", len(cands))
+	}
+}
+
+// pstr 是本文件的字符串指针帮手（JSON 列以 *string 存 NULL 语义）。
+func pstr(s string) *string { return &s }

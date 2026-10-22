@@ -208,24 +208,31 @@ func TestContractNoCandidate(t *testing.T) {
 }
 
 // TestContractAggregateExcluded aggregate/* 排除（01-catalog.md §5：
-// 上游自己的策略层与我们重叠后无法归因——两层策略只留我们这层；
-// excluded_from_candidates 标志与渠道名判双保险）。
+// 上游自己的策略层与我们重叠后无法归因——两层策略只留我们这层）。
+//
+// 两道闸各测各的：①excluded_from_candidates 标志（刷新器写）；②
+// upstream_model_id 首斜杠段 == aggregate（路由层兜底，2026-10-22 把原
+// 「渠道名 == aggregate」改为前缀判——渠道名由 upstream 行推出，永远产不出
+// aggregate，那道是恒假的死代码）。
 func TestContractAggregateExcluded(t *testing.T) {
 	st := newFakeStore()
 	st.addModel(&AbstractModel{ID: 1, Name: "smart", Status: StatusActive})
-	st.cands[1] = []CandidateDecl{{RealModelID: 10}, {RealModelID: 11}, {RealModelID: 12}}
-	st.real[10] = mkReal(10, "aggregate", "agg-model")     // 渠道名命中
-	st.real[10].ExcludedFromCandidates = false             // 标志被清掉（改库）
+	st.cands[1] = []CandidateDecl{{RealModelID: 10}, {RealModelID: 11}, {RealModelID: 12}, {RealModelID: 13}}
+	st.real[10] = mkReal(10, "aggregate", "agg-model") // 闸①：标志命中
+	st.real[10].ExcludedFromCandidates = true
 	st.real[11] = mkReal(11, "deepseek-official", "flash") // 正常
-	st.real[12] = mkReal(12, "cline", "x")                 // 标志命中
-	st.real[12].ExcludedFromCandidates = true
+	st.real[12] = mkReal(12, "cline", "aggregate/x")       // 闸②：id 前缀命中、标志被清掉（改库）
+	st.real[12].ExcludedFromCandidates = false
+	// 近似名不误伤：渠道段必须精确等于 aggregate（与 store 的 SQL 前缀
+	// 判定同款口径——aggregate-v2/、my_aggregate/ 都不是聚合渠道）。
+	st.real[13] = mkReal(13, "aggregate-v2", "aggregate-v2/x")
 
 	r, rerr, err := NewResolver(st).Resolve(ctx(), "smart")
 	if err != nil || rerr != nil {
 		t.Fatalf("解析失败: %v %v", err, rerr)
 	}
-	if len(r.Candidates) != 1 || r.Candidates[0].ID != 11 {
-		t.Fatalf("aggregate 应全排除（渠道名+标志双保险）: %+v", r.Candidates)
+	if len(r.Candidates) != 2 || r.Candidates[0].ID != 11 || r.Candidates[1].ID != 13 {
+		t.Fatalf("aggregate 应全排除、近似名不误伤（标志+id 前缀两道）: %+v", r.Candidates)
 	}
 }
 

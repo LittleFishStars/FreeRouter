@@ -390,12 +390,12 @@ func (s *Server) HandleV1Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 与 proxyV1 共享候选循环骨架（切换预算与冷却回传单点实现）。
-	if s.switchCandidates(r.Context(), w, requestID, cs, cands, func(cand Candidate) bool {
+	// 终局响应写在 onExhausted 里——见 runCandidates 的注释。
+	s.runCandidates(r.Context(), w, requestID, cs, cands, func(cand Candidate) bool {
 		return s.proxyResponsesOnce(r.Context(), w, *req, cand, requestID)
-	}) {
-		return
-	}
-	s.writeV1Error(w, "upstream_unavailable", "所有上游候选均失败", requestID)
+	}, func() {
+		s.writeV1Error(w, "upstream_unavailable", "所有上游候选均失败", requestID)
+	})
 }
 
 // proxyResponsesOnce 单候选非流式代理（Responses 出站编码版 proxyOnce）。
