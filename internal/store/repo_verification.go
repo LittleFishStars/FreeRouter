@@ -258,3 +258,129 @@ func (r *ModelRepo) CreateCredential(ctx context.Context, ownerAccountID int64, 
 	}
 	return res.LastInsertId()
 }
+
+// ================================================================ 凭据读筛选与状态写入（管理面）
+
+// CredentialStatus 是凭据的可调用状态。
+//
+// 值域就是 upstream_credentials.status 的 DB CHECK 枚举——不自造（06-audit 与
+// 管理面按这套值发审计）。02-credentials §5.2 那套（pending/active/degraded/
+// revoked）是建议口径，与 0001 已发布的 CHECK 不一致，差异已回报 lead；
+// 在文档统一之前，**以库里的 CHECK 为准**：写了 CHECK 外的值会被 SQLite 拒掉，
+// 而错误信息会漏进 API 响应。
+type CredentialStatus string
+
+const (
+	CredPending  CredentialStatus = "pending"  // 已提交，鉴定未走完
+	CredActive   CredentialStatus = "active"   // 可被调用
+	CredInvalid  CredentialStatus = "invalid"  // 密钥失效（上游 401 持续等）
+	CredExpired  CredentialStatus = "expired"  // 到期
+	CredDisabled CredentialStatus = "disabled" // 人工停用（suspend / ban 的落点）
+)
+
+func (s CredentialStatus) valid() bool {
+	switch s {
+	case CredPending, CredActive, CredInvalid, CredExpired, CredDisabled:
+		return true
+	}
+	return false
+}
+
+// SetCredentialStatus 写凭据状态。
+//
+// suspend / ban 的落点：两者都映射到 disabled。为什么不各加一个枚举值——
+// status 列有 DB CHECK，加值必须新迁移，而"暂停"与"封禁"的差别在**原因与
+// 是否可恢复**，不在状态机：这两件事由审计事件的 detail 承载（reason/operator），
+// 而不是把一个维度拆成两个状态值让所有判定逻辑去猜（02-credentials §5.2 对
+// 布尔 enabled 的批评在这里同样适用）。
+//
+// **必须由调用方在同一 WithTx 里写审计**（02-admin §9 的 ban 是 🔒 二次确认级）：
+// 管理动作必留痕的唯一实现手段是同事务——本方法若在内部自行写审计，
+// 就把"写没写审计"变成仓储的隐式行为，调用方无法感知也无法补字段。
+// 事务传播已经就绪：WithTx 内取到的仓储绑定同一个 tx，直接调即可。
+func (r *ModelRepo) SetCredentialStatus(ctx context.Context, id int64, status CredentialStatus) error {
+	if !status.valid() {
+		return fmt.Errorf("store: 非法凭据状态 %q（值域 pending/active/invalid/expired/disabled）", status)
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE upstream_credentials SET status = ? WHERE id = ?`, string(status), id)
+	if err != nil {
+		return fmt.Errorf("store: 改凭据状态失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrCredentialNotFound
+	}
+	return nil
+}
+
+// CredentialFilter 是管理面凭据列表的筛选条件（02-admin §9 的 owner/provider/
+// verify_status/status 四个筛选位）。零值 = 不筛。
+type CredentialFilter struct {
+	OwnerAccountID *int64
+	Provider       string
+	Status         CredentialStatus
+	VerifyStatus   VerifyStatus
+	// Limit <=0 取 100，硬上限 500（管理面列表不应当拉全表）。
+	Limit  int
+	Offset int
+}
+
+// ListCredentials 按条件列凭据（管理面）。
+//
+// 走的索引：owner 筛 → ix_upstream_credentials_owner；status+verify_status 筛
+// → ix_upstream_credentials_status（前导列正是 status）。两个筛选位都留了
+// 索引可用形状，不需要为管理面再加索引。
+//
+// 返回的行**不含任何密文**：secret_ref 是引用，密文在 upstream_secrets，
+// 解密要主密钥且只在发起上游请求时按需取。
+func (r *ModelRepo) ListCredentials(ctx context.Context, f CredentialFilter) ([]Credential, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	q := strings.Builder{}
+	q.WriteString(credentialColumns + ` WHERE 1=1`)
+	var args []any
+	if f.OwnerAccountID != nil {
+		q.WriteString(" AND owner_account_id = ?")
+		args = append(args, *f.OwnerAccountID)
+	}
+	if f.Provider != "" {
+		q.WriteString(" AND provider = ?")
+		args = append(args, f.Provider)
+	}
+	if f.Status != "" {
+		if !f.Status.valid() {
+			return nil, fmt.Errorf("store: 非法凭据状态筛选 %q", f.Status)
+		}
+		q.WriteString(" AND status = ?")
+		args = append(args, string(f.Status))
+	}
+	if f.VerifyStatus != "" {
+		if !f.VerifyStatus.valid() {
+			return nil, fmt.Errorf("store: 非法鉴定状态筛选 %q", f.VerifyStatus)
+		}
+		q.WriteString(" AND verify_status = ?")
+		args = append(args, string(f.VerifyStatus))
+	}
+	q.WriteString(" ORDER BY id DESC LIMIT ? OFFSET ?")
+	args = append(args, limit, f.Offset)
+
+	rows, err := r.db.QueryContext(ctx, q.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列凭据失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Credential
+	for rows.Next() {
+		c, err := scanCredentialRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *c)
+	}
+	return out, rows.Err()
+}

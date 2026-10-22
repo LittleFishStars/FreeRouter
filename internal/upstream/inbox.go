@@ -33,25 +33,44 @@ type VerificationWriter interface {
 
 // InboxWriter 是 admin_inbox 投递的窄接口（任务第 3 点）。
 //
-// 三事件（03-upstream.md §3.3 表的同源子集 + 05-verification 的 suspect）：
-//   - 新模型出现 upstream_model_added（info）
-//   - 模型消失 upstream_model_missing（warn）
-//   - 鉴定变 suspect upstream_model_suspect（warn——它标在目录里影响可用性判断）
+// 三事件（kind/severity 取自 docs/security/06-audit.md §3.1 的**唯一权威词表**，
+// b701374 裁决；03-upstream.md §3.3 现在只是同一词表的引用视图）：
+//   - 新模型出现 model_added（info）
+//   - 模型消失 model_missing（warning）
+//   - 鉴定变 suspect verification_failed（warning——§3.1 用它覆盖「鉴定 suspect
+//     或复检回归」；它标在目录里影响可用性判断）
 //
 // 去重规则（§3.3：同一 (kind, related_id, title) 在 read_at IS NULL 状态下
 // 不重复插入）归 Lead 的实现侧；本接口只管投递。
 type InboxWriter interface {
 	// NotifyInbox 投递一条站内通知。kind 事件类型；relatedID 是 real_models.id
 	// 的字符串形态；payloadJSON 是载荷（模型 id/上游/证据等）；severity 取
-	// info/warn/error（03-upstream.md §3.3 表）。
+	// info|warning|error（06-audit.md §3.1，秩递增）。
 	NotifyInbox(ctx context.Context, kind, relatedID, title, payloadJSON, severity string) error
 }
 
-// inbox 三事件的 kind 常量（03-upstream.md §3.3 表口径）。
+// inbox 三事件的 kind 常量（值域取自 06-audit.md §3.1）。
+//
+// 为什么必须逐字对齐那张表：store 的 InboxRepo.Append 按枚举**拒非枚举值**
+// （severity 是排序键，写错会静默排到末尾——「看起来能用、实际不可用」那一类），
+// 而本包的「通知失败只记日志」语义会把这种拒绝**吞成日志里的静默失败**：
+// 管理员收件箱永远收不到模型变动信号。所以新增事件类型时先改 06-audit 再改
+// 这里；verify_test 的 TestContractInboxVocabularyMatchesAudit 把「投递的
+// kind/severity 落在枚举内」钉成断言。
 const (
-	InboxKindModelAdded   = "upstream_model_added"   // 目录新增模型（info）
-	InboxKindModelMissing = "upstream_model_missing" // 目录消失模型（warn）
-	InboxKindModelSuspect = "upstream_model_suspect" // 鉴定变 suspect（warn）
+	InboxKindModelAdded   = "model_added"         // 目录新增模型（info）
+	InboxKindModelMissing = "model_missing"       // 目录消失模型（warning）
+	InboxKindModelSuspect = "verification_failed" // 鉴定 suspect / 复检回归（warning）
+	// InboxKindChannelFailing：一个渠道/上游连续失败（relay 整类不可用、
+	// selfhosted 端点连不上）。bootstrap.go 的自举失败也走它——severity 取 error。
+	InboxKindChannelFailing = "channel_failing"
+)
+
+// inbox 的 severity 常量（06-audit.md §3.1：固定三值，列表按 severity DESC 排）。
+const (
+	InboxSeverityInfo    = "info"
+	InboxSeverityWarning = "warning"
+	InboxSeverityError   = "error"
 )
 
 // RefreshHooks 刷新联动的可选依赖集。
@@ -162,7 +181,7 @@ func (h *RefreshHooks) notifySuspect(ctx context.Context, log *slog.Logger, it v
 		"fingerprint_version": FingerprintVersion,
 	})
 	if err := h.Inbox.NotifyInbox(ctx, InboxKindModelSuspect, fmt.Sprint(it.realModelID),
-		"模型鉴定标记 suspect：", string(payload), "warn"); err != nil {
+		"模型鉴定标记 suspect：", string(payload), InboxSeverityWarning); err != nil {
 		log.Warn("upstream: suspect 通知投递失败（旁路）", "model", it.info.UpstreamModelID, "error", err)
 	}
 }
@@ -194,7 +213,7 @@ func (h *RefreshHooks) notifyMissing(ctx context.Context, log *slog.Logger, upst
 		"at":       time.Now().Unix(),
 	})
 	if err := h.Inbox.NotifyInbox(ctx, InboxKindModelMissing, fmt.Sprint(realModelID),
-		"目录消失模型：", string(payload), "warn"); err != nil {
+		"目录消失模型：", string(payload), InboxSeverityWarning); err != nil {
 		log.Warn("upstream: 模型消失通知投递失败（旁路）", "model", model, "error", err)
 	}
 }
