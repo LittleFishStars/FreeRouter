@@ -681,3 +681,98 @@ func (s ModelStatus) valid() bool {
 	}
 	return false
 }
+
+// ================================================================ 上游写域（管理面）
+
+// validUpstreamKind 判定 kind 值域（upstreams.kind 有 DB CHECK，Go 层同步一份
+// 是为了给出可判定的错误，而不是让 SQLite 的 CHECK 失败信息漏进 API 响应）。
+func validUpstreamKind(kind string) bool {
+	switch kind {
+	case "relay", "vendor", "selfhosted":
+		return true
+	}
+	return false
+}
+
+// UpdateUpstream 改上游的名称、base_url 与启用开关（02-admin §9 的 PATCH）。
+//
+// 为什么 kind 不在这里改：kind 改变的是"这条上游**怎么被调用**"，不是它的名字
+// 或开关。就地改会让"我改了 base_url"与"我改了调用方式"看起来是同一类操作，
+// 而后者会让所有依赖该上游的候选在下一次请求时走一条完全不同的代码路径
+// （02-admin §9 明确论证）。所以 kind 走 SetUpstreamKind 单独一条，管理面对应
+// 独立的危险级端点。
+//
+// 为什么要回读旧行做存在性判定：UPDATE 影响 0 行既可能是"不存在"也可能是
+// "值没变"，只看 RowsAffected 会把前者报成成功。
+func (r *ModelRepo) UpdateUpstream(ctx context.Context, id int64, name, baseURL string, enabled bool) error {
+	if id == 0 {
+		return errors.New("store: 上游 id 不得为 0")
+	}
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(baseURL) == "" {
+		return errors.New("store: 上游 name 与 base_url 不得为空")
+	}
+	if _, err := r.getUpstreamByID(ctx, id); err != nil {
+		return err
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE upstreams SET name = ?, base_url = ?, enabled = ? WHERE id = ?`,
+		name, baseURL, boolInt(enabled), id)
+	if err != nil {
+		return fmt.Errorf("store: 改上游失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetUpstreamKind 变更上游形态（relay/vendor/selfhosted）。
+//
+// 为什么单独一条：见 UpdateUpstream 的论证。
+//
+// 为什么要求 base_url 与新 kind 匹配：relay 的调用路径是 sidecar 进程内直调
+// adapter，没有端点；改成 relay 却留着一条 http URL，等于让运行时按一个不会被
+// 使用的地址做能力判断。反之 vendor/selfhosted 改完没地址则必然调用失败。
+// 这一条把"形态与地址不匹配"这个只能靠日志反推的错误挡在写入时。
+func (r *ModelRepo) SetUpstreamKind(ctx context.Context, id int64, kind string) error {
+	if !validUpstreamKind(kind) {
+		return fmt.Errorf("store: 非法上游类型 %q（kind 只能是 relay/vendor/selfhosted）", kind)
+	}
+	u, err := r.getUpstreamByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if kind == "relay" && !strings.HasPrefix(u.BaseURL, "sidecar://") {
+		// relay 的 base_url 定案值（task-12）是 provider 锚点 sidecar://<provider>。
+		// 非空校验已在 UpsertUpstream，这里校的是"与新形态一致"。
+		return fmt.Errorf("store: 改成 relay 前请把 base_url 换成 sidecar://<provider> 形态（当前 %q）；relay 不经 HTTP 网关", u.BaseURL)
+	}
+	if kind != "relay" && strings.HasPrefix(u.BaseURL, "sidecar://") {
+		return fmt.Errorf("store: %s 类型需要真实端点地址，而当前 base_url 是 provider 锚点 %q", kind, u.BaseURL)
+	}
+	res, err := r.db.ExecContext(ctx, `UPDATE upstreams SET kind = ? WHERE id = ?`, kind, id)
+	if err != nil {
+		return fmt.Errorf("store: 变更上游形态失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *ModelRepo) getUpstreamByID(ctx context.Context, id int64) (*Upstream, error) {
+	var u Upstream
+	var enabled int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT id, kind, name, base_url, secret_id, owner_account_id, enabled, last_seen_at
+		   FROM upstreams WHERE id = ?`, id).
+		Scan(&u.ID, &u.Kind, &u.Name, &u.BaseURL, &u.SecretID, &u.OwnerAccountID, &enabled, &u.LastSeenAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: 读上游 %d 失败: %w", id, err)
+	}
+	u.Enabled = enabled != 0
+	return &u, nil
+}
