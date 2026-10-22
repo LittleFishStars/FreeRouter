@@ -27,57 +27,86 @@ import (
 	"strings"
 )
 
-// InboxKind 是待办事项的种类（02-admin §12 入站字段）。
+// 值域哨兵错误：kind/severity 都没有 DB CHECK（0001 不可改），值域由 Go 层
+// 保证，因此必须**可判定**——调用方（admin-api）要据此回 400 而不是 500，
+// 用 errors.Is 而不是匹配错误字符串。
+var (
+	ErrInvalidInboxKind     = errors.New("store: 非法 inbox kind")
+	ErrInvalidInboxSeverity = errors.New("store: 非法 inbox severity")
+)
+
+// InboxKind 是待办事项的种类。
+//
+// 词表（lead 裁决 2）：以 06-audit §3.1 的 10 个为**唯一权威**——它是
+// "新事件必须先归类否则告警规则覆盖不到"的守门表，语义最完整。02-admin 的
+// 5 个（registration/model_change/failure/pool_alert/breaker_alert）是它的
+// 子集且命名更糊（model_change 分不清新增/消失/属性变，而三者处置动作不同）；
+// 别名由文档层统一映射，**代码里只出现规范名**。
+//
+// 无 DB CHECK（0001 不能改），因此值域由 Go 层保证：Append 必须拒非枚举值。
 type InboxKind string
 
 const (
-	InboxRegistration InboxKind = "registration"  // 注册待审核
-	InboxModelChange  InboxKind = "model_change"  // 目录变动（新增/消失/属性变化）
-	InboxFailure      InboxKind = "failure"       // 故障通知
-	InboxPoolAlert    InboxKind = "pool_alert"    // 池告警
-	InboxBreakerAlert InboxKind = "breaker_alert" // 熔断告警
+	InboxAccountPending     InboxKind = "account_pending"     // 新注册待审核
+	InboxModelAdded         InboxKind = "model_added"         // 目录新增上游模型
+	InboxModelMissing       InboxKind = "model_missing"       // 上游模型消失
+	InboxModelChanged       InboxKind = "model_changed"       // 上下文/模态/efforts 等属性变化
+	InboxChannelFailing     InboxKind = "channel_failing"     // 某渠道连续失败（故障）
+	InboxCredentialInvalid  InboxKind = "credential_invalid"  // 贡献凭据失效
+	InboxVerificationFailed InboxKind = "verification_failed" // 鉴定 suspect / 复检回归
+	InboxPoolExhausted      InboxKind = "pool_exhausted"      // 组共享池耗尽
+	InboxGlobalBudget       InboxKind = "global_budget"       // 全站预算熔断（等级最高）
+	InboxKeyAnomaly         InboxKind = "key_anomaly"         // 单账户单位时间用量突增
 )
 
 func (k InboxKind) valid() bool {
 	switch k {
-	case InboxRegistration, InboxModelChange, InboxFailure, InboxPoolAlert, InboxBreakerAlert:
+	case InboxAccountPending, InboxModelAdded, InboxModelMissing, InboxModelChanged,
+		InboxChannelFailing, InboxCredentialInvalid, InboxVerificationFailed,
+		InboxPoolExhausted, InboxGlobalBudget, InboxKeyAnomaly:
 		return true
 	}
 	return false
 }
 
-// InboxSeverity 是严重级。降序序：error > warning > info。
+// InboxSeverity 是严重级。词表（lead 裁决 1）= info | warning | error，秩递增。
+//
+// 取这三个是因为 02-admin 是对外 API 契约（改它属 breaking）且用的正是它；
+// DDL 注释的 critical、catalog/upstream 的 warn 全部向它对齐（文档侧统一）。
 type InboxSeverity string
 
 const (
-	SeverityError   InboxSeverity = "error"
-	SeverityWarning InboxSeverity = "warning"
 	SeverityInfo    InboxSeverity = "info"
+	SeverityWarning InboxSeverity = "warning"
+	SeverityError   InboxSeverity = "error"
 )
 
 func (s InboxSeverity) valid() bool {
 	switch s {
-	case SeverityError, SeverityWarning, SeverityInfo:
+	case SeverityInfo, SeverityWarning, SeverityError:
 		return true
 	}
 	return false
 }
 
-// severityRank 给出排序权重（越大越靠前）。error=3 / warning=2 / info=1。
+// severityRankCase 是 SQL 侧的严重级秩表达式（lead 裁决 1 的排序键），
+// %s 填严重级列名。秩：error=3 > warning=2 > 其余=1。
 //
-// 为什么用数字权重而不是字符串排序：字典序是 error < info < warning，
-// 与"降序"要求正好错位——直接 ORDER BY severity DESC 会把 info 排在最前。
-// 这类错位不会报错、只会让最紧急的事项沉底，所以在代码里显式定权重。
+// 为什么值域已在 Go 层硬校验、SQL 仍用 ELSE 1 而不是报错：历史库里可能有
+// 裁决前写入的旧拼写；ELSE 1 让它们沉到末尾（最不紧急），而不是让整个查询失败。
+// 新写入则由 Append 拦住，不会再产生非法值。
+const severityRankCase = `CASE %s WHEN 'error' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END`
+
+// severityRank 是 severityRankCase 的 Go 镜像（与 SQL 同形：error=3、warning=2、
+// 其余=1）。契约测试断言二者对同一组值一致，防两份映射漂移。
 func severityRank(s InboxSeverity) int {
 	switch s {
 	case SeverityError:
 		return 3
 	case SeverityWarning:
 		return 2
-	case SeverityInfo:
-		return 1
 	}
-	return 0
+	return 1
 }
 
 // InboxItem 是一条待办事项。
@@ -99,18 +128,31 @@ func (i InboxItem) Read() bool { return i.ReadAt != nil }
 // InboxRepo 是待处理事项仓储。
 type InboxRepo struct{ base }
 
-// Append 投递一条待办事项，返回新行 id。
+// Append 投递一条待办事项，返回行 id。
+//
+// 未读期幂等（01-catalog §3.5「同一个 (kind, related_id) 在未读期间不重复写」）：
+// 同一关联对象的同一变动第二次到达时，只把 detail_json 更新为最新值、不新建行
+// （裸 INSERT 会让每轮刷新灌一条，一天上百条，待办页失去意义）。幂等窗口由
+// 0003 的部分唯一索引 ux_admin_inbox_open 在库层面保证，本函数用对应的
+// ON CONFLICT 目标命中它；已读之后索引不再覆盖，自然可以重开新行。
+//
+// DO UPDATE 只改 detail_json 与 severity，且 severity **只升不降**（lead 裁决 4）：
+// 一轮刷新里同一变动可能先报 error 后报 info，降级会让真故障从待办页顶部滑走；
+// 而 title 不覆盖是因为它携带的是首次发现时的描述（时间语义已定在未读窗口）。
 //
 // detailJSON 原样存：调用方给什么就存什么，存储层不解析、不校验、不改写。
 // 为什么不做"必须是合法 JSON"的校验：02-admin 的入站示例里 detail_json 是个
 // 对象，但表结构注释只说"JSON"；把校验做在存储层会让"先建条目后补细节"的
 // 工作流无法落地，而这类补写是运维的常见动作。
 func (r *InboxRepo) Append(ctx context.Context, kind InboxKind, severity InboxSeverity, title, detailJSON string, relatedID *int64) (int64, error) {
+	// 值域硬校验（lead 裁决 1/2）：kind/severity 都没有 DB CHECK，而拼错的
+	// severity 会静默排到末尾（CASE ... ELSE 1）——"看起来能用、实际不可用"
+	// 的那类 bug 只能在这里拦。错误可判定：ErrInvalidInboxKind / ErrInvalidInboxSeverity。
 	if !kind.valid() {
-		return 0, fmt.Errorf("store: 非法 inbox kind %q", kind)
+		return 0, fmt.Errorf("%w: %q", ErrInvalidInboxKind, kind)
 	}
 	if !severity.valid() {
-		return 0, fmt.Errorf("store: 非法 inbox severity %q", severity)
+		return 0, fmt.Errorf("%w: %q", ErrInvalidInboxSeverity, severity)
 	}
 	if strings.TrimSpace(title) == "" {
 		return 0, errors.New("store: inbox title 不得为空（列表里没有标题的待办无从处理）")
@@ -119,16 +161,38 @@ func (r *InboxRepo) Append(ctx context.Context, kind InboxKind, severity InboxSe
 	if detailJSON != "" {
 		detail = sql.NullString{String: detailJSON, Valid: true}
 	}
-	res, err := r.db.ExecContext(ctx,
+	if _, err := r.db.ExecContext(ctx,
 		`INSERT INTO admin_inbox(kind, severity, title, detail_json, related_id, created_at)
-		 VALUES(?,?,?,?,?,?)`,
-		string(kind), string(severity), title, detail, relatedID, now())
-	if err != nil {
+		 VALUES(?,?,?,?,?,?)
+		 ON CONFLICT(kind, related_id) WHERE read_at IS NULL AND related_id IS NOT NULL
+		 DO UPDATE SET
+		     detail_json = excluded.detail_json,
+		     -- severity 只升不降：新秩 >= 旧秩才覆盖（秩表达式与 List 的排序键同形）。
+		     severity = CASE WHEN `+fmt.Sprintf(severityRankCase, "excluded.severity")+` >=
+		                           `+fmt.Sprintf(severityRankCase, "admin_inbox.severity")+`
+		                      THEN excluded.severity
+		                      ELSE admin_inbox.severity END`,
+		string(kind), string(severity), title, detail, relatedID, now()); err != nil {
 		return 0, fmt.Errorf("store: 投递待办事项失败: %w", err)
 	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("store: 读取待办事项 id 失败: %w", err)
+	// 回读 id 而不是用 LastInsertId：命中部分唯一索引走 DO UPDATE 时，
+	// LastInsertId 不会指向被更新的那一行（它只在真插入时有意义），
+	// 拿它返回会让调用方拿着一个错 id 去标已读。回读与 ON CONFLICT 同一
+	// 目标条件，拿到的就是当前未读的那一条。
+	var id int64
+	q := `SELECT id FROM admin_inbox WHERE kind = ? AND read_at IS NULL`
+	args := []any{string(kind)}
+	if relatedID != nil {
+		q += ` AND related_id = ?`
+		args = append(args, *relatedID)
+	} else {
+		q += ` AND related_id IS NULL`
+	}
+	if err := r.db.QueryRowContext(ctx, q+` ORDER BY id DESC LIMIT 1`, args...).Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, fmt.Errorf("store: 回读待办事项 id 失败: %w", err)
 	}
 	return id, nil
 }
@@ -194,9 +258,18 @@ func (r *InboxRepo) List(ctx context.Context, f InboxFilter) ([]InboxItem, error
 		q.WriteString(" AND created_at <= ?")
 		args = append(args, f.ToTS)
 	}
-	// severity 用 CASE 权重排序（字典序是错的，见 severityRank 注释）。
-	q.WriteString(` ORDER BY CASE severity
-	                     WHEN 'error' THEN 3 WHEN 'warning' THEN 2 WHEN 'info' THEN 1 ELSE 0 END DESC,
+	// 排序键：severity 秩降序 → created_at 降序 → id 降序。
+	// 秩表达式**只有一处定义**（severityRankCase），Append 的"只升不降"与这里
+	// 共用它——两份秩表各自内联是漂移温床，漂移的后果是"Go 认为 error 最高、
+	// 库排出来 info 在前"这种没人看得出来的错位。
+	// 次级决胜键是必须的：无决胜键时同秩行的顺序由查询计划决定，会随索引与
+	// 统计漂移，"默认按 severity 降序"就成了空话；id 兜底保证全序。
+	//
+	// 取舍（刻意）：不为 severity 加索引。现有 ix_admin_inbox_unread(read_at,
+	// created_at) 与 ix_admin_inbox_kind(kind, created_at) 都不含 severity，
+	// 按秩排会 filesort——但 inbox 是"每轮刷新都写"的表，为读排序加索引换来的
+	// 写放大不值；MVP 阶段未读行是极少数，排序代价可接受。
+	q.WriteString(` ORDER BY ` + fmt.Sprintf(severityRankCase, "severity") + ` DESC,
 	                  created_at DESC, id DESC
 	                  LIMIT ? OFFSET ?`)
 	args = append(args, limit, f.Offset)
