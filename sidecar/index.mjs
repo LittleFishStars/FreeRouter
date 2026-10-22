@@ -12,18 +12,25 @@
 //   5. （未来若开本地端口）只准绑 127.0.0.1、拒绝通配地址 —— OAuth 回调监听是登录流的
 //      既有需求（04-sidecar.md 4.2），但 `0.0.0.0`/空主机监听会把回环信任边界打破；
 //      新增监听前先重读红线③与 config 校验（validate.go 对非回环地址直接拒绝）。
-//
-// 关于 hub 的现实（实测 0.2.1-rc.2）：其根导出是 cordis 插件（依赖 @deepseek-ai/cordis、
-// cosmokit、dsh-credentials 等 B 层包），./client 导出是浏览器模块加载格式（要 window）。
-// 两者在纯 Node 里都 import 不动。所以本 sidecar 的当前形态是「契约完整、能力分级」：
-// health / providers.list / login 会话簿记等不依赖 hub 的方法真实可用；
-// models.list / credentials.* / credits.query / login.start 需要 hub，缺则 E_DEPENDENCY_MISSING。
-// hub 一旦能在 Node 侧装载（或被移植出可独立调用的入口），只需给对应 handler 接上 hubCall。
+// 关于 hub 的现实（2026-10-22 实测，hub 0.2.1-rc.2）：根导出是 cordis 插件（要完整
+// Cordis Context），./client 是浏览器模块格式（要 window），两者都**不是**能给 Go 复用的
+// 调用面。可行路径是深路径 import `lib/<provider>-adapter.js`，前提是 B 层依赖
+// （@deepseek-ai/dsh-llm 等，随 DSH 安装目录走）能被解析 —— 见 deps.mjs 的解析钩子。
+// 因此本 sidecar 的能力分级变成：
+//   * health / providers.list / login 会话簿记：不依赖 hub，始终可用；
+//   * credentials.resolve/describe：读 $DSH_HOME/.credentials.yaml（**只读**，见 credentials.mjs）；
+//   * models.list / infer.stream：apiKey 型 provider（modelscope/opencode）真跑通；
+//     OAuth 型需要 DSH 账号池，返回 E_NOT_IMPLEMENTED 并说明原因；
+//   * credits.query：余额端点在各自 credits 模块里，尚未接（E_NOT_IMPLEMENTED）。
+// 任何路径的失败都归一成结构化错误，进程不崩（5.1「挂横幅继续」依赖这点）。
 
 import process from 'node:process';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
+import * as hub from './hub.mjs';
+import * as dshCredentials from './credentials.mjs';
+import { redactLine } from './redact.mjs';
 
 const SIDECAR_VERSION = '0.1.0';
 
@@ -33,8 +40,10 @@ const SIDECAR_VERSION = '0.1.0';
 // 在进程级把 stdout 让出来，比在几十个调用点各自自律可靠得多。
 const realStdoutWrite = process.stdout.write.bind(process.stdout);
 function toStderr(...args) {
+  // 所有 stderr 输出都过一遍遮蔽：这一路既承载我们自己的审计行，也承载第三方库
+  // 经 stdout-guard 改道的内容（OAuth 授权码/token 碎片最可能从后者漏出来）。
   const line = args.map((a) => (typeof a === 'string' ? a : safeStringify(a))).join(' ');
-  process.stderr.write(line + '\n');
+  process.stderr.write(redactLine(line) + '\n');
 }
 for (const level of ['log', 'info', 'warn', 'error', 'debug', 'trace']) {
   console[level] = toStderr;
@@ -74,44 +83,46 @@ const PROVIDERS = [
 
 // —— 3. hub 装载与 B 层依赖探测 ————————————————————————————————
 // 路径来源：FR_HUB_PATH（Go 侧 Options.HubPath 注入）。留空则尝试 DSH 默认位置。
-const HUB_PATH = process.env.FR_HUB_PATH
-  || path.join(process.env.DSH_HOME || path.join(process.env.HOME || '', '.local/share/dsh'),
-              'profiles/web/node_modules/dsh-providers-hub');
+// 真实解析（含候选枚举）在 hub.mjs，这里只留一个名字给错误信息用。
+const HUB_PATH = hub.hubPath();
 
-function depProbe(name) {
-  // 只探测「可解析」，不执行模块 —— 执行是 hub 自己的事（且可能抛）。
+// depProbe 判断某个 B 层包在**依赖根**里是否存在。
+//
+// 为什么按文件存在性而不是 createRequire().resolve()：实测 createRequire 从 hub 的
+// package.json 起解析时**不受** registerHooks 影响（只有 ESM import 走了钩子），
+// 于是 @deepseek-ai/dsh-credentials 在装了依赖的情况下仍报「找不到」——假阴性。
+// 依赖根由 hub.probe() 给出（它自己就是靠 dsh-llm 定位的），存在性即结论。
+function depProbe(root, name) {
+  if (!root) return { name, ok: false, detail: '未定位到 DSH 依赖根' };
+  const pkg = path.join(root, name, 'package.json');
   try {
-    const req = createRequire(path.join(HUB_PATH, 'package.json'));
-    req.resolve(name);
+    fs.accessSync(pkg, fs.constants.R_OK);
     return { name, ok: true, detail: '' };
-  } catch (e) {
-    return { name, ok: false, detail: String(e.message || e).split('\n')[0] };
+  } catch {
+    return { name, ok: false, detail: `依赖根里没有 ${name}` };
   }
 }
 
-let hubState = null; // { hub, error }
-async function loadHub() {
-  if (hubState) return hubState;
-  try {
-    const mod = await import(path.join(HUB_PATH, 'lib/index.js'));
-    hubState = { hub: mod, error: '' };
-  } catch (e) {
-    // 记住失败原因而不是每次调用重新 import 一次（import 缓存会记住 rejection，但错误文案
-    // 会被 Node 包一层 ERR_MODULE_NOT_FOUND 链；这里保留第一手信息给 health/deps 用）。
-    hubState = { hub: null, error: String(e.message || e).split('\n')[0] };
-  }
-  return hubState;
+// hubStatus 缓存装载探测结果（进程内一次）。
+// 为什么缓存：probe() 会 import 十几个 adapter 模块，而 health 是 3s 超时的纯内存操作
+// （5.3）——每次重跑一遍只会让 health 变慢，不会让结论更准（模块装载结果是进程常量）。
+let hubStatus = null;
+async function hubProbe() {
+  if (!hubStatus) hubStatus = await hub.probe();
+  return hubStatus;
 }
 
-function requireHub(method) {
-  // 同步入口给异步 handler 用：把「缺 hub」变成一次可 await 的抛出。
-  return loadHub().then(({ hub, error }) => {
-    if (!hub) {
-      throw new SidecarError('E_DEPENDENCY_MISSING',
-        `${method} 需要 dsh-providers-hub，装载失败：${error || '未知原因'}（hub_path=${HUB_PATH}）`);
-    }
-    return hub;
-  });
+// requireHub 把「hub 不可用」变成 E_DEPENDENCY_MISSING。
+// 与旧实现的关键差别：**不再** import 根的 cordis 插件。它其实 import 得动，但导出的是
+// `{apply(ctx)}`——「能 import」不等于「能用」，拿它当 hub 可用是 code-review 点名的
+// 同类静默降级（能力缺失必须显式说）。这里以「adapter 模块 + B 层依赖都就位」为可用判据。
+async function requireHub(method) {
+  const st = await hubProbe();
+  if (!st.hubOk) {
+    throw new SidecarError('E_DEPENDENCY_MISSING',
+      `${method} 需要可装载的 dsh-providers-hub adapter（hub_path=${HUB_PATH}）：${st.depsDetail || '未知原因'}`);
+  }
+  return st;
 }
 
 // —— 4. 错误类型与红线守卫 —————————————————————————————————————
@@ -188,45 +199,77 @@ const METHODS = {
       toStderr(`[audit] state.json mtime=${st.mtime.toISOString()}（本进程绝不读写其内容，红线②）`);
     } catch { /* 不存在也不算错，health 的语义是「我活着」 */ }
 
-    const deps = ['@deepseek-ai/dsh-credentials', '@deepseek-ai/cosmokit', '@deepseek-ai/schemastery']
-      .map(depProbe);
-    const { hub, error } = await loadHub();
-    if (!hub) deps.push({ name: 'dsh-providers-hub', ok: false, detail: error });
+    // 顺序有讲究：**先**让 hubProbe() 装上依赖解析钩子，再 depProbe()。
+    // 反过来的话 createRequire 走的是未打补丁的解析器，B 层包一律报「找不到」——
+    // 实测就是这种假阴性（依赖其实在 DSH 安装目录里）。
+    const st = await hubProbe();
+    const deps = ['@deepseek-ai/dsh-credentials', '@deepseek-ai/dsh-llm', '@deepseek-ai/cordis',
+      '@deepseek-ai/cosmokit', '@deepseek-ai/schemastery']
+      .map((name) => depProbe(st.depRoot, name));
+    deps.push({
+      name: 'dsh-providers-hub',
+      ok: st.hubOk,
+      detail: st.hubOk ? `依赖根=${st.depRoot || '(自动)'}` : (st.depsDetail || '装载失败'),
+    });
     return {
       version: SIDECAR_VERSION,
       providers: PROVIDERS.map((p) => p.provider),
       deps,
+      // hubAdapters 让 Go 侧一眼看到「哪几家 adapter 模块在位、哪几家需要账号池」，
+      // 而不是靠试调用去猜（04-sidecar 3 节的同一原则）。
+      hubAdapters: st.adapters,
       stateReadonly: true,
       nodeVersion: process.version,
     };
   },
 
   'providers.list': async () => {
-    // hasAccount 需要 hub 的账号池（读凭据存储元数据）；缺 hub 时如实报 false ——
-    // 它是「存在元数据」的弱断言，报 false 只影响引导，不影响正确性。
-    const { hub } = await loadHub();
-    return PROVIDERS.map((p) => ({ ...p, hasAccount: hub ? Boolean(hub.hasAccount?.(p.provider)) : false }));
+    // hasAccount：有 DSH 凭据引用即视为「存在账号元数据」（不含值）。
+    // 为什么不去 hub 里问账号池：池是 DSH 运行态，sidecar 没有它；凭据文件是同一份事实的
+    // 持久形态，且这个字段只影响引导（报错也不会造成错误调用）。
+    const st = await hubProbe();
+    const adapters = new Map((st.adapters || []).map((a) => [a.provider, a]));
+    return PROVIDERS.map((p) => {
+      const a = adapters.get(p.provider);
+      return {
+        ...p,
+        // 契约字段：hasAccount 只表示「存在元数据」，绝不含凭据值
+        hasAccount: dshCredentials.hasProvider(p.provider),
+        // 附加能力位（未知字段主进程应忽略，契约 3）：adapter 是否可独立驱动
+        adapterAvailable: Boolean(a && a.ok),
+        adapterShape: a ? a.shape : '',
+        adapterDetail: a && !a.ok ? (a.detail || '') : '',
+      };
+    });
   },
 
-  'models.list': async ({ provider }) => {
+  'models.list': async ({ provider, credentialRef, apiKey }) => {
     if (!provider) throw new SidecarError('E_BAD_REQUEST', 'provider 不能为空');
     if (!PROVIDERS.some((p) => p.provider === provider)) {
       throw new SidecarError('E_BAD_REQUEST', `未知 provider：${provider}`);
     }
-    await requireHub('models.list'); // hub 就位后：return hubListModels(hub, provider)
-    throw new SidecarError('E_NOT_IMPLEMENTED', 'models.list 的 hub 调用面尚未在纯 Node 下暴露（等待上游导出适配）');
+    await requireHub('models.list');
+    try {
+      return await hub.listModels({ provider, credentialRef, apiKey });
+    } catch (e) {
+      throw asSidecarError(e, 'models.list');
+    }
   },
 
   'credentials.resolve': async ({ credentialRef }) => {
     if (!credentialRef) throw new SidecarError('E_BAD_REQUEST', 'credentialRef 不能为空');
-    await requireHub('credentials.resolve');
-    throw new SidecarError('E_NOT_IMPLEMENTED', 'credentials.resolve 的 hub 调用面尚未在纯 Node 下暴露');
+    // 只读：读 $DSH_HOME/.credentials.yaml（见 credentials.mjs 的红线段落）。
+    // 返回 null 表示「不存在」——对齐 DSH 的空值口径（契约 2.2）。
+    const value = dshCredentials.resolve(credentialRef);
+    if (value === null) return null;
+    return { value, source: 'dsh-credentials-yaml' };
   },
 
   'credentials.describe': async ({ credentialRef }) => {
     if (!credentialRef) throw new SidecarError('E_BAD_REQUEST', 'credentialRef 不能为空');
-    await requireHub('credentials.describe');
-    throw new SidecarError('E_NOT_IMPLEMENTED', 'credentials.describe 的 hub 调用面尚未在纯 Node 下暴露');
+    const d = dshCredentials.describe(credentialRef);
+    if (!d) throw new SidecarError('E_CREDENTIAL_MISSING', `凭据引用不存在：${credentialRef}`);
+    return d; // 不含值（契约 2.2：describe 只给元数据）
   },
 
   'login.start': async ({ provider }) => {
@@ -272,33 +315,36 @@ const METHODS = {
 
   'credits.query': async ({ provider, credentialRef }) => {
     if (!provider) throw new SidecarError('E_BAD_REQUEST', 'provider 不能为空');
-    await requireHub('credits.query');
-    void credentialRef;
-    throw new SidecarError('E_NOT_IMPLEMENTED', 'credits.query 的 hub 调用面尚未在纯 Node 下暴露');
+    if (!credentialRef) throw new SidecarError('E_BAD_REQUEST', 'credentialRef 不能为空');
+    // 余额端点在各家的 `<provider>-credits.js` 里，入参是「账号凭据对象」而不是明文 key
+    // （例：codearts-credits.js 收 access_token + 账号元数据）。它们与账号池同源，属于
+    // 「需要 DSH 运行态」的那一类，与 infer.stream 的 OAuth 分支同因。
+    // 如实报未实现，而不是发一个不带鉴权的请求再让上游回 401（那会把配置问题伪装成上游故障）。
+    throw new SidecarError('E_NOT_IMPLEMENTED',
+      `credits.query 的余额端点需要 ${provider} 的账号对象（DSH 账号池），sidecar 暂无账号池替身`);
   },
 
   // —— 推理方法（03-upstream.md §3.1：relay 的生成请求必须经 provider adapter）——
-  // caller.go（Go 侧）已锁定的调用形状：{ provider, model, body, stream }，
-  // 应答载荷是「adapter 吐的 OpenAI 形态流/响应体原文」——Go 侧用候选方言的
-  // StreamReader 消费。hub 就位前：与 models.list 同款的两级降级
-  // （缺 hub → E_DEPENDENCY_MISSING；hub 在而调用面未暴露 → E_NOT_IMPLEMENTED）。
-  'infer.stream': async ({ provider, model, body, stream }) => {
+  // 调用形状：{ provider, model, body, stream, credentialRef?, apiKey? }
+  //   * body 是候选方言已编码的请求体（Go 侧 openai.Adapter 产出）；
+  //   * 凭据二选一：credentialRef 指向 DSH 的只读凭据存储；apiKey 是 FreeRouter 自有
+  //     凭据（Go 侧用主密钥解密后单帧传入）。两者都在本进程内就地消费，不进日志、
+  //     不进应答、不写回任何存储（红线①）。
+  // 应答：{ sse: "<OpenAI chat.completion.chunk 的 SSE 全文>" }——relay.go 的消费面
+  //      是「OpenAI 形态流原文」，这样 Go 侧 StreamReader 一行都不用改。
+  'infer.stream': async ({ provider, model, body, stream, credentialRef, apiKey }) => {
     if (!provider) throw new SidecarError('E_BAD_REQUEST', 'provider 不能为空');
     if (!model) throw new SidecarError('E_BAD_REQUEST', 'model 不能为空');
     if (body == null || typeof body !== 'object') {
       throw new SidecarError('E_BAD_REQUEST', 'body 必须是请求体对象（候选方言已编码的 JSON）');
     }
-    const hub = await requireHub('infer.stream');
-    // provider 未知照样透传给 hub（目录表可能落后于 hub 版本——hub 是权威）；
-    // 这里只拦结构性错误，不重复维护一份 provider 白名单。
-    // hub 就位后的目标形态（占位注释，接线时替换）：
-    //   const adapter = hub.getAdapter?.(provider) ?? hub.createAdapter?.(provider);
-    //   const resp = await adapter.stream({ model, ...body, stream });
-    //   return resp; // OpenAI 形态流/响应体，Go 侧 StreamReader 消费
-    void stream; // 流式与否已编码在 body 里；adapter.stream 自行识别
-    void hub;
-    throw new SidecarError('E_NOT_IMPLEMENTED',
-      'infer.stream 的 hub 调用面尚未在纯 Node 下暴露（等待 adapter 入口导出）；Go 侧调用形状已锁定');
+    await requireHub('infer.stream');
+    void stream; // 流式与否已编码在 body 里；adapter 自己决定线上形态
+    try {
+      return await hub.streamInfer({ provider, model, body, credentialRef, apiKey });
+    } catch (e) {
+      throw asSidecarError(e, 'infer.stream');
+    }
   },
   shutdown: async () => {
     // 5.4 步骤 4：主动清理登录会话（回环监听、定时器）后退出，让主进程不用 SIGKILL。
@@ -372,8 +418,33 @@ function main() {
   process.on('unhandledRejection', (e) => toStderr('[unhandled]', String(e)));
 }
 
+// asSidecarError 把 hub.mjs 抛的错误翻成契约错误码。
+// 关键点：**不把原始异常文本原样吐给 Go**——adapter 的错误信息可能带上游响应片段
+// （含 key 前缀），那正是 02-credentials §6.4「错误信息要脱敏」要拦的。这里只保留
+// 第一行并做一次保守遮蔽（token/secret/authorization 形态）。
+function asSidecarError(e, method) {
+  if (e instanceof SidecarError) return e;
+  if (e && e.code === 'E_NOT_IMPLEMENTED') return new SidecarError('E_NOT_IMPLEMENTED', String(e.message || e));
+  if (e && e.code === 'E_BAD_REQUEST') return new SidecarError('E_BAD_REQUEST', String(e.message || e));
+  const first = redactSensitive(String((e && e.message) || e).split('\n')[0]);
+  return new SidecarError('E_INTERNAL', `${method} 失败：${first}`,
+    // 上游 429/超时类（adapter 的 LlmError 用 code 表达）值得重试一次
+    /rate|timeout|429/i.test(first));
+}
+
+// 错误文本外发前统一走 redactLine（模式定义在 redact.mjs，与 Go 侧同组）。
+const redactSensitive = redactLine;
+
 function safeStringify(v) {
-  try { return JSON.stringify(v); } catch { return String(v); }
+  // 为什么单独处理 Error：第三方库常把 Error 直接丢进 console.*，JSON.stringify(new Error('x'))
+  // 是 "{}"——排查时看到空对象比看到堆栈糟得多。
+  if (v instanceof Error) return v.stack || `${v.name}: ${v.message}`;
+  try {
+    return JSON.stringify(v);
+  } catch {
+    // 循环引用 / BigInt：回退到 String()，保证日志里至少有一个可读形态
+    return String(v);
+  }
 }
 
 main();

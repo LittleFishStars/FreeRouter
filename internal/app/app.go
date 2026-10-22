@@ -51,6 +51,9 @@ type App struct {
 
 	// HTTP 服务器（装配好全部中间件与路由的）。
 	server *httpapi.Server
+
+	// 贡献流程服务（M8）：惰性构造，无状态，可被控制台/管理面复用。
+	contribution *upstream.ContributionService
 }
 
 // Options 控制装配行为（测试用得上的注入点）。

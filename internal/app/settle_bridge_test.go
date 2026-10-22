@@ -22,6 +22,7 @@ import (
 
 	"github.com/LittleFishStars/FreeRouter/internal/config"
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
+	"github.com/LittleFishStars/FreeRouter/internal/ir"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
 
@@ -64,6 +65,9 @@ func TestContractSettleBridgeWritesRequestAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("建抽象模型: %v", err)
 	}
+	if amID == 0 {
+		t.Fatal("抽象模型 id 不应为 0")
+	}
 	upID, err := repos.Models.UpsertUpstream(ctx, "selfhosted", "test-up", "http://127.0.0.1:1", nil, true)
 	if err != nil {
 		t.Fatalf("建上游: %v", err)
@@ -76,7 +80,7 @@ func TestContractSettleBridgeWritesRequestAndUsage(t *testing.T) {
 	}
 	// 请求额度行：day/10（会计数 -1 行 → 1）。
 	if err := repos.Quotas.SetAccountQuota(ctx, acctID, store.TotalScope,
-		store.QuotaUnitRequest, store.QuotaPeriodDay, 10); err != nil {
+		store.UnitRequest, store.PeriodDay, 10); err != nil {
 		t.Fatalf("建额度行: %v", err)
 	}
 
@@ -90,7 +94,7 @@ func TestContractSettleBridgeWritesRequestAndUsage(t *testing.T) {
 		ModelName: "smart", RealModelID: rmID,
 		Status: "ok", HTTPStatus: 200,
 		RetryCount: 0, TTFTMs: 12, TotalMs: 34,
-		Usage: &irUsage(10, 5), EndedAt: now,
+		Usage: ir.Ptr(ir.Usage{InputTokens: ir.Ptr(10), OutputTokens: ir.Ptr(5)}), EndedAt: now,
 	}); err != nil {
 		t.Fatalf("成功请求结算失败: %v", err)
 	}
@@ -109,7 +113,7 @@ func TestContractSettleBridgeWritesRequestAndUsage(t *testing.T) {
 
 	// ① 额度行：request/day used 恰为 1（成功 1 + 失败 0）。
 	q, err := repos.Quotas.AccountQuota(ctx, acctID, store.TotalScope,
-		store.QuotaUnitRequest, store.QuotaPeriodDay)
+		store.UnitRequest, store.PeriodDay)
 	if err != nil {
 		t.Fatalf("读额度行: %v", err)
 	}
@@ -155,6 +159,3 @@ func TestContractSettleBridgeWritesRequestAndUsage(t *testing.T) {
 		t.Fatalf("usage_daily = %+v，期望 requests=1 in=10 out=5", rows[0])
 	}
 }
-
-// irUsage 构造 ir.Usage（测试便捷）。
-func irUsage(in, out int) (u irUsageT) { return }

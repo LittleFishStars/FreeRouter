@@ -11,6 +11,7 @@ package dshprovider
 // node 不在 PATH 时全部 Skip —— CI 的 Go-only runner 不该因为缺 Node 而红。
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -519,17 +520,34 @@ func TestContractRealSidecar(t *testing.T) {
 		t.Fatalf("provider 目录应为 17 家，得 %d", len(ps))
 	}
 
-	// 缺 hub：必须拿到**结构化错误**（不是超时、不是进程死亡），且进程依旧健康。
-	_, err = c.CredentialsResolve(ctx, "dsh:buddy:0")
-	if err == nil {
-		t.Fatal("本机未装 B 层依赖，credentials.resolve 理应报错（若环境已装齐请更新本用例）")
+	// credentials.resolve 现在走 $DSH_HOME/.credentials.yaml 的**只读**解析（与 hub 无关），
+	// 契约是「空值/不存在 → result 为 null」。所以这里接受两种正确形态：
+	//   a) 无错误 + nil —— 本机没有这个 ref（最常见）；
+	//   b) 结构化错误 —— 文件缺失/不可读，或将来换成 DSH 后端时的 E_DEPENDENCY_MISSING。
+	// 无论哪种都**不得**是超时或进程死亡。
+	cred, err := c.CredentialsResolve(ctx, "dsh:buddy:0")
+	if err != nil {
+		switch de := asError(t, err); de.Code {
+		case CodeDependencyMissng, CodeNotImplemented, CodeCredentialMissng:
+			// 可接受：这台机器上没有该凭据或没有对应后端
+		default:
+			t.Errorf("credentials.resolve 的失败码应为 E_DEPENDENCY_MISSING/E_NOT_IMPLEMENTED/E_CREDENTIAL_MISSING，得 %s（%v）",
+				de.Code, de)
+		}
+	} else if cred != nil && cred.Value == "" {
+		// resolve 命中时不得回空串：空值按契约必须表达为 null（DSH 口径）。
+		t.Error("credentials.resolve 命中时值不得为空串（空值应表达为 null）")
 	}
-	de := asError(t, err)
-	if de.Code != CodeDependencyMissng && de.Code != CodeNotImplemented {
-		t.Errorf("缺 hub 应 E_DEPENDENCY_MISSING/E_NOT_IMPLEMENTED，得 %s（%v）", de.Code, de)
+
+	// 「业务错误不影响通道健康」的活体断言：credits.query 恒为 E_NOT_IMPLEMENTED
+	// （余额端点要的是 DSH 账号对象，sidecar 无账号池替身）。它必须是**结构化错误**
+	// 而不是超时/断连——这正是「缺能力不崩」的核心。
+	_, err = c.Call(ctx, "credits.query", map[string]any{"provider": "modelscope", "credentialRef": "x"})
+	if CodeOf(err) != CodeNotImplemented {
+		t.Errorf("credits.query 应回 E_NOT_IMPLEMENTED，得 %v", err)
 	}
 	if !c.Available() {
-		t.Fatal("业务错误不得影响通道健康——「缺 hub 不崩」是本用例的核心断言")
+		t.Fatal("业务错误不得影响通道健康——「缺能力不崩」是本用例的核心断言")
 	}
 
 	// 红线守卫的活体往返（真 sidecar 侧）。
@@ -563,4 +581,72 @@ func nodeVersion() string {
 		return "不可用"
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// ────────────────────────────────────────────────────────────────
+// ⑬ sidecar stderr 的日志遮蔽（code-review 一般 8）：
+//
+//	sidecar 的 stdout-guard 会把第三方库任意输出改道 stderr（典型：hub adapter 的
+//	调试行、OAuth 回调 URL）。这些行**不能原样**进主进程日志——授权码/token 会
+//	跟着进去。本用例断言「进日志的那一份」被截断且遮蔽，而排障用的环形缓冲保留原文。
+//
+// ────────────────────────────────────────────────────────────────
+func TestContractStderrRedaction(t *testing.T) {
+	var buf bytes.Buffer
+	h := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	// 不走子进程：drainStderr 只依赖 log + stderr 环，直接构造最小 Client。
+	c := &Client{log: slog.New(h), stderr: newStderrRing(8)}
+
+	const (
+		secretToken = "sk-live-abcdef1234567890"
+		authCode    = "abcd1234efghijkl"
+	)
+	long := strings.Repeat("A", 4096)
+	input := strings.Join([]string{
+		"Authorization: Bearer " + secretToken,
+		"GET /oauth/callback?code=" + authCode + "&state=xyz HTTP/1.1",
+		`{"access_token":"` + secretToken + `","expires_in":3600}`,
+		long, // 超长行：截断
+		"普通日志：provider=modelscope 装载成功",
+	}, "\n") + "\n"
+	c.drainStderr(strings.NewReader(input))
+
+	// 1. 遮蔽：日志里不得出现任何形态的密钥/授权码。
+	logged := buf.String()
+	for _, leak := range []string{secretToken, authCode} {
+		if strings.Contains(logged, leak) {
+			t.Fatalf("stderr 日志泄露了凭据：%q 出现在\n%s", leak, logged)
+		}
+	}
+	// 2. 截断：超长行不得整行进日志（512 字节上限 + "…"）。日志是结构化 TextHandler，
+	//    行内会被包引号与转义，所以按 600 个连续 A 是否出现来判定「没有整行照抄」。
+	if strings.Contains(logged, strings.Repeat("A", 600)) {
+		t.Errorf("超长 stderr 行未被截断（应 ≤ %d 字节）", stderrLogMaxBytes)
+	}
+	// 3. 正常内容仍要可读（遮蔽不能把有用信息一起吃掉）。
+	if !strings.Contains(logged, "modelscope") {
+		t.Errorf("普通日志不应被遮蔽掉：%s", logged)
+	}
+	// 4. 环形缓冲保留原文：排障要看完整错误（它只在内存里，不进日志系统）。
+	tail := c.StderrTail(16)
+	joined := strings.Join(tail, "\n")
+	if !strings.Contains(joined, secretToken) {
+		t.Errorf("环形缓冲应保留原文供排障，实际：%v", tail)
+	}
+	if len(tail) != 5 {
+		t.Errorf("应保留 5 行，得 %d：%v", len(tail), tail)
+	}
+}
+
+// TestContractRedactLogLineIdempotent 断言遮蔽幂等：对已遮蔽的文本再跑一次不变。
+// 为什么重要：同一行可能被多层包装（adapter → sidecar → 主进程日志），
+// 非幂等的遮蔽会在第二层把 `***` 当成值再遮一次，产出 `******` 之类的噪音。
+func TestContractRedactLogLineIdempotent(t *testing.T) {
+	once := redactLogLine("Authorization: Bearer sk-abcdefgh12345678")
+	if twice := redactLogLine(once); twice != once {
+		t.Errorf("遮蔽应幂等：once=%q twice=%q", once, twice)
+	}
+	if strings.Contains(once, "abc...") || strings.Contains(once, "defgh12345678") {
+		t.Errorf("遮蔽不彻底：%q", once)
+	}
 }

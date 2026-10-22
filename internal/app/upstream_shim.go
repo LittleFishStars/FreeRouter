@@ -10,6 +10,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
@@ -149,6 +150,10 @@ func adapterForKind(kind string) ir.Adapter {
 // 行缓存不设：一次 Candidates 查询 + 一次闭包内查询都是毫秒级 SQLite 读，
 // 设缓存只会让「上游停用/启用」的生效时间变慢。
 func (a *App) newUpstreamShim() (upstreamShim, *realModelCandidates) {
+	// 启动期先自检凭据链路：装配了但解不开的上游会以**无鉴权**请求出站，
+	// 那是最难排查的一类故障（现场在上游、原因在本地）。自检失败只告警不阻塞——
+	// 无鉴权 selfhosted 是合法配置，凭据问题不该挡住整个进程。
+	a.auditCredentialWiring(context.Background())
 	http := upstream.NewHTTPTransport(nil, a.secretSource())
 	relay := upstream.NewRelayTransport(a.sidecar)
 	// relay 目标识别：Candidate→Target 需要 kind/base_url/real_model——
@@ -171,19 +176,80 @@ func (s appRealModelSource) ListUpstreams(ctx context.Context) ([]store.Upstream
 	return s.app.store.Repos().Models.ListUpstreams(ctx)
 }
 
-// secretSource 是 HTTPTransport 的凭据源闭包：upstream_secrets 的 AES-GCM
-// 解密在 store 侧。M5 过渡期 vendor 凭据入库路径未通（贡献流程是 M3/M4），
-// 先返回空 token（无鉴权 selfhosted 可用；vendor 待贡献流程接通后补）。
+// secretSource 是 HTTPTransport 的凭据源闭包：secretRef → 明文 Bearer。
 //
-// 为什么现在就留接口位：secret 的解密 API 形状在 store 侧稳定后，
-// 这里只改一行——装配层的「先钉形状后填肉」与 UpstreamWriter 桥同策略。
+// ## 接线（M8 贡献流程）
+//
+// secretRef 由贡献流程写库时确定（internal/upstream/contribution.go 的 Submit）：
+// 纯十进制 = upstream_secrets.id。解密在 store 侧（AES-256-GCM，主密钥来自 0600 文件、
+// 不入库），本闭包只做「引用 → 解密 → 明文」这一次翻译，拿到的明文**只在一次请求的
+// 生命周期内存活**（02-credentials 6.4），不进日志、不缓存、不回显。
+//
+// ## 红线（04-sidecar 4.1 / 02-credentials 6.4）
+//
+// 这里**只解密**，没有对应的写回路径：DSH 侧的续期与 FreeRouter 自己的提交是两条
+// 互不相交的写路径（前者写 .credentials.yaml，后者写 upstream_secrets），
+// 我们绝不把 token 写回 DSH。
+//
+// ## 为什么旧实现是「恒返回空串」而现在必须显式报
+//
+// 旧实现的注释写着「M5 过渡期先返回空 token」——那是一条**静默降级**：
+// transport.go 只在 token 非空时带 Authorization 头，于是配了 vendor 凭据的上游会以
+// **无鉴权**请求打到上游，用户看到的是上游 401/502（upstream_error/upstream_unavailable），
+// 而真实原因是「我们没带凭据」。故障现场因此漂到上游，排查方向全错（C6 精神）。
+//
+// 现在：能解密就带 Bearer；解不出来就**返回错误**（transport 归到 ErrAuth，
+// 上层按鉴权失败换候选/告警），不再假装成功。剩余的唯一「无鉴权」情形是
+// secretRef 为空——那是 selfhosted（如本机 ollama）的正当用法。
 func (a *App) secretSource() upstream.SecretSource {
 	return func(ctx context.Context, secretRef string) (string, error) {
-		// TODO(M4 贡献流程)：接 store 的凭据解密（secretRef → 明文 Bearer）。
-		// 返回空串 = 无鉴权：与「SecretRef 为空」同效（transport.go 只在
-		// token 非空时带 Authorization 头）。
-		return "", nil
+		ref := strings.TrimSpace(secretRef)
+		if ref == "" {
+			// 无引用 = 该上游没有密钥材料：无鉴权 selfhosted 的合法形态。
+			return "", nil
+		}
+		secretID, err := parseSecretRefID(ref)
+		if err != nil {
+			// 引用形态不认识：属于数据/装配错误（不是"没有凭据"），如实报出来。
+			// 错误信息里只带引用本身，不带任何密钥片段。
+			return "", fmt.Errorf("app: secretRef %q 不是合法的密文引用：%w", ref, err)
+		}
+		plain, err := a.store.Repos().Secrets.GetSecret(ctx, secretID)
+		if err != nil {
+			// 三种失败各自可归因（store 已把它们分成不同类型）：
+			//   不存在 → 配置缺失，凭据应标 invalid；
+			//   解密失败 → 安全事件（密钥不符/密文被篡改），要告警而非重试；
+			//   其它 → 主密钥不可用等，运维处理。
+			return "", fmt.Errorf("app: 解密上游凭据失败（secret id=%d）：%w", secretID, err)
+		}
+		token := strings.TrimSpace(string(plain))
+		if token == "" {
+			return "", fmt.Errorf("app: 上游凭据解密结果为空（secret id=%d）", secretID)
+		}
+		return token, nil
 	}
+}
+
+// parseSecretRefID 把 secretRef 解析成 upstream_secrets.id。
+//
+// 值域约定（与 contribution.Submit 写入口径一致）：纯十进制 id。
+// 为什么不用更花哨的形态（如 "secret:<id>"）：引用只在我们自己的两个包里流转，
+// 少一层语法就少一处解析分歧；将来要加前缀时改这两处 + 一个测试即可。
+func parseSecretRefID(ref string) (int64, error) {
+	var id int64
+	for _, c := range ref {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("含非数字字符 %q", string(c))
+		}
+		id = id*10 + int64(c-'0')
+		if id > 1<<62 {
+			return 0, fmt.Errorf("数值越界")
+		}
+	}
+	if id == 0 {
+		return 0, fmt.Errorf("id 为 0")
+	}
+	return id, nil
 }
 
 // targetOf 构造 Caller 的候选→Target 闭包。
@@ -236,3 +302,155 @@ var (
 	// M5 过渡实现与 httpapi 消费面的编译期兼容（测试仍覆盖它的匹配逻辑）。
 	_ httpapi.CandidateSource = (*realModelCandidates)(nil)
 )
+
+// —— 贡献流程装配（M8）：upstream.ContributionStore 的 store 实现 ——
+//
+// 为什么放在装配层：功能包（internal/upstream）只定义窄接口，谁能满足它由这里决定
+// （inbox.go 的 UpstreamWriter/AdminNotifier 同一套纪律）。好处是内聚包不 import
+// 具体仓储，测试可以塞 fake 而不开 SQLite。
+type contributionStore struct {
+	repos *store.Repos
+}
+
+func (c contributionStore) UpsertUpstream(ctx context.Context, kind, name, baseURL string, ownerAccountID *int64, enabled bool) (int64, error) {
+	return c.repos.Models.UpsertUpstream(ctx, kind, name, baseURL, ownerAccountID, enabled)
+}
+
+func (c contributionStore) PutSecret(ctx context.Context, upstreamID int64, plaintext []byte) (int64, error) {
+	return c.repos.Secrets.PutSecret(ctx, upstreamID, plaintext)
+}
+
+func (c contributionStore) DeleteSecret(ctx context.Context, secretID int64) error {
+	return c.repos.Secrets.DeleteSecret(ctx, secretID)
+}
+
+func (c contributionStore) CreateCredential(ctx context.Context, ownerAccountID int64, provider, externalID, label, secretRef string) (int64, error) {
+	return c.repos.Models.CreateCredential(ctx, ownerAccountID, provider, externalID, label, secretRef)
+}
+
+func (c contributionStore) SetCredentialStatus(ctx context.Context, id int64, status store.CredentialStatus) error {
+	return c.repos.Models.SetCredentialStatus(ctx, id, status)
+}
+
+func (c contributionStore) MarkVerified(ctx context.Context, credentialID int64, status store.VerifyStatus, evidence string) error {
+	return c.repos.Models.MarkVerified(ctx, credentialID, status, evidence)
+}
+
+func (c contributionStore) LookupCredential(ctx context.Context, id int64) (*store.Credential, error) {
+	return c.repos.Models.LookupCredential(ctx, id)
+}
+
+func (c contributionStore) ListCredentials(ctx context.Context, f store.CredentialFilter) ([]store.Credential, error) {
+	return c.repos.Models.ListCredentials(ctx, f)
+}
+
+func (c contributionStore) ListUpstreams(ctx context.Context) ([]store.Upstream, error) {
+	return c.repos.Models.ListUpstreams(ctx)
+}
+
+func (c contributionStore) UpdateUpstream(ctx context.Context, id int64, name, baseURL string, enabled bool) error {
+	return c.repos.Models.UpdateUpstream(ctx, id, name, baseURL, enabled)
+}
+
+// NewContributionService 装配贡献服务：真 store（AES-GCM 密文）+ 默认 HTTP 探测
+// （GET {base}/models，零 token 成本，见 contribution.go 的 HTTPProbe 说明）。
+//
+// 探测为什么不用 sidecar 的 models.list：那条路只对 apiKey 型 provider
+// （modelscope/opencode）开放，而贡献物的 base_url 是任意 OpenAI 兼容端点——
+// 用 provider adapter 反而会把「任意端点」限制成「已知 17 家」。
+func (a *App) newContributionService() *upstream.ContributionService {
+	return upstream.NewContributionService(contributionStore{repos: a.store.Repos()}, nil, upstream.ContributionOptions{})
+}
+
+// Contribution 返回进程级贡献服务（控制台/管理面用；无状态，可直接复用）。
+func (a *App) Contribution() *upstream.ContributionService {
+	if a.contribution == nil {
+		a.contribution = a.newContributionService()
+	}
+	return a.contribution
+}
+
+// auditCredentialWiring 是「凭据链路未接」的显式告警（code-review 一般 6 的兜底）。
+//
+// 判据：存在 vendor/selfhosted 上游且它**声明了**密钥材料（upstreams.secret_id 非空），
+// 但 secretSource 解不开（主密钥不可用 / 密文行缺失 / 引用形态不认识）。
+// 这类上游如果被调用，就会以「无 Authorization」打到上游，故障现场漂到 401/502——
+// 所以启动期必须说出来，而不是等用户报「上游 401」再去查。
+//
+// 为什么不逐条解密：解密有成本且会碰主密钥，启动期只做**存在性**判定
+// （HasSecret 不解密），真正解密留在请求路径上（明文只在调用期内存活）。
+func (a *App) auditCredentialWiring(ctx context.Context) {
+	if a.store == nil {
+		return
+	}
+	ups, err := a.store.Repos().Models.ListUpstreams(ctx)
+	if err != nil {
+		a.log.Warn("凭据链路自检：读上游列表失败", "err", err)
+		return
+	}
+	masterOK := !allZero(a.store.MasterKey())
+	hasSecret := func(ctx context.Context, upstreamID int64) (bool, error) {
+		if !masterOK {
+			return false, nil
+		}
+		return a.store.Repos().Secrets.HasSecret(ctx, upstreamID)
+	}
+	need, wired, broken := credentialWiringIssues(ctx, ups, hasSecret, masterOK)
+	a.logCredentialWiring(need, wired, broken)
+}
+
+// logCredentialWiring 是自检的**输出面**（单独拆出来便于测试：日志文案本身是契约，
+// 运维靠 grep「凭据链路未接」来发现静默降级的现场）。
+func (a *App) logCredentialWiring(need, wired, broken int) {
+	if need == 0 {
+		return
+	}
+	if broken > 0 {
+		// Warn 级：这不是「少个功能」，而是**正在以错误形态出站**（无鉴权请求）。
+		a.log.Warn("凭据链路未接：部分上游声明了密钥材料但解不开，这些上游会以无鉴权请求出站",
+			"upstreams_need_credential", need, "wired", wired, "broken", broken,
+			"hint", "检查 store.master_key_file 是否可读、upstream_secrets 是否有对应行")
+		return
+	}
+	// 全部接线：Debug 级即可（正常路径不该在启动日志里占一行 warn）。
+	a.log.Debug("凭据链路自检通过", "upstreams_need_credential", need)
+}
+
+// credentialWiringIssues 是自检的**纯判定**部分（便于测试：不需要真库的悬空外键）。
+//
+// 返回 (声明了密钥材料的上游数, 解得到的, 解不到的)。
+func credentialWiringIssues(ctx context.Context, ups []store.Upstream, hasSecret func(context.Context, int64) (bool, error), masterOK bool) (need, wired, broken int) {
+	for _, u := range ups {
+		if u.Kind != string(upstream.KindVendor) && u.Kind != string(upstream.KindSelfHosted) {
+			continue
+		}
+		if u.SecretID == nil || *u.SecretID == 0 {
+			continue // 无鉴权的 selfhosted：正当形态
+		}
+		need++
+		if !masterOK {
+			broken++
+			continue
+		}
+		has, err := hasSecret(ctx, u.ID)
+		if err != nil || !has {
+			broken++
+			continue
+		}
+		wired++
+	}
+	return need, wired, broken
+}
+
+// allZero 判断主密钥是否已不可用（Store.Close 会把内存副本抹零，见 store.Close）。
+func allZero(b []byte) bool {
+	if len(b) == 0 {
+		return true
+	}
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
+}
