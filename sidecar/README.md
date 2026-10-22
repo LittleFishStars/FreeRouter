@@ -62,6 +62,12 @@
 > 能力缺失一律**显式报码**，不做「看起来能用」的降级——这是 code-review 对 `secretSource`
 > 那条静默降级的同一条纪律，在 sidecar 侧同样适用。
 
+`infer.stream` 的应答形状是 `{"sse": "<OpenAI chat.completion.chunk 的 SSE 全文>"}`：
+NDJSON 是一问一答（不能多帧推送），所以 adapter 的 `StreamChunk` 在 sidecar 内被还原成
+线上格式再整段返回；Go 侧 `relay.go` 的 `unwrapInferPayload` 会拆掉这层信封，
+并兼容「裸 SSE/JSON 载荷」的旧假设（`TestContractRelayUnwrapSSEPayload` 覆盖三种形态）。
+真流式（多帧应答）需要契约演进，属于单独一次接口变更，不在本次范围。
+
 ### 复跑实测
 
 ```console
