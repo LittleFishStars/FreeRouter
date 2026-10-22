@@ -38,11 +38,14 @@ type UpstreamWriter interface {
 
 // AdminNotifier 是 admin_inbox 通知的窄接口（§3.3：目录/健康事件的唯一发现点）。
 //
-// ALIGN-SPEC G：relay 连续失败写 upstream_failing。自举阶段能发的通知有限
-// （目录拉不下来 = warn），实现归装配层；接口为 nil 时跳过通知（不阻塞主流程，
-// §3.3「通知是旁路」）。
+// ALIGN-SPEC G：relay 连续失败写 `channel_failing`（severity=error，
+// 词表唯一权威 = docs/security/06-audit.md §3.1 的 10 值 kind；b701374 裁决
+// 收敛了旧拼写 upstream_failing——store 的 InboxRepo.Append 拒非枚举值，
+// 旧词会经由本包的「通知失败只记日志」静默失败）。
+// 自举阶段能发的通知有限（目录拉不下来），实现归装配层；接口为 nil 时
+// 跳过通知（不阻塞主流程，§3.3「通知是旁路」）。
 type AdminNotifier interface {
-	// NotifyAdminInbox 写一条待处理通知。kind/severity/detail 的口径见 03-upstream.md §3.3 表。
+	// NotifyAdminInbox 写一条待处理通知。kind/severity/detail 的口径见 06-audit.md §3.1。
 	NotifyAdminInbox(ctx context.Context, kind, relatedID, title, detail string, severity string) error
 }
 
@@ -112,7 +115,7 @@ func (b *RelayBootstrapper) Run(ctx context.Context) BootstrapResult {
 	if err != nil {
 		res := BootstrapResult{SkippedReason: "providers.list 失败: " + err.Error()}
 		lg.Warn("relay 自举失败，下轮重试（不阻塞启动）", "error", err)
-		b.notify(ctx, "upstream_failing", "", "relay 自举失败", res.SkippedReason, "warn")
+		b.notify(ctx, InboxKindChannelFailing, "", "relay 自举失败", res.SkippedReason, InboxSeverityError)
 		return res
 	}
 	// 步骤 2：逐 provider 落 upstreams 行（kind='relay', owner=NULL, enabled=true）。
@@ -127,7 +130,7 @@ func (b *RelayBootstrapper) Run(ctx context.Context) BootstrapResult {
 		}
 		if _, err := b.writer.UpsertUpstream(ctx, "relay", p.Provider, RelayBaseURLOf(p.Provider), nil, true); err != nil {
 			lg.Error("relay 自举止写库失败，该 provider 下轮重试", "provider", p.Provider, "error", err)
-			b.notify(ctx, "upstream_failing", p.Provider, "relay 行落库失败", err.Error(), "error")
+			b.notify(ctx, InboxKindChannelFailing, p.Provider, "relay 行落库失败", err.Error(), InboxSeverityError)
 			continue
 		}
 	}

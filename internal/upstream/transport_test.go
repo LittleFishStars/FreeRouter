@@ -491,9 +491,9 @@ func TestContractBootstrapFailureIsSideEffect(t *testing.T) {
 		t.Fatalf("应带 SkippedReason 跳过：%+v", res)
 	}
 	if len(nt.notes) == 0 {
-		t.Fatal("providers.list 失败应发 upstream_failing 通知")
+		t.Fatal("providers.list 失败应发 channel_failing 通知")
 	}
-	if !strings.Contains(nt.notes[0], "upstream_failing") {
+	if !strings.Contains(nt.notes[0], InboxKindChannelFailing) {
 		t.Fatalf("通知 kind 错位：%s", nt.notes[0])
 	}
 

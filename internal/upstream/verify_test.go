@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -350,8 +351,8 @@ func TestContractInboxThreeEvents(t *testing.T) {
 	if len(inbox.notes) != 1 || inbox.notes[0].kind != InboxKindModelSuspect {
 		t.Fatalf("suspect 应投递一条通知：%+v", inbox.notes)
 	}
-	if inbox.notes[0].severity != "warn" {
-		t.Fatalf("suspect 通知 severity 应 warn：%s", inbox.notes[0].severity)
+	if inbox.notes[0].severity != InboxSeverityWarning {
+		t.Fatalf("suspect 通知 severity 应 warning：%s", inbox.notes[0].severity)
 	}
 
 	// added / missing 事件走 relay 刷新路径（fixture 同款）：
@@ -475,3 +476,83 @@ func containsText(s, sub string) bool {
 
 // fmt 保底（错误构造用）。
 var _ = fmt.Sprintf
+
+// ———— 词表契约（06-audit.md §3.1 是唯一权威；b701374 裁决） ————
+
+// auditInboxKinds 是 docs/security/06-audit.md §3.1 表里的 10 个权威 kind。
+//
+// 为什么在这里重抄一份而不是 import store 的校验函数：store 的执法点在
+// feat/storage 的 repo_inbox.Append（尚未合入本分支），而「生产者投递的词
+// 落在枚举内」这件事必须在本包就被钉住——store 拒非枚举值 + 本包「通知失败
+// 只记日志」的组合会把拼写漂移变成**静默失败**（管理员收件箱永远收不到信号）。
+// 词表漂移时本测试与 store 的枚举校验会同时变红，这才是想要的联动。
+var auditInboxKinds = map[string]bool{
+	"account_pending":     true,
+	"model_added":         true,
+	"model_missing":       true,
+	"model_changed":       true,
+	"channel_failing":     true,
+	"credential_invalid":  true,
+	"verification_failed": true,
+	"pool_exhausted":      true,
+	"global_budget":       true,
+	"key_anomaly":         true,
+}
+
+var auditInboxSeverities = map[string]bool{"info": true, "warning": true, "error": true}
+
+// TestContractInboxVocabularyMatchesAudit：本包全部生产者投递的 kind/severity
+// 必须落在 06-audit §3.1 枚举内（三事件 + bootstrap 的 channel_failing）。
+// 这条测试防的是「文档词表又动了一次，而代码静默失败」。
+func TestContractInboxVocabularyMatchesAudit(t *testing.T) {
+	// 常量本身先自证（新增常量忘了对齐会在这里红）。
+	consts := []struct {
+		name, kind, sev string
+	}{
+		{"added", InboxKindModelAdded, InboxSeverityInfo},
+		{"missing", InboxKindModelMissing, InboxSeverityWarning},
+		{"suspect", InboxKindModelSuspect, InboxSeverityWarning},
+		{"failing", InboxKindChannelFailing, InboxSeverityError},
+	}
+	for _, c := range consts {
+		if !auditInboxKinds[c.kind] {
+			t.Errorf("kind %s=%q 不在 06-audit §3.1 枚举内", c.name, c.kind)
+		}
+		if !auditInboxSeverities[c.sev] {
+			t.Errorf("severity %s=%q 不在枚举内", c.name, c.sev)
+		}
+	}
+
+	// 活体断言：跑一轮真实投递，检查送出去的字符串。
+	fx := openVerifyFixture(t)
+	fx.fake.setCatalog(fx.prov, seedCatalog())
+	r := NewModelRefresherWithHooks(fx.st, fx.fake, time.Minute, nil, fx.hooks)
+	if _, err := r.RefreshOnce(context.Background()); err != nil {
+		t.Fatalf("刷新失败: %v", err)
+	}
+	if len(fx.inbox.notes) == 0 {
+		t.Fatal("应有投递记录")
+	}
+	for _, n := range fx.inbox.notes {
+		if !auditInboxKinds[n.kind] {
+			t.Errorf("投递的 kind=%q 不在枚举内（store 会拒收 → 静默失败）", n.kind)
+		}
+		if !auditInboxSeverities[n.severity] {
+			t.Errorf("投递的 severity=%q 不在枚举内", n.severity)
+		}
+	}
+
+	// bootstrap 路径同样验一次（channel_failing 走 AdminNotifier）。
+	bn := &fakeNotifier{}
+	b := NewRelayBootstrapper(&fakeProviderSource{err: errors.New("sidecar down")},
+		&fakeUpstreamWriter{}, &fakeRefresher{}, bn, nil)
+	b.Run(context.Background())
+	if len(bn.notes) == 0 {
+		t.Fatal("bootstrap 应有通知")
+	}
+	// fakeNotifier 记的是 kind/related/severity 拼接串。
+	if !strings.Contains(bn.notes[0], InboxKindChannelFailing) ||
+		!strings.HasSuffix(bn.notes[0], "/"+InboxSeverityError) {
+		t.Fatalf("bootstrap 通知词表错位：%s", bn.notes[0])
+	}
+}

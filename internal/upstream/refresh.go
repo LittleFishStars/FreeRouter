@@ -205,7 +205,7 @@ func (r *ModelRefresher) refreshUpstream(ctx context.Context, u store.Upstream) 
 	if err != nil {
 		return 0, err
 	}
-	// missing 事件（§3.3 表 upstream_model_missing，warn）：MarkMissing 只给
+	// missing 事件（06-audit §3.1 词表 model_missing，warning）：MarkMissing 只给
 	// 条数不给 id——用 before 快照与 keepIDs 的差集还原本轮消失的行。
 	if r.hooks != nil && r.hooks.Inbox != nil && marked > 0 {
 		keep := make(map[int64]struct{}, len(keepIDs))
