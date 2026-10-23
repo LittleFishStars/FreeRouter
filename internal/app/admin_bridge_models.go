@@ -47,19 +47,19 @@ type modelsBridge struct{ b *adminBridge }
 // realModelToAdmin 翻真实模型行。
 func realModelToAdmin(m *store.RealModel) *httpapi.AdminRealModel {
 	out := &httpapi.AdminRealModel{
-		ID:                encodeID(idcode.RealModel, m.ID),
-		DisplayName:       m.DisplayName,
-		UpstreamID:        encodeID(idcode.Upstream, m.UpstreamID),
-		UpstreamModelID:   m.UpstreamModelID,
-		GroupName:         m.GroupName,
-		Channel:           m.Channel,
-		ContextWindow:     m.ContextWindow,
-		Status:            string(m.Status),
-		Hidden:            m.Hidden,
-		SortOrder:         m.SortOrder,
-		Source:            m.Source,
-		LastSeenAt:        m.LastSeenAt,
-		MissingSince:      m.MissingSince,
+		ID:                     encodeID(idcode.RealModel, m.ID),
+		DisplayName:            m.DisplayName,
+		UpstreamID:             encodeID(idcode.Upstream, m.UpstreamID),
+		UpstreamModelID:        m.UpstreamModelID,
+		GroupName:              m.GroupName,
+		Channel:                m.Channel,
+		ContextWindow:          m.ContextWindow,
+		Status:                 string(m.Status),
+		Hidden:                 m.Hidden,
+		SortOrder:              m.SortOrder,
+		Source:                 m.Source,
+		LastSeenAt:             m.LastSeenAt,
+		MissingSince:           m.MissingSince,
 		ExcludedFromCandidates: m.ExcludedFromCandidates,
 	}
 	// qualified_name（§7.1 只读）：dsh:渠道/上游模型 id——渠道不可知时
@@ -405,17 +405,59 @@ func (mb *modelsBridge) UpdateAbstractModel(ctx context.Context, id string, patc
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
-	// store 缺口：抽象模型列级 UPDATE（display_name/capability_mode/
-	// strategy/note）——没有对应方法，整行重建（CreateAbstractModel 是
-	// INSERT）不可用。显式占位错误，等 storage 落 UpdateAbstractModel。
-	// status 迁移与弃用（PATCH 载荷里 httpapi 已分流）不走本方法。
-	for _, k := range []string{"display_name", "capability_mode", "capabilities", "strategy", "note"} {
-		if _, has := patch[k]; has {
-			return nil, "", fmt.Errorf("抽象模型 %s 列更新待 storage 落 UpdateAbstractModel：%w", k, errAdminNotImplemented)
+	// store 已落 SetAbstractModelProfile（列级 UPDATE，nil 列不动）。
+	// 这里把 PATCH 载荷翻成列值：strategy 存成 JSON 数组（与创建路径同源），
+	// capabilities 仍按 note 前缀编码（存储无 capabilities 列，见文件头）。
+	var displayName, strategy, mode, note *string
+	if raw, has := patch["display_name"]; has {
+		var v string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return nil, "", fmt.Errorf("display_name 必须是字符串: %w", err)
 		}
+		displayName = &v
+	}
+	if raw, has := patch["capability_mode"]; has {
+		var v string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return nil, "", fmt.Errorf("capability_mode 必须是字符串: %w", err)
+		}
+		mode = &v
+	}
+	if raw, has := patch["strategy"]; has {
+		// 载荷是数组（["expiry-first","balance"]），存成 JSON 文本。
+		strategy = new(string)
+		var arr []string
+		if err := json.Unmarshal(raw, &arr); err == nil {
+			b, _ := json.Marshal(arr)
+			*strategy = string(b)
+		} else {
+			var single string
+			if err2 := json.Unmarshal(raw, &single); err2 != nil {
+				return nil, "", fmt.Errorf("strategy 必须是策略名数组: %w", err)
+			}
+			b, _ := json.Marshal([]string{single})
+			*strategy = string(b)
+		}
+	}
+	if raw, has := patch["capabilities"]; has {
+		// 能力文档写进 note（带 capsNotePrefix，与创建路径同一编码）。
+		note = new(string)
+		*note = capsNotePrefix + string(raw)
+	}
+	if raw, has := patch["note"]; has {
+		var v string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return nil, "", fmt.Errorf("note 必须是字符串: %w", err)
+		}
+		note = &v
 	}
 	var auditID string
 	err = mb.b.st.WithTx(ctx, func(tx *store.Repos) error {
+		if displayName != nil || strategy != nil || mode != nil || note != nil {
+			if err := tx.Models.SetAbstractModelProfile(ctx, aid, displayName, strategy, mode, note); err != nil {
+				return err
+			}
+		}
 		aid2, aerr := appendAudit(ctx, tx.Logs, audit)
 		if aerr != nil {
 			return aerr

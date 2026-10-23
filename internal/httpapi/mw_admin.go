@@ -602,6 +602,12 @@ type AdminUpstreamUpdate struct {
 	Name    *string `json:"name,omitempty"`
 	BaseURL *string `json:"base_url,omitempty"`
 	Enabled *bool   `json:"enabled,omitempty"`
+	// Kind 只为「让解码通过」而声明：PATCH 带 kind 时，handler 要给出
+	// 「kind 变更请走 POST /upstreams/{id}/kind」的定向提示（它改变调用
+	// 路径，是独立高危动作）。若结构体不声明这个字段，解码器的
+	// DisallowUnknownFields 会先把 kind 报成「未知字段」，抢在定向提示
+	// 之前——用户就看不到该走哪个端点了。本字段永不被读取。
+	Kind *json.RawMessage `json:"kind,omitempty"`
 }
 
 // AdminUpstreamStore 是上游读写。

@@ -279,8 +279,14 @@ func (s *Server) handleAdminUpstreamPatch(deps *AdminDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		var fieldsMap map[string]json.RawMessage
-		if _, ok := adminDecodeBoth(w, r, &fieldsMap); !ok {
+		// 一次解码同时拿到「出现了哪些字段」与「解成结构体的值」。
+		//
+		// 为什么不能像早期实现那样调两次 adminDecodeBoth：那个函数每次都
+		// io.ReadAll(r.Body)，第一次读完 body 就空了，第二次必然报
+		// 「请求体不能为空」——PATCH 上游永远 400（实测踩到）。
+		var in AdminUpstreamUpdate
+		fieldsMap, ok := adminDecodeBoth(w, r, &in)
+		if !ok {
 			return
 		}
 		if _, has := fieldsMap["kind"]; has {
@@ -290,10 +296,6 @@ func (s *Server) handleAdminUpstreamPatch(deps *AdminDeps) http.HandlerFunc {
 		cur, err := deps.Upstreams.GetUpstream(r.Context(), id)
 		if err != nil {
 			mapAdminError(w, err, "上游")
-			return
-		}
-		var in AdminUpstreamUpdate
-		if _, ok := adminDecodeBoth(w, r, &in); !ok {
 			return
 		}
 		if in.BaseURL != nil {

@@ -842,3 +842,58 @@ func (r *ModelRepo) getUpstreamByID(ctx context.Context, id int64) (*Upstream, e
 	u.Enabled = enabled != 0
 	return &u, nil
 }
+
+// SetAbstractModelProfile 列级更新抽象模型的可编辑字段（管理面 PATCH 的写面）。
+//
+// 为什么必须有：CreateAbstractModel 是 INSERT，没有列级 UPDATE 的话
+// 「改显示名 / 改策略链 / 改能力模式」在管理面上无从表达——此前这些字段
+// 的 PATCH 一律回 404（桥显式报未接线，而不是静默忽略）。
+//
+// nil = 不改该列（PATCH 语义）。全部为 nil 时不发 SQL 也不报错：
+// 「一次什么都没改的 PATCH」是幂等的空操作，不是错误。
+//
+// 校验与 CreateAbstractModel 同源（同一套枚举与「display_name 非空」判据）：
+// 两处各写一份必然漂移，而漂移的表现是「创建时拒的值更新时收下」。
+// strategy 是逗号分隔的策略链（02-routing 的顺序语义），这里只保证非空，
+// 链的合法性由调用方（管理面 handler）按策略名表校验——存储层不认识策略名。
+func (r *ModelRepo) SetAbstractModelProfile(ctx context.Context, id int64, displayName, strategy, capabilityMode *string, note *string) error {
+	sets := []string{}
+	args := []any{}
+	if displayName != nil {
+		if strings.TrimSpace(*displayName) == "" {
+			return errors.New("store: 抽象模型必须有 display_name")
+		}
+		sets = append(sets, "display_name = ?")
+		args = append(args, *displayName)
+	}
+	if strategy != nil {
+		if strings.TrimSpace(*strategy) == "" {
+			return errors.New("store: 策略链不得为空（候选选择没有兜底顺序）")
+		}
+		sets = append(sets, "strategy = ?")
+		args = append(args, *strategy)
+	}
+	if capabilityMode != nil {
+		switch *capabilityMode {
+		case "strict", "filter":
+		default:
+			return fmt.Errorf("store: 非法 capability_mode %q（期望 strict/filter）", *capabilityMode)
+		}
+		sets = append(sets, "capability_mode = ?")
+		args = append(args, *capabilityMode)
+	}
+	if note != nil {
+		sets = append(sets, "note = ?")
+		args = append(args, *note)
+	}
+	if len(sets) == 0 {
+		return nil
+	}
+	args = append(args, id)
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE abstract_models SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
+	if err != nil {
+		return fmt.Errorf("store: 更新抽象模型失败: %w", err)
+	}
+	return requireAffected(res, "抽象模型", id)
+}

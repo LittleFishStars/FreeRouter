@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ErrNotFound 是仓储层统一的"不存在"信号。
@@ -430,4 +431,94 @@ func (r *AccountRepo) RecoveryCodeHashOf(ctx context.Context, id int64) (string,
 		return "", nil
 	}
 	return *hash, nil
+}
+
+// SetAccountClasses 整组替换账户的权限类集合。
+//
+// 为什么必须有整组替换而不是只有 AddClass：管理面 PATCH 的语义是「改类」，
+// 而改类必然包含**移除**（把 admin 降成 tenant）。只有追加接口的话，
+// 移除无从表达，管理面就只能报「未接线」——这是它此前 404 的根因。
+//
+// 不变式（01-accounts §1）：类集合非空。空集合既不能登录也不能被授权，
+// 是纯粹的垃圾数据，故在写入前拒绝，而不是留给调用方自查。
+//
+// 事务：DELETE + 多次 INSERT 必须原子——半途失败会留下「少了类」的账户，
+// 而管理员以为改完了。在事务里执行时复用现有 tx。
+func (r *AccountRepo) SetAccountClasses(ctx context.Context, accountID int64, classes []Class) error {
+	if len(classes) == 0 {
+		return errors.New("store: 权限类集合不能为空（01-accounts.md §1 不变式 1）")
+	}
+	seen := make(map[Class]bool, len(classes))
+	for _, c := range classes {
+		if !c.valid() {
+			return fmt.Errorf("store: 非法权限类 %q", c)
+		}
+		if seen[c] {
+			return fmt.Errorf("store: 权限类 %q 重复", c)
+		}
+		seen[c] = true
+	}
+
+	if r.s != nil && r.s.tx == nil {
+		return r.s.WithTx(ctx, func(tx *Repos) error {
+			return tx.Accounts.SetAccountClasses(ctx, accountID, classes)
+		})
+	}
+
+	// 存在性检查：账户不存在时报 ErrNotFound，而不是静默「替换成功」。
+	var exists int
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM accounts WHERE id = ?`, accountID).Scan(&exists); err != nil {
+		return fmt.Errorf("store: 查账户失败: %w", err)
+	}
+	if exists == 0 {
+		return ErrNotFound
+	}
+
+	if _, err := r.db.ExecContext(ctx,
+		`DELETE FROM account_classes WHERE account_id = ?`, accountID); err != nil {
+		return fmt.Errorf("store: 清空权限类失败: %w", err)
+	}
+	for _, c := range classes {
+		if _, err := r.db.ExecContext(ctx,
+			`INSERT INTO account_classes(account_id, class) VALUES(?,?)`,
+			accountID, string(c)); err != nil {
+			return fmt.Errorf("store: 写权限类 %q 失败: %w", c, err)
+		}
+	}
+	return nil
+}
+
+// SetAccountProfile 改显示名与备注（管理面 PATCH 与账户自助共用写面）。
+//
+// 为什么合并两个字段而不是各给一个方法：它们同属「账户的展示信息」，
+// 管理面一次 PATCH 常常同时带两者；拆两个方法会让调用方自己拼事务，
+// 而拼错的表现是「显示名改了、备注没改」这种半套状态。
+//
+// nil = 不改该列（PATCH 语义）；display_name 空串拒绝——「没有称呼」
+// 不是合法状态（调用方应给默认值，例如用户名）。
+func (r *AccountRepo) SetAccountProfile(ctx context.Context, id int64, displayName *string, note *string) error {
+	if displayName != nil && strings.TrimSpace(*displayName) == "" {
+		return errors.New("store: display_name 不得为空串")
+	}
+	sets := []string{}
+	args := []any{}
+	if displayName != nil {
+		sets = append(sets, "display_name = ?")
+		args = append(args, *displayName)
+	}
+	if note != nil {
+		sets = append(sets, "note = ?")
+		args = append(args, *note)
+	}
+	if len(sets) == 0 {
+		return nil // 什么都没要改：不是错误，也不该发 SQL
+	}
+	args = append(args, id)
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE accounts SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
+	if err != nil {
+		return fmt.Errorf("store: 更新账户资料失败: %w", err)
+	}
+	return requireAffected(res, "账户", id)
 }

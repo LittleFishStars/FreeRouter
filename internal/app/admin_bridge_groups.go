@@ -1,13 +1,12 @@
 // admin_bridge_groups.go —— AdminGroupsStore → store.GroupRepo（task-23）。
 //
 // 桥要点：
-//   - 组 id 出入站走 idcode(grp_)；成员账户 id 同（acc_）。
-//   - CreateGroup 的 policies 文档：store 的策略是 group_policies 键值表
-//     （policy_key/policy_value JSON 文档），管理面整文档替换——落库时
-//     摊平为单键 "admin_doc"（整份 JSON 存一个值），读侧原样取回。
-//     为什么不逐键摊平：键语义（放开类/限制类/池）属于 auth.GroupPolicy
-//     的强类型域，桥逐键解释就是第二份合并口径；整文档存取让 03-groups
-//     的策略校验留在 authz 侧（task-22 在做），两边零耦合。
+//   - policies 文档：整组摊平进**三张表**（group_policies 键值行 /
+//     group_quota_pools 池行 / group_model_quota_caps 上限行），读侧从三张表
+//     反向拼回。字段↔键的口径见 group_policy_codec.go。
+//     旧方案（整份 JSON 存假键 admin_doc）已废：写侧会被 SetPolicy 的
+//     已知键校验拒掉（PUT 因此始终 500），而运行时合并只读真实键，
+//     就算写进去也不会生效。
 //   - DuplicateGroup：store 无此方法——用 WithTx 组合现有方法实现
 //     （CreateGroup + ListGroupModels/SetGroupModels + 策略键复制 + 成员复制），
 //     任务书明确允许。
@@ -30,9 +29,6 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
-
-// groupDocKey 是管理面策略整文档在 group_policies 里的存储键。
-const groupDocKey = store.PolicyKey("admin_doc")
 
 type groupsBridge struct{ b *adminBridge }
 
@@ -92,11 +88,9 @@ func (gb *groupsBridge) GetGroup(ctx context.Context, id string) (*httpapi.Admin
 			}
 		}
 	}
-	// 策略整文档：admin_doc 键存 JSON 原文；无键时空对象。
-	detail.Policies = json.RawMessage(`{}`)
-	if doc, err := gb.b.repos.Groups.GetPolicy(ctx, gid, groupDocKey); err == nil && doc != "" {
-		detail.Policies = json.RawMessage(doc)
-	}
+	// 策略文档：从键值表 + 池行 + 上限行反向拼回（group_policy_codec.go）。
+	// 早期读的是假键 admin_doc：写侧必然失败，就算写成功运行时合并也读不到。
+	detail.Policies = decodePolicyDoc(ctx, gb.b.repos, gid)
 	return detail, nil
 }
 
@@ -119,7 +113,7 @@ func (gb *groupsBridge) CreateGroup(ctx context.Context, in httpapi.AdminGroup, 
 			}
 		}
 		if len(policies) > 0 {
-			if err := tx.Groups.SetPolicy(ctx, id, groupDocKey, string(policies)); err != nil {
+			if err := applyPolicyDoc(ctx, tx, id, policies); err != nil {
 				return err
 			}
 		}
@@ -298,6 +292,25 @@ func (gb *groupsBridge) DuplicateGroup(ctx context.Context, id, newName string, 
 				}
 			}
 		}
+		// 池与按模型上限是**独立的表**，不在 ListPolicies 里——早期只复制
+		// 键值策略会让副本组「看起来一样」但共享池与按模型限额全丢，
+		// 而副本的用途正是「照着现有策略再开一组」。
+		if pools, err := tx.Quotas.ListPoolsByGroup(ctx, gid); err == nil {
+			for _, pl := range pools {
+				if err := tx.Quotas.SetPool(ctx, nid, pl.AbstractModelID, pl.Unit, pl.Period, pl.Limit); err != nil {
+					return err
+				}
+			}
+		}
+		if caps, err := tx.Quotas.ListGroupModelCaps(ctx, gid, nil); err == nil {
+			for _, c := range caps {
+				cc := c
+				cc.GroupID = nid
+				if err := tx.Quotas.SetGroupModelCap(ctx, cc); err != nil {
+					return err
+				}
+			}
+		}
 		// 成员不复制：组是授权单元，「复制组」复制的是策略面不是人——
 		// 把人一起拷走等于一次未经确认的批量授权变更（§2.3 纪律）。
 		aid, aerr := appendAudit(ctx, tx.Logs, audit)
@@ -448,10 +461,13 @@ func (gb *groupsBridge) ReplaceGroupPolicies(ctx context.Context, groupID string
 	var old json.RawMessage
 	var auditID string
 	err = gb.b.st.WithTx(ctx, func(tx *store.Repos) error {
-		if prev, err := tx.Groups.GetPolicy(ctx, gid, groupDocKey); err == nil && prev != "" {
-			old = json.RawMessage(prev)
-		}
-		if err := tx.Groups.SetPolicy(ctx, gid, groupDocKey, string(doc)); err != nil {
+		// 旧值从三张表反向拼回（与读侧同一口径）；新值整组摊平进三张表。
+		// 假键 admin_doc 的旧方案已废：写侧会被 SetPolicy 的键校验拒掉，
+		// 而运行时合并（LoadPolicySnapshot）只读真实键，写了也不生效。
+		old = decodePolicyDoc(ctx, &store.Repos{
+			Groups: tx.Groups, Models: tx.Models, Quotas: tx.Quotas,
+		}, gid)
+		if err := applyPolicyDoc(ctx, tx, gid, doc); err != nil {
 			return err
 		}
 		aid, aerr := appendAudit(ctx, tx.Logs, audit)

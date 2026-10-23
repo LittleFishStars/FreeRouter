@@ -291,14 +291,9 @@ func (ab *accountsBridge) UpdateAccount(ctx context.Context, id string, in httpa
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
-	// store 缺口：SetAccountClasses（整组替换）/ SetAccountGroups——
-	// 给了这两个字段时显式报错而不是静默忽略（TODO(storage) 占位）。
-	if in.Classes != nil {
-		return nil, "", fmt.Errorf("classes 整组替换待 storage 落 SetAccountClasses：%w", errAdminNotImplemented)
-	}
-	if in.Groups != nil {
-		return nil, "", fmt.Errorf("groups 整组替换待 storage 落 SetAccountGroups：%w", errAdminNotImplemented)
-	}
+	// classes / groups 的整组替换：store 已落 SetAccountClasses /
+	// SetAccountGroups，这里接线（此前显式报未接线 → 管理面改类 404）。
+	// 两者都在同一个 WithTx 里，不会出现「类改了、组没改」的半套状态。
 	var auditID string
 	err = ab.b.st.WithTx(ctx, func(tx *store.Repos) error {
 		if in.Status != nil {
@@ -306,9 +301,38 @@ func (ab *accountsBridge) UpdateAccount(ctx context.Context, id string, in httpa
 				return err
 			}
 		}
-		// 显示名/备注走 UPDATE——store 无单列方法，用 SetAccountRateLimits
-		// 之外的窄 SQL 不可行（无 DB 句柄）。TODO(storage)：SetAccountProfile
-		//（display_name/note）。当前退化为「仅当同时给了速率时」不写这两列。
+		if in.Classes != nil {
+			classes := make([]store.Class, 0, len(*in.Classes))
+			for _, c := range *in.Classes {
+				classes = append(classes, store.Class(c))
+			}
+			if err := tx.Accounts.SetAccountClasses(ctx, nid, classes); err != nil {
+				return err
+			}
+		}
+		if in.Groups != nil {
+			gids := make([]int64, 0, len(*in.Groups))
+			for _, g := range *in.Groups {
+				gid, derr := decodeID(idcode.Group, g)
+				if derr != nil {
+					return derr
+				}
+				gids = append(gids, gid)
+			}
+			if err := tx.Groups.SetAccountGroups(ctx, nid, gids); err != nil {
+				return err
+			}
+		}
+		// 显示名/备注：store 已落 SetAccountProfile（nil 列不动）。
+		if in.DisplayName != nil || in.Note != nil {
+			var note *string
+			if in.Note != nil {
+				note = in.Note
+			}
+			if err := tx.Accounts.SetAccountProfile(ctx, nid, in.DisplayName, note); err != nil {
+				return err
+			}
+		}
 		if in.RPMLimit != nil || in.TPMLimit != nil || in.MaxConcurrency != nil {
 			a, err := tx.Accounts.GetAccount(ctx, nid)
 			if err != nil {

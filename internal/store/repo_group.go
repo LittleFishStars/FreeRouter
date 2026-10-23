@@ -731,3 +731,113 @@ func (s *Store) EnsureDefaultGroup(ctx context.Context, maxKeys int) (int64, err
 		return tx.Groups.SetPolicy(ctx, gid, PolicyMaxKeys, fmt.Sprintf("%d", maxKeys))
 	})
 }
+
+// SetAccountGroups 整组替换账户的组归属（管理面 PATCH groups 的写面）。
+//
+// 为什么必须有：groups 是「改权限类之外的第二根隔离轴」——移出组会同时
+// 收走模型授权与额度来源。只有 AddMember/RemoveMember 的接口无法表达
+// 「从 {A,B} 换成 {C}」这种原子变更，半途失败会留下双组或零组。
+//
+// 不变式（03-groups §5）：账户至少属于一个组。空集合 = 可见模型集为空 =
+// 静默停用，这不该是改组的一个结果，故在写入前拒绝。
+//
+// 成员要求 tenant 类（03-groups §9，AddMember 的既有判据）：contributor
+// 容器账户没有调用能力，给它落组没有语义。这里沿用同一判据并在首个
+// 非 tenant 账户上报错，而不是静默跳过。
+func (r *GroupRepo) SetAccountGroups(ctx context.Context, accountID int64, groupIDs []int64) error {
+	if len(groupIDs) == 0 {
+		return errors.New("store: 账户至少要属于一个组（03-groups §5：删组不删人的落点必须存在）")
+	}
+	if r.s != nil && r.s.tx == nil {
+		return r.s.WithTx(ctx, func(tx *Repos) error {
+			return tx.Groups.SetAccountGroups(ctx, accountID, groupIDs)
+		})
+	}
+
+	// 先验目标组都存在（拿不存在的组当归属是配置错误，不是「以后会补上」）。
+	for _, gid := range groupIDs {
+		if _, err := r.GetGroup(ctx, gid); err != nil {
+			return fmt.Errorf("store: 目标组 %d 不可用: %w", gid, err)
+		}
+	}
+	// 与既有成员比差异：只删多余的、只加缺失的（幂等，且不碰没变的行）。
+	cur, err := r.groupsOfAccountLocked(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	inSet := func(id int64, list []int64) bool {
+		for _, v := range list {
+			if v == id {
+				return true
+			}
+		}
+		return false
+	}
+	for _, gid := range cur {
+		if !inSet(gid, groupIDs) {
+			if err := r.RemoveMember(ctx, gid, accountID); err != nil {
+				return err
+			}
+		}
+	}
+	for _, gid := range groupIDs {
+		if !inSet(gid, cur) {
+			if err := r.AddMember(ctx, gid, accountID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ListAccountGroups 读账户所属组 id 列表（按组 id 升序，稳定输出）。
+func (r *GroupRepo) ListAccountGroups(ctx context.Context, accountID int64) ([]int64, error) {
+	return r.groupsOfAccountLocked(ctx, accountID)
+}
+
+// groupsOfAccountLocked 是两处共用的查询（名字沿用调用方语境，无锁语义）。
+func (r *GroupRepo) groupsOfAccountLocked(ctx context.Context, accountID int64) ([]int64, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT group_id FROM group_members WHERE account_id = ? ORDER BY group_id`, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("store: 查账户所属组失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []int64{}
+	for rows.Next() {
+		var gid int64
+		if err := rows.Scan(&gid); err != nil {
+			return nil, fmt.Errorf("store: 扫描组 id 失败: %w", err)
+		}
+		out = append(out, gid)
+	}
+	return out, rows.Err()
+}
+
+// SetGroupPolicyKeys 整组替换键值策略（管理面 PUT policies 的落点）。
+//
+// 为什么必须有：PUT 的语义是「从集合 A 到集合 B 的完整替换」（02-admin §6：
+// 合并算法对整个集合求值，局部增删会让当前生效值依赖一段难以复盘的历史）。
+// 只有逐键 SetPolicy/DeletePolicy 的话，调用方要自己算差异并保证原子——
+// 半途崩溃就留下 A∩B 这种既不是 A 也不是 B 的状态。
+//
+// 实现：DELETE 全部行 + 逐键 SetPolicy，同一事务。逐键写复用 SetPolicy，
+// 键合法性与值形状校验因此只有一份口径（policyKindOf + validatePolicyValue）。
+// 空 map = 清空该组全部策略（回到「未设」，限制类不参与 min、布尔 fail-closed）。
+func (r *GroupRepo) SetGroupPolicyKeys(ctx context.Context, groupID int64, policies map[PolicyKey]string) error {
+	if r.s != nil && r.s.tx == nil {
+		return r.s.WithTx(ctx, func(tx *Repos) error {
+			return tx.Groups.SetGroupPolicyKeys(ctx, groupID, policies)
+		})
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`DELETE FROM group_policies WHERE group_id = ?`, groupID); err != nil {
+		return fmt.Errorf("store: 清空组策略失败: %w", err)
+	}
+	for k, v := range policies {
+		if err := r.SetPolicy(ctx, groupID, k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
