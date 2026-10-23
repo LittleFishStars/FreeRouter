@@ -9,12 +9,13 @@
 //   - 凭据 DTO 无任何明文/引用字段（§9 红线，类型层已消灭，桥照搬）。
 //
 // store 缺口（回报 Lead 转达 storage）：
-//   ① verifications 面按「鉴定条目」建模，库里鉴定状态在凭据行上——
-//     桥按「凭据即鉴定条目」映射（ListVerifications = ListCredentials 的
-//     verify 投影；GetVerification/Override 走 LookupCredential/MarkVerified）；
-//     §10.1 的 stage/stage_results/recheck 列不存在，字段留空（已回报）。
-//   ② 上游 SecretPresent：upstream_secrets 有行即 true（getUpstreamByID
-//     的 secret_id 非空近似——不读密文本身）。
+//
+//	① verifications 面按「鉴定条目」建模，库里鉴定状态在凭据行上——
+//	  桥按「凭据即鉴定条目」映射（ListVerifications = ListCredentials 的
+//	  verify 投影；GetVerification/Override 走 LookupCredential/MarkVerified）；
+//	  §10.1 的 stage/stage_results/recheck 列不存在，字段留空（已回报）。
+//	② 上游 SecretPresent：upstream_secrets 有行即 true（getUpstreamByID
+//	  的 secret_id 非空近似——不读密文本身）。
 package app
 
 import (
@@ -40,11 +41,11 @@ type upstreamsBridge struct{ b *adminBridge }
 
 func upstreamToAdmin(u *store.Upstream) *httpapi.AdminUpstream {
 	out := &httpapi.AdminUpstream{
-		ID:        encodeID(idcode.Upstream, u.ID),
-		Kind:      u.Kind,
-		Name:      u.Name,
-		BaseURL:   u.BaseURL,
-		Enabled:   u.Enabled,
+		ID:         encodeID(idcode.Upstream, u.ID),
+		Kind:       u.Kind,
+		Name:       u.Name,
+		BaseURL:    u.BaseURL,
+		Enabled:    u.Enabled,
 		LastSeenAt: u.LastSeenAt,
 		// SecretPresent：secret_id 非空近似（有密文行的外键）——绝不读密文。
 		SecretPresent: u.SecretID != nil,
@@ -359,7 +360,42 @@ func (cb *credentialsBridge) NotifyCredential(ctx context.Context, id, message s
 // 鉴定（凭据行上的 verify 投影）
 // ---------------------------------------------------------------------------
 
-type verificationsBridge struct{ b *adminBridge }
+type verificationsBridge struct {
+	b *adminBridge
+	// l2 是深度鉴定探针（可选）。为 nil 表示没有装配运行时 L2 能力，
+	// TriggerL2 会返回 ErrAdminNotWired——让管理员看到的不是「已鉴定」。
+	//
+	// 为什么挂在结构体而不是全局：测试要交替注入真探针与 nil，包级变量
+	// 会在多个测试用例之间残留状态（和 modelsLookup 的构造时闭包同理）。
+	l2 L2Probe
+}
+
+// L2Probe 是 L2 深度鉴定的探针边界。
+//
+// L2 的真实内容（上下文窗口二分 / 视觉已知答案图 / logprobs 分布 / 流式
+// 真实性）需要真实调用上游并取得结果才能形成判定——这些是**运行时探针**
+// 的职责（它知道拿哪把凭据、打到哪个端点、怎么解析返回）。
+//
+// Run 返回 OK=false 表示这次探针失败且不可判（上游超时/凭据失效等），
+// 调用方把它当作「未鉴定」而不是「可疑」——误杀成本高于误放。
+//
+// 当前仓库没有这套探针本体（贡献流程的 L0/L1 是目录级探测），所以
+// verificationsBridge 构造时 l2 恒为 nil → TriggerL2 返回 404。这个接口
+// 是为「把真实探针挂上来」预留的边界，不是伪 L2 的桩。
+type L2Probe interface {
+	// Run 执行一次深度鉴定。credID 是被测凭据行、claimedModel 是声称的模型。
+	Run(credID int64, claimedModel string) L2Outcome
+}
+
+// L2Outcome 是 L2 探针的输出。
+type L2Outcome struct {
+	// OK 是否可判地完成了（false = 无能力/上游异常，按「未鉴定」处理）。
+	OK bool
+	// Verdict 可取 verified/suspect/unverified（对应 store.VerifyState）。
+	Verdict string
+	// Evidence 是给人看的证据（脱敏，不落 API Key）。
+	Evidence json.RawMessage
+}
 
 func credentialToVerification(c *store.Credential) *httpapi.AdminVerification {
 	v := &httpapi.AdminVerification{
@@ -450,6 +486,67 @@ func (vb *verificationsBridge) OverrideVerification(ctx context.Context, id, ver
 	return credentialToVerification(c), auditID, nil
 }
 
+// TriggerL2 触发 L2 深度鉴定（02-admin §10.1）。
+//
+// L2 需要运行时探针（见 L2Probe 注释）。当前桥不装配任何探针，所以这里
+// 恒返回 ErrAdminNotWired（404）——能力未接线不确认存在，跟「接口不存在」
+// 同一行为。这比返回一个假的「已深度鉴定」诚实得多：没有真实基准的深度
+// 鉴定只是换了个名字的目录探测，会骗过它要服务的判定器。
+func (vb *verificationsBridge) TriggerL2(ctx context.Context, id string, audit httpapi.AdminAuditEntry) (*httpapi.AdminVerification, string, error) {
+	if vb.l2 == nil {
+		return nil, "", httpapi.ErrAdminNotWired
+	}
+	// 挂上真探针后：LookupCredential → l2.Run → MarkVerified（事务内写
+	// verify_detail + 审计）。方法签名已按此形状留好，路径清晰。
+	_ = id
+	_ = audit
+	return nil, "", httpapi.ErrAdminNotWired
+}
+
+// ToggleRecheck 加入/移出定时复检队列（02-admin §10.1）。
+//
+// 定时复检标志先从凭据行的 verify_detail 读再写回。调度器（多久跑一次）
+// 未装配，所以这里只持久化开关，不做定时——但开关没有落库就白记了。
+func (s *verificationsBridge) ToggleRecheck(ctx context.Context, id string, enabled bool, audit httpapi.AdminAuditEntry) (*httpapi.AdminVerification, string, error) {
+	vid, err := decodeID(idcode.Verification, id)
+	if err != nil {
+		return nil, "", errAdminNotImplemented
+	}
+	cur, err := s.b.repos.Models.LookupCredential(ctx, vid)
+	if err != nil {
+		return nil, "", mapStoreErr(err)
+	}
+	doc := map[string]any{}
+	if cur.VerifyDetail != "" {
+		_ = json.Unmarshal([]byte(cur.VerifyDetail), &doc)
+	}
+	doc["recheck"] = map[string]any{
+		"enabled":  enabled,
+		"last_at":  nil,
+		"operator": audit.ActingClass,
+	}
+	b, _ := json.Marshal(doc)
+	var auditID string
+	if err := s.b.st.WithTx(ctx, func(tx *store.Repos) error {
+		if err := tx.Models.MarkVerified(ctx, vid, cur.VerifyStatus, string(b)); err != nil {
+			return err
+		}
+		aid, aerr := appendAudit(ctx, tx.Logs, audit)
+		if aerr != nil {
+			return aerr
+		}
+		auditID = aid
+		return nil
+	}); err != nil {
+		return nil, "", mapStoreErr(err)
+	}
+	c, err := s.b.repos.Models.LookupCredential(ctx, vid)
+	if err != nil {
+		return nil, auditID, nil
+	}
+	return credentialToVerification(c), auditID, nil
+}
+
 // ---------------------------------------------------------------------------
 // 审计
 // ---------------------------------------------------------------------------
@@ -458,10 +555,10 @@ type auditBridge struct{ b *adminBridge }
 
 func auditEntryToAdmin(e *store.AuditEntry) *httpapi.AdminAuditEntry {
 	out := &httpapi.AdminAuditEntry{
-		ID:          encodeID(idcode.Audit, e.ID),
-		TS:          e.TS,
-		Action:      e.Action,
-		Result:      e.Result,
+		ID:     encodeID(idcode.Audit, e.ID),
+		TS:     e.TS,
+		Action: e.Action,
+		Result: e.Result,
 	}
 	if e.AccountID != nil {
 		out.AccountID = encodeID(idcode.Account, *e.AccountID)

@@ -75,6 +75,8 @@ func (s *Server) mountAdminOps(r chi.Router, deps *AdminDeps) {
 	r.Get("/verifications", s.handleAdminVerificationsList(deps))
 	r.Get("/verifications/{id}", s.handleAdminVerificationDetail(deps))
 	r.Post("/verifications/{id}/override", s.handleAdminVerificationOverride(deps))
+	r.Post("/verifications/{id}/l2", s.handleAdminVerificationL2(deps))
+	r.Post("/verifications/{id}/recheck", s.handleAdminVerificationRecheck(deps))
 
 	// 审计：静态 /export 先于 /{id}（chi 字面量优先，注册顺序兜可读性）
 	r.Get("/audit", s.handleAdminAuditList(deps))
@@ -621,7 +623,71 @@ func (s *Server) handleAdminVerificationOverride(deps *AdminDeps) http.HandlerFu
 	}
 }
 
+// handleAdminVerificationL2 POST /api/admin/verifications/{id}/l2。
+//
+// 触发 L2 深度鉴定。能力未装配（无运行时探针）→ 桥返回 ErrAdminNotWired，
+// mapAdminError 把它映射成 404——管理员看到的不是「已鉴定」，而是「这项能力
+// 还没接线」。这是刻意的：没有真实基准的伪 L2 会骗过它要服务的判定器。
+func (s *Server) handleAdminVerificationL2(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "鉴定存储", deps.Verifications != nil) {
+			return
+		}
+		p, ok := adminActor(w, r)
+		if !ok {
+			return
+		}
+		id, ok := adminVerificationID(w, r)
+		if !ok {
+			return
+		}
+		audit := adminBaseAudit(p, r, "verification.l2", "verification:"+id, "ok")
+		row, auditID, err := deps.Verifications.TriggerL2(r.Context(), id, audit)
+		if err != nil {
+			mapAdminError(w, err, "鉴定条目")
+			return
+		}
+		adminWriteOK(w, http.StatusOK, row, auditID)
+	}
+}
+
+// handleAdminVerificationRecheck POST /api/admin/verifications/{id}/recheck。
+//
+// 加入 / 移出定时复检队列（body.recheck 布尔）。
+func (s *Server) handleAdminVerificationRecheck(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "鉴定存储", deps.Verifications != nil) {
+			return
+		}
+		p, ok := adminActor(w, r)
+		if !ok {
+			return
+		}
+		id, ok := adminVerificationID(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			Recheck bool `json:"recheck"`
+		}
+		if _, ok := adminDecodeBoth(w, r, &body); !ok {
+			return
+		}
+		audit := adminBaseAudit(p, r, "verification.recheck", "verification:"+id, "ok")
+		if b, err := json.Marshal(map[string]any{"recheck": body.Recheck}); err == nil {
+			audit.Detail = b
+		}
+		row, auditID, err := deps.Verifications.ToggleRecheck(r.Context(), id, body.Recheck, audit)
+		if err != nil {
+			mapAdminError(w, err, "鉴定条目")
+			return
+		}
+		adminWriteOK(w, http.StatusOK, row, auditID)
+	}
+}
+
 // ---------------------------------------------------------------------------
+// 审计
 // 审计
 // ---------------------------------------------------------------------------
 

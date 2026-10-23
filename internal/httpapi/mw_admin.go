@@ -769,6 +769,11 @@ type AdminVerificationStore interface {
 	// override 记录（含时间）；桥把结论写 verify_status 并回改判后的
 	// 条目，新旧状态进审计 Detail（06-audit §3 鉴定结论变化）。
 	OverrideVerification(ctx context.Context, id, verdict, reason, operatorAccountID string, audit AdminAuditEntry) (*AdminVerification, string, error)
+	// TriggerL2 触发 L2 深度鉴定。返回更新后的条目与结果说明。
+	// 能力未装配（无运行时探针）返回 ErrAdminNotWired。
+	TriggerL2(ctx context.Context, id string, audit AdminAuditEntry) (*AdminVerification, string, error)
+	// ToggleRecheck 加入/移出定时复检队列（body.recheck 布尔）。
+	ToggleRecheck(ctx context.Context, id string, enabled bool, audit AdminAuditEntry) (*AdminVerification, string, error)
 }
 
 // ---------------------------------------------------------------------------

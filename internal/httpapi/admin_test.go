@@ -794,7 +794,30 @@ func (f *verificationsFake) OverrideVerification(ctx context.Context, id, verdic
 	return &cp, auditID, err
 }
 
-// keysFake / inboxFake / settingsFake。
+func (f *verificationsFake) TriggerL2(_ context.Context, id string, _ AdminAuditEntry) (*AdminVerification, string, error) {
+	v, ok := f.byID[id]
+	if !ok {
+		return nil, "", ErrAdminNotFound
+	}
+	// 假体无运行时探针：返回 ErrAdminNotWired（与真桥当前行为一致——
+	// 真 L2 探针未装配时 l2 端点是 404）。
+	return v, "", ErrAdminNotWired
+}
+
+func (f *verificationsFake) ToggleRecheck(_ context.Context, id string, enabled bool, _ AdminAuditEntry) (*AdminVerification, string, error) {
+	v, ok := f.byID[id]
+	if !ok {
+		return nil, "", ErrAdminNotFound
+	}
+	cp := *v
+	cp.Stage = "L1"
+	if enabled {
+		// 只做标志位设置，没有真实可观察字段；Echo 以确认成功。
+		cp.Verdict = string(v.Verdict)
+	}
+	return &cp, "", nil
+}
+
 type keysFake struct{ counts map[string]int64 }
 
 func (f *keysFake) CountKeys(_ context.Context, accountID string) (int64, error) {
