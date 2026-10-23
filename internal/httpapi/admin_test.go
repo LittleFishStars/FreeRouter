@@ -2103,3 +2103,60 @@ func TestContractInvalidIDAndPaginationParams(t *testing.T) {
 		}
 	}
 }
+
+// 合并面假体（AdminAccountsStore 的三个合并方法）。
+func (f *accountsFake) PrecheckMerge(ctx context.Context, sourceID, targetID string) (*AdminMergePlan, error) {
+	if _, ok := f.byID[sourceID]; !ok {
+		return nil, ErrAdminAccountNotFound
+	}
+	if _, ok := f.byID[targetID]; !ok {
+		return nil, ErrAdminAccountNotFound
+	}
+	return &AdminMergePlan{
+		SourceID: sourceID, TargetID: targetID,
+		Blocking: []string{}, RenamedKeys: []string{},
+		SourceClasses: f.byID[sourceID].Classes, TargetClasses: f.byID[targetID].Classes,
+	}, nil
+}
+
+func (f *accountsFake) MergeAccounts(ctx context.Context, sourceID, targetID string, audit AdminAuditEntry) (*AdminMergePlan, string, error) {
+	plan, perr := f.PrecheckMerge(ctx, sourceID, targetID)
+	if perr != nil {
+		return nil, "", perr
+	}
+	auditID, err := f.audit.Append(ctx, audit)
+	if err != nil {
+		return plan, "", err
+	}
+	// 源转 merged（假体只维护对外可见的那件事）。
+	if a, ok := f.byID[sourceID]; ok {
+		a.Status = "merged"
+	}
+	// 类并集落到目标。
+	if src, ok := f.byID[sourceID]; ok {
+		tgt := f.byID[targetID]
+		seen := map[string]bool{}
+		for _, c := range append(append([]string{}, tgt.Classes...), src.Classes...) {
+			if !seen[c] {
+				seen[c] = true
+				tgt.Classes = append(tgt.Classes, c)
+			}
+		}
+	}
+	return plan, auditID, nil
+}
+
+func (f *accountsFake) RollbackMerge(ctx context.Context, sourceID string, audit AdminAuditEntry) (*AdminMergePlan, string, error) {
+	src, ok := f.byID[sourceID]
+	if !ok {
+		return nil, "", ErrAdminAccountNotFound
+	}
+	if src.Status != "merged" {
+		// 没有未撤销的合并 → 与「不存在」同形（404）。
+		return nil, "", ErrAdminAccountNotFound
+	}
+	src.Status = "active"
+	auditID, err := f.audit.Append(ctx, audit)
+	return &AdminMergePlan{SourceID: sourceID, RolledBack: true,
+		Blocking: []string{}, RenamedKeys: []string{}}, auditID, err
+}

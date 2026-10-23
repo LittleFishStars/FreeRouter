@@ -32,6 +32,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/LittleFishStars/FreeRouter/internal/auth"
 	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 )
 
@@ -43,10 +44,18 @@ func (s *Server) mountAdminAccounts(r chi.Router, deps *AdminDeps) {
 	// /accounts/{id} 吞掉（注册顺序再兜一层可读性）。
 	r.Get("/accounts/pending", s.handleAdminAccountsPending(deps))
 	r.Post("/accounts/pending/{id}/approve", s.handleAdminAccountApprove(deps))
+	r.Post("/accounts/pending/{id}/reject", s.handleAdminAccountReject(deps))
+	// CSV 导入：静态路径 /import 必须在 /{id} 之前注册（chi 字面量优先，
+	// 注册顺序再兜一层可读性）。
+	r.Post("/accounts/import", s.HandleAdminAccountsImport(deps))
 	r.Get("/accounts/{id}", s.handleAdminAccountDetail(deps))
 	r.Patch("/accounts/{id}", s.handleAdminAccountPatch(deps))
 	r.Post("/accounts/{id}/password", s.handleAdminAccountPassword(deps))
 	r.Post("/accounts/{id}/sessions/revoke", s.handleAdminAccountRevokeSessions(deps))
+	// 合并面（🔒 危险写）：预检是只读、合并与回滚是写。
+	r.Get("/accounts/{id}/merge/precheck", s.handleAdminAccountMergePrecheck(deps))
+	r.Post("/accounts/{id}/merge", s.handleAdminAccountMerge(deps))
+	r.Post("/accounts/{id}/merge/rollback", s.handleAdminAccountMergeRollback(deps))
 }
 
 // handleAdminAccountsList GET /api/admin/accounts?class=&status=&group_id=。
@@ -524,6 +533,51 @@ func (s *Server) handleAdminAccountApprove(deps *AdminDeps) http.HandlerFunc {
 // strPtr 小工具（载荷构造处反复用到 *string）。
 func strPtr(v string) *string { return &v }
 
+// handleAdminAccountReject POST /api/admin/accounts/pending/{id}/reject。
+//
+// 拒绝 = 状态转 rejected（01-accounts §5：rejected 是「从未通过审核」，
+// 与 disabled 的「曾经可用后被停用」区分开）。理由可选但**必须落审计**：
+// 申请人后续申诉、以及「同一个上游账号被反复申请」的识别都靠它。
+//
+// 与 approve 对称地走 UpdateAccount（受控的 status 迁移），而不是自己写 SQL：
+// 两条路径共用同一个桥方法，状态机的关卡（pending→rejected 合法、
+// active→rejected 不合法）只有一份实现。
+func (s *Server) handleAdminAccountReject(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "账户存储", deps.Accounts != nil) {
+			return
+		}
+		p, ok := adminActor(w, r)
+		if !ok {
+			return
+		}
+		id, ok := accountIDParam(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			Reason string `json:"reason"`
+		}
+		if _, ok := adminDecodeBoth(w, r, &body); !ok {
+			return
+		}
+		reason := strings.TrimSpace(body.Reason)
+		audit := adminBaseAudit(p, r, "account.reject", "account:"+id, "ok")
+		if b, err := json.Marshal(map[string]any{"reason": reason}); err == nil {
+			audit.Detail = b
+		}
+		status := "rejected"
+		in := AdminAccountUpdate{Status: &status}
+		row, auditID, err := deps.Accounts.UpdateAccount(r.Context(), id, in, audit)
+		if err != nil {
+			mapAdminError(w, err, "账户")
+			return
+		}
+		s.fillAdminCounts(deps, r, row)
+		adminWriteOK(w, http.StatusOK, renderAdminAccount(row), auditID)
+	}
+}
+
 // TODO(M7-下一轮，已在回报里列给 lead)：
 //   - POST /accounts/import（CSV 导入）：逐行创建 + 批次汇总审计（admin.
 //     import_batch）+ 一次性密码集合回显；行级失败策略（整单拒 vs 部分
@@ -534,3 +588,158 @@ func strPtr(v string) *string { return &v }
 //   - POST /accounts/pending/{id}/reject：rejected 已可经 PATCH 达到；
 //     reject 单独端点只是 action 归类差异（account.reject），待注册流
 //     落地时与 approve 对称补齐。
+
+// ---------------------------------------------------------------------------
+// 账户合并 / 回滚 / 预检（01-accounts §4，02-admin §5.1 的 🔒 危险写）
+// ---------------------------------------------------------------------------
+
+// handleAdminAccountMergePrecheck GET /api/admin/accounts/{id}/merge/precheck?target=acc_x
+//
+// 为什么单独给一个只读端点：文档要求「管理员在合并确认页看到预检结果，
+// 只有🔴为空时才能点确认」。没有预检端点，确认页就只能盲签——而合并是
+// 不可逆方向的操作（虽有 7 天窗口，但窗口内的用量已经归到 target 了）。
+func (s *Server) handleAdminAccountMergePrecheck(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "账户存储", deps.Accounts != nil) {
+			return
+		}
+		id, ok := accountIDParam(w, r)
+		if !ok {
+			return
+		}
+		target := strings.TrimSpace(r.URL.Query().Get("target"))
+		if target == "" {
+			adminWriteParamErr(w, "target", "预检必须带目标账户（?target=acc_<n>）")
+			return
+		}
+		if _, err := idcode.Decode(idcode.Account, target); err != nil {
+			adminWriteParamErr(w, "target", "目标账户 id 形状非法（期望 acc_<数字>）")
+			return
+		}
+		plan, err := deps.Accounts.PrecheckMerge(r.Context(), id, target)
+		if err != nil {
+			mapAdminError(w, err, "账户")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": plan})
+	}
+}
+
+// handleAdminAccountMerge POST /api/admin/accounts/{id}/merge。
+//
+// 请求体 {"target_account_id":"acc_x"}（前端 mergeAccount 的形状）。
+// 阻塞项非空 → 409 conflict 且消息带具体是哪条凭据撞了（01-accounts §4：
+// 同 provider+external_id 是身份重叠，静默合并会把两个自然人变成一个）。
+func (s *Server) handleAdminAccountMerge(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "账户存储", deps.Accounts != nil) {
+			return
+		}
+		p, ok := adminActor(w, r)
+		if !ok {
+			return
+		}
+		id, ok := accountIDParam(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			TargetAccountID string `json:"target_account_id"`
+		}
+		if _, ok := adminDecodeBoth(w, r, &body); !ok {
+			return
+		}
+		target := strings.TrimSpace(body.TargetAccountID)
+		if target == "" {
+			adminWriteParamErr(w, "target_account_id", "必须指定合并目标账户")
+			return
+		}
+		if _, err := idcode.Decode(idcode.Account, target); err != nil {
+			adminWriteParamErr(w, "target_account_id", "目标账户 id 形状非法（期望 acc_<数字>）")
+			return
+		}
+		if target == id {
+			adminWriteParamErr(w, "target_account_id", "不能把账户合并到自己")
+			return
+		}
+		audit := adminBaseAudit(p, r, "account.merge", "account:"+id, "ok")
+		if b, err := json.Marshal(map[string]any{"target": target}); err == nil {
+			audit.Detail = b
+		}
+		plan, auditID, err := deps.Accounts.MergeAccounts(r.Context(), id, target, audit)
+		if err != nil {
+			// 409 时把预检明细一并回出去：管理员要知道「先处理哪条凭据」。
+			var ae *auth.Error
+			if asAuthError(err, &ae) && ae.Code == auth.CodeConflict {
+				writeJSON(w, http.StatusConflict, map[string]any{
+					"error": map[string]any{
+						"message": ae.Msg, "type": "conflict_error",
+						"param": "target_account_id", "code": "conflict",
+						"details": map[string]any{"blocking": planBlocking(plan)},
+					},
+				})
+				return
+			}
+			mapAdminError(w, err, "账户")
+			return
+		}
+		adminWriteOK(w, http.StatusOK, mergeResponse(plan, true, false), auditID)
+	}
+}
+
+// handleAdminAccountMergeRollback POST /api/admin/accounts/{id}/merge/rollback。
+//
+// 超窗或没有未撤销的合并 → 404（不确认「这里曾有过一次合并」；
+// 与「未接线能力不确认存在」同一口径）。
+func (s *Server) handleAdminAccountMergeRollback(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "账户存储", deps.Accounts != nil) {
+			return
+		}
+		p, ok := adminActor(w, r)
+		if !ok {
+			return
+		}
+		id, ok := accountIDParam(w, r)
+		if !ok {
+			return
+		}
+		audit := adminBaseAudit(p, r, "account.merge_rollback", "account:"+id, "ok")
+		plan, auditID, err := deps.Accounts.RollbackMerge(r.Context(), id, audit)
+		if err != nil {
+			mapAdminError(w, err, "账户")
+			return
+		}
+		adminWriteOK(w, http.StatusOK, mergeResponse(plan, false, true), auditID)
+	}
+}
+
+// planBlocking 安全取预检的阻塞明细（plan 可能为 nil）。
+func planBlocking(plan *AdminMergePlan) []string {
+	if plan == nil {
+		return []string{}
+	}
+	return plan.Blocking
+}
+
+// mergeResponse 在预检形状上补前端契约声明的 merged / rolled_back 标记。
+//
+// 为什么用 map 而不是给 AdminMergePlan 加两个恒为 false 的字段：预检响应里
+// 出现 "merged": false 会被读成「这次预检的结论是没合并」，而它其实只是
+// 「这不是执行结果」。标记只在它所属的那一个响应里存在。
+func mergeResponse(plan *AdminMergePlan, merged, rolledBack bool) map[string]any {
+	out := map[string]any{
+		"source_id": plan.SourceID, "target_id": plan.TargetID,
+		"blocking": plan.Blocking, "renamed_keys": plan.RenamedKeys,
+		"keys": plan.Keys, "credentials": plan.Credentials,
+		"group_relations": plan.GroupRels,
+		"source_classes":  plan.SourceClasses, "target_classes": plan.TargetClasses,
+	}
+	if merged {
+		out["merged"] = true
+	}
+	if rolledBack {
+		out["rolled_back"] = true
+	}
+	return out
+}

@@ -16,6 +16,8 @@ import {
   listAccounts,
   listGroups,
   mergeAccount,
+  precheckMerge,
+  type MergePlan,
   patchAccount,
   resetAccountPassword,
   revokeAccountSessions,
@@ -210,9 +212,32 @@ export function AccountDetailPage({ def }: PageProps) {
   const [error, setError] = useState<unknown>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [mergeTarget, setMergeTarget] = useState('')
+  // 合并预检结果：文档要求「只有🔴为空时才能点确认」，所以确认框的可用性
+  // 由它决定，而不是让管理员盲签一个必然被服务端拒的操作。
+  const [mergePlan, setMergePlan] = useState<MergePlan | null>(null)
+  const [mergePlanErr, setMergePlanErr] = useState<string | null>(null)
+  const [mergePlanBusy, setMergePlanBusy] = useState(false)
+
   const [generatedPassword, setGeneratedPassword] = useState<string | null>(null)
 
   const account = q.data
+
+  // 合并预检：文档要求「只有🔴为空时才能点确认」（01-accounts §4）。
+  // 定义在 account 之后，闭包里读它的 id 才不是「用未声明的变量」。
+  async function runMergePrecheck() {
+    const target = mergeTarget.trim()
+    if (!target || !account) return
+    setMergePlanBusy(true)
+    setMergePlanErr(null)
+    setMergePlan(null)
+    try {
+      setMergePlan(await precheckMerge(account.id, target))
+    } catch (e) {
+      setMergePlanErr(e instanceof Error ? e.message : '预检失败')
+    } finally {
+      setMergePlanBusy(false)
+    }
+  }
   useEffect(() => {
     if (!account) return
     setClasses(account.classes)
@@ -553,19 +578,56 @@ export function AccountDetailPage({ def }: PageProps) {
             回滚这次合并…
           </button>
         ) : (
+          <>
           <div className="field-row">
             <Field label="目标账户 ID" required hint="合并前请确认对象：这是本操作最贵的错误。">
-              <input value={mergeTarget} onChange={(e) => setMergeTarget(e.target.value)} placeholder="acc_…" />
+              <input value={mergeTarget} onChange={(e) => { setMergeTarget(e.target.value); setMergePlan(null) }} placeholder="acc_…" />
             </Field>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => void runMergePrecheck()}
+              disabled={!mergeTarget.trim() || mergePlanBusy}
+            >
+              {mergePlanBusy ? '正在预检…' : '先跑预检'}
+            </button>
             <button
               type="button"
               className="btn-danger"
               onClick={() => setDialog('merge')}
-              disabled={!mergeTarget.trim()}
+              disabled={!mergeTarget.trim() || !mergePlan || mergePlan.blocking.length > 0}
             >
               合并到该账户…
             </button>
           </div>
+          {mergePlanErr ? <p className="form-error">{mergePlanErr}</p> : null}
+          {mergePlan ? (
+            <div className="merge-precheck">
+              {mergePlan.blocking.length > 0 ? (
+                <Banner tone="warn" title="存在阻塞项：不能合并">
+                  <ul className="plain-list">
+                    {mergePlan.blocking.map((b, i) => (
+                      <li key={i}>{b}</li>
+                    ))}
+                  </ul>
+                  <p className="muted">
+                    同一个上游凭据挂在两个账户上是「身份重叠」——静默合并会把两个自然人
+                    并成一个且不可逆。请先手工处理上面这几条凭据再回来。
+                  </p>
+                </Banner>
+              ) : (
+                <Banner tone="ok" title="预检通过：可以合并">
+                  将改挂 {mergePlan.keys} 把 Key、{mergePlan.credentials} 个凭据、
+                  {mergePlan.group_relations} 条组关系；
+                  类并集：{mergePlan.source_classes.join(' / ') || '无'} ∪{' '}
+                  {mergePlan.target_classes.join(' / ') || '无'}。
+                  {mergePlan.renamed_keys.length > 0 &&
+                    ` 其中 ${mergePlan.renamed_keys.length} 把同名 Key 会被自动改名（追加 -from-${mergePlan.source_id.replace('acc_', '')}）。`}
+                </Banner>
+              )}
+            </div>
+          ) : null}
+          </>
         )}
       </Section>
 

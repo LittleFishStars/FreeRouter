@@ -17,7 +17,10 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
 	"github.com/LittleFishStars/FreeRouter/internal/idcode"
@@ -451,4 +454,181 @@ func (kb *keysCountBridge) CountKeys(ctx context.Context, accountID string) (int
 		return 0, err
 	}
 	return int64(len(keys)), nil
+}
+
+// ---------------------------------------------------------------------------
+// CSV 导入（httpapi.ImportStore）
+// ---------------------------------------------------------------------------
+
+// ImportAccount 建一个导入账户：active + tenant 类 + 组 + 额度，同一事务。
+//
+// 为什么单独一个方法而不复用 CreateAccount：导入的默认权限类是 tenant
+// （01-accounts §2：管理员导入授予调用能力），而单体创建的类集合由请求
+// 指定、状态默认 active 但可给 pending。两者混在一个方法里会让「导入是否
+// 可能造出 pending 账户」这种问题需要读代码才能回答。
+//
+// 组：给了用给的（名字非法即失败，该行计入失败数）；没给进默认组——
+// 无组账户的可见模型集合为空，等价于「导入了一堆登进去啥也干不了的账户」。
+func (ab *accountsBridge) ImportAccount(ctx context.Context, row httpapi.ImportRow, audit httpapi.AdminAuditEntry) (string, error) {
+	if row.PasswordHash == "" {
+		return "", errors.New("store: 导入账户必须带口令哈希（生成在 handler 侧）")
+	}
+	gid, err := ab.b.st.EnsureDefaultGroup(ctx, 0)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(row.Group) != "" {
+		parsed, derr := decodeID(idcode.Group, row.Group)
+		if derr != nil {
+			return "", fmt.Errorf("组 id 非法 %q: %w", row.Group, derr)
+		}
+		gid = parsed
+	}
+	var newID int64
+	err = ab.b.st.WithTx(ctx, func(tx *store.Repos) error {
+		id, cerr := tx.Accounts.CreateAccount(ctx, store.AccountAuth{
+			Account: store.Account{
+				DisplayName: row.DisplayName,
+				Username:    row.Username,
+				Status:      store.AccountActive,
+			},
+			PasswordHash: row.PasswordHash,
+		}, []store.Class{store.ClassTenant})
+		if cerr != nil {
+			return cerr
+		}
+		newID = id
+		if err := tx.Groups.AddMember(ctx, gid, id); err != nil {
+			return err
+		}
+		if row.QuotaUnit != "" && row.QuotaLimit != nil {
+			if err := tx.Quotas.SetAccountQuota(ctx, id, 0,
+				store.QuotaUnit(row.QuotaUnit), store.PeriodDay, *row.QuotaLimit); err != nil {
+				return err
+			}
+		}
+		_, aerr := appendAudit(ctx, tx.Logs, audit)
+		return aerr
+	})
+	if err != nil {
+		return "", mapStoreErr(err)
+	}
+	return encodeID(idcode.Account, newID), nil
+}
+
+// ImportBatchAudit 记一条批次事件（06-audit：操作者、行数、成功/失败数）。
+//
+// 为什么批次与逐行都要记：逐行事件回答「alice 这个账户是谁建的」，
+// 批次事件回答「那次操作一共造了多少账户」——后者是异常批量开户的唯一线索。
+func (ab *accountsBridge) ImportBatchAudit(ctx context.Context, audit httpapi.AdminAuditEntry) (string, error) {
+	aid, err := appendAudit(ctx, ab.b.repos.Logs, audit)
+	if err != nil {
+		return "", mapStoreErr(err)
+	}
+	return aid, nil
+}
+
+// 编译期断言：accountsBridge 同时是账户面与导入面的实现。
+var _ httpapi.ImportStore = (*accountsBridge)(nil)
+
+// ---------------------------------------------------------------------------
+// 账户合并与回滚（httpapi.AdminAccountsStore 的合并面）
+// ---------------------------------------------------------------------------
+
+// mergePlanToAdmin 把 store 的预检结果翻成对外形状（id 编码 + 冲突成人话）。
+func mergePlanToAdmin(p store.MergePlan, sourceID, targetID string) *httpapi.AdminMergePlan {
+	blocking := make([]string, 0, len(p.Blocking))
+	for _, c := range p.Blocking {
+		blocking = append(blocking, c.Detail)
+	}
+	renamed := p.RenamedKeys
+	if renamed == nil {
+		renamed = []string{}
+	}
+	return &httpapi.AdminMergePlan{
+		SourceID: sourceID, TargetID: targetID,
+		Blocking: blocking, RenamedKeys: renamed,
+		Keys: p.Keys, Credentials: p.Creds, GroupRels: p.GroupRels,
+		SourceClasses: p.SourceClasses, TargetClasses: p.TargetClasses,
+	}
+}
+
+func (ab *accountsBridge) PrecheckMerge(ctx context.Context, sourceID, targetID string) (*httpapi.AdminMergePlan, error) {
+	sid, err := decodeID(idcode.Account, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	tid, err := decodeID(idcode.Account, targetID)
+	if err != nil {
+		return nil, err
+	}
+	p, err := ab.b.repos.Accounts.PrecheckMerge(ctx, sid, tid)
+	if err != nil {
+		return nil, mapStoreErr(err)
+	}
+	return mergePlanToAdmin(p, sourceID, targetID), nil
+}
+
+// MergeAccounts 执行合并。
+//
+// 审计在**业务写成功之后**由同一事务外补记：store.MergeAccount 自带事务，
+// 把审计塞进它里面需要改 store 签名；而合并的留痕行本身就是「谁在什么时候
+// 把谁并给了谁」的一等记录（account_merges 是回滚依据，比审计行更结构化）。
+// 这里仍写审计，是为了让审计流里能看到这次操作（06-audit：账户合并记
+// source/target）——两条记录各自服务不同的查询。
+func (ab *accountsBridge) MergeAccounts(ctx context.Context, sourceID, targetID string, audit httpapi.AdminAuditEntry) (*httpapi.AdminMergePlan, string, error) {
+	sid, err := decodeID(idcode.Account, sourceID)
+	if err != nil {
+		return nil, "", err
+	}
+	tid, err := decodeID(idcode.Account, targetID)
+	if err != nil {
+		return nil, "", err
+	}
+	plan, err := ab.b.repos.Accounts.MergeAccount(ctx, sid, tid, time.Time{})
+	if err != nil {
+		if errors.Is(err, store.ErrMergeBlocked) {
+			// 阻塞项明细进消息：管理员要看到「是哪条凭据撞了」才能处理。
+			detail := "合并被阻塞：存在身份重叠的凭据"
+			if len(plan.Blocking) > 0 {
+				detail = "合并被阻塞：" + plan.Blocking[0].Detail
+			}
+			return mergePlanToAdmin(plan, sourceID, targetID), "", fmt.Errorf("%w: %s", httpapi.ErrAdminConflict, detail)
+		}
+		return nil, "", mapStoreErr(err)
+	}
+	aid, aerr := appendAudit(ctx, ab.b.repos.Logs, audit)
+	if aerr != nil {
+		// 合并已完成，审计写失败不该把它说成失败（同导入批次的判断）。
+		return mergePlanToAdmin(plan, sourceID, targetID), "", nil
+	}
+	return mergePlanToAdmin(plan, sourceID, targetID), aid, nil
+}
+
+func (ab *accountsBridge) RollbackMerge(ctx context.Context, sourceID string, audit httpapi.AdminAuditEntry) (*httpapi.AdminMergePlan, string, error) {
+	sid, err := decodeID(idcode.Account, sourceID)
+	if err != nil {
+		return nil, "", err
+	}
+	rec, err := ab.b.repos.Accounts.RollbackMerge(ctx, sid, time.Time{})
+	if err != nil {
+		if errors.Is(err, store.ErrMergeNotReversible) {
+			return nil, "", store.ErrNotFound
+		}
+		return nil, "", mapStoreErr(err)
+	}
+	// 回滚结果用同一形状回（target 的类保留并集，见 store 注释）。
+	out := &httpapi.AdminMergePlan{
+		SourceID: sourceID,
+		TargetID: encodeID(idcode.Account, rec.TargetID),
+		Keys:     len(rec.MovedKeys), Credentials: len(rec.MovedCreds),
+		GroupRels:  len(rec.MovedGroupIDs),
+		RolledBack: true,
+		Blocking:   []string{}, RenamedKeys: []string{},
+	}
+	aid, aerr := appendAudit(ctx, ab.b.repos.Logs, audit)
+	if aerr != nil {
+		return out, "", nil
+	}
+	return out, aid, nil
 }

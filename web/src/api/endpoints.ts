@@ -276,6 +276,30 @@ export function importAccountsCsv(csv: string) {
   )
 }
 
+export interface MergePlan {
+  source_id: string
+  target_id: string
+  /** 🔴 阻塞项（同 provider 凭据撞身份）：非空时不得执行合并。 */
+  blocking: string[]
+  /** 🟡 将被自动改名的 Key（名字不是身份，Key 的身份是它的 secret）。 */
+  renamed_keys: string[]
+  keys: number
+  credentials: number
+  group_relations: number
+  source_classes: string[]
+  target_classes: string[]
+  merged?: boolean
+  rolled_back?: boolean
+}
+
+/** 合并预检（只读）：确认页必须先看它，🔴 为空才允许点确认。 */
+export function precheckMerge(id: string, target: string) {
+  // 查询串手工拼：getOne 不带 query 参数（本文件里唯一的 GET 带参场景）。
+  return getOne<MergePlan>(
+    `${PATHS.adminAccounts}/${seg(id)}/merge/precheck?target=${seg(target)}`
+  )
+}
+
 export function mergeAccount(id: string, targetAccountId: string) {
   return postWrite<{ merged: boolean }>(`${PATHS.adminAccounts}/${seg(id)}/merge`, {
     target_account_id: targetAccountId

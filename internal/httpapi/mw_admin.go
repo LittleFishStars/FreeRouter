@@ -310,6 +310,29 @@ type AdminAccountsStore interface {
 	ResetPassword(ctx context.Context, id, passwordHash string, revokeSessions bool, audit AdminAuditEntry) (sessionsRevoked int, auditID string, err error)
 	// RevokeSessions 吊销该账户全部会话（与审计同事务），返回吊销数。
 	RevokeSessions(ctx context.Context, id string, audit AdminAuditEntry) (int, string, error)
+	// PrecheckMerge 跑合并预检（只读）。阻塞项非空时不得执行合并。
+	PrecheckMerge(ctx context.Context, sourceID, targetID string) (*AdminMergePlan, error)
+	// MergeAccounts 执行合并（单事务：类并集 + 资源改挂 + 源转 merged + 留痕）。
+	// 预检有阻塞项时返回 ErrAdminConflict（消息带具体是哪条凭据撞了）。
+	MergeAccounts(ctx context.Context, sourceID, targetID string, audit AdminAuditEntry) (*AdminMergePlan, string, error)
+	// RollbackMerge 回滚 source 最近一次未撤销的合并。超窗/无记录返回
+	// ErrAdminNotFound（对外 404：不确认「曾有合并」）。
+	RollbackMerge(ctx context.Context, sourceID string, audit AdminAuditEntry) (*AdminMergePlan, string, error)
+}
+
+// AdminMergePlan 是合并预检/结果（01-accounts §4 的确认页数据）。
+type AdminMergePlan struct {
+	SourceID      string   `json:"source_id"`
+	TargetID      string   `json:"target_id"`
+	Blocking      []string `json:"blocking"`
+	RenamedKeys   []string `json:"renamed_keys"`
+	Keys          int      `json:"keys"`
+	Credentials   int      `json:"credentials"`
+	GroupRels     int      `json:"group_relations"`
+	SourceClasses []string `json:"source_classes"`
+	TargetClasses []string `json:"target_classes"`
+	// RolledBack 标记这是回滚结果（执行/回滚共用一个响应形状）。
+	RolledBack bool `json:"rolled_back,omitempty"`
 }
 
 // ErrAdminAccountNotFound 是账户面未命中哨兵（→ 404 not_found）。
