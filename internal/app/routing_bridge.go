@@ -207,6 +207,8 @@ type routingCandidates struct {
 	bridge   *abstractModelBridge
 	resolver *routing.Resolver
 	cd       *routing.Cooldowns
+	// balance 是后台余额探测（balance 排序键）。nil = 未装配。
+	balance *BalanceLoop
 
 	mu  sync.Mutex
 	rrs map[int64]*routing.RoundRobinCursor // 按抽象模型持有游标（03-strategy §3.4）
@@ -219,6 +221,7 @@ func newRoutingCandidates(app *App) *routingCandidates {
 		bridge:   b,
 		resolver: routing.NewResolver(b),
 		cd:       routing.NewCooldowns(),
+		balance:  app.balanceLoop,
 		rrs:      map[int64]*routing.RoundRobinCursor{},
 	}
 }
@@ -329,15 +332,14 @@ func (c *routingCandidates) pathsOf(ctx context.Context, resolved *routing.Resol
 			RealModel:  rm,
 			Constraint: byModel[rm.ID],
 			Caps:       capsOf(rm),
-			// 排序键中：TTFT/TotalMs 来自 latencySampler（每请求延迟采样，
-			// 见 latency.go）。Balance/ExpiresAt 当前仍无数据源（余额查询
-			// 属 M8/配额面，A5 待定项）——保持零值/无键，让 routing 垫底。
+			// 排序键：TTFT/TotalMs 来自 latencySampler，Balance/ExpiresAt 来自
+			// balanceLoop（均为各自的后台测量，无样本时保持 -1/零值垫底）。
 			//
 			// 注意 TTFTMs 无样本时必须 -1：speed 键判 <0 为无样本垫底，
 			// 零值 0 会被读成「TTFT 0 毫秒的极速模型」排到最前。
-			ExpiresAt:       0,     // 到期：无数据源（余额/到期查询未接）
-			Balance:         0,     // 余额：无数据源
-			BalanceKnown:    false, // 余额未知 → 无键，垫底
+			ExpiresAt:       c.expiresAtOf(rm.UpstreamID),
+			Balance:         c.balanceOf(rm.UpstreamID),
+			BalanceKnown:    c.balanceKnown(rm.UpstreamID),
 			TTFTMs:          c.ttftMs(rm),
 			TotalMs:         c.totalMs(rm),
 			PriceMultiplier: 1,     // 无价格数据时取基线 1（03-strategy §2.5.2）
@@ -557,4 +559,37 @@ func (c *routingCandidates) latencyMs(rm routing.RealModelInfo, ttft bool) int64
 		return int64(snap.TTFTMs)
 	}
 	return int64(snap.TotalMs)
+}
+
+// balanceOf 返回某上游的余额（weight 量级未知时为 0）。
+func (c *routingCandidates) balanceOf(upstreamID int64) float64 {
+	if c.balance == nil {
+		return 0
+	}
+	br, ok := c.balance.BalanceOfUpstream(context.Background(), upstreamID)
+	if !ok {
+		return 0
+	}
+	return br.Balance
+}
+
+// balanceKnown 报告该上游的余额是否已知（未知则 balanceOf 无意义）。
+func (c *routingCandidates) balanceKnown(upstreamID int64) bool {
+	if c.balance == nil {
+		return false
+	}
+	_, ok := c.balance.BalanceOfUpstream(context.Background(), upstreamID)
+	return ok
+}
+
+// expiresAtOf 返回该上游的到期时间（无则 0）。
+func (c *routingCandidates) expiresAtOf(upstreamID int64) int64 {
+	if c.balance == nil {
+		return 0
+	}
+	br, ok := c.balance.BalanceOfUpstream(context.Background(), upstreamID)
+	if !ok || br.ExpiresAt.IsZero() {
+		return 0
+	}
+	return br.ExpiresAt.Unix()
 }

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
 	"github.com/LittleFishStars/FreeRouter/internal/config"
@@ -58,6 +59,10 @@ type App struct {
 	// buildServer 里创建一次，同时注入 httpapi.SetLatencySink 与 routingCandidates。
 	// nil = 未装配：TTFT 采样丢弃，speed 排序退回无样本垫底。
 	latencySampler *upstream.LatencySampler
+
+	// balanceLoop 是后台余额探测循环（balance 排序键数据源）。
+	// server_build 里由 startBalanceProbe 创建；routing 读它填 Path.Balance。
+	balanceLoop *BalanceLoop
 
 	// HTTP 服务器（装配好全部中间件与路由的）。
 	server *httpapi.Server
@@ -142,6 +147,9 @@ func Setup(ctx context.Context, opts Options) (*App, error) {
 	bgCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	a.bgCancel = cancel
 	a.startModelRefresh(bgCtx)
+	// 余额探测后台任务（balance 排序键数据源）。必须放在 startModelRefresh
+	// 之后：relay 上游由自举写入，先刷新才有 provider 可探测。
+	a.startBalanceProbe(bgCtx)
 
 	// 第 6 步：HTTP（装配中间件链 + 路由 + v1 面板注入）。
 	a.server = a.buildServer()
@@ -236,4 +244,53 @@ func (a *App) Close() error {
 		return a.store.Close()
 	}
 	return nil
+}
+
+// startBalanceProbe 启动后台余额探测循环（balance 排序键的数据源）。
+//
+// 只探测 relay 上游（base_url = sidecar://<provider>），因为只有它们走
+// sidecar 的账号池、余额口径一致可比较。vendor/selfhosted 用自己的凭据、
+// 额度语义各异，不参与 balance 排序——那条上游的余额本来就是未知。
+//
+// sidecar 不可用 / 无 relay 上游时静默空转（探测是旁路，不阻塞启动）。
+func (a *App) startBalanceProbe(ctx context.Context) {
+	if a.sidecar == nil {
+		return
+	}
+	a.balanceLoop = NewBalanceLoop(
+		upstream.NewQuotaProbe(a.sidecar),
+		balanceSource{
+			relayUpstreams: func(c context.Context) (map[int64]string, error) {
+				return a.relayProviders(c)
+			},
+			providerOfUpstream: func(c context.Context, upstreamID int64) string {
+				// 每次反查重读上游行：relay 上游数量少，且余额排序不需要强一致。
+				u, err := a.store.Repos().Models.GetUpstreamByID(c, upstreamID)
+				if err != nil || u == nil || u.Kind != "relay" {
+					return ""
+				}
+				return providerFromSidecarURL(u.BaseURL)
+			},
+		},
+		60*time.Second,
+	)
+	go a.balanceLoop.Run(ctx)
+}
+
+// relayProviders 列出所有 relay 上游 (upstreamID → provider)，从 base_url 解析。
+func (a *App) relayProviders(ctx context.Context) (map[int64]string, error) {
+	ups, err := a.store.Repos().Models.ListUpstreams(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[int64]string{}
+	for _, u := range ups {
+		if u.Kind != "relay" {
+			continue
+		}
+		if p := providerFromSidecarURL(u.BaseURL); p != "" {
+			out[u.ID] = p
+		}
+	}
+	return out, nil
 }
