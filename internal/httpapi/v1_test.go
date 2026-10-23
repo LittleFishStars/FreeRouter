@@ -749,3 +749,34 @@ data: [DONE]
 		t.Fatalf("错误帧后必须以 data: [DONE] 收尾（§4.3）；尾部=%q", body[max(0, len(body)-60):])
 	}
 }
+
+// TestContractV1ResponsesStream：/v1/responses stream:true（§7.1 流式事件面）。
+//
+// 上游是 Chat-compatible 流（openAIStreamOK），出站必须是 Responses 具名事件：
+// response.output_text.delta / response.completed。契约点：Content-Type 为
+// text/event-stream（SSE），且每个 data 行都是带 type 字段的完整 JSON。
+func TestContractV1ResponsesStream(t *testing.T) {
+	up := &fakeUpstream{script: []fakeCall{{Stream: openAIStreamOK}}}
+	cs := &fakeCandidates{models: map[string][]Candidate{
+		"smart": {chatCandidate("deepseek-chat")},
+	}}
+	s := newV1Server(t, up, cs)
+
+	rec := httptest.NewRecorder()
+	s.HandleV1Responses(rec, v1Request("POST", "/v1/responses", `{"model":"smart","instructions":"你是助手","input":"你好","stream":true}`))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200；body=%s", rec.Code, rec.Body.String())
+	}
+	ct := rec.Header().Get("Content-Type")
+	if ct != sseContentType {
+		t.Fatalf("Content-Type = %q，期望 %q", ct, sseContentType)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "response.output_text.delta") {
+		t.Fatalf("流式响应应含 response.output_text.delta，body=%s", body)
+	}
+	if strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("Responses 流式不应以 [DONE] 收尾（那是 Chat 的形状）；body=%s", body)
+	}
+}

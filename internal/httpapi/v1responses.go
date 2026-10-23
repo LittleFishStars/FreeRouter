@@ -16,8 +16,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
+	"github.com/LittleFishStars/FreeRouter/internal/ir/openai"
 )
 
 // ---------------------------------------------------------------------------
@@ -221,6 +223,10 @@ func decodeResponsesItem(req *ir.Request, item responsesInputItem) {
 		var parts []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
+			// input_image 的图片 URL/data（Responses 的 image_url 对象）。
+			ImageURL *struct {
+				URL string `json:"url"`
+			} `json:"image_url"`
 		}
 		if err := json.Unmarshal(item.Content, &parts); err == nil {
 			msg := ir.Message{Role: role}
@@ -229,9 +235,20 @@ func decodeResponsesItem(req *ir.Request, item responsesInputItem) {
 				case "input_text", "output_text", "text":
 					msg.Parts = append(msg.Parts, ir.TextPart{Text: p.Text})
 				case "input_image":
-					// input_image 的 image_url 字段在 M5 简化为占位（Responses
-					// 图片面较 Chat 更复杂——先收文本，图片 TODO(P1)）。
-					msg.Parts = append(msg.Parts, ir.TextPart{Text: "[图片输入暂不支持：Responses input_image]"})
+					// Responses 的 input_image 与 Chat 的 image_url 是同一张图——
+					// 复用 openai 的解析（data URL 内联解码 / http(s) URL 保留
+					// 引用），规则必须一致，不能两处各写一份。
+					if p.ImageURL == nil || p.ImageURL.URL == "" {
+						msg.Parts = append(msg.Parts, ir.TextPart{Text: "[图片输入缺失 image_url]"})
+						continue
+					}
+					img, ierr := openai.DecodeImageURL(p.ImageURL.URL)
+					if ierr != nil {
+						// §10：无法表达的 part 不静默丢弃——转成可读占位并继续。
+						msg.Parts = append(msg.Parts, ir.TextPart{Text: "[图片输入无法解析: " + ierr.Error() + "]"})
+					} else {
+						msg.Parts = append(msg.Parts, img)
+					}
 				}
 			}
 			req.Messages = append(req.Messages, msg)
@@ -368,29 +385,32 @@ func (s *Server) HandleV1Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 流式：Responses 的流式面是 response.output_text.delta 等具名事件——
-	// M5 先 400 明确不支持（比给一个 [DONE]-形状的假流诚实；C6 精神）。
-	// TODO(P1)：Responses 流式事件面（task-8 范围②只要求入站面打通）。
-	if req.Stream {
-		s.writeV1Error(w, "invalid_request", "Responses 流式暂不支持（M5 最小面：非流式）", requestID)
-		return
-	}
-
-	// 非流式走 proxyOnce 逐候选；出站编码是 Responses 形状——与
-	// proxyV1 的「入站方言出站」不同，这里出站方言是我们自做的 Responses。
+	// 候选统一先查（流式与非流式都要），再按 Stream 分流。
 	cs := s.v1Candidates()
 	cands, cerr := cs.Candidates(r.Context(), req.Model, *req)
 	if errors.Is(cerr, ErrModelNotFound) {
-		// 与 proxyV1 同口径：模型不可见 → 404 而不是 503。
-		s.writeV1Error(w, "model_not_found", "模型不存在", requestID)
+		s.writeV1Error(w, "model_not_found", "模型不存在", requestID) // 与 proxyV1 同口径
 		return
 	}
 	if cerr != nil || len(cands) == 0 {
 		s.writeV1Error(w, "no_candidate", "当前无可用上游候选", requestID)
 		return
 	}
-	// 与 proxyV1 共享候选循环骨架（切换预算与冷却回传单点实现）。
-	// 终局响应写在 onExhausted 里——见 runCandidates 的注释。
+
+	if req.Stream {
+		// 流式：用 response.output_text.delta 等具名事件。候选循环内由
+		// proxyResponsesStreamOnce 逐帧写 SSE；所有上游候选失败时 onExhausted
+		// 输出 response.failed 事件帧（此刻头可能已按流式发出，不能写 JSON 体）。
+		s.setSSEOnce(w)
+		s.runCandidates(r.Context(), w, requestID, cs, cands, func(cand Candidate) bool {
+			return s.proxyResponsesStreamOnce(r.Context(), w, *req, cand, requestID)
+		}, func() {
+			s.writeResponsesStreamError(w, requestID, "全部上游候选失败")
+		})
+		return
+	}
+
+	// 非流式走 proxyOnce 逐候选；出站编码是 Responses 形状。
 	s.runCandidates(r.Context(), w, requestID, cs, cands, func(cand Candidate) bool {
 		return s.proxyResponsesOnce(r.Context(), w, *req, cand, requestID)
 	}, func() {
@@ -434,6 +454,91 @@ func (s *Server) proxyResponsesOnce(ctx context.Context, w http.ResponseWriter, 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
 	return true
+}
+
+// proxyResponsesStreamOnce 单候选流式代理（Responses 出站编码版 streamOnce）。
+//
+// 上游是 Chat-compatible 流（cand.Adapter.NewStreamReader），出站是 Responses
+// 具名事件流（proxyResponsesStreamWriter，见 internal/ir/openai/responses_stream.go）。
+//
+// 返回 true = 已写出可见内容（C7 不可再换候选）；false = 该候选可跳过（换下一个）。
+func (s *Server) proxyResponsesStreamOnce(ctx context.Context, w http.ResponseWriter, req ir.Request, cand Candidate, reqID string) bool {
+	// 起时点用于 TTFT：必须在编码/上游握手前取，否则首包延迟被低估（同 streamOnce）。
+	start := time.Now()
+	upOpt := ir.EncodeOptions{UpstreamModel: cand.UpstreamModelID, RequestID: reqID}
+	_, warns, err := cand.Adapter.EncodeRequest(&req, upOpt)
+	if err != nil {
+		return false
+	}
+	for _, warn := range warns {
+		s.log.Warn("v1 responses stream encode warning", ttftLogField, reqID, "param", warn.Param, "message", warn.Message)
+	}
+	call, err := s.v1Upstream().Call(ctx, cand, req, true)
+	if err != nil || call == nil {
+		return false
+	}
+	defer call.Body.Close()
+	if call.Err != nil {
+		return false
+	}
+
+	// 上游 Chat 流事件 → IR 事件 → Responses 出站 writer。
+	reader := cand.Adapter.NewStreamReader(call.Body, ir.DecodeOptions{RequestID: reqID})
+	writer := openai.NewResponsesStreamWriter(w, req.Model)
+
+	ttft := time.Now()
+	first := true
+	for {
+		ev, err := reader.Next()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break // 上游正常结束
+			}
+			break
+		}
+		if ev.Type == ir.EvDone {
+			_ = writer.Write(ev)
+			break
+		}
+		if !writer.State().Accept(ev) {
+			continue
+		}
+		if err := writer.Write(ev); err != nil {
+			break
+		}
+		if first && writer.State().Visible() {
+			// 首段可见内容时刻——TTFT 从「发起请求」算到这个瞬间才准确。
+			ttft = time.Now()
+			s.log.Info("v1 responses stream ttft", "request_id", reqID, "ttft_ms", ttft.Sub(start).Milliseconds())
+			first = false
+		}
+	}
+	_ = ttft
+	_ = writer.Close()
+	return true
+}
+
+// setSSEOnce 给流式响应立头。幂等：多次调用只第一次设（WriteHeader 后改无效）。
+func (s *Server) setSSEOnce(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", sseContentType)
+	w.Header().Set("Cache-Control", sseCacheControl)
+	// 断言 Flush 支持：SSE 依赖它逐帧发出，不支持会攒在缓冲里（TTFT 失真）。
+	if f := flusher(w); f != nil {
+		f.Flush()
+	}
+}
+
+// writeResponsesStreamError 在流式响应已发出（头不可改）后写 error 事件。
+// 与 completed 同形状，便于客户端统一解析。
+func (s *Server) writeResponsesStreamError(w http.ResponseWriter, reqID, msg string) {
+	// 走与正常路径同一个 writer，保证事件形状不漂移（手写帧易与 writer 不一致）。
+	wr := openai.NewResponsesStreamWriter(w, "")
+	_ = wr.Write(ir.Event{Type: ir.EvError, Err: &ir.Error{Code: "upstream_unavailable", Message: msg}})
+	_ = wr.Close()
+	if f := flusher(w); f != nil {
+		f.Flush()
+	}
+	_ = reqID
 }
 
 // parseResponsesEffort 把 Responses 的 reasoning.effort 归一到 ir.Effort。
