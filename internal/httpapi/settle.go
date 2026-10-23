@@ -75,6 +75,22 @@ type Settler interface {
 // SetSettler 注入结算出口（装配层调用；未注入时 v1 请求不结算，仅日志）。
 func (s *Server) SetSettler(v Settler) { s.settler = v }
 
+// LatencySink 是每请求延迟样本的接收口（路由排序键 speed 的数据源）。
+//
+// 装配层注入实现（internal/app 里通常是共用同一个 upstream.LatencySampler：
+// settle 侧写、routing 侧读）。httpapi 只依赖这个窄接口，不设实现——与
+// Settler 同一种「装配层填、httpapi 只调」的注入面。
+//
+// nil = 未装配：延迟样本丢弃（速度排序退回无样本垫底）。
+type LatencySink interface {
+	// RecordLatency 记录一次成功调用的延迟（路由按 realModelID 聚合）。
+	// ttftMs/totalMs 用 -1 表示无样本。
+	RecordLatency(ctx context.Context, realModelID int64, ttftMs, totalMs int64)
+}
+
+// SetLatencySink 注入每请求延迟采样出口。
+func (s *Server) SetLatencySink(v LatencySink) { s.latencySink = v }
+
 // settleTimeout 是终态结算的独立超时。
 //
 // 为什么是 5s 而不是更长：结算是一次本地事务（requests + usage_daily +
@@ -121,9 +137,19 @@ type attemptObs struct {
 //   - 无 Settler（未装配/测试）时什么都不做，不写日志噪音。
 //   - 结算用脱离取消的 ctx + settleTimeout，见文件头注释。
 func (s *Server) settleRequest(ctx context.Context, pr proxyReq, requestID string, st *settleState) {
-	if s == nil || s.settler == nil || st == nil {
+	if s == nil || st == nil {
 		return
 	}
+	// 每请求延迟进采样器（路由排序键 speed 的数据源）。
+	// 放在 Settler 判定之前：即使结算未装配，延迟采样仍要喂——排序是独立能力。
+	// 只在 RealModelID 已知时记（未知行无法归属到速排序，丢弃）。
+	if s.latencySink != nil && st.obs.RealModelID > 0 {
+		s.latencySink.RecordLatency(ctx, st.obs.RealModelID, st.obs.TTFTMs, st.obs.TotalMs)
+	}
+	if s.settler == nil {
+		return
+	}
+
 	var accountID, keyID string
 	if p := KeyPrincipalFromContext(ctx); p != nil {
 		accountID, keyID = p.AccountID, p.KeyID

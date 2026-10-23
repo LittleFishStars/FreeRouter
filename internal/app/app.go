@@ -54,6 +54,11 @@ type App struct {
 	// 否则两处刷新会争同一条 sidecar 串行管道。
 	modelRefresher *upstream.ModelRefresher
 
+	// latencySampler 是每请求延迟采样器（speed 排序键的数据源）。
+	// buildServer 里创建一次，同时注入 httpapi.SetLatencySink 与 routingCandidates。
+	// nil = 未装配：TTFT 采样丢弃，speed 排序退回无样本垫底。
+	latencySampler *upstream.LatencySampler
+
 	// HTTP 服务器（装配好全部中间件与路由的）。
 	server *httpapi.Server
 

@@ -64,6 +64,10 @@ type Server struct {
 	// settler 是 v1 请求终态结算出口（SetSettler 注入）。
 	// nil = 未装配：请求照常服务但不写 requests/usage_daily（测试与降级态）。
 	settler Settler
+
+	// latencySink 是每请求延迟采样出口（SetLatencySink 装配）。
+	// nil = 未装配：延迟样本丢弃（路由 speed 排序退回无样本垫底）。
+	latencySink LatencySink
 }
 
 // New 构造服务器。deps.Logger 为 nil 时使用默认 logger。

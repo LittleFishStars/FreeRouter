@@ -33,6 +33,7 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
 	"github.com/LittleFishStars/FreeRouter/internal/routing"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
+	"github.com/LittleFishStars/FreeRouter/internal/upstream"
 )
 
 // sidecarScheme 是 relay 上游 base_url 的固定前缀（03-upstream.md §3.2：
@@ -328,21 +329,18 @@ func (c *routingCandidates) pathsOf(ctx context.Context, resolved *routing.Resol
 			RealModel:  rm,
 			Constraint: byModel[rm.ID],
 			Caps:       capsOf(rm),
-			// 四个排序键当前都没有数据来源（探测/额度面尚未接线）：
-			// 这里把「无数据」显式写出来，而不是留零值——因为零值语义是
-			// 「有数据且为 0」，会被策略键当成真实测量值参与排序。
+			// 排序键中：TTFT/TotalMs 来自 latencySampler（每请求延迟采样，
+			// 见 latency.go）。Balance/ExpiresAt 当前仍无数据源（余额查询
+			// 属 M8/配额面，A5 待定项）——保持零值/无键，让 routing 垫底。
 			//
-			// 具体地 TTFTMs 必须显式 -1：routing 的 speed 键判 `TTFTMs < 0`
-			// 为无样本（垫底），零值 0 会被读成「TTFT 0 毫秒的极速模型」
-			// 排到最前（code-review 巡检发现）。默认链 [expiry-first,
-			// balance] 不含 speed 所以当前安全，但管理员一旦把 speed 配
-			// 进链就会命中这个坑。
-			ExpiresAt:       0,     // 到期：0 = 无到期概念（expiresAt 键判 <=0 无键）
-			Balance:         0,     // 余额：值无意义
+			// 注意 TTFTMs 无样本时必须 -1：speed 键判 <0 为无样本垫底，
+			// 零值 0 会被读成「TTFT 0 毫秒的极速模型」排到最前。
+			ExpiresAt:       0,     // 到期：无数据源（余额/到期查询未接）
+			Balance:         0,     // 余额：无数据源
 			BalanceKnown:    false, // 余额未知 → 无键，垫底
-			TTFTMs:          -1,    // 无样本 → 垫底（不是 0，见上）
-			TotalMs:         -1,    // 同上
-			PriceMultiplier: 1,     // 无价格数据时取基线 1（03-strategy §2.5.2 的「不被惩罚中间态」）
+			TTFTMs:          c.ttftMs(rm),
+			TotalMs:         c.totalMs(rm),
+			PriceMultiplier: 1,     // 无价格数据时取基线 1（03-strategy §2.5.2）
 			CooledDown:      false, // 冷却由 Cooldowns.Apply 统一标注
 		})
 	}
@@ -491,4 +489,72 @@ func containsString(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// latencySyncBridge 把 httpapi 的「按 realModelID 记样本」转成采样器的
+// 「按 (UpstreamID, RealModel) 存」。realModelID → 行信息的查表这里用
+// store 读 API，不缓存（调用频率低，且依赖 real_models 变更即时可见）。
+//
+// 为什么需要单独一个类型而不是直接复用 upstream.LatencySampler：
+// httpapi.LatencySink 的入参是 realModelID（real_models 行 id），而采样器
+// 的键是 (UpstreamID, RealModel)——routing 的 RealModelInfo 带后两者。
+// 中间这层翻译就是本类型；若直接改采样器键为 realModelID 也行，但那样
+// routing 读的时候还得反查，反而多一次反查。
+type latencyDefaultSink struct {
+	sampler *upstream.LatencySampler
+	bridge  *abstractModelBridge
+}
+
+// RecordLatency 实现 httpapi.LatencySink。
+func (l latencyDefaultSink) RecordLatency(ctx context.Context, realModelID int64, ttftMs, totalMs int64) {
+	if l.sampler == nil || realModelID <= 0 {
+		return
+	}
+	// 查 real_model → (UpstreamID, RealModel)。查询失败按未知行丢弃，
+	// 不中断请求（采样是旁路）。
+	upID, modelID, ok := l.resolveReal(ctx, realModelID)
+	if !ok {
+		return
+	}
+	l.sampler.RecordSuccess(ctx, upstream.SamplerKey{
+		UpstreamID: upID,
+		RealModel:  modelID,
+	}, float64(ttftMs), float64(totalMs), time.Now())
+}
+
+// resolveReal 解析 realModelID → (UpstreamID, RealModel)。ok=false 表示未知行。
+func (l latencyDefaultSink) resolveReal(ctx context.Context, realModelID int64) (int64, string, bool) {
+	if l.bridge == nil {
+		return 0, "", false
+	}
+	info, err := l.bridge.GetRealModel(ctx, realModelID)
+	if err != nil || info == nil {
+		return 0, "", false
+	}
+	return info.UpstreamID, info.UpstreamModelID, true
+}
+
+// ttftMs / totalMs 从采样器读某候选的平滑 TTFT/总耗时（毫秒）。
+//
+// 无采样器（参数装配层没建）或无样本时返回 -1（无样本垫底）。
+func (c *routingCandidates) ttftMs(rm routing.RealModelInfo) int64 {
+	return c.latencyMs(rm, true)
+}
+
+func (c *routingCandidates) totalMs(rm routing.RealModelInfo) int64 {
+	return c.latencyMs(rm, false)
+}
+
+func (c *routingCandidates) latencyMs(rm routing.RealModelInfo, ttft bool) int64 {
+	if c.app == nil || c.app.latencySampler == nil {
+		return -1
+	}
+	snap := c.app.latencySampler.Latency(upstream.SamplerKey{
+		UpstreamID: rm.UpstreamID,
+		RealModel:  rm.UpstreamModelID,
+	})
+	if ttft {
+		return int64(snap.TTFTMs)
+	}
+	return int64(snap.TotalMs)
 }
