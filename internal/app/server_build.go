@@ -143,19 +143,5 @@ func (a *App) readyCheck(ctx context.Context) error {
 	return nil
 }
 
-// groupMemberAdapter 满足 meter 的 groupMemberReader
-// （GroupIDsOfAccount 由 task-12 落在 ModelRepo 上）。
-type groupMemberAdapter struct {
-	models groupMemberReader
-}
-
-type groupMemberReader interface {
-	GroupIDsOfAccount(ctx context.Context, accountID int64) ([]int64, error)
-}
-
-func (g groupMemberAdapter) GroupIDsOfAccount(ctx context.Context, accountID int64) ([]int64, error) {
-	return g.models.GroupIDsOfAccount(ctx, accountID)
-}
-
 // errNotReady 是 readyz 的兜底错误。
 var errNotReady = errors.New("app: 存储未初始化")

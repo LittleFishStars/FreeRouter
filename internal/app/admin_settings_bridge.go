@@ -40,8 +40,6 @@ type settingsBridge struct {
 	cfg *config.Config
 }
 
-
-
 // GetSettings 返回分组视图 {"security":{...},"limits":{...},"runtime":{...}}。
 func (s *settingsBridge) GetSettings(ctx context.Context) (json.RawMessage, error) {
 	_ = ctx

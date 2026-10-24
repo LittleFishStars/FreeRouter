@@ -183,16 +183,6 @@ func mustParseID(s string) int64 {
 	return v
 }
 
-func parseIDs(in []string) []int64 {
-	out := make([]int64, 0, len(in))
-	for _, s := range in {
-		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
 func ptrString(s string) *string { return &s }
 
 func ptrUnix(t *time.Time) *int64 {

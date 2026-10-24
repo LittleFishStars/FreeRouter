@@ -175,9 +175,6 @@ event: message_stop
 data: {"type":"message_stop"}
 `
 
-// anthropic 非流式响应样本。
-const anthropicResponseOK = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"你好！"}],"stop_reason":"end_turn","usage":{"input_tokens":12,"output_tokens":6}}`
-
 // ---------------------------------------------------------------------------
 // 契约测试
 // ---------------------------------------------------------------------------

@@ -27,7 +27,6 @@ type sessFakeStore struct {
 	accounts map[string]*auth.Account // by username
 	byID     map[string]*auth.Account
 	sessions map[string]*auth.Session // key: hex(tokenHash)
-	nextID   int
 }
 
 func newSessFakeStore() *sessFakeStore {
@@ -404,9 +403,8 @@ func TestContractSessionEndpointShape(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 type fakeSetupStore struct {
-	count    int
-	created  []string
-	failWith error
+	count   int
+	created []string
 }
 
 func (f *fakeSetupStore) CountAccounts(context.Context) (int, error) {

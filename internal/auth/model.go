@@ -2,7 +2,6 @@ package auth
 
 import (
 	"fmt"
-	"sort"
 	"time"
 )
 
@@ -399,14 +398,4 @@ type PoolRef struct {
 // 判定形式与存储层的单条条件 UPDATE 对齐：used + cost <= limit。
 func (p PoolRef) PoolExhausted(cost int64) bool {
 	return p.Used+cost > p.Limit
-}
-
-// sortedKeys 返回 map 的稳定有序键（仅测试与调试用，保证输出可比较）。
-func sortedKeys[T any](m map[string]T) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

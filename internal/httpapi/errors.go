@@ -121,10 +121,3 @@ func writeErrorParam(w http.ResponseWriter, status int, code, param, message str
 		Error: errorBody{Message: message, Type: string(TypeForCode(code)), Param: param, Code: code},
 	})
 }
-
-// writeErrorTyped 允许调用方覆盖 type（仅用于协议面必须换形状的少数场合）。
-func writeErrorTyped(w http.ResponseWriter, status int, code, typ, message string) {
-	writeJSON(w, status, errorEnvelope{
-		Error: errorBody{Message: message, Type: typ, Param: nil, Code: code},
-	})
-}

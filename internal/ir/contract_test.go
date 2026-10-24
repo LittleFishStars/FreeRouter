@@ -98,19 +98,6 @@ func compareGoldenSem(t *testing.T, name string, got []byte) {
 	}
 }
 
-// jsonEqual 做"语义相等"判断：解析成 any 再 DeepEqual，字段顺序与空白不敏感。
-func jsonEqual(t *testing.T, a, b []byte) bool {
-	t.Helper()
-	var va, vb any
-	if err := json.Unmarshal(a, &va); err != nil {
-		t.Fatalf("A 不是合法 JSON: %v", err)
-	}
-	if err := json.Unmarshal(b, &vb); err != nil {
-		t.Fatalf("B 不是合法 JSON: %v", err)
-	}
-	return reflect.DeepEqual(va, vb)
-}
-
 // ---- IR 事件的测试用 JSON 表示 ----
 //
 // 为什么不用反射自动序列化 ir.Event：Event 是联合体，不同 Type 下有效字段不同，

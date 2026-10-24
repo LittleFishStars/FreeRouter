@@ -577,7 +577,6 @@ loop:
 			total++
 			time.Sleep(directive.Backoff)
 		case SwitchCandidate, FailRequest:
-			total++
 			break loop
 		}
 	}

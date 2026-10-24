@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -586,14 +585,6 @@ func ensureHeaders(w http.ResponseWriter, requestID string) {
 	// mwRequestID 已写 X-Request-ID；这里补 X-Free-Router-Request-Id
 	//（middleware.go 铁律不改，handler 自行补齐）。
 	w.Header().Set("X-Free-Router-Request-Id", requestID)
-}
-
-// fmtRequestID 仅用于日志格式化（保留接口位，M5 不强制形状）。
-func fmtRequestID(prefix, id string) string {
-	if id == "" {
-		return prefix
-	}
-	return fmt.Sprintf("%s %s", prefix, id)
 }
 
 // v1Deps 是面板依赖的进程级注册表：server.go 不能动，就用包级 registry

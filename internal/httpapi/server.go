@@ -225,17 +225,6 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
-	// M0 阶段恒为「需要初始化」：真正的判定要读库（是否有 admin 账户），
-	// 在 M3 引入 store 后替换。这里刻意不返回「已完成」，
-	// 避免一个还没接数据库的骨架对外谎报初始化状态。
-	writeJSON(w, http.StatusOK, map[string]any{
-		"setup_required":       true,
-		"registration_enabled": s.cfg.Security.RegistrationEnabled,
-		"requires_approval":    s.cfg.Security.RegistrationRequiresApproval,
-	})
-}
-
 func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "not_found", "接口不存在", nil)
 }

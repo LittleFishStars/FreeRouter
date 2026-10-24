@@ -88,13 +88,6 @@ func (o Options) nodePath() string {
 	return o.NodePath
 }
 
-func (o Options) startupTimeout() time.Duration {
-	if o.StartupTimeout <= 0 {
-		return defaultStartupTimeout
-	}
-	return o.StartupTimeout
-}
-
 func (o Options) logger() *slog.Logger {
 	if o.Logger == nil {
 		return slog.Default()

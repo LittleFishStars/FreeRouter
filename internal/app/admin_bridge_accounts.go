@@ -85,30 +85,6 @@ func (ab *accountsBridge) accountGroups(ctx context.Context, accountID int64) ([
 	return out, nil
 }
 
-// fillAccountDerived 填充派生字段（组归属 + 额度合计行 + 计数）。
-func (ab *accountsBridge) fillAccountDerived(ctx context.Context, row *httpapi.AdminAccount, id int64) {
-	if gs, err := ab.accountGroups(ctx, id); err == nil {
-		row.Groups = gs
-	}
-	// 账户级额度合计行（abstract_model_id=0）：三个 (unit,period) 键里
-	// 取「最有约束力的一条」给 quota 对象——§5.2 说 quota 是单个对象，
-	// 数据层是多行；展示哪条按限流最严原则取 limit 最小的行。
-	best := (*httpapi.AdminQuota)(nil)
-	for _, u := range []store.QuotaUnit{store.UnitRequest, store.UnitToken, store.UnitCredit} {
-		for _, p := range []store.QuotaPeriod{store.PeriodDay, store.PeriodMonth} {
-			q, err := ab.b.repos.Quotas.AccountQuota(ctx, id, 0, u, p)
-			if err != nil || q == nil {
-				continue // 没有这一行 = 该维度不限（05-storage 语义）
-			}
-			cand := &httpapi.AdminQuota{Unit: string(u), Limit: q.Limit, Used: q.Used, Period: string(p)}
-			if best == nil || cand.Limit < best.Limit {
-				best = cand
-			}
-		}
-	}
-	row.Quota = best
-}
-
 func (ab *accountsBridge) ListAccounts(ctx context.Context, f httpapi.AdminAccountFilter) ([]httpapi.AdminAccount, int64, error) {
 	// TODO(storage)：正式 ListAccounts（SQL 筛选 + LIMIT/OFFSET + COUNT）。
 	// 占位实现：全量 + 内存过滤。accounts 表量级（全站账户）在小规模下

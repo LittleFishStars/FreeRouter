@@ -87,11 +87,6 @@ func (c gatedCatalog) ListModelIDs(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
-// newGatedCatalog 构造（装配层 buildServer 用）。
-func newGatedCatalog(inner httpapi.ModelCatalog, gate *visibilityGate, testBypass bool) gatedCatalog {
-	return gatedCatalog{inner: inner, gate: gate, testBypass: testBypass}
-}
-
 // ---------------------------------------------------------------------------
 // gatedCandidates：v1 三端点的第 5 步前置
 // ---------------------------------------------------------------------------
@@ -132,11 +127,6 @@ func (c gatedCandidates) Candidates(ctx context.Context, model string, req ir.Re
 		return nil, httpapi.ErrModelNotFound
 	}
 	return c.inner.Candidates(ctx, model, req)
-}
-
-// newGatedCandidates 构造。
-func newGatedCandidates(inner httpapi.CandidateSource, gate *visibilityGate, testBypass bool) gatedCandidates {
-	return gatedCandidates{inner: inner, gate: gate, testBypass: testBypass}
 }
 
 // visibilityDeps 打包 buildServer 需要的两个装饰器（避免 wireVisibility

@@ -7,10 +7,10 @@ import (
 
 // fakeLatencySink 记录收到的样本，验证 settle→sink 链路。
 type fakeLatencySink struct {
-	gotReal int64
-	gotTTFT int64
+	gotReal  int64
+	gotTTFT  int64
 	gotTotal int64
-	hit     bool
+	hit      bool
 }
 
 func (f *fakeLatencySink) RecordLatency(_ context.Context, realModelID int64, ttftMs, totalMs int64) {

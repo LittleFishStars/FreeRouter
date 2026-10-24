@@ -23,7 +23,6 @@ type fakeStore struct {
 	keys     map[string]*APIKey  // by ID
 	allow    map[string][]string // keyID → 白名单
 	groups   map[string][]GroupPolicy
-	clock    *time.Time // 与测试共享的"现在"
 }
 
 func newFakeStore() *fakeStore {
@@ -276,11 +275,3 @@ func (f *fakeStore) allowKeyCreation(accountID string) {
 }
 
 func intp(i int) *int { return &i }
-
-// testClock 返回可控时钟：测试推进"现在"而不 sleep。
-func testClock() (*fakeStore, func(time.Duration)) {
-	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
-	f := newFakeStore()
-	f.clock = &now
-	return f, func(d time.Duration) { now = now.Add(d) }
-}

@@ -102,7 +102,7 @@ func snapshotToGroupPolicies(ctx context.Context, models *store.ModelRepo, snap 
 				gp.ModelQuotas = map[auth.ModelQuotaKey]int64{}
 			}
 			gp.ModelQuotas[auth.ModelQuotaKey{
-				Model:  strconv.FormatInt(c.AbstractModelID, 0),
+				Model:  strconv.FormatInt(c.AbstractModelID, 10),
 				Unit:   string(c.Unit),
 				Period: string(c.Period),
 			}] = c.Cap
@@ -112,7 +112,7 @@ func snapshotToGroupPolicies(ctx context.Context, models *store.ModelRepo, snap 
 				continue
 			}
 			gp.Pools = append(gp.Pools, auth.PoolRef{
-				GroupID:         strconv.FormatInt(p.GroupID, 0),
+				GroupID:         strconv.FormatInt(p.GroupID, 10),
 				AbstractModelID: p.AbstractModelID,
 				Unit:            string(p.Unit),
 				Period:          string(p.Period),
@@ -221,8 +221,8 @@ func (b authzKeyBridge) KeyAllowlist(ctx context.Context, keyID string) ([]strin
 // keyAuthBridge 同一字段对齐逻辑——判定链只需要 ID/AccountID/哈希/状态）。
 func keyRowToAuth(k *store.APIKey, keyHash []byte) (*auth.APIKey, error) {
 	out := &auth.APIKey{
-		ID:        strconv.FormatInt(k.ID, 0),
-		AccountID: strconv.FormatInt(k.AccountID, 0),
+		ID:        strconv.FormatInt(k.ID, 10),
+		AccountID: strconv.FormatInt(k.AccountID, 10),
 		KeyHash:   keyHash,
 		Prefix:    k.Prefix,
 		Status:    auth.KeyStatus(k.Status),

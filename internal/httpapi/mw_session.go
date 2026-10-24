@@ -172,6 +172,8 @@ func (s *Server) clearSessionCookie() *http.Cookie {
 
 // isSameOrigin 报告请求的 Origin 头是否与 Host 同源（额外的保险层，
 // 当前未强制——SameSite+自定义头已构成双保险；保留给将来 CORS 放开时）。
+//
+//lint:ignore U1000 有意预留：CORS 放开时作为第三道 CSRF 校验接入
 func isSameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
@@ -184,6 +186,7 @@ func isSameOrigin(r *http.Request) bool {
 	return false
 }
 
+//lint:ignore U1000 有意预留：与 isSameOrigin 配套
 func splitHostPort(s string) (host, port string, err error) {
 	i := strings.LastIndex(s, "://")
 	if i >= 0 {

@@ -964,25 +964,6 @@ func adminBaseAudit(p *auth.Principal, r *http.Request, action, target, result s
 	return e
 }
 
-// adminAuditStandalone 独立追加一条审计（仅用于批次汇总这类"跨多条
-// 事务的统计行"——单条业务写一律走 store 方法的事务内审计）。
-func (d *AdminDeps) adminAuditStandalone(ctx context.Context, p *auth.Principal, r *http.Request, action, target, result string, detail map[string]any) string {
-	if d == nil || d.Audit == nil {
-		return ""
-	}
-	e := adminBaseAudit(p, r, action, target, result)
-	if detail != nil {
-		if b, err := json.Marshal(detail); err == nil {
-			e.Detail = b
-		}
-	}
-	id, err := d.Audit.Append(ctx, e)
-	if err != nil {
-		return ""
-	}
-	return id
-}
-
 // mapAdminError 把窄接口错误翻译成管理面错误体。
 //
 // 为什么集中一处：四十个 handler 各写一遍 errors.Is 链必然漏支；

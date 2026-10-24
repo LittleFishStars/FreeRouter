@@ -36,10 +36,6 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/upstream"
 )
 
-// sidecarScheme 是 relay 上游 base_url 的固定前缀（03-upstream.md §3.2：
-// relay 不持有地址，只有 providers 引用）。渠道名取前缀后的 provider 名。
-const sidecarScheme = "sidecar://"
-
 // upstreamSnapshotTTL 是上游表快照的有效期。
 //
 // 为什么 1s：它管的是**凭据/上游启停的生效窗口**，不是目录刷新周期

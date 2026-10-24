@@ -59,15 +59,15 @@ type AuthorizeInput struct {
 // AuthorizeResult 是发起授权的结果。
 type AuthorizeResult struct {
 	// Mode 是 'redirect' 或 'session'。
-	Mode           string `json:"mode"`
-	AuthorizeURL   string `json:"authorize_url,omitempty"`
-	SessionID      string `json:"session_id,omitempty"`
-	UserCode       string `json:"user_code,omitempty"`
+	Mode            string `json:"mode"`
+	AuthorizeURL    string `json:"authorize_url,omitempty"`
+	SessionID       string `json:"session_id,omitempty"`
+	UserCode        string `json:"user_code,omitempty"`
 	VerificationURI string `json:"verification_uri,omitempty"`
-	QRImageURL     string `json:"qr_image_url,omitempty"`
-	Flow           string `json:"flow,omitempty"`
-	Interval       int    `json:"interval,omitempty"`
-	Message        string `json:"message,omitempty"`
+	QRImageURL      string `json:"qr_image_url,omitempty"`
+	Flow            string `json:"flow,omitempty"`
+	Interval        int    `json:"interval,omitempty"`
+	Message         string `json:"message,omitempty"`
 }
 
 // PollInput 是查询后台授权会话的入参。
@@ -80,10 +80,10 @@ type PollInput struct {
 
 // PollResult 是会话状态。
 type PollResult struct {
-	Status    string `json:"status"` // pending | ok | failed | expired
-	Message   string `json:"message,omitempty"`
-	Outcome   *OAuthOutcome `json:"outcome,omitempty"`
-	Interval  int    `json:"interval,omitempty"`
+	Status   string        `json:"status"` // pending | ok | failed | expired
+	Message  string        `json:"message,omitempty"`
+	Outcome  *OAuthOutcome `json:"outcome,omitempty"`
+	Interval int           `json:"interval,omitempty"`
 }
 
 // ProviderChoice 是一个供应商的可用性。

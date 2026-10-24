@@ -17,7 +17,7 @@ const (
 	// KeyRevoked 是单向吊销（05-keys §4）：签发后不可恢复。
 	// 为什么与 disabled 分开：disabled 是运营动作（先停一下，可恢复），
 	// revoked 是安全动作（疑似泄露，不可恢复）；合并会让"可恢复"污染吊销语义。
-	KeyRevoked  KeyStatus = "revoked"
+	KeyRevoked KeyStatus = "revoked"
 )
 
 // APIKey 是 Key 的读模型。

@@ -144,8 +144,8 @@ func TestContractSettleStreamCarriesUsageAndTTFT(t *testing.T) {
 // 仍只结算一次，且 usage/RealModelID 取成功候选的那次（换路不重复记账）。
 func TestContractSettleOnceOnCandidateSwitch(t *testing.T) {
 	up := &fakeUpstream{script: []fakeCall{
-		{Err: errors.New("连接被拒")},                          // 候选 1：连接层失败
-		{Response: openAIResponseOK},                         // 候选 2：成功
+		{Err: errors.New("连接被拒")},    // 候选 1：连接层失败
+		{Response: openAIResponseOK}, // 候选 2：成功
 	}}
 	cand1 := chatCandidate("deepseek-chat")
 	cand1.ID = 11
