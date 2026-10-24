@@ -65,9 +65,16 @@ type AuthorizeResult struct {
 	UserCode        string `json:"user_code,omitempty"`
 	VerificationURI string `json:"verification_uri,omitempty"`
 	QRImageURL      string `json:"qr_image_url,omitempty"`
-	Flow            string `json:"flow,omitempty"`
-	Interval        int    `json:"interval,omitempty"`
-	Message         string `json:"message,omitempty"`
+	// QRImageData 是二维码的 data URL（sidecar 已抓取并内联）。
+	//
+	// 为什么不用 QRImageURL：站点的 CSP 是 `img-src 'self' data:`，微信的
+	// 二维码域名不在白名单里，浏览器会**在发请求前**就拦掉（实测 <img>
+	// naturalWidth 恒为 0、网络面板里连请求都没有）。所以由 sidecar 抓取、
+	// 以 data URL 下发；QRImageURL 保留给"将来放宽 CSP 或做了反代"的场景。
+	QRImageData string `json:"qr_image_data,omitempty"`
+	Flow        string `json:"flow,omitempty"`
+	Interval    int    `json:"interval,omitempty"`
+	Message     string `json:"message,omitempty"`
 }
 
 // PollInput 是查询后台授权会话的入参。

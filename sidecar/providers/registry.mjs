@@ -28,6 +28,7 @@ import * as cline from './cline/cline-oauth.js'
 import * as gemini from './gemini/gemini-oauth.js'
 import * as lobsterai from './lobsterai/lobsterai-oauth.js'
 import * as loomy from './loomy/loomy-oauth.js'
+import * as loomyWechat from './loomy/loomy-wechat.js'
 import * as minimax from './minimax/minimax-oauth.js'
 import * as qoder from './qoder/qoder-oauth.js'
 import * as raccoon from './raccoon/raccoon-oauth.js'
@@ -37,6 +38,7 @@ import { TRAE } from './trae/trae-product.js'
 import { generateDeviceId, generateMachineId } from './trae/trae.js'
 import * as autoclaw from './autoclaw/autoclaw-oauth.js'
 import * as officeace from './officeace/officeace-auth.js'
+import * as astudioOAuth from './astudio/astudio-oauth.js'
 import * as codearts from './codearts/codearts.mjs'
 import { CLINE } from './cline/cline-product.js'
 import { MINIMAX } from './minimax/minimax-product.js'
@@ -50,6 +52,73 @@ import { randomBytes } from 'node:crypto'
 
 /** 回调路径：所有 browser 形态共用（供应商按端口 + 固定路径回调）。 */
 export const CALLBACK_PATH = '/oauth/callback'
+
+/**
+ * 把外部二维码图片抓下来转成 `data:` URL。
+ *
+ * ## 为什么必须这么做（2026-10-24 实测）
+ *
+ * 服务端的安全头是 `Content-Security-Policy: img-src 'self' data:`，微信的
+ * 二维码域名（`mp.weixin.qq.com` / `open.weixin.qq.com`）**不在白名单里**，
+ * 浏览器会直接拒绝加载——实测 `<img>` 的 naturalWidth 恒为 0，而且控制台
+ * 连请求都不发（CSP 在请求前就拦了）。
+ *
+ * 两个可选做法：放宽 CSP 加两个外部域，或由 sidecar 抓取后以 `data:` 内联。
+ * 选后者：① `data:` 本来就已在白名单里，不用为了一个图片削弱全站 CSP；
+ * ② 抓取发生在服务端，不受用户网络环境（是否墙外）影响；③ 微信二维码
+ * 约 40 KB，base64 后 ~55 KB，只在发起授权那一次返回，代价可接受。
+ *
+ * 抓取失败不致命：返回 null，由调用方回落到原始 `qr_image_url`
+ * （若将来放宽了 CSP 或做了反代，那条路仍然能用）。
+ */
+async function qrAsDataUrl(url, extraHeaders = {}) {
+  try {
+    const r = await fetch(url, {
+      headers: {
+        // 微信对空 UA / 爬虫 UA 会拒绝，这里伪装成普通浏览器。
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        ...extraHeaders,
+      },
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!r.ok) return null
+    const buf = Buffer.from(await r.arrayBuffer())
+    if (buf.length === 0 || buf.length > 512 * 1024) return null
+    const ct = r.headers.get('content-type')?.split(';')[0]?.trim() || 'image/png'
+    if (!ct.startsWith('image/')) return null
+    return `data:${ct};base64,${buf.toString('base64')}`
+  } catch {
+    return null
+  }
+}
+
+/**
+ * sleep：二维码/设备码形态的轮询间隔。
+ *
+ * 这个函数**之前只被引用、从未定义**（raccoon 的 runner 里 `await sleep(...)`），
+ * 意味着商汤小浣熊扫码后一进入轮询就抛 `ReferenceError: sleep is not defined`。
+ * 之所以没人发现：扫码流程要真人拿手机扫才会走到那一行。
+ *
+ * 支持 signal：用户点「放弃本次授权」时立刻中断等待，而不是干等到超时。
+ */
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('登录已取消'))
+      return
+    }
+    const timer = setTimeout(resolve, ms)
+    signal?.addEventListener?.(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        reject(new Error('登录已取消'))
+      },
+      { once: true },
+    )
+  })
+}
 
 /**
  * 各 provider 的落库参数（主进程用它决定上游行怎么写）。
@@ -268,30 +337,67 @@ register('qoder', {
 // ===========================================================================
 
 register('loomy', {
-  name: 'Loomy',
-  flow: 'sms',
-  needs: ['phone'],
-  // 讯飞 AccessKey 不内置：没配 secret 就报未配置（上游会回签名错误，
-  // 那个错误与真实原因无关，用户看不出是配置缺失）。
+  name: 'Loomy（讯飞）',
+  /*
+   * 改成**微信扫码**（原先是短信验证码，需要用户先输手机号）。
+   *
+   * 扫码的好处是不用手机号、路径更短；流程全在微信开放平台的标准接口上：
+   *   ① 拉授权页 HTML → 正则取 uuid（**无需执行 JS**，这是能脱离浏览器的关键）
+   *   ② 前端直接 <img src=open.weixin.qq.com/connect/qrcode/<uuid>>
+   *   ③ 长轮询 long.open.weixin.qq.com/connect/l/qrconnect 读 wx_errcode
+   *   ④ 405（已确认）那一帧带 wx_code → 换 rcode → 换 session
+   *
+   * 全部是 HTTP，**不需要本机监听**（上游另有一版会起本机服务渲染二维码页，
+   * 与 sidecar 红线③冲突，故不采用）。
+   *
+   * 短信登录（loginLoomyBySmsCode）仍然可用、代码保留，只是清单里不再暴露
+   * 那个入口——一个 provider 只能声明一个 flow，扫码是主流路径。
+   */
+  flow: 'qr',
   unavailable: LOOMY.accessKeySecret === ''
     ? '未配置讯飞 AccessKey：请设 LOOMY_ACCESS_KEY_ID / LOOMY_ACCESS_KEY_SECRET'
     : null,
-  async start({ phone }) {
-    if (!phone) throw new Error('E_BAD_REQUEST: Loomy 登录需要手机号')
-    // 上游 sendLoomySmsCode 只返回 **msgid**（登录时必须带它），所以存进会话材料。
-    const msgid = await loomy.sendLoomySmsCode(phone, LOOMY)
-    // 发码完成、等用户回填：这一步没有后台任务，poll 时由 submit 续上。
+  async start() {
+    const uuid = await loomyWechat.fetchLoomyWechatUuid()
+    const qrUrl = loomyWechat.buildLoomyWechatQrImageUrl(uuid)
     return background(
       'loomy',
-      'sms',
-      { authorize_url: '', message: '验证码已发送，请回填', phone, msgid },
-      null,
+      'qr',
+      {
+        authorize_url: qrUrl,
+        qr_image_url: qrUrl,
+        qr_image_data: await qrAsDataUrl(qrUrl, { Referer: 'https://open.weixin.qq.com/' }),
+        message: '请用微信扫码，扫完在手机上确认',
+      },
+      async ({ signal }) => {
+        const ST = loomyWechat.LOOMY_WECHAT_POLL_STATUS
+        let lastErrcode = ''
+        for (;;) {
+          if (signal?.aborted) throw new Error('登录已取消')
+          // pollLoomyWechatOnce 自己是长轮询（微信侧 ~25 秒才返回），
+          // 所以这里不再额外 sleep。
+          const r = await loomyWechat.pollLoomyWechatOnce(uuid, lastErrcode)
+          lastErrcode = r.errcode ?? ''
+          if (r.status === ST.confirmed) {
+            if (!r.code) continue // 405 却没带 code：异常帧，继续轮询，绝不拿空 code 去换
+            const bound = await loomy.bindLoomyThirdAccount(r.code, LOOMY)
+            if (bound.bind === 1) {
+              // 该微信已绑手机号 → 直接换会话（skip 跳过的是"绑定手机号"步骤）
+              const out = await loomy.bindLoomySkip(bound.rcode, LOOMY)
+              return { session: out.session, userid: out.userid }
+            }
+            // 未绑手机号：上游这套接口拿不到会话，只能请用户先绑一次。
+            // 不假装成功，也不循环重试（同一个号再扫还是同样的结果）。
+            throw new Error(
+              '该微信尚未绑定 Loomy 账号：请先到 loomy 用手机号登录一次完成绑定，再回来扫码',
+            )
+          }
+          if (r.status === ST.cancelled) throw new Error('用户取消了扫码')
+          if (r.status === ST.expired) throw new Error('二维码已失效，请重新发起登录')
+        }
+      },
+      300_000,
     )
-  },
-  submit({ code, state }) {
-    const st = JSON.parse(state)
-    if (!st.phone || !st.msgid) throw new Error('会话缺少手机号或 msgid，请重新发起')
-    return loomy.loginLoomyBySmsCode(st.phone, code, st.msgid, LOOMY)
   },
 })
 
@@ -333,6 +439,67 @@ register('raccoon', {
     const cred = typeof credential === 'string' ? JSON.parse(credential) : credential
     const next = await raccoon.refreshRaccoonCredential(product, cred)
     return { credential: JSON.stringify(next), expires_at: String(next.expires_at ?? '') }
+  },
+})
+
+register('astudio', {
+  name: 'AStudio（讯飞星辰）',
+  flow: 'qr',
+  /*
+   * AStudio 的登录**不是** OAuth2（没有 authorize_url + code 回调），而是
+   * 讯飞 SSO 的微信扫码三件套：
+   *   ① GET  /SSOService/wx/scanlogin/qrcode?fd=<fd>   取二维码 URL
+   *   ② GET  /SSOService/wx/scanlogin/uids?fd=<fd>     轮询扫码状态
+   *   ③ POST /SSOService/wx/scanlogin/bind             绑定会话
+   * 之后 completeAstudioLogin 用会话 cookie 换出推理凭据（modelBearerToken）。
+   *
+   * 全程 HTTP，**不需要本机监听**——符合 sidecar 红线③。上游另有一条
+   * 「起本机 HTTP 服务展示二维码页」的路径（loomy-wechat-login 同款），
+   * 这里刻意不用：二维码 URL 直接交给浏览器渲染就够了。
+   */
+  async start() {
+    const { fd, qrUrl } = await astudioOAuth.createAstudioWechatQrCode()
+    return background(
+      'astudio',
+      'qr',
+      {
+        // qrUrl 是微信二维码图片地址，前端直接 <img src>。实测该地址可匿名访问
+        //（不需要 cookie/UA 伪装），与 raccoon 的登录页链接不同。
+        authorize_url: qrUrl,
+        qr_image_url: qrUrl,
+        // 转成 data URL：CSP 只允许 'self' 与 data:，外链图会被浏览器拦掉。
+        qr_image_data: await qrAsDataUrl(qrUrl),
+        message: '请用微信扫码；扫码后需在手机上确认',
+      },
+      async ({ signal }) => {
+        for (;;) {
+          await sleep(2000, signal)
+          const r = await astudioOAuth.pollAstudioWechatScan(fd)
+          if (r.status === 'scanned' && r.account) {
+            const bound = await astudioOAuth.bindAstudioWechatSession(fd, r.account)
+            if (!bound.ok) throw new Error(bound.message ?? '绑定微信登录会话失败')
+            const cred = await astudioOAuth.completeAstudioLogin({ ...r.account, loginMethod: 'wechat' })
+            if (!cred?.access_token) throw new Error('AStudio 未返回推理凭据（modelBearerToken）')
+            return {
+              access_token: cred.access_token,
+              refresh_token: JSON.stringify(cred), // 无独立 refresh；整包留作重登材料
+              expires_at: '',
+            }
+          }
+          // unbound = 该微信号还没开通 AStudio 账号。上游明确：开通要去
+          // AStudio 客户端绑手机号，重扫无用，所以直接终止而不是继续轮询。
+          if (r.status === 'unbound') throw new Error(r.message)
+          if (r.status === 'error') throw new Error(r.message ?? '轮询扫码状态失败')
+        }
+      },
+      300_000, // 二维码有效期 5 分钟（上游 createAstudioWechatQrCode 的 expiresInMs）
+    )
+  },
+  async refresh({ credential }) {
+    // AStudio 没有 refresh 端点（会话 ssoSessionId 一年有效、不滑动），
+    // 唯一的硬终点是 code=80000「登录异常，请重新登录」。这里如实返回原值，
+    // 由上层按「不可刷新」处理，而不是假装刷成功。
+    return { credential, expires_at: '' }
   },
 })
 
@@ -472,22 +639,27 @@ register('zcode', {
 
 /** 只能走「API Key 型贡献」的 provider（上游没有可脱离 IDE 的 OAuth 登录面）。 */
 /*
- * 这三家没有可用的 OAuth 登录面，但**凭据照样可以贡献**——上游自己用的就是
- * 「粘贴凭据」这条路。所以每一项都带上 base_url 与 steps：
+ * 剩下的这两家确实没有可用的登录面，但**凭据照样可以贡献**——上游自己用的
+ * 就是「粘贴凭据」这条路。所以每一项都带上 base_url 与 steps：
  * base_url 让前端一键填进 API Key 表单，steps 告诉用户去哪儿拿凭据。
  *
- * 各家的依据（都来自 dsh-providers-hub 的源码注释，不是推测）：
+ * 依据（来自 dsh-providers-hub 源码，不是推测）：
  *   - modelscope：`modelscope-auth.js` 明确写「没有登录流程，也不能续期」，
  *     凭据是控制台手工生成的 API Key（`ms-…`），上游入口就是粘贴弹窗。
- *   - astudio：`astudio-oauth.js` 明确写「没有 OAuth2 / PKCE / 授权 URL / 回调」，
- *     登录是 Electron 客户端里的微信扫码，授权页与回调都握在客户端手里。
- *     上游能「用」是因为它跑在用户本机、能直接读 `astron-session.json`；
- *     FreeRouter 是服务端，读不到别人的桌面文件，所以只能请用户把
- *     `modelBearerToken` 粘过来。
  *   - opencode：`opencode-auth.js` 是账号池/指纹工具，不是登录流程；
  *     凭据就是 API Key。
  *
- * 为什么不索性从清单里删掉：删掉之后用户搜不到「这家能不能贡献」，
+ * ⚠️ **2026-10-24 修正**：先前这里还有 astudio，理由写的是「`astudio-oauth.js`
+ * 明确写没有 OAuth2/PKCE/授权 URL/回调，登录在 Electron 客户端里」。那条判断
+ * **是错的**，而且错得很典型：只读了文件头注释里「不存在任何程序化**续期**接口」
+ * 这一句，把「没有 refresh」读成了「没有登录」。实际上同文件里就有完整的
+ * 微信扫码三件套（`createAstudioWechatQrCode` / `pollAstudioWechatScan` /
+ * `bindAstudioWechatSession`）与短信+极验登录，全部是 HTTP 接口、不需要本机
+ * 监听。astudio 现已作为 `flow: 'qr'` 正常接入。
+ *
+ * 教训：判断"上游有没有某能力"要读**导出清单与函数体**，不能只读注释。
+ *
+ * 为什么不索性把这两家从清单里删掉：删掉之后用户搜不到「这家能不能贡献」，
  * 会以为平台不支持；列出来 + 给替代路径，才是完整回答。
  */
 export const API_KEY_ONLY = [
@@ -499,16 +671,6 @@ export const API_KEY_ONLY = [
     steps: [
       '到 modelscope.cn 控制台 → 访问令牌，生成一个 API Key（ms- 开头）',
       '点下方「填入端点」把 base URL 带进来，再把 Key 粘到 API Key 输入框',
-    ],
-  },
-  {
-    id: 'astudio',
-    name: 'Astudio',
-    reason: 'AStudio 的登录是桌面客户端里的微信扫码，授权页与回调都在客户端内，没有可程序化走完的 OAuth',
-    baseUrl: 'https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1',
-    steps: [
-      '先在 AStudio 桌面客户端登录，从本机会话文件 astron-session.json 里取出 modelBearerToken',
-      '点下方「填入端点」带入 base URL，把 token 粘到 API Key 输入框',
     ],
   },
   {

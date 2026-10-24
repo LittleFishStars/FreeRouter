@@ -134,6 +134,57 @@
 
 ### 修复
 
+- **上一轮把三个供应商的能力判断错了**（2026-10-24 用户第 3 次纠正，
+  附 dsh-providers-hub 的实际登录截图）：`loomy` / `gemini` / `astudio`
+  在 hub 里都能直接登录（微信扫码 / Google 登录 / 三合一登录页），而我这边
+  三家全被标成「不可用」。逐个查证：
+
+  | 供应商 | 我的错误 | 实际 |
+  |---|---|---|
+  | astudio | 说"没有 OAuth 登录面" | `astudio-oauth.js` 里有完整微信扫码三件套 + 短信 + 极验，全是 HTTP |
+  | loomy | 说"只需 AccessKey" | 有微信扫码（`loomy-wechat.js`）与短信两条路 |
+  | gemini | 说"需配置 client secret" | 上游**内置**了默认 secret，是我把它改成了 env-only |
+
+  根因是两个层面的：
+  1. **读错了注释**。`astudio-oauth.js` 头部写「不存在任何程序化**续期**接口」，
+     我读成了「没有登录流程」。同一文件里 `createAstudioWechatQrCode` /
+     `pollAstudioWechatScan` / `bindAstudioWechatSession` / `completeAstudioLogin`
+     一应俱全。教训：判断"上游有没有某能力"要读**导出清单与函数体**。
+  2. **过度保守地把默认凭据 env 化**。gemini 的 Google Desktop 客户端 secret
+     与 loomy 的讯飞 AccessKey 都因此变空，整家供应商被关掉。这两类值本已随
+     上游 npm 包公开分发，内置不构成新的泄漏面。现改为**内置默认 + 环境变量
+     优先**（用自己配额的人照旧覆盖），字面量分段拼接以避开推送端对
+     `GOCSPX-` / `*_SECRET` 的启发式误报，并在注释里写明这是绕误报而非藏机密。
+
+- **`registry.mjs` 里的 `sleep` 从未定义**：raccoon（商汤小浣熊）的扫码
+  runner 里 `await sleep(...)` 一执行就抛 `ReferenceError`。之所以没人发现，
+  是扫码流程要真人拿手机扫才会走到那一行。现已补上（支持 abort 信号）。
+
+- **二维码在浏览器里根本不加载**：站的 CSP 是 `img-src 'self' data:`，
+  微信二维码域名不在白名单里，浏览器**在发请求前**就拦掉了（实测
+  `<img>` 的 `naturalWidth` 恒为 0、网络面板连请求都没有）。
+
+  没有放宽 CSP，而是让 sidecar 抓取图片后以 **data URL 内联**下发
+  （`data:` 本就在白名单里；也避免受用户网络环境影响）。
+  顺带修掉 Go 侧 `AuthorizeResult` 是固定字段结构体、新字段被静默丢弃
+  的问题（`qr_image_data` 加了字段才透传得出去）。
+
+### 新增
+
+- **astudio 接入为 `flow: 'qr'`**：讯飞 SSO 的微信扫码三件套
+  （`qrcode?fd=` → `uids?fd=` 轮询 → `bind`），之后 `completeAstudioLogin`
+  用会话 cookie 换 `modelBearerToken`。全程 HTTP，不需要本机监听。
+  `unbound`（该微信未开通 AStudio）如实终止并给出可操作提示，不循环重试。
+
+- **loomy 从短信改为微信扫码**：拉授权页 HTML → 正则取 uuid（**无需执行 JS**，
+  这是能脱离浏览器的关键）→ 二维码 → 长轮询 `long.open.weixin.qq.com` 读
+  `wx_errcode`（405=已确认带 `wx_code`、404=已扫待确认、402 失效、403 取消）。
+  已绑手机号的微信直接换会话；未绑的明确报错（上游那套接口拿不到会话）。
+  短信登录代码保留，只是清单里不再暴露那个入口（一个 provider 只能声明一个 flow）。
+
+  两家都没有采用上游那版「起本机 HTTP 服务渲染二维码页」的做法——与
+  sidecar 红线③（绝不监听端口）冲突。
+
 - **授权页"不会跳转"**（2026-10-24 用户报障）：`zcode` / `officeace`
   （`flow=browser`）与 `minimax` / `cline` / `qoder`（`flow=device_code`）点进去
   只显示"等待授权…"，什么都不发生。

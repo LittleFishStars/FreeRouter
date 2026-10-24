@@ -436,9 +436,18 @@ export function ContributeOAuthPage({ def }: PageProps) {
               <span className="block-meta muted">若新标签被浏览器拦截，点这里即可。</span>
             </p>
           )}
-          {session.flow === 'qr' && session.qr_image_url && (
+          {session.flow === 'qr' && (session.qr_image_data || session.qr_image_url) && (
             <p>
-              <img src={session.qr_image_url} alt="登录二维码" width={220} height={220} />
+              {/* 优先用 qr_image_data（服务端抓好的 data URL）：CSP 是
+                  `img-src 'self' data:`，外链二维码会被浏览器静默拦掉
+                  ——实测 naturalWidth 恒为 0 且不发请求。 */}
+              <img
+                src={session.qr_image_data ?? session.qr_image_url}
+                alt="登录二维码"
+                width={220}
+                height={220}
+                style={{ borderRadius: 8, background: '#fff', padding: 8 }}
+              />
               <span className="block-meta">用手机 App 扫码授权</span>
             </p>
           )}

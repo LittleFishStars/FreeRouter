@@ -255,6 +255,7 @@ func (b *oauthBridge) Authorize(ctx context.Context, in httpapi.AuthorizeInput) 
 		UserCode        string `json:"user_code"`
 		VerificationURI string `json:"verification_uri"`
 		QRImageURL      string `json:"qr_image_url"`
+		QRImageData     string `json:"qr_image_data"`
 		Flow            string `json:"flow"`
 		Interval        int    `json:"interval"`
 		Message         string `json:"message"`
@@ -265,7 +266,8 @@ func (b *oauthBridge) Authorize(ctx context.Context, in httpapi.AuthorizeInput) 
 	out := &httpapi.AuthorizeResult{
 		Mode: res.Mode, SessionID: res.SessionID, UserCode: res.UserCode,
 		VerificationURI: res.VerificationURI, QRImageURL: res.QRImageURL,
-		Flow: res.Flow, Interval: res.Interval, Message: res.Message,
+		QRImageData: res.QRImageData,
+		Flow:        res.Flow, Interval: res.Interval, Message: res.Message,
 	}
 	if res.Mode == "session" {
 		out.AuthorizeURL = res.AuthorizeURL

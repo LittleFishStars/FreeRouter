@@ -159,6 +159,8 @@ export interface OAuthAuthorize {
   user_code?: string
   verification_uri?: string
   qr_image_url?: string
+  /** 服务端内联的二维码（data URL）。CSP 只允许 'self' 与 data:，外链图会被拦。 */
+  qr_image_data?: string
   interval?: number
   message?: string
 }

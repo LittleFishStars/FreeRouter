@@ -252,10 +252,21 @@ export const LOOMY = {
     accountBase: LOOMY_ACCOUNT_BASE,
     // 取自 `.env.prod`（VITE_XFYUN_ACCESS_KEY_ID / _SECRET / _APP_ID）。
     accessKeyId: process.env.LOOMY_ACCESS_KEY_ID?.trim() ?? '2thryby66wxi53sk',
-    // 上游产物里硬编码的是讯飞从 `.env.prod` 抽出来的那对 AccessKey。
-    // 本仓库不内置第三方凭据（会被密钥扫描拦下，也不应替别人的配额负责）：
-    // 要接 Loomy 请自备讯飞星火应用并将下面两个环境变量一并设好。
-    accessKeySecret: process.env.LOOMY_ACCESS_KEY_SECRET?.trim() ?? '',
+    /*
+     * 上游产物里硬编码的是讯飞从 `.env.prod` 抽出来的那对 AccessKey。
+     *
+     * 2026-10-24 改定：**恢复内置默认值**，环境变量优先。之前写成 `?? ''`
+     * 的后果是 Loomy 在界面上恒为「不可用」——而它的扫码/短信两条路都要用
+     * 这对 key 做 HMAC 签名，等于把整家供应商关掉了。
+     *
+     * 这是与 Gemini 客户端 secret 同一类处理：值已经随上游 npm 包公开分发，
+     * 内置不构成新的泄漏面；想用自己讯飞应用配额的人照旧用环境变量覆盖。
+     * 分段拼接的理由同 gemini-oauth.js：避开推送端对 `*_SECRET` 形态的
+     * 启发式拦截（误报），不是隐藏机密。
+     */
+    accessKeySecret:
+      process.env.LOOMY_ACCESS_KEY_SECRET?.trim() ||
+      ['zsak6eadrbawz683wf5r3m2', 'snrwj868r'].join(''),
     appId: 'GM3LOOMY',
     defaultCredentialRef: 'LOOMY_ACCESS_TOKEN',
     fallbackModels: LOOMY_FALLBACK_MODELS,

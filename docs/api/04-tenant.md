@@ -121,7 +121,7 @@
 | 形态 | 入口 | 适用 |
 |---|---|---|
 | API Key 型 | `POST /api/contributions` | 任何 OpenAI 兼容端点 |
-| 供应商 OAuth 型 | `POST /api/contributions/oauth/{provider}` | 16 家（13 家 OAuth + 3 家 API Key 型） |
+| 供应商 OAuth 型 | `POST /api/contributions/oauth/{provider}` | 16 家（14 家 OAuth + 2 家只能 API Key 型） |
 
 ### 5.1 端点总表
 
@@ -147,8 +147,8 @@
 
 | `unavailable_kind` | 含义 | 例子 | 运维能否改变 |
 |---|---|---|---|
-| `config` | 本站缺配置（如没设 OAuth 客户端 secret / 第三方 AccessKey） | `gemini` 缺 `CMDC_PAK_GOOGLE_CLIENT_SECRET`；`loomy` 缺讯飞 `LOOMY_ACCESS_KEY_ID`/`_SECRET` | ✅ 补上配置即可用 |
-| `unsupported` | 上游没有可脱离 IDE 的 OAuth 登录面；或登录流要自己起 HTTP 服务（与 sidecar「不监听端口」红线冲突） | `modelscope` / `astudio` / `opencode` | ❌ 补任何配置都不会变可用，**但要走 API Key 型贡献**（见下） |
+| `config` | 本站缺配置（如自己没设 OAuth 客户端 secret / 第三方 AccessKey） | 任意 `browser`/`qr` 型供应商在环境变量缺失且无内置默认值时 | ✅ 补上配置即可用 |
+| `unsupported` | 上游确实没有可用的登录面（凭据只能手工粘贴） | `modelscope` / `opencode` | ❌ 补任何配置都不会变可用，**但要走 API Key 型贡献**（见下） |
 
 **为什么这个字段必须存在**：两类在界面上都叫「不可用」会造成两种误判——
 ① 运维去翻那三家本来就不该有 OAuth 配置的供应商；② 把缺配置的两家
@@ -171,7 +171,7 @@
 
 #### 5.1.2 替代贡献路径（`suggested_endpoint` / `steps`）
 
-`unavailable_kind=unsupported` 的三家仍然**可以贡献**——只是不通过 OAuth。
+`unavailable_kind=unsupported` 的两家仍然**可以贡献**——只是不通过 OAuth。
 上游自己用的就是"粘贴凭据"这条路，我们把它显式化：
 
 | 字段 | 用途 |
@@ -179,12 +179,11 @@
 | `suggested_endpoint` | 该供应商的 OpenAI 兼容 base URL。前端提供「填入端点」按钮一键填进 API Key 表单 |
 | `steps` | 「去哪儿拿凭据」的操作步骤数组，前端渲染成编号清单 |
 
-三家的端点与凭据来源（依据 `dsh-providers-hub` 源码注释，非推测）：
+两家的端点与凭据来源（依据 `dsh-providers-hub` 源码，非推测）：
 
 | 供应商 | base URL | 凭据从哪来 |
 |---|---|---|
 | `modelscope` | `https://api-inference.modelscope.cn/v1` | 魔搭控制台生成的 API Key（`ms-` 开头）。上游 `modelscope-auth.js` 明确写「没有登录流程，也不能续期」 |
-| `astudio` | `https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1` | AStudio 桌面客户端登录后的 `modelBearerToken`（在 `astron-session.json`）。上游 `astudio-oauth.js` 明确写「没有 OAuth2 / PKCE / 授权 URL / 回调」——DSH 能"用"是因为它跑在用户本机、能读客户端文件；本服务是服务端，读不到别人的桌面，所以请用户粘过来 |
 | `opencode` | `https://opencode.ai/inference/openai/v1` | opencode.ai 生成的 API Key。上游 `opencode-auth.js` 是账号池/指纹工具，不是登录流程 |
 
 > **为什么不在清单里直接删掉这三家**：删掉之后用户搜不到"这家能不能贡献"，

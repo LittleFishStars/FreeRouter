@@ -62,17 +62,23 @@ FreeRouter 的上游供给有两个来源：平台自己配的官方 key（`owne
 |---|---|---|
 | API Key（OpenAI 兼容端点） | ✅ 已实现 | 提交即探测（L0 + HTTP 可达性/鉴权/目录），失败也保留记录 |
 | 供应商 OAuth（11 家，开箱可用） | ✅ 已实现 | codearts / accio / minimax / cline / qoder / raccoon / lobsterai / trae / autoclaw / officeace / zcode |
-| 供应商 OAuth（2 家，需配一个第三方凭据） | ✅ 已实现 | gemini（`CMDC_PAK_GOOGLE_CLIENT_SECRET`）、loomy（讯飞 AccessKey 对）。未配置时清单里列出但 `available=false` 并写明要设哪个变量 |
-| 供应商 OAuth（3 家，只能走 API Key 型） | ➖ 不适用 OAuth，✅ 可贡献 | modelscope（上游明确"没有登录流程"）、astudio（登录在桌面客户端内，无可复用的授权 URL/回调）、opencode（上游 auth 是账号池工具）。这三家的**凭据仍可贡献**：清单里带 `suggested_endpoint` + `steps`，前端一键填端点后走 API Key 表单 |
+| 供应商 OAuth（14 家，全部开箱可用） | ✅ 已实现 | 13 家 browser/device_code/qr/sms + astudio（微信扫码）。gemini 与 loomy 的第三方凭据（Google 客户端 secret / 讯飞 AccessKey）**内置默认值**，可用环境变量覆盖成自己的 |
+| 只能走 API Key 型（2 家） | ➖ 不适用 OAuth，✅ 可贡献 | modelscope（上游明确"没有登录流程"）、opencode（上游 auth 是账号池工具）。**凭据仍可贡献**：清单里带 `suggested_endpoint` + `steps`，前端一键填端点后走 API Key 表单 |
 
 实现方式：按上游 `deepseek-harness-codearts` 的 tsc 产物做**依赖闭包整体提取**
 （83 个文件，不手抄），由 `sidecar/providers/registry.mjs` 把 16 家的差异收敛成
 三种交互形态（`redirect` / `device_code` / `sms·qr`）。详见
 [../../sidecar/providers/README.md](../../sidecar/providers/README.md)。
 
-> **家数口径**：本表合计 **16 家**（11 开箱 + 2 需配凭据 + 3 走 API Key 型）。
+> **家数口径**：本表合计 **16 家**（14 家 OAuth + 2 家只能 API Key 型）。
 > 注意「走 API Key 型」不等于「不能贡献」——只是不经过 OAuth，见
 > [../api/04-tenant.md](../api/04-tenant.md) 第 5.1.2 节的替代路径。
+>
+> **2026-10-24 修正**：本表先前把 astudio 归到「只能 API Key 型」，理由写成
+> 「登录在桌面客户端内、没有可复用的授权 URL」。那是**误读**——`astudio-oauth.js`
+> 里被当成"没有登录"的那句原文是「不存在任何程序化**续期**接口」（没有 refresh），
+> 同一文件里有完整的微信扫码三件套与短信+极验登录。astudio 现已按 `flow: 'qr'`
+> 正常接入。教训：判断上游有无某能力要读导出清单与函数体，不能只读注释。
 > 上游 providers-hub 的查证清单是 **17 个渠道**；本站移植覆盖了其中 16 个，
 > 差额 1 家需在 providers-hub 侧复核具体是哪个渠道（本表只列已实际接入的，
 > 不把未接入的算进"支持"里）。
