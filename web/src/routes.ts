@@ -99,7 +99,7 @@ export const PAGES: PageDef[] = [
   { path: '/login', title: '登录', summary: '密码登录；会话为 HttpOnly Cookie，浏览器自动管理。', nav: null, requires: 'none', element: LoginPage },
   { path: '/register', title: '注册', summary: '默认开启但需审核；审核只针对调用能力。', nav: null, requires: 'none', element: RegisterPage },
   { path: '/pending', title: '待审核提示', summary: '仅待审核账户登录后可见的状态页。', nav: null, requires: 'auth', element: PendingPage },
-  { path: '/contribute', title: '贡献入口', summary: '三类入口：反代供应商、API 供应商、自定义供应商；未登录可用。', nav: 'public', requires: 'none', element: ContributePage },
+  { path: '/contribute', title: '贡献入口', summary: '左栏反代供应商（账号登录），右栏 API 供应商（内置目录 + 自定义端点）；未登录可用。', nav: 'public', requires: 'none', element: ContributePage },
   { path: '/contribute/oauth/:provider', title: '供应商授权', summary: '跳转第三方授权，回调落在 /contribute/callback。', nav: null, requires: 'none', element: ContributeOAuthPage },
   { path: '/contribute/callback', title: '贡献回调', summary: '受理结果与（未登录时）可恢复路径。', nav: null, requires: 'none', element: ContributeCallbackPage },
   { path: '/contribute/recovery', title: '恢复码兑换', summary: '纯 Key 型贡献者的一次性恢复路径。', nav: null, requires: 'none', element: ContributeRecoveryPage },

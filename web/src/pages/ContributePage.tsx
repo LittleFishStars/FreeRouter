@@ -22,8 +22,6 @@ import {
   FormControlLabel,
   List,
   ListItemButton,
-  Tab,
-  Tabs,
   Typography
 } from '@mui/material'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
@@ -58,12 +56,14 @@ import PageFrame from './PageFrame'
 import type { PageProps } from '../routes'
 import { FREE_NOTICE } from '../utils/contribute'
 
-/** 三个入口的标签与顺序（契约 v2 §8）：id 与后端 categories[].id 一一对应。 */
-const CONTRIBUTE_TABS: { value: ContributionCategoryId; label: string }[] = [
-  { value: 'reverse_proxy', label: '反代供应商' },
-  { value: 'api', label: 'API 供应商' },
-  { value: 'custom', label: '自定义供应商' }
-]
+/** 自定义供应商在右栏列表里的哨兵 id。
+ *
+ * 为什么用哨兵而不是单独一组 state：右栏的交互是统一的「从列表选一项 →
+ * 下方给表单」，自定义端点只是列表里的一项（「供应商清单」从内置目录换成
+ * 用户自己的地址栏）。目录 id 都是厂商 slug（deepseek-com / opencode-ai …），
+ * 不会与这个值撞车。
+ */
+const CUSTOM_PROVIDER_ID = '__custom__'
 
 /**
  * 按 id 取分类。categories 是判别联合：用类型守卫收窄后调用方拿到的 items
@@ -113,20 +113,31 @@ function FreeConfirm({ checked, onChange }: { checked: boolean; onChange: (v: bo
 }
 
 /**
- * 贡献入口（公共区）：三类入口 = 反代供应商（供应商账号登录）/ API 供应商
- * （内置端点 + 粘贴 Key）/ 自定义供应商（任意 OpenAI 兼容端点）。
+ * 贡献入口（公共区）：左栏反代供应商（供应商账号登录，凭据由 sidecar 换出），
+ * 右栏 API 供应商（内置目录 + 粘 Key），自定义端点是右栏列表的置顶项。
  *
- * 三段共用同一份无偿确认与同一张结果卡：确认是「贡献即无条件」的阻断点，
- * 放三份就会出现「这页勾了那页没勾」的裂缝；结果卡的恢复码更是只显示一次，
- * 分成三处展示等于给用户三条不同的回站路径。
+ * 为什么是左右双栏而不是 Tab 切换：两类入口是**并列的选择**而不是同一件事
+ * 的几种形态——用户进页第一眼该同时看到「用账号登录一家」和「贴一把 Key」
+ * 两条路；Tab 会把其中一条藏进一次点击之后（2026-10-25 用户定案）。
+ *
+ * 自定义供应商为什么并入右栏：它的交互与 API 供应商同构（一个端点 + 一把
+ * Key），只是端点来源从内置目录换成用户手填——放在同一个列表里，搜索落空
+ * 的用户会自然落到它，而不是面对一个死胡同。
+ *
+ * 两栏共用同一份无偿确认与同一张结果卡：确认是「贡献即无条件」的阻断点，
+ * 放两份就会出现「这边勾了那边没勾」的裂缝；结果卡的恢复码更是只显示一次，
+ * 分开展示等于给用户两条不同的回站路径。
  */
 export default function ContributePage({ def }: PageProps) {
-  const [tab, setTab] = useState<ContributionCategoryId>('reverse_proxy')
   const [freeConfirmed, setFreeConfirmed] = useState(false)
   const [result, setResult] = useState<ContributeResult | null>(null)
   const providers = useApi(() => getContributeProviders(), [])
 
-  // 自定义供应商（任意 OpenAI 兼容端点）
+  // 右栏选中项：API 目录里的 id，或自定义项的哨兵 id。
+  const [selectedId, setSelectedId] = useState('')
+  const isCustom = selectedId === CUSTOM_PROVIDER_ID
+
+  // 自定义供应商（任意 OpenAI 兼容端点；右栏置顶项的表单状态）
   const [endpoint, setEndpoint] = useState('')
   const [customKey, setCustomKey] = useState('')
   const [customLabel, setCustomLabel] = useState('')
@@ -136,7 +147,6 @@ export default function ContributePage({ def }: PageProps) {
 
   // API 供应商（内置目录 55 家；端点由后端解析，前端只给 provider id + Key）
   const [apiSearch, setApiSearch] = useState('')
-  const [apiProviderId, setApiProviderId] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [apiLabel, setApiLabel] = useState('')
   const [apiModel, setApiModel] = useState('')
@@ -176,8 +186,8 @@ export default function ContributePage({ def }: PageProps) {
       setApiError(new Error('请先勾选上方的无偿确认'))
       return
     }
-    if (!apiProviderId) {
-      setApiError(new Error('请先在左侧选择一家 API 供应商'))
+    if (!selectedId || isCustom) {
+      setApiError(new Error('请先在上方列表选择一家 API 供应商'))
       return
     }
     setApiError(null)
@@ -186,7 +196,7 @@ export default function ContributePage({ def }: PageProps) {
       // 不带 endpoint：契约 §3 规定 kind=api 的端点由后端从内置目录解析
       const r = await submitContribution({
         kind: 'api',
-        provider: apiProviderId,
+        provider: selectedId,
         api_key: apiKey,
         label: apiLabel,
         claimed_models: apiModel.trim() ? [apiModel.trim()] : []
@@ -250,22 +260,8 @@ export default function ContributePage({ def }: PageProps) {
         {FREE_NOTICE}
       </Banner>
 
-      <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 1.5 }}>
-        <Tabs
-          value={tab}
-          onChange={(_, v: ContributionCategoryId) => setTab(v)}
-          aria-label="贡献入口"
-          variant="scrollable"
-          allowScrollButtonsMobile
-        >
-          {CONTRIBUTE_TABS.map((t) => (
-            <Tab key={t.value} value={t.value} label={t.label} />
-          ))}
-        </Tabs>
-      </Box>
-
-      {/* 三个入口共用一份确认：反代点的是授权链接、两个表单点的是提交按钮，
-          阻断点不同但语义相同——只放一份，避免「这个勾了那个没勾」。 */}
+      {/* 两栏共用一份确认：左栏点的是授权链接、右栏点的是提交按钮，
+          阻断点不同但语义相同——只放一份，避免「这边勾了那边没勾」。 */}
       <Box
         sx={{
           mb: 2,
@@ -278,11 +274,21 @@ export default function ContributePage({ def }: PageProps) {
       >
         <FreeConfirm checked={freeConfirmed} onChange={setFreeConfirmed} />
         <Typography variant="caption" color="text.secondary" component="p" sx={{ m: 0, mt: 0.25 }}>
-          未勾选时：反代供应商的授权链接不可点，两个表单的提交按钮不可用。
+          未勾选时：左栏的授权链接不可点，右栏的提交按钮不可用。
         </Typography>
       </Box>
 
-      {tab === 'reverse_proxy' && (
+      {/* 左右双栏（lg 起并排；窄屏纵向堆叠，反代在上）：两类入口是并列的选择，
+          同屏可见而不是藏在 Tab 之后。 */}
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', lg: 'minmax(0, 1fr) minmax(0, 1.15fr)' },
+          gap: 2,
+          alignItems: 'start'
+        }}
+      >
+        {/* ── 左栏：反代供应商 ── */}
         <Section
           title="反代供应商"
           hint="用供应商账号登录，由 sidecar 换出凭据（不接触你的 Key）。选一家 → 跳转授权 / 扫码 / 填码 → 完成后凭据入池。"
@@ -297,7 +303,7 @@ export default function ContributePage({ def }: PageProps) {
                 return (
                   <EmptyState
                     title="当前没有接入反代供应商"
-                    hint="供应商授权服务尚未配置。你仍然可以用「API 供应商」或「自定义供应商」入口贡献。"
+                    hint="供应商授权服务尚未配置。你仍然可以在右侧贡献 API Key。"
                   />
                 )
               }
@@ -378,12 +384,13 @@ export default function ContributePage({ def }: PageProps) {
                                   type="button"
                                   className="btn-ghost provider-fill"
                                   onClick={() => {
-                                    // 端点是自定义入口的输入；留在本页只会让人找不到填在哪
+                                    // 端点填进右栏「自定义供应商」项的表单并选中它：
+                                    // 停在左栏只会让人找不到值填去了哪里。
                                     setEndpoint(p.suggested_endpoint!)
-                                    setTab('custom')
+                                    setSelectedId(CUSTOM_PROVIDER_ID)
                                   }}
                                 >
-                                  填入自定义入口
+                                  填入右侧自定义供应商
                                 </button>
                               )}
                             </li>
@@ -397,12 +404,11 @@ export default function ContributePage({ def }: PageProps) {
             }}
           </AsyncView>
         </Section>
-      )}
 
-      {tab === 'api' && (
+        {/* ── 右栏：API 供应商（目录来自 Tingly Box）＋ 自定义端点 ── */}
         <Section
           title="API 供应商"
-          hint="内置端点，只需粘贴该家的 Key；端点由服务端按目录解析，你不需要填。"
+          hint="内置端点（目录来自 Tingly Box），只需粘贴该家的 Key，端点由服务端解析；目录里没有的选「自定义供应商」手填端点。"
         >
           <AsyncView state={providers} loadingRows={4}>
             {(d) => {
@@ -417,75 +423,125 @@ export default function ContributePage({ def }: PageProps) {
                       p.id.toLowerCase().includes(keyword)
                   )
                 : items
-              const selected = items.find((p) => p.id === apiProviderId)
+              const selected = isCustom ? undefined : items.find((p) => p.id === selectedId)
 
               return (
-                <Box
-                  sx={{
-                    display: 'grid',
-                    gridTemplateColumns: { xs: '1fr', md: 'minmax(15rem, 20rem) minmax(0, 1fr)' },
-                    gap: 2,
-                    alignItems: 'start'
-                  }}
-                >
-                  <Box>
-                    <Field label="搜索供应商" hint={`按名称或端点过滤，共 ${items.length} 家`}>
-                      <input
-                        value={apiSearch}
-                        onChange={(e) => setApiSearch(e.target.value)}
-                        placeholder="例如 deepseek 或 https://"
-                      />
-                    </Field>
-                    <List
-                      dense
-                      sx={{
-                        mt: 1,
-                        maxHeight: 420,
-                        overflowY: 'auto',
-                        border: 1,
-                        borderColor: 'divider',
-                        borderRadius: 2,
-                        py: 0
-                      }}
+                <Box>
+                  <Field label="搜索供应商" hint={`按名称或端点过滤，共 ${items.length} 家`}>
+                    <input
+                      value={apiSearch}
+                      onChange={(e) => setApiSearch(e.target.value)}
+                      placeholder="例如 deepseek 或 https://"
+                    />
+                  </Field>
+                  <List
+                    dense
+                    sx={{
+                      mt: 1,
+                      maxHeight: 360,
+                      overflowY: 'auto',
+                      border: 1,
+                      borderColor: 'divider',
+                      borderRadius: 2,
+                      py: 0
+                    }}
+                  >
+                    {/* 自定义项固定置顶、不参与过滤：搜索落空时它是兜底路径，
+                        被过滤掉用户就进了死胡同。 */}
+                    <ListItemButton
+                      selected={isCustom}
+                      onClick={() => setSelectedId(CUSTOM_PROVIDER_ID)}
+                      sx={{ flexDirection: 'column', alignItems: 'flex-start', gap: 0.25 }}
                     >
-                      {filtered.map((p) => (
-                        <ListItemButton
-                          key={p.id}
-                          selected={p.id === apiProviderId}
-                          onClick={() => {
-                            setApiProviderId(p.id)
-                            setApiModel('') // 换供应商即清空声称模型：模型 id 是分家的
-                          }}
-                          sx={{ flexDirection: 'column', alignItems: 'flex-start', gap: 0.25 }}
-                        >
-                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                            {p.name}
-                          </Typography>
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            component="p"
-                            sx={{ wordBreak: 'break-all' }}
-                          >
-                            {p.base_url}
-                          </Typography>
-                        </ListItemButton>
-                      ))}
-                    </List>
-                    {filtered.length === 0 && (
-                      <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                        没有匹配的供应商，换个关键词试试。
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        自定义供应商
                       </Typography>
-                    )}
-                  </Box>
+                      <Typography variant="caption" color="text.secondary" component="p">
+                        任意 OpenAI 兼容端点，手填 base URL
+                      </Typography>
+                    </ListItemButton>
+                    {filtered.map((p) => (
+                      <ListItemButton
+                        key={p.id}
+                        selected={p.id === selectedId}
+                        onClick={() => {
+                          setSelectedId(p.id)
+                          setApiModel('') // 换供应商即清空声称模型：模型 id 是分家的
+                        }}
+                        sx={{ flexDirection: 'column', alignItems: 'flex-start', gap: 0.25 }}
+                      >
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                          {p.name}
+                        </Typography>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          component="p"
+                          sx={{ wordBreak: 'break-all' }}
+                        >
+                          {p.base_url}
+                        </Typography>
+                      </ListItemButton>
+                    ))}
+                  </List>
+                  {filtered.length === 0 && (
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                      没有匹配的供应商：换个关键词，或选「自定义供应商」手填端点。
+                    </Typography>
+                  )}
 
-                  <Box>
-                    {!selected ? (
-                      <EmptyState
-                        title="先选择一家供应商"
-                        hint="从左侧列表选一家，右侧会显示它的端点与可点选的模型。"
-                      />
-                    ) : (
+                  <Box sx={{ mt: 2 }}>
+                    {isCustom ? (
+                      <form className="form-card" onSubmit={onSubmitCustom}>
+                        <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
+                          自定义供应商
+                        </Typography>
+                        <Field
+                          label="端点地址"
+                          required
+                          hint="该 Key 指向的 OpenAI 兼容 base URL，例如 https://api.example.com/v1"
+                        >
+                          <input
+                            value={endpoint}
+                            onChange={(e) => setEndpoint(e.target.value)}
+                            required
+                            placeholder="https://…"
+                          />
+                        </Field>
+                        <Field label="API Key" required hint="提交后不再显示，也不会出现在任何页面。">
+                          <input
+                            type="password"
+                            value={customKey}
+                            onChange={(e) => setCustomKey(e.target.value)}
+                            required
+                            autoComplete="off"
+                          />
+                        </Field>
+                        <Field
+                          label="标签"
+                          required
+                          hint="你自己认得出的名字，例如「备用号」；凭据列表里只能靠它识别。"
+                        >
+                          <input value={customLabel} onChange={(e) => setCustomLabel(e.target.value)} required />
+                        </Field>
+                        <Field
+                          label="声称的模型"
+                          required
+                          hint="一次提交只声明一个模型（后端取第一个值）；多填也只会用第一个。"
+                        >
+                          <input
+                            value={customModels}
+                            onChange={(e) => setCustomModels(e.target.value)}
+                            required
+                            placeholder="例如 deepseek-chat"
+                          />
+                        </Field>
+                        <FormError error={customError} />
+                        <button type="submit" className="btn-primary" disabled={!freeConfirmed || customSubmitting}>
+                          {customSubmitting ? '正在提交…' : '提交贡献'}
+                        </button>
+                      </form>
+                    ) : selected ? (
                       <form className="form-card" onSubmit={onSubmitApi}>
                         <div>
                           <Typography variant="body2" sx={{ fontWeight: 600 }}>
@@ -569,6 +625,11 @@ export default function ContributePage({ def }: PageProps) {
                           {apiSubmitting ? '正在提交…' : `提交到 ${selected.name}`}
                         </button>
                       </form>
+                    ) : (
+                      <EmptyState
+                        title="先选择一家供应商"
+                        hint="从上方列表选一家：目录里的家端点自动带出；没有的选「自定义供应商」手填端点。"
+                      />
                     )}
                   </Box>
                 </Box>
@@ -576,48 +637,7 @@ export default function ContributePage({ def }: PageProps) {
             }}
           </AsyncView>
         </Section>
-      )}
-
-      {tab === 'custom' && (
-        <Section
-          title="自定义供应商"
-          hint="任意 OpenAI 兼容端点（自建网关、局域网服务、其它中转站）。提交后 Key 永不回显；请填写这个 Key 声称能提供的模型。"
-        >
-          <form className="form-card" onSubmit={onSubmitCustom}>
-            <Field label="端点地址" required hint="该 Key 指向的 OpenAI 兼容 base URL，例如 https://api.example.com/v1">
-              <input value={endpoint} onChange={(e) => setEndpoint(e.target.value)} required placeholder="https://…" />
-            </Field>
-            <Field label="API Key" required hint="提交后不再显示，也不会出现在任何页面。">
-              <input
-                type="password"
-                value={customKey}
-                onChange={(e) => setCustomKey(e.target.value)}
-                required
-                autoComplete="off"
-              />
-            </Field>
-            <Field label="标签" required hint="你自己认得出的名字，例如「备用号」；凭据列表里只能靠它识别。">
-              <input value={customLabel} onChange={(e) => setCustomLabel(e.target.value)} required />
-            </Field>
-            <Field
-              label="声称的模型"
-              required
-              hint="一次提交只声明一个模型（后端取第一个值）；多填也只会用第一个。"
-            >
-              <input
-                value={customModels}
-                onChange={(e) => setCustomModels(e.target.value)}
-                required
-                placeholder="例如 deepseek-chat"
-              />
-            </Field>
-            <FormError error={customError} />
-            <button type="submit" className="btn-primary" disabled={!freeConfirmed || customSubmitting}>
-              {customSubmitting ? '正在提交…' : '提交贡献'}
-            </button>
-          </form>
-        </Section>
-      )}
+      </Box>
 
       <Section title="未登录贡献后怎么回来">
         <ul className="plain-list">

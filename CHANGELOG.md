@@ -20,7 +20,12 @@
     收录规则：只收有 OpenAI 兼容端点的 active 条目，排除 oauth/gcp_sa/aws_sigv4/azure_key、
     localhost 自建、带 `{占位符}` 的模板端点。**ModelScope / OpenCode 的 key 型条目保留**
     （2026-10-25 用户澄清：移除的只是反代登录形态，见下）；
-  - 自定义供应商：任意 OpenAI 兼容端点（自建网关、局域网服务、其它中转）。
+  - 自定义供应商：任意 OpenAI 兼容端点（自建网关、局域网服务、其它中转），
+    作为右栏列表的置顶项（不参与搜索过滤——搜索落空时的兜底路径）。
+  - 前端贡献入口页为**左右双栏**（2026-10-25 定案）：左栏反代供应商（账号登录），
+    右栏 API 供应商（内置目录 + 自定义端点），同屏并列；窄屏纵向堆叠。
+    此前曾按三 Tab 实现，按用户反馈改为双栏——两类入口是并列的选择，
+    不该把其中一条藏进一次点击之后。
   - `GET /api/contributions/providers` 改为 `{data:{categories:[…]}}`（破坏性变更，见下）；
     `POST /api/contributions` 新增 `kind=api|custom`（缺省 custom），`kind=api` 时端点由服务端从
     目录解析、落库 `upstreams.provider = api:<id>`，客户端自报端点一律忽略——不允许冒名供应商。
