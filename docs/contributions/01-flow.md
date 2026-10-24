@@ -66,9 +66,14 @@ FreeRouter 的上游供给有两个来源：平台自己配的官方 key（`owne
 | 供应商 OAuth（3 家，走 API Key 型） | ➖ 不适用 | modelscope（上游无登录入出接口）、astudio（登录流要自己起本机 HTTP 服务，与 sidecar 不监听端口冲突）、opencode（登录在 adapter 层） |
 
 实现方式：按上游 `deepseek-harness-codearts` 的 tsc 产物做**依赖闭包整体提取**
-（83 个文件，不手抄），由 `sidecar/providers/registry.mjs` 把 15 家的差异收敛成
+（83 个文件，不手抄），由 `sidecar/providers/registry.mjs` 把 16 家的差异收敛成
 三种交互形态（`redirect` / `device_code` / `sms·qr`）。详见
 [../../sidecar/providers/README.md](../../sidecar/providers/README.md)。
+
+> **家数口径**：本表合计 **16 家**（11 开箱 + 2 需配凭据 + 3 走 API Key 型）。
+> 上游 providers-hub 的查证清单是 **17 个渠道**；本站移植覆盖了其中 16 个，
+> 差额 1 家需在 providers-hub 侧复核具体是哪个渠道（本表只列已实际接入的，
+> 不把未接入的算进"支持"里）。
 
 **为什么 OAuth 只在 sidecar 里做**：PLAN §5.5 —— 这些供应商的授权与续期细节只有
 providers-hub 的实现覆盖过；用 Go 重写是另一个量级的工程，且必然在每次上游改版后

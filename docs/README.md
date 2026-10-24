@@ -44,6 +44,7 @@
 | **API 契约** | [api/01-inbound.md](api/01-inbound.md) | 入站 API（OpenAI / Anthropic） | ✅ 445 行 |
 | | [api/02-admin.md](api/02-admin.md) | 管理 API | ✅ 539 行 |
 | | [api/03-errors.md](api/03-errors.md) | 错误码与响应头 | ✅ 326 行 |
+| | [api/04-tenant.md](api/04-tenant.md) | 租户与贡献者 API（账户/Key/用量/贡献） | ✅ 228 行 |
 | **运维** | [ops/01-security.md](ops/01-security.md) | 公网安全基线清单 | ✅ 314 行 |
 | | [ops/02-deploy.md](ops/02-deploy.md) | 部署、配置项、备份 | ✅ 520 行 |
 | | [ops/03-milestones.md](ops/03-milestones.md) | 里程碑拆解与验收清单 | ✅ 507 行 |

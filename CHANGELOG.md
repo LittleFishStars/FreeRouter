@@ -69,11 +69,12 @@
   `accounts.must_change_password`（`NOT NULL DEFAULT 0`，存量账户不受影响）。
 - 控制台静态页与 SPA 资源不再经过 Key 鉴权链（旧行为下浏览器打开 `/` 直接
   `401 invalid_api_key`，前端根本加载不了）；`/v1/*` 与 `/api/*` 不变。
-- **供应商 OAuth 全量移植（15 家）**（2026-10-23）：按上游
+- **供应商 OAuth 全量移植（16 家）**（2026-10-23）：按上游
   `deepseek-harness-codearts` 的 `tsc` 产物做依赖闭包整体提取（83 个文件），
   不手抄——这些文件里全是逆向出的常量与请求形状，手抄会引入静默偏差。
-  - 已接入 13 家：codearts / gemini / accio / minimax / cline / qoder / loomy /
-    raccoon / lobsterai / trae / autoclaw / officeace / zcode；
+  - 已接入 13 家 OAuth：codearts / gemini / accio / minimax / cline / qoder / loomy /
+    raccoon / lobsterai / trae / autoclaw / officeace / zcode（其中 gemini / loomy
+    需配一个第三方凭据）；
   - modelscope / astudio / opencode 走「API Key 型贡献」并给出具体原因
     （无登录面 / 需要本机 HTTP 服务 / 登录在 adapter 层）；
   - sidecar 把 15 家的差异收敛成三种交互形态（redirect / device_code / sms·qr），
@@ -116,6 +117,51 @@
   会话，登录页不再因旧 session 回跳；③ 登录页拒绝 `from=/login` 的脏回跳
   目标；④ `index.html` 加 `Cache-Control: no-store`，防止旧产物清单引用
   已删除的 chunk 导致白屏。
+
+- **`strconv.FormatInt(x, 0)` 会让进程 panic**（2026-10-24 静态扫描发现）：
+  `internal/app/policy_bridge.go` 的四处 id 转字符串用了 base=0，而
+  `FormatInt` 的 base 合法范围是 **2–36**（base=0 是 `ParseInt` 的「自动探测
+  前缀」语义，`FormatInt` 没有这个语义）。实测直接
+  `panic: strconv: illegal AppendInt/FormatInt base`。
+
+  这四处所在的分支此前**零测试覆盖**，缺陷一直潜伏：管理员一旦给组配了
+  「按模型额度上限」或「共享池」，或 Key 鉴权走到 `keyRowToAuth`，进程就崩。
+  修复为 base=10，并补两条回归测试
+  （`TestSnapshotToGroupPoliciesNoPanic` / `TestKeyRowToAuthNoPanic`）
+  覆盖这两条分支——已验证把 base 改回 0 时测试立即捕获 panic。
+
+- **静态检查归零**（2026-10-24）：`staticcheck ./...` 从 27 项降到 0。
+  - 删除 12 处确认无引用的死代码（M0 阶段被替代的 `handleSetupStatus`、
+    重复定义的 `groupMemberAdapter`、未使用的 `newGatedCatalog`/
+    `newGatedCandidates`/`fillAccountDerived`/`parseIDs`/`sortedKeys`/
+    `fmtRequestID`/`writeErrorTyped`/`adminAuditStandalone`/`sidecarScheme`/
+    `Options.startupTimeout`）；
+  - 清理 6 处测试死变量（未使用的 clock 字段、nextID、failWith、
+    anthropicResponseOK、jsonEqual、一处无效自增）；
+  - 两处有意预留的安全函数（`isSameOrigin`/`splitHostPort`，CORS 放开时的
+    第三道 CSRF 校验）加 `//lint:ignore U1000` 并写明理由，而不是删掉。
+
+- **7 个文件未 gofmt**（2026-10-24）：已全部格式化。
+
+### 文档
+
+- **新增 `docs/api/04-tenant.md`**（租户与贡献者 API，228 行）：此前
+  `/api/account/*`、`/api/usage/*`、`/api/contributions/*` 三组共 26 个端点
+  **完全没有 API 契约文档**，只在 UI 分册里零散提及。新分册补齐端点总表、
+  请求/响应形状、以及几个关键设计理由（为什么注册防枚举、为什么 OAuth 要
+  独立 poll 端点、为什么恢复码对 OAuth 型也要发）。
+
+- **`docs/api/02-admin.md` 补 `GET /api/admin/accounts/{id}/merge/precheck`**：
+  该端点随合并功能一起落地但文档漏记，导致「确认页必须先看预检」这条
+  纪律在契约里没有对应条目。
+
+- **家数口径统一为 16 家**：此前文档里 15 / 16 / 17 三个数字混用
+  （17 是上游 providers-hub 的渠道数，15 是早期统计）。现统一为
+  「本站接入 16 家（11 开箱 + 2 需配凭据 + 3 走 API Key 型）」，并在
+  `contributions/01-flow.md` 标注与上游 17 个渠道的口径差异。
+
+- **`docs/OPEN-QUESTIONS.md` 索引同步**：条目数 205 → 207、篇数 30 → 31，
+  新增 `api/04-tenant.md` 分组（Q206/Q207）。
 
 ### 废弃
 

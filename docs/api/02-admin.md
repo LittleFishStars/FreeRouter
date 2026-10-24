@@ -139,11 +139,14 @@
 | `POST` | `/api/admin/accounts/{id}/sessions/revoke` | 吊销全部会话 | ➖ |
 | `POST` | `/api/admin/accounts/{id}/merge` | 合并到目标账户 | 🔒（账户面） |
 | `POST` | `/api/admin/accounts/{id}/merge/rollback` | `reversible_until` 内回滚 | 🔒（账户面） |
+| `GET` | `/api/admin/accounts/{id}/merge/precheck` | 合并预检（只读，`?target=acc_<n>`）：返回阻塞项、待改名的 Key、将改挂的资源数 | ➖ |
 | `GET` | `/api/admin/accounts/pending` | 审核队列 | ➖ |
 | `POST` | `/api/admin/accounts/pending/{id}/approve` | 批准（**必填组 + 配额**） | ➖ |
 | `POST` | `/api/admin/accounts/pending/{id}/reject` | 拒绝（可填理由） | 🔒（二次确认） |
 
 **没有 `DELETE /api/admin/accounts/{id}`**。总纲的数据模型里 `requests` / `audit_log` 引用 `account_id`，物理删除会让历史悬空。
+
+**为什么合并要单独的预检端点**：合并是方向不可逆的账户面写，而它的阻塞条件（同 `provider`+`external_id` 的凭据撞身份）无法在确认框里“看情况”——必须先读一次预检、把 🔴 阻塞项与 🟡 自动改名项展示给管理员。“先让你点、失败再说”会把一个本可提前避免的合并做成一次必然的失败体验。预检只读（不写库、不进审计）。
 
 ### 5.2 关键字段
 
