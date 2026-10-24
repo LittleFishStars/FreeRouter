@@ -150,12 +150,28 @@ FreeRouter 就是在额度与人之间加的一层：**下面反向代理各大�
 
 ## 项目状态
 
-**设计阶段：文档完成，代码未开工。**
+**实现阶段：M0–M9 主体落地，M10 加固进行中。**
 
-里程碑拆解见 `ops/03-milestones.md`（M0–M10，约 19.5 工日）。其中 M0 / M1 是骨架与存储，
-不受任何待拍板项影响，可直接开工。
+后端（Go）、sidecar（Node）与控制台（React + MUI v9）都已有可运行实现；前端构建产物经
+`webui_dist` 构建标签嵌入单二进制。里程碑的逐项推进与验证记录在 [CHANGELOG.md](CHANGELOG.md)
+（M10 实跑结论也在其中）。当前质量基线见
+[ops/05-static-analysis.md](docs/ops/05-static-analysis.md)：`gofmt` / `go vet` / `staticcheck`
+零告警，`gosec` 的告警已逐条评估，单元与契约测试全绿。
 
 尚未拍板的设计点汇总在 [`docs/OPEN-QUESTIONS.md`](docs/OPEN-QUESTIONS.md)（205 条，按阻塞级分 A/B/C）。
+
+### 快速开始
+
+```bash
+make build      # 编译 bin/freerouter（版本信息由 ldflags 注入）
+make test       # 单元测试；make contract 只跑契约测试，make test-race 带竞态检测
+make vet        # go vet；make fmt 格式化；make tidy 整理依赖
+make web        # 构建前端到 internal/webui/dist（嵌入单二进制前必须跑）
+make run        # 用 testdata/config.yaml 前台启动
+```
+
+构建缓存固定在仓库内（`.cache/`，不入库）：本机 `~/.cache` 与 `~/go` 在沙箱下只读，
+Makefile 已把 `GOMODCACHE` / `GOCACHE` / `GOPATH` 指到工作区，无需额外环境变量。
 
 ---
 

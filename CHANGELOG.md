@@ -106,6 +106,21 @@
   `ErrGloballyFused`（全局预算熔断）仍为 429 `quota_exceeded`（与分册 §3.1 一致）。
   `Retry-After` 指向命中行的重置时刻（锚点脏数据时宁缺勿错）。
 
+### 整理（内部重构，无接口语义变化）
+
+- **管理面 9 个资源面的 id 参数校验收敛到 `idParamValid`**（2026-10-24）：
+  账户/组/真实模型/抽象模型四处此前各抄了一份 `chi.URLParam` + `idcode.Decode` +
+  `adminWriteParamErr`；现在都走 `mw_admin.go` 一处实现。400 的 msg 逐字未变
+  （`<资源> id 形状非法（期望 <前缀>_<数字>）`），前缀仍取自 `idcode` 常量。
+- **仓储层的「读一列 int64」收敛到 `store.collectIDs`**：组/合并两处共 7 个调用点
+  此前是同一段 `QueryContext → defer Close → for rows.Next → Scan(&id) → append`
+  的复制，且其中两处漏了 `rows.Err()`。现统一由 `collectIDs` 承担，并**统一了错误文案**
+  （运维会看到的唯一变化）：旧文案各写一套（「列组成员失败」「扫描成员行失败」
+  「读取改挂清单失败」……），新文案统一为 `查询/扫描/遍历<业务名>失败`，例如
+  `store: 查询组成员失败: …`。有日志检索依赖旧措辞的告警规则需要相应调整。
+- **仓库卫生**：清掉 `tmp/` 下 378 MB 的 npm 探测缓存、`__pycache__`、根目录 21 MB
+  旧二进制与空目录 `.tmp/`；一次性脚本与 `.bak` 归档进 `tmp/archive/`（均不入库）。
+
 ### 重新设计（Web 控制台）
 
 - **组件库迁到 Material UI v9 + Emotion**（2026-10-24）：替换此前"手写 CSS
@@ -134,6 +149,15 @@
 
 ### 修复
 
+- **管理面「复检开关」的请求体键名不匹配**（2026-10-24）：前端发 `{"enabled": bool}`，
+  后端结构体是 `json:"recheck"`，未知字段被 JSON 静默忽略——点一次按钮库里仍写
+  `false`。前端改发 `{"recheck": bool}`，并把请求体形状写进 `api/02-admin.md` §10
+  （此前只文档化了响应里的 `recheck.enabled`）。
+- **控制台面三个裸 `{ok}` 响应被前端当 `{data}` 信封解析**（2026-10-24）：改密、
+  吊销会话、OAuth 取消都用 `postWrite` 声明返回 `{data,audit_id}`，类型与运行时不符
+  （`data` 恒 `undefined`，调用点没读才没爆）。新增 `postPlain` 供这三个端点使用。
+- **`App.tsx` 页脚探针硬编码路径**（2026-10-24）：`/healthz`、`/readyz`、`/api/version`
+  改走 `PATHS`（新增 `PATHS.version`），恢复 `client.ts` 自定的「路径只写 PATHS」红线。
 - **上一轮把三个供应商的能力判断错了**（2026-10-24 用户第 3 次纠正，
   附 dsh-providers-hub 的实际登录截图）：`loomy` / `gemini` / `astudio`
   在 hub 里都能直接登录（微信扫码 / Google 登录 / 三合一登录页），而我这边
@@ -312,6 +336,17 @@
   从"设想"改成"实际技术形态 + 状态"。同时如实记录一处**与原文不符**的
   偏差：手机端宽表仍是横向滚动 + 首列吸附，没有做成卡片列表（原因与
   后续建议写在该节，并新增 Q208 待定）。
+
+- **新增 `docs/ops/06-contract-drift.md`**（前后端契约漂移审计，2026-10-24）：把后端
+  107 条注册点与前端 95 个封装逐条对表，记录本次已修 3 条、待决 12 条（缺路由、
+  参数被忽略、后端独有写路径、死封装、恒空字段）。这类缝 `staticcheck` / `tsc` 都
+  看不见——两侧各自自洽，错在中间。
+
+- **`README.md` 项目状态更新**：原文写「设计阶段：文档完成，代码未开工」，与现状
+  （Go 后端 + sidecar + MUI 控制台、M0–M9 主体落地）不符；同时补「快速开始」小节
+  （`make build/test/contract/web/run`）与构建缓存位置说明。
+
+- **`docs/README.md` 索引补 `ops/04-collaboration.md`**：该分册此前未进文档地图。
 
 ### 废弃
 

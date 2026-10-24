@@ -81,6 +81,17 @@
 
 改密成功会**吊销全部会话**并清除 Cookie（含当前这条），客户端须重新登录。`display_name` 可选：首次登录时一并补全账户信息，省一次往返。
 
+响应是**裸对象**、不包 `data` 信封（控制台面的少量端点如此，与 `/api/admin/*` 的
+`{data,audit_id}` 不同）：
+
+```json
+{"ok": true, "message": "口令已更新，请用新口令重新登录", "display_name_updated": true}
+```
+
+同理不带 `data` 的还有 `POST /api/account/sessions/{id}/revoke` 与
+`POST /api/contributions/oauth/{provider}/cancel`（均为 `{"ok": true}`）。
+前端用 `postPlain` 而不是 `postWrite` 声明这三个端点，否则类型会把 `data` 说成存在。
+
 ---
 
 ## 3. API Key 自助

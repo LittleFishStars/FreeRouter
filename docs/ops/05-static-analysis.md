@@ -21,6 +21,7 @@
 | `staticcheck` | 深度语义检查（未使用代码、无效比较等） | **0 问题** | 见下 |
 | `gosec` | 安全模式扫描 | 42 项（全部经评估，见第 3 节） | 见下 |
 | `govulncheck` | 依赖漏洞（可达性分析） | 代码 0 漏洞 | 见下 |
+| `dupl` | 重复代码（80 token 以上） | 6 组（均为 REST 列表/详情样板，判定保留，见 3.8） | `.cache/tools/dupl -t 80 cmd internal` |
 | `go mod tidy` | 依赖整洁 | 无变化 | `make tidy` |
 
 工具装在仓库内（`GOMODCACHE` 指向 `.cache/gomod`，避免污染用户级模块缓存）：
@@ -31,6 +32,7 @@ export GOCACHE=$PWD/.cache/gobuild GOMODCACHE=$PWD/.cache/gomod \
 go install honnef.co/go/tools/cmd/staticcheck@latest
 go install github.com/securego/gosec/v2/cmd/gosec@latest
 go install golang.org/x/vuln/cmd/govulncheck@latest
+go install github.com/mibk/dupl@latest
 
 .cache/bin/staticcheck ./...
 .cache/bin/gosec -quiet -exclude-dir=.cache ./...
@@ -134,6 +136,23 @@ gosec 的 G101 靠「变量名含 credential/secret/password + 字符串字面�
 
 `G115`（整数截断）、`G118`（context 泄漏）、`G404`（弱随机）已在前一节
 修复或显式标注，不再出现在基线里。
+
+### 3.8 `dupl` · 重复代码（6 组）
+
+**判定：结构性样板，保留。** 逐组看过：
+
+- 管理面列表 handler（`need → limit/offset → List → render → envelope`）与详情
+  handler（`need → 取 id → Get → mapAdminError → writeJSON{data}`）——这些是 REST
+  端点的**天然形状**。提到泛型 helper 能把 12 行压成 3 行，但每个 handler 里
+  都有一段特有逻辑（账户详情补两个计数、组详情把 `policies/members/models` 的
+  nil 归一成空对象、票据/收件箱多一步审计），闭包化之后要读两处才看得懂一条
+  端点，与「每个 handler 可独立对照分册」的写法相悖。
+- 测试里的同构断言（`v1_test.go`、`routing_bridge_test.go`、`settle_bridge_test.go`）
+  ——测试的重复是「同一种失败要各自能独立读懂」，合并成表驱动反而要跳两屏。
+
+**真正该合的已合**：仓储层的「读一列 int64」（7 处）与 id 参数校验（4 处）
+已经收敛（见第 2 节），它们的重复有**漂移风险**（漏 `rows.Err()`、前缀与 msg 不同步），
+和上面这些“没有第二份判断”的样板不是一个性质。
 
 ---
 

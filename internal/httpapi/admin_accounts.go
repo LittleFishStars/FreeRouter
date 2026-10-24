@@ -141,12 +141,7 @@ func adminFilterStatusValid(st string) bool {
 
 // accountIDParam 解 /accounts/{id} 路径参数：idcode 前缀校验（lead 裁决①）。
 func accountIDParam(w http.ResponseWriter, r *http.Request) (string, bool) {
-	raw := chi.URLParam(r, "id")
-	if _, err := idcode.Decode(idcode.Account, raw); err != nil {
-		adminWriteParamErr(w, "id", "账户 id 形状非法（期望 acc_<数字>）")
-		return "", false
-	}
-	return raw, true
+	return idParamValid(w, r, "id", idcode.Account, "账户")
 }
 
 // handleAdminAccountDetail GET /api/admin/accounts/{id}：详情只给行字段

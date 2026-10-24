@@ -315,6 +315,37 @@ type dbtx interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+// collectIDs 执行一条只返回单个 int64 列的查询，把结果收成 int64 切片。
+//
+// 为什么有这个函数：多个仓储里都出现过同一段「QueryContext → defer
+// rows.Close → for rows.Next → Scan(&id) → append → rows.Err」样板。收在这里
+// 以后调用点只剩一行 SQL，也不会再出现「抄一份时漏掉 rows.Err」这类事故。
+//
+// 返回值语义与原调用点一致：**空切片而非 nil**（管理面把 nil 与 [] 当两种
+// 东西渲染），因此出参是 []int64{} 而不是 var out []int64。
+//
+// op 是业务名，只用于错误文案「查询/扫描/遍历<op>失败」——日志里带上业务名，
+// 才能从一条 sqlite 报错认出是哪张关联表出的问题。
+func collectIDs(ctx context.Context, db dbtx, op, q string, args ...any) ([]int64, error) {
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: 查询%s失败: %w", op, err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: 扫描%s失败: %w", op, err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历%s失败: %w", op, err)
+	}
+	return out, nil
+}
+
 // newRepos 构造仓储集合。底层为 nil 的方法在调用时会 panic——这是刻意的：
 // 仓储只能从 Store 获得，nil 说明是编程错误而非运行时条件。
 func newRepos(s *Store) *Repos {

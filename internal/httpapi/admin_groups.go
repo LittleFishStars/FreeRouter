@@ -45,12 +45,7 @@ func (s *Server) mountAdminGroups(r chi.Router, deps *AdminDeps) {
 // groupIDParam 解组路径参数：idcode 前缀校验（lead 裁决①——拿 acc_1 打
 // groups 端点必须在解码层失败，而不是去查错表）。
 func groupIDParam(w http.ResponseWriter, r *http.Request) (string, bool) {
-	raw := chi.URLParam(r, "id")
-	if _, err := idcode.Decode(idcode.Group, raw); err != nil {
-		adminWriteParamErr(w, "id", "组 id 形状非法（期望 grp_<数字>）")
-		return "", false
-	}
-	return raw, true
+	return idParamValid(w, r, "id", idcode.Group, "组")
 }
 
 func (s *Server) handleAdminGroupsList(deps *AdminDeps) http.HandlerFunc {

@@ -150,40 +150,22 @@ func (r *AccountRepo) PrecheckMerge(ctx context.Context, sourceID, targetID int6
 		ks.Close()
 	}
 
-	ids, err := collectIDs(ctx, r.db, `SELECT id FROM api_keys WHERE account_id = ? ORDER BY id`, sourceID)
+	ids, err := collectIDs(ctx, r.db, "改挂清单", `SELECT id FROM api_keys WHERE account_id = ? ORDER BY id`, sourceID)
 	if err != nil {
 		return plan, err
 	}
 	plan.MovedKeys, plan.Keys = ids, len(ids)
-	if ids, err := collectIDs(ctx, r.db, `SELECT id FROM upstream_credentials WHERE owner_account_id = ? ORDER BY id`, sourceID); err == nil {
+	if ids, err := collectIDs(ctx, r.db, "改挂清单", `SELECT id FROM upstream_credentials WHERE owner_account_id = ? ORDER BY id`, sourceID); err == nil {
 		plan.MovedCreds, plan.Creds = ids, len(ids)
 	} else {
 		return plan, err
 	}
-	if ids, err := collectIDs(ctx, r.db, `SELECT group_id FROM group_members WHERE account_id = ? ORDER BY group_id`, sourceID); err == nil {
+	if ids, err := collectIDs(ctx, r.db, "改挂清单", `SELECT group_id FROM group_members WHERE account_id = ? ORDER BY group_id`, sourceID); err == nil {
 		plan.MovedGroups, plan.GroupRels = ids, len(ids)
 	} else {
 		return plan, err
 	}
 	return plan, nil
-}
-
-// collectIDs 读一列 int64。
-func collectIDs(ctx context.Context, db dbtx, q string, args ...any) ([]int64, error) {
-	rows, err := db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("store: 读取改挂清单失败: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := []int64{}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: 扫描改挂清单失败: %w", err)
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
 }
 
 // classNames 把权限类翻成字符串数组（稳定顺序按 Class 常量声明序）。

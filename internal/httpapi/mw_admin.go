@@ -44,6 +44,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
+	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 )
 
 // ---------------------------------------------------------------------------
@@ -1197,6 +1198,22 @@ func adminValidQuota(q *AdminQuota) error {
 // 填出错字段名）。
 func adminWriteParamErr(w http.ResponseWriter, param, msg string) {
 	writeErrorParam(w, http.StatusBadRequest, "invalid_request", param, msg)
+}
+
+// idParamValid 解 {id} 类的路径参数并校验 idcode 前缀（lead 裁决①：id
+// 前缀混用必须在解码层失败——拿 acc_1 打 groups 端点不该走到查错表）。
+//
+// 为什么集中在这里：账户/组/真实模型/抽象模型/上游/凭据/鉴定/审计/收件箱
+// 九个资源面都是同一个形状，各写一份就必然出现「改了期望前缀但忘了改 msg，
+// 或者反过来」的漂移。want 只是给人看的中文资源名，前缀取自 idcode 常量，
+// 所以 400 文案里的「期望 xx_<数字>」与 Decode 的判据永远同源。
+func idParamValid(w http.ResponseWriter, r *http.Request, param, prefix, want string) (string, bool) {
+	raw := chi.URLParam(r, param)
+	if _, err := idcode.Decode(prefix, raw); err != nil {
+		adminWriteParamErr(w, param, want+" id 形状非法（期望 "+prefix+"_<数字>）")
+		return "", false
+	}
+	return raw, true
 }
 
 // adminFail 是"校验错误自动落 param"的小工具：错误串以 "字段名:" 开头

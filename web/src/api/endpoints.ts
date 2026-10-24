@@ -19,6 +19,7 @@ import {
   getOne,
   PATHS,
   patchWrite,
+  postPlain,
   postWrite,
   putWrite
 } from './client'
@@ -78,7 +79,7 @@ export function putAccountPassword(body: {
   new_password: string
   display_name?: string
 }) {
-  return postWrite<{ ok: boolean; display_name_updated?: boolean }>(
+  return postPlain<{ ok: boolean; message?: string; display_name_updated?: boolean }>(
     PATHS.accountPassword,
     body
   )
@@ -100,7 +101,7 @@ export function getAccountSessions() {
 
 /** 暂定：POST /api/account/sessions/{id}/revoke。 */
 export function revokeAccountSession(id: string) {
-  return postWrite<{ ok: boolean }>(`${PATHS.accountSessions}/${seg(id)}/revoke`)
+  return postPlain<{ ok: boolean }>(`${PATHS.accountSessions}/${seg(id)}/revoke`)
 }
 
 // ── 注册 / 待审核 ──────────────────────────────────────────────────────
@@ -197,7 +198,7 @@ export function pollOAuthContribution(
 
 /** 放弃一次后台授权会话（幂等）。 */
 export function cancelOAuthContribution(provider: string, sessionId: string) {
-  return postWrite<{ ok: boolean }>(`${PATHS.contributions}/oauth/${seg(provider)}/cancel`, {
+  return postPlain<{ ok: boolean }>(`${PATHS.contributions}/oauth/${seg(provider)}/cancel`, {
     session_id: sessionId
   })
 }
@@ -558,9 +559,13 @@ export function overrideVerification(id: string, verdict: string, reason: string
   })
 }
 
+// 请求体的键是 recheck 而不是 enabled：后端的 body 结构是
+// struct{ Recheck bool `json:"recheck"` }（admin_ops.go 的 recheck handler），
+// 发 {enabled} 会被 json 静默忽略——按钮看着能点，实际每次都写 false。
+// 响应里的 recheck.enabled 是回读字段，两者不是同一个键。
 export function setVerificationRecheck(id: string, enabled: boolean) {
   return postWrite<AdminVerification>(`${PATHS.adminVerifications}/${seg(id)}/recheck`, {
-    enabled
+    recheck: enabled
   })
 }
 

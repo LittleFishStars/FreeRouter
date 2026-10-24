@@ -63,21 +63,11 @@ func (s *Server) mountAdminModels(r chi.Router, deps *AdminDeps) {
 // realModelIDParam / abstractModelIDParam：idcode 前缀校验（lead 裁决①，
 // 跨资源 id 混用在解码层失败）。
 func realModelIDParam(w http.ResponseWriter, r *http.Request) (string, bool) {
-	raw := chi.URLParam(r, "id")
-	if _, err := idcode.Decode(idcode.RealModel, raw); err != nil {
-		adminWriteParamErr(w, "id", "真实模型 id 形状非法（期望 rm_<数字>）")
-		return "", false
-	}
-	return raw, true
+	return idParamValid(w, r, "id", idcode.RealModel, "真实模型")
 }
 
 func abstractModelIDParam(w http.ResponseWriter, r *http.Request) (string, bool) {
-	raw := chi.URLParam(r, "id")
-	if _, err := idcode.Decode(idcode.AbstractModel, raw); err != nil {
-		adminWriteParamErr(w, "id", "抽象模型 id 形状非法（期望 am_<数字>）")
-		return "", false
-	}
-	return raw, true
+	return idParamValid(w, r, "id", idcode.AbstractModel, "抽象模型")
 }
 
 // ---------------------------------------------------------------------------

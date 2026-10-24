@@ -52,7 +52,7 @@ import InboxIcon from '@mui/icons-material/Inbox'
 import LogoutIcon from '@mui/icons-material/Logout'
 import PersonOutlinedIcon from '@mui/icons-material/PersonOutlined'
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
-import { ApiError, postAuthLogout } from './api/client'
+import { ApiError, PATHS, postAuthLogout } from './api/client'
 import { SessionProvider, useSession } from './api/session'
 import { useColorMode } from './colorMode'
 import RequirePage from './components/RequirePage'
@@ -431,10 +431,10 @@ function Footer() {
       fetch(path, { credentials: 'include' })
         .then((r) => r.ok)
         .catch(() => false)
-    void Promise.all([probe('/healthz'), probe('/readyz')]).then(([h, r]) => {
+    void Promise.all([probe(PATHS.healthz), probe(PATHS.readyz)]).then(([h, r]) => {
       if (alive) setHealth((s) => ({ ...s, healthz: h, readyz: r }))
     })
-    fetch('/api/version', { credentials: 'include' })
+    fetch(PATHS.version, { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
       .then((v) => {
         if (alive && v && typeof v.version === 'string') {

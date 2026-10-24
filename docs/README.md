@@ -48,7 +48,9 @@
 | **运维** | [ops/01-security.md](ops/01-security.md) | 公网安全基线清单 | ✅ 314 行 |
 | | [ops/02-deploy.md](ops/02-deploy.md) | 部署、配置项、备份 | ✅ 520 行 |
 | | [ops/03-milestones.md](ops/03-milestones.md) | 里程碑拆解与验收清单 | ✅ 507 行 |
+| | [ops/04-collaboration.md](ops/04-collaboration.md) | 多分支并行开发的协作约定（分工、写域、合并纪律） | ✅ 与文件同步 |
 | | [ops/05-static-analysis.md](ops/05-static-analysis.md) | 静态分析与扫描基线（工具、基线、告警评估） | ✅ 174 行 |
+| | [ops/06-contract-drift.md](ops/06-contract-drift.md) | 前后端契约漂移审计（已修 / 待决清单） | ✅ 新增 |
 
 ---
 

@@ -37,29 +37,12 @@ type GroupRepo struct {
 //     这里如实返回空，由调用方决定是否视为异常。meter 的池遍历对空列表
 //     天然跳过，不 fail-open 也不误拒）。
 func (r *GroupRepo) GroupIDsOfAccount(ctx context.Context, accountID int64) ([]int64, error) {
-	rows, err := r.db.QueryContext(ctx,
+	return collectIDs(ctx, r.db, "账户所属组",
 		`SELECT m.group_id
 		   FROM group_members m
 		   JOIN groups g ON g.id = m.group_id
 		  WHERE m.account_id = ?
 		  ORDER BY m.group_id ASC`, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("store: 查账户所属组失败: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	out := []int64{}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: 读组 id 失败: %w", err)
-		}
-		out = append(out, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: 遍历组 id 失败: %w", err)
-	}
-	return out, nil
 }
 
 // ================================================================ M7 组写路径
@@ -317,22 +300,9 @@ func (r *GroupRepo) RemoveMember(ctx context.Context, groupID, accountID int64) 
 // ListMembers 列组成员的账户 id（升序）。管理面用（03-groups §7：
 // 成员列表只有管理员可见——可见性是 httpapi 的事，这里只给数据）。
 func (r *GroupRepo) ListMembers(ctx context.Context, groupID int64) ([]int64, error) {
-	rows, err := r.db.QueryContext(ctx,
+	return collectIDs(ctx, r.db, "组成员",
 		`SELECT account_id FROM group_members WHERE group_id = ? ORDER BY account_id ASC`,
 		groupID)
-	if err != nil {
-		return nil, fmt.Errorf("store: 列组成员失败: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := []int64{}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: 扫描成员行失败: %w", err)
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
 }
 
 // ================================================================ 组策略键值读写
@@ -472,22 +442,9 @@ func (r *GroupRepo) setGroupModelsInner(ctx context.Context, groupID int64, ids 
 // ListGroupModels 列组的抽象模型授权（升序）。合成侧（LoadPolicySnapshot）
 // 与 console 都用。
 func (r *GroupRepo) ListGroupModels(ctx context.Context, groupID int64) ([]int64, error) {
-	rows, err := r.db.QueryContext(ctx,
+	return collectIDs(ctx, r.db, "组模型授权",
 		`SELECT abstract_model_id FROM group_models WHERE group_id = ? ORDER BY abstract_model_id ASC`,
 		groupID)
-	if err != nil {
-		return nil, fmt.Errorf("store: 列组模型授权失败: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := []int64{}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: 扫描组模型行失败: %w", err)
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
 }
 
 // ================================================================ 快照装载
@@ -797,21 +754,8 @@ func (r *GroupRepo) ListAccountGroups(ctx context.Context, accountID int64) ([]i
 
 // groupsOfAccountLocked 是两处共用的查询（名字沿用调用方语境，无锁语义）。
 func (r *GroupRepo) groupsOfAccountLocked(ctx context.Context, accountID int64) ([]int64, error) {
-	rows, err := r.db.QueryContext(ctx,
+	return collectIDs(ctx, r.db, "账户所属组",
 		`SELECT group_id FROM group_members WHERE account_id = ? ORDER BY group_id`, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("store: 查账户所属组失败: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := []int64{}
-	for rows.Next() {
-		var gid int64
-		if err := rows.Scan(&gid); err != nil {
-			return nil, fmt.Errorf("store: 扫描组 id 失败: %w", err)
-		}
-		out = append(out, gid)
-	}
-	return out, rows.Err()
 }
 
 // SetGroupPolicyKeys 整组替换键值策略（管理面 PUT policies 的落点）。

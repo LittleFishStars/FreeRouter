@@ -66,7 +66,8 @@ export const PATHS = {
   recoveryCode: '/api/contributions/recovery-code',
   // 资产加载器
   healthz: '/healthz',
-  readyz: '/readyz'
+  readyz: '/readyz',
+  version: '/api/version'
 } as const
 
 /** 权限类（PLAN 2.2：admin/tenant/contributor 的布尔组合，不是角色）。 */
@@ -245,6 +246,14 @@ export function getEnvelope<T>(path: string): Promise<T> {
 /** POST 写：返回 {data, audit_id}。 */
 export function postWrite<T>(path: string, body?: unknown): Promise<WriteEnvelope<T>> {
   return request<WriteEnvelope<T>>(path, { method: 'POST', body })
+}
+// postPlain 是不拆信封的 POST：控制台面的少数端点（改密、吊销会话、
+// OAuth 取消）返回裸 {ok:...} 而不是 {data,audit_id}（04-tenant.md §2.2）。
+// 用 postWrite 声明这些端点的返回类型会让类型说谎——运行时拿到的就是
+// 裸对象，data 恒为 undefined。两种信封各自有函数，调用点一眼能看出
+// 这个端点是哪一种。
+export function postPlain<T>(path: string, body?: unknown): Promise<T> {
+  return request<T>(path, { method: 'POST', body })
 }
 
 /** PATCH 局部更新。 */

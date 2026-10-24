@@ -449,6 +449,11 @@ GET /api/admin/abstract-models/am_fast/chain
 | `POST` | `/api/admin/verifications/{id}/override` | 人工改判（**必填理由**） | 🔒（二次确认） |
 | `POST` | `/api/admin/verifications/{id}/recheck` | 加入 / 移出复检队列 | ➖ |
 
+`recheck` 的请求体是 `{"recheck": true|false}`——键名是 **`recheck`**，不是 `enabled`。
+`enabled` 是响应里 `recheck.enabled` 的回读字段，两者看着像同一个东西但不是同一个键：
+发 `{"enabled": true}` 会被 JSON 静默忽略（Go 的 struct 解码不报未知字段），
+结果就是“点一次按钮，库里仍然写 false”。响应回整个鉴定条目，回读值看 `recheck.enabled`。
+
 ### 10.1 关键字段
 
 ```json

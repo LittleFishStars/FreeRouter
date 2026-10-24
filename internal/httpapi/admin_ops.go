@@ -96,16 +96,6 @@ func (s *Server) mountAdminOps(r chi.Router, deps *AdminDeps) {
 	r.Patch("/inbox/{id}", s.handleAdminInboxPatch(deps))
 }
 
-// idParamValid 通用路径 id 校验：前缀对、可解码。
-func idParamValid(w http.ResponseWriter, r *http.Request, param, prefix, want string) (string, bool) {
-	raw := chi.URLParam(r, param)
-	if _, err := idcode.Decode(prefix, raw); err != nil {
-		adminWriteParamErr(w, param, want+" id 形状非法（期望 "+prefix+"_<数字>）")
-		return "", false
-	}
-	return raw, true
-}
-
 func adminUpstreamID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return idParamValid(w, r, "id", idcode.Upstream, "上游")
 }
