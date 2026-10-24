@@ -355,9 +355,11 @@ func (c contributionStore) UpdateUpstream(ctx context.Context, id int64, name, b
 // NewContributionService 装配贡献服务：真 store（AES-GCM 密文）+ 默认 HTTP 探测
 // （GET {base}/models，零 token 成本，见 contribution.go 的 HTTPProbe 说明）。
 //
-// 探测为什么不用 sidecar 的 models.list：那条路只对 apiKey 型 provider
-// （modelscope/opencode）开放，而贡献物的 base_url 是任意 OpenAI 兼容端点——
-// 用 provider adapter 反而会把「任意端点」限制成「已知 17 家」。
+// 探测为什么不用 sidecar 的 models.list：那条路要 provider adapter，而现在的
+// adapter 只剩 OAuth 型（依赖 DSH 账号池，本侧没有账号池替身）；贡献物的
+// base_url 又可以是任意 OpenAI 兼容端点——用 adapter 反而会把「任意端点」
+// 限制成「已知的那几家」。2026-10-24 移除 modelscope/opencode 后，这条边界
+// 比原来更明显：apiKey 型 adapter 已经一个都不剩。
 func (a *App) newContributionService() *upstream.ContributionService {
 	return upstream.NewContributionService(contributionStore{repos: a.store.Repos()}, nil, upstream.ContributionOptions{})
 }

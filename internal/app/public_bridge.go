@@ -174,8 +174,8 @@ func (b *contributionBridge) CredentialOf(ctx context.Context, owner, id int64) 
 	}, nil
 }
 
-func (b *contributionBridge) ContributionUsage(ctx context.Context, owner int64) (int64, int64, int64, error) {
-	return b.st.Repos().Usage.ContributionUsageByOwner(ctx, owner)
+func (b *contributionBridge) ContributionUsage(ctx context.Context, owner, since int64) (int64, int64, int64, error) {
+	return b.st.Repos().Usage.ContributionUsageByOwner(ctx, owner, since)
 }
 
 // Submit 把 httpapi 形状翻成 upstream.Submission 并执行完整链路。

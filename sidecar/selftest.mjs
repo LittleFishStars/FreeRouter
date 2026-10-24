@@ -10,7 +10,8 @@
 //   3. **只读不写**：调用前后文件内容与 mtime 不变；
 //   4. 敏感遮蔽（Bearer / query code / JSON token / sk- 前缀 / 截断 / 幂等）；
 //   5. hub 装载（hub 在时）：adapter 能力表与「类名漂移」检测；
-//   6. infer.stream（hub 在时）：以打桩 fetch 验证 Authorization 头与 SSE 还原。
+//   6. 无可用 adapter 时（hub 在时）：infer.stream / listModels 给结构化
+//      E_NOT_IMPLEMENTED 而不是发一个注定失败的请求。
 //
 // 为什么不放进 Go 的 TestContract：这些断言测的是 Node 进程内部的实现细节
 // （YAML 标量、钩子、SSE 拼装），从 Go 侧只能间接观察。Go 侧的契约测试负责
@@ -167,10 +168,10 @@ await test('hub 装载：能力表与类名漂移检测', async () => {
   if (!st.hubOk) throw Object.assign(new Error('hub 不在本机（跳过 hub 用例）'), { skip: true });
   hubOK = true;
   assert.ok(st.depsOk, 'B 层依赖应可解析');
-  assert.ok(st.adapters.length >= 17, 'adapter 能力表应覆盖 17 家以上');
-  const ms = st.adapters.find((a) => a.provider === 'modelscope');
-  assert.equal(ms.ok, true);
-  assert.equal(ms.shape, 'api_key');
+  assert.ok(st.adapters.length >= 14, 'adapter 能力表应覆盖 14 家以上（全部 OAuth 型）');
+  // 不应再有 api_key 型条目：可独立驱动的那种 adapter 已随 modelscope / opencode 下线，
+  // 「粘贴 Key」形态改由主进程的内置目录 + 直连出站承担。
+  assert.equal(st.adapters.some((a) => a.shape === 'api_key'), false);
   // 类名漂移必须被如实报出，而不是静默 ok
   for (const a of st.adapters) {
     if (!a.ok) assert.ok(a.detail, `${a.provider} 失败时应带 detail`);
@@ -180,39 +181,21 @@ await test('hub 装载：能力表与类名漂移检测', async () => {
 await test('OAuth 型 provider 如实拒绝（不伪装成可用）', async () => {
   if (!hubOK) throw Object.assign(new Error('hub 不在本机'), { skip: true });
   await assert.rejects(() => hub.adapterFor('trae', 'x'), (e) => e.code === 'E_NOT_IMPLEMENTED');
-  await assert.rejects(() => hub.adapterFor('modelscope', ''), (e) => e.code === 'E_BAD_REQUEST');
+  // 不在表里 = 没有 adapter：返回 null 而不是抛错，由上层决定怎么报（不在这层替它编原因）。
+  assert.equal(await hub.adapterFor('no-such-provider', 'x'), null);
 });
 
-await test('infer.stream：带 Authorization 打到官方端点并还原 SSE', async () => {
+await test('infer.stream / listModels：无可用 adapter 时如实拒绝', async () => {
   if (!hubOK) throw Object.assign(new Error('hub 不在本机'), { skip: true });
-  const seen = [];
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = async (url, init = {}) => {
-    seen.push({ url: String(url), headers: init.headers || {} });
-    const sse = [
-      'data: {"id":"c1","choices":[{"index":0,"delta":{"content":"你好"}}]}',
-      'data: {"id":"c1","choices":[{"index":0,"delta":{"content":"世界"},"finish_reason":"stop"}]}',
-      'data: [DONE]',
-      '',
-    ].join('\n\n');
-    return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  };
-  try {
-    const r = await hub.streamInfer({
-      provider: 'modelscope', model: 'deepseek-ai/DeepSeek-V4.1-Flash',
-      apiKey: 'sk-selftest-fake-key', // 打桩 fetch：不出网
-      body: { messages: [{ role: 'user', content: 'hi' }] },
-    });
-    assert.equal(seen.length, 1);
-    assert.match(seen[0].url, /^https:\/\/api-inference\.modelscope\.cn\/v1\/chat\/completions$/);
-    const auth = JSON.stringify(seen[0].headers).toLowerCase();
-    assert.ok(auth.includes('authorization'), '应带 Authorization 头');
-    assert.ok(r.sse.includes('data: [DONE]'), '应以 [DONE] 收尾');
-    assert.ok(r.sse.includes('你好'), '应包含模型输出');
-    assert.equal(r.sse.includes('sk-selftest-fake-key'), false, '应答不得回显 key');
-  } finally {
-    globalThis.fetch = realFetch;
-  }
+  // 当前 sidecar 没有任何 apiKey 型 adapter（仅有的两家已下线），OAuth 型又要 DSH
+  // 账号池。两个入口都必须给结构化 E_NOT_IMPLEMENTED——这才是「缺能力不崩」的活体
+  // 断言：既不发一个注定 401 的请求（把配置问题伪装成上游故障），也不假装成功。
+  await assert.rejects(
+    () => hub.streamInfer({ provider: 'trae', model: 'm', body: { messages: [{ role: 'user', content: 'hi' }] } }),
+    (e) => e.code === 'E_NOT_IMPLEMENTED');
+  await assert.rejects(
+    () => hub.listModels({ provider: 'trae', apiKey: 'sk-selftest-fake-key' }),
+    (e) => e.code === 'E_NOT_IMPLEMENTED');
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });

@@ -19,11 +19,9 @@ import type { UsageLog } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
 import {
   AsyncView,
-  Badge,
   Banner,
   DataTable,
   EmptyState,
-  KeyValues,
   Section,
   StatusBadge
 } from '../../components/ui'
@@ -178,8 +176,11 @@ export function UsagePage({ def }: PageProps) {
   )
 }
 
-// ── 调用日志 ───────────────────────────────────────────────────────────
+// ── 调用日志 ─────────────────────────────────────────────────────────────
 
+// LOGS_PAGE_SIZE 是调用日志的每页行数（后端 limit 上限 200）。
+// 这里与后端默认值（50）一致：不改 limit 也能翻页，改了也不会被截断。
+const LOGS_PAGE_SIZE = 50
 export function LogsPage({ def }: PageProps) {
   const keys = useApi(() => listKeys({ limit: 100 }), [])
   const models = useApi(() => listAvailableModels(), [])
@@ -187,17 +188,30 @@ export function LogsPage({ def }: PageProps) {
   const [model, setModel] = useState('')
   const [status, setStatus] = useState<'' | 'ok' | 'failed'>('')
   const [errorCode, setErrorCode] = useState('')
+  const [offset, setOffset] = useState(0)
+  // 分页只用 offset（后端 GET /api/usage/logs 只认 limit/offset，没有 cursor）。
+  // 为什么先拼成一个对象再传：endpoints.ts 里的 UsageLogQuery 还没改成 offset，
+  // 以字面量直接传会报“多余属性”；先绑成变量走结构化赋值，前端改完也不用回头改这里。
+  const query = {
+    key_id: keyId || undefined,
+    model: model || undefined,
+    status: status || undefined,
+    error_code: errorCode || undefined,
+    limit: LOGS_PAGE_SIZE,
+    offset
+  }
   const q = useApi(
-    () =>
-      listUsageLogs({
-        key_id: keyId || undefined,
-        model: model || undefined,
-        status: status || undefined,
-        error_code: errorCode || undefined,
-        limit: 100
-      }),
-    [keyId, model, status, errorCode]
+    () => listUsageLogs(query),
+    // offset 必须在依赖里：否则“下一页”只改了页码不发请求。
+    // error_code 同理——它是后端已支持的筛选（修了 P3 后端忽略它的那条）。
+    [keyId, model, status, errorCode, offset]
   )
+  // 换筛选条件必须回到第 1 页：停在第 3 页换筛选会得到空页，看起来像“没结果”，
+  // 实际只是越界。
+  function filterChanged(apply: () => void) {
+    apply()
+    setOffset(0)
+  }
 
   const firstModel = models.data?.data[0]?.name ?? '<抽象模型名>'
   const curl = `curl https://<你的站点>/v1/chat/completions \\
@@ -231,7 +245,13 @@ export function LogsPage({ def }: PageProps) {
   return (
     <PageFrame
       def={def}
-      actions={<button type="button" className="btn-ghost" onClick={exportCsv} disabled={(q.data?.data.length ?? 0) === 0}>导出 CSV</button>}
+      actions={
+        // 只导当前页：导全量需要后端另开导出端点（不受 limit 限制），
+        // 在这里拼多次请求会让「筛选条件已变、导出还在跑」变成静默的错页。
+        <button type="button" className="btn-ghost" onClick={exportCsv} title="导出当前页" disabled={(q.data?.data.length ?? 0) === 0}>
+          导出 CSV
+        </button>
+      }
     >
       <Banner tone="muted">
         日志只出现抽象模型名；真实落点与贡献者归因仅管理端可见。租户端不提供请求正文。
@@ -240,7 +260,7 @@ export function LogsPage({ def }: PageProps) {
       <div className="toolbar">
         <label className="toolbar-field">
           Key
-          <select value={keyId} onChange={(e) => setKeyId(e.target.value)}>
+          <select value={keyId} onChange={(e) => filterChanged(() => setKeyId(e.target.value))}>
             <option value="">全部</option>
             {keys.data?.data.map((k) => (
               <option key={k.id} value={k.id}>{k.name}（{k.prefix}）</option>
@@ -249,7 +269,7 @@ export function LogsPage({ def }: PageProps) {
         </label>
         <label className="toolbar-field">
           抽象模型
-          <select value={model} onChange={(e) => setModel(e.target.value)}>
+          <select value={model} onChange={(e) => filterChanged(() => setModel(e.target.value))}>
             <option value="">全部</option>
             {models.data?.data.map((m) => (
               <option key={m.name} value={m.name}>{m.name}</option>
@@ -258,7 +278,7 @@ export function LogsPage({ def }: PageProps) {
         </label>
         <label className="toolbar-field">
           状态
-          <select value={status} onChange={(e) => setStatus(e.target.value as '' | 'ok' | 'failed')}>
+          <select value={status} onChange={(e) => filterChanged(() => setStatus(e.target.value as '' | 'ok' | 'failed'))}>
             <option value="">全部</option>
             <option value="ok">成功</option>
             <option value="failed">失败</option>
@@ -266,7 +286,7 @@ export function LogsPage({ def }: PageProps) {
         </label>
         <label className="toolbar-field">
           错误码
-          <input value={errorCode} onChange={(e) => setErrorCode(e.target.value)} placeholder="no_candidate" />
+          <input value={errorCode} onChange={(e) => filterChanged(() => setErrorCode(e.target.value))} placeholder="no_candidate" />
         </label>
         <button type="button" className="btn-ghost" onClick={q.reload}>刷新</button>
       </div>
@@ -308,6 +328,32 @@ export function LogsPage({ def }: PageProps) {
           </DataTable>
         )}
       </AsyncView>
+
+      {/* 分页：后端只认 limit/offset（信封里的 total 是总行数，不是本页行数）。
+          只在本页不是全部时渲染，免得只有两三页时也冒出一排按钮。 */}
+      {(q.data?.total ?? 0) > LOGS_PAGE_SIZE && (
+        <div className="toolbar">
+          <span className="muted">
+            第 {offset + 1}–{offset + (q.data?.data.length ?? 0)} 条，共 {fmtNum(q.data?.total ?? 0)} 条
+          </span>
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={offset === 0}
+            onClick={() => setOffset(Math.max(0, offset - LOGS_PAGE_SIZE))}
+          >
+            上一页
+          </button>
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={offset + LOGS_PAGE_SIZE >= (q.data?.total ?? 0)}
+            onClick={() => setOffset(offset + LOGS_PAGE_SIZE)}
+          >
+            下一页
+          </button>
+        </div>
+      )}
 
       <Section title="错误码怎么用">
         <ul className="plain-list">
@@ -386,23 +432,10 @@ export function ModelsPage({ def }: PageProps) {
                   <StatusBadge status={m.status} label={statusLabel(m.status)} />
                 </header>
                 <p className="muted">{m.display_name}</p>
-                <KeyValues
-                  items={[
-                    { label: '上下文窗口', value: m.capabilities.context_window ? fmtNum(m.capabilities.context_window) : '—' },
-                    { label: '最大输出', value: m.capabilities.max_output ? fmtNum(m.capabilities.max_output) : '—' },
-                    {
-                      label: '能力',
-                      value: (
-                        <>
-                          {m.capabilities.vision && <Badge tone="muted">视觉</Badge>}
-                          {m.capabilities.tool_calling && <Badge tone="muted">工具调用</Badge>}
-                          {m.capabilities.json_mode && <Badge tone="muted">JSON mode</Badge>}
-                          {!m.capabilities.vision && !m.capabilities.tool_calling && !m.capabilities.json_mode && '—'}
-                        </>
-                      )
-                    }
-                  ]}
-                />
+                {/* 这里曾经渲染上下文窗口/最大输出/能力三个键值（取自
+                    capabilities），但后端该字段恒为空对象（无存储列，也没有
+                    对租户可信的来源），界面上只会出现一排“—”。后端已删该
+                    字段：无值比假空值诚实，真有能力数据时再加回来。 */}
                 {m.status === 'deprecated' && (
                   <Banner tone="warn">
                     建议改用 {m.replacement ?? '替代模型'}。弃用不是关闭，请求仍然可用。

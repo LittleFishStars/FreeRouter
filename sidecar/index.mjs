@@ -19,8 +19,10 @@
 // 因此本 sidecar 的能力分级变成：
 //   * health / providers.list / login 会话簿记：不依赖 hub，始终可用；
 //   * credentials.resolve/describe：读 $DSH_HOME/.credentials.yaml（**只读**，见 credentials.mjs）；
-//   * models.list / infer.stream：apiKey 型 provider（modelscope/opencode）真跑通；
-//     OAuth 型需要 DSH 账号池，返回 E_NOT_IMPLEMENTED 并说明原因；
+//   * models.list / infer.stream：当前**没有可独立驱动的 apiKey 型 adapter**
+//     （modelscope / opencode 已按契约 v2 §7 移除），OAuth 型需要 DSH 账号池，
+//     两条路都返回结构化 E_NOT_IMPLEMENTED；apiKey 那种「粘贴 Key」的贡献形态
+//     由主进程的内置目录 + 直连出站承担，不再经过 sidecar。
 //   * credits.query：余额端点在各自 credits 模块里，尚未接（E_NOT_IMPLEMENTED）。
 // 任何路径的失败都归一成结构化错误，进程不崩（5.1「挂横幅继续」依赖这点）。
 
@@ -72,10 +74,6 @@ const PROVIDERS = [
   { provider: 'loomy',        displayName: 'Loomy（微信扫码）',  loginKind: 'qr_scan',          loginImplemented: true },
   { provider: 'minimax',      displayName: 'MiniMax',          loginKind: 'device_code',      loginImplemented: true },
   { provider: 'minimaxintl',  displayName: 'MiniMax 国际版',     loginKind: 'device_code',      loginImplemented: true },
-  // modelscope 只有刷新逻辑、无交互登录（§8 待定首次凭据来源）；opencode 是粘贴 API Key。
-  // 两者没有「可发起的登录流」，login.start 一律 E_NOT_IMPLEMENTED（6.1：隐藏入口）。
-  { provider: 'modelscope',   displayName: 'ModelScope',       loginKind: 'plain_credential', loginImplemented: false },
-  { provider: 'opencode',     displayName: 'OpenCode',         loginKind: 'plain_credential', loginImplemented: false },
   { provider: 'qoder',        displayName: 'Qoder',            loginKind: 'browser_callback', loginImplemented: true },
   { provider: 'qodercn',      displayName: 'Qoder 国内版',      loginKind: 'browser_callback', loginImplemented: true },
   { provider: 'raccoon',      displayName: 'Raccoon（扫码/短信）', loginKind: 'qr_scan',        loginImplemented: true },

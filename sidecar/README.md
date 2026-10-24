@@ -31,11 +31,11 @@
 |---|---|---|
 | `import 'dsh-providers-hub'`（`.` 导出 → `lib/index.js`） | **可 import，但不可用** | 导出键 `{Config, apply, inject, makeReadImage, makeReadImageRequest, name}`——是一个 cordis 插件。`apply(ctx)` 需要完整 Cordis `Context`（credentials / llm / settings / store 都在 ctx 上），在 DSH 之外没有这个东西 |
 | `import 'dsh-providers-hub/client'`（`./client` → `lib/client/jet-hub.js`） | **失败** | `ReferenceError: window is not defined`——文件首行是 `window.__ModuleLoader__.load({...})`，这是浏览器模块加载格式 |
-| `import '.../lib/xxx-adapter.js'`（深路径） | **首次失败 → 加解析钩子后成功** | 裸 import 报 `ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/dsh-llm' imported from .../lib/modelscope-adapter.js`。**这不是 hub 的问题，是 B 层依赖不在 profile 里**：305 个 `@deepseek-ai/*` 包全在 DSH 安装目录 `/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/`，而 `hub/node_modules/@deepseek-ai` 是个**空目录** |
+| `import '.../lib/xxx-adapter.js'`（深路径） | **首次失败 → 加解析钩子后成功** | 裸 import 报 `ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/dsh-llm' imported from .../lib/modelscope-adapter.js`（该 adapter 已随 provider 下线，原始错误文本保留不动）。**这不是 hub 的问题，是 B 层依赖不在 profile 里**：305 个 `@deepseek-ai/*` 包全在 DSH 安装目录 `/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/`，而 `hub/node_modules/@deepseek-ai` 是个**空目录** |
 | `NODE_PATH=<DSH 依赖根>` + 裸 import | **无效** | ESM 不读 `NODE_PATH`（该变量只影响 CJS 的 legacy 查找），报错与上一行完全相同 |
 | 在 `hub/node_modules/@deepseek-ai/` 里建软链 | **可行但违反纪律** | hub 目录是**只读参考**（PRD 要求），且升级 hub 会把链接冲掉 |
 | `createRequire(hub/package.json).resolve('@deepseek-ai/dsh-credentials')` | **假阴性** | 即使依赖就在依赖根里也报 `Cannot find module`——`createRequire` 从 hub 的 `package.json` 起解析时**不受** `module.registerHooks` 影响（只有 ESM import 走钩子）。所以 health 的逐包判定改成「依赖根里有没有这个包目录」，不再用这个 API |
-| 自建解析钩子 + shim 目录（**采用**） | **成功** | `module.registerHooks({resolve})` 把 `@deepseek-ai/*` 的解析起点改到 `/tmp/freerouter-sidecar-<uid>/deps-shim/__entry.mjs`（同级 `node_modules/@deepseek-ai/<pkg>` 是指向 DSH 依赖根的符号链接），Node 随后走**原生 exports 解析**。实测 18 个 adapter 模块全部 import 成功 |
+| 自建解析钩子 + shim 目录（**采用**） | **成功** | `module.registerHooks({resolve})` 把 `@deepseek-ai/*` 的解析起点改到 `/tmp/freerouter-sidecar-<uid>/deps-shim/__entry.mjs`（同级 `node_modules/@deepseek-ai/<pkg>` 是指向 DSH 依赖根的符号链接），Node 随后走**原生 exports 解析**。实测 18 个 adapter 模块全部 import 成功（其中 2 个已随 modelscope / opencode 下线，现表内 16 个） |
 
 **为什么最终选「深路径 adapter」而不是「加载 cordis 插件」**：
 
@@ -53,9 +53,13 @@
 |---|---|---|
 | `health` / `providers.list` / `login.*` 会话簿记 / 红线守卫 | **可用** | 不依赖 hub，纯内存/session |
 | `credentials.resolve` / `credentials.describe` | **可用（只读）** | 读 `$DSH_HOME/.credentials.yaml` 的 `refs:` 段；22 条真实引用解析通过，且调用后文件 mtime/内容不变 |
-| `models.list`（modelscope / opencode） | **可用** | adapter 的 `slots()` / `identitySlots()` 由我们注入，纯 Node 可驱动 |
-| `infer.stream`（modelscope / opencode） | **可用** | 打桩 fetch 实测：`POST https://api-inference.modelscope.cn/v1/chat/completions` 带 `Authorization`，SSE 被解析成 `StreamChunk` 再还原成 OpenAI SSE 交还 Go |
-| `models.list` / `infer.stream`（13 家 OAuth 型） | **E_NOT_IMPLEMENTED（如实拒绝）** | 这些 adapter 从 `options.accountPool` 取 `credential.access_token`，账号池是 DSH 的运行态；sidecar 没有池替身，硬跑会把「没账号」伪装成上游故障 |
+| `models.list` / `infer.stream`（全部 15 家 provider） | **E_NOT_IMPLEMENTED（如实拒绝）** | 这些 adapter 从 `options.accountPool` 取 `credential.access_token`，账号池是 DSH 的运行态；sidecar 没有池替身，硬跑会把「没账号」伪装成上游故障 |
+
+> **2026-10-24 变更**：原先唯一「可用」的那一类是 modelscope / opencode 两个「粘贴 API Key」
+> 的 adapter（`slots()` / `identitySlots()` 由我们注入，纯 Node 可驱动）。两家已按
+> `tmp/CONTRACT-contribution-v2.md` §7 从 sidecar 与注册表里删除——那种凭据形态改由主进程的
+> **内置 API 目录 + 直连出站**承担（少一层进程，也少一处明文 key 落点）。因此 sidecar 现在
+> 不再提供任何「粘贴 Key 就能跑」的能力，`models.list` / `infer.stream` 两条路都如实报码。
 | `credits.query` | **E_NOT_IMPLEMENTED** | 余额端点（如 `codearts-credits.js`）要的是账号对象，同属「需要 DSH 运行态」那一类 |
 | `login.start` 的真实登录流 | **E_NOT_IMPLEMENTED**（保持原状） | 登录流是 cordis 插件 `apply(ctx)` 里注册的，走的是第 1.1 节被否掉的那条路；当前只提供会话簿记与 `expiresAt` 自清理 |
 
@@ -82,7 +86,7 @@ $ node -e 'import("file:///home/ylxc/.local/share/dsh/profiles/web/node_modules/
 window is not defined
 
 # 3) 降级路径：hub 不在位时仍然「活着但会说 error」
-$ printf '%s\n' '{"id":1,"method":"health"}' '{"id":2,"method":"models.list","params":{"provider":"modelscope","apiKey":"sk-x"}}' \
+$ printf '%s\n' '{"id":1,"method":"health"}' '{"id":2,"method":"models.list","params":{"provider":"trae","apiKey":"sk-x"}}' \
   | FR_HUB_PATH=/nonexistent/hub node sidecar/index.mjs 2>/dev/null
 {"id":1,"ok":true,"result":{...,"deps":[{"name":"dsh-providers-hub","ok":false,...}],"hubAdapters":[]}}
 {"id":2,"ok":false,"error":{"code":"E_DEPENDENCY_MISSING","message":"models.list 需要可装载的 dsh-providers-hub adapter（hub_path=/nonexistent/hub）…"}}
@@ -113,7 +117,7 @@ $ printf '%s\n' \
     '{"id":5,"method":"shutdown"}' \
   | node sidecar/index.mjs 2>/tmp/sidecar.log
 
-{"id":1,"ok":true,"result":{"version":"0.1.0","providers":[…17 家…],"deps":[{"name":"dsh-providers-hub","ok":true,"detail":"依赖根=/usr/lib/node_modules/@deepseek-ai/dsh/node_modules"}],"hubAdapters":[…18 条…],"stateReadonly":true,"nodeVersion":"v26.5.0"}}
+{"id":1,"ok":true,"result":{"version":"0.1.0","providers":[…15 家…],"deps":[{"name":"dsh-providers-hub","ok":true,"detail":"依赖根=/usr/lib/node_modules/@deepseek-ai/dsh/node_modules"}],"hubAdapters":[…16 条…],"stateReadonly":true,"nodeVersion":"v26.5.0"}}
 {"id":2,"ok":true,"result":[{"provider":"accio","displayName":"Accio","loginKind":"browser_callback","loginImplemented":true,"hasAccount":true,"adapterAvailable":true,"adapterShape":"oauth"}, … ]}
 {"id":3,"ok":true,"result":{"value":"<真值>","source":"dsh-credentials-yaml"}}
 {"id":4,"ok":false,"error":{"code":"E_CREDENTIAL_READONLY","message":"该方法违反红线，永远不存在：credentials.set","retryable":false}}

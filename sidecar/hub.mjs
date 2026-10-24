@@ -6,11 +6,9 @@
 // |---|---|---|
 // | `import 'dsh-providers-hub'`（`.` 导出） | **装载成功但不可用** | 导出 `{Config, apply, inject, makeReadImage, ...}`，是一个 cordis 插件；`apply(ctx)` 要一个完整的 Cordis Context（credentials/llm/settings/store 全在 ctx 上），在 DSH 之外没有 |
 // | `import '.../client'` | **失败** | `ReferenceError: window is not defined`（`lib/client/jet-hub.js` 是 `window.__ModuleLoader__.load({...})` 浏览器格式） |
-// | `import '.../lib/<provider>-adapter.js'` | **成功**（配合 deps.mjs 的解析钩子） | 例：`ModelscopeAdapter` 可实例化，注入假 key 后 `stream()` 真发出 `POST https://api-inference.modelscope.cn/v1/chat/completions` 并解析 SSE 成 StreamChunk 事件 |
+// | `import '.../lib/<provider>-adapter.js'` | **成功**（配合 deps.mjs 的解析钩子） | 例：`ModelscopeAdapter` 可实例化，注入假 key 后 `stream()` 真发出 `POST https://api-inference.modelscope.cn/v1/chat/completions` 并解析 SSE 成 StreamChunk 事件（**该 adapter 已随 modelscope 于 2026-10-24 下线**，这条记录保留为「深路径 import 可行」的实测证据） |
 //
 // 所以本 sidecar 选**深路径 adapter**，不加载 cordis 插件。代价与边界见下：
-//   - apiKey 型 provider（modelscope / opencode）adapter 的构造选项全是调用方注入
-//     （`slots()` / `identitySlots()`），因此可以完全在 DSH 之外驱动；
 //   - OAuth 型 provider 的 adapter 从 `options.accountPool` 里取 `credential.access_token`，
 //     账号池是 DSH 的运行态（凭据在 DSH 的 .credentials.yaml 里，池语义在 DSH 内存里）。
 //     我们**能装载**它们的模块，但**不能**在没有账号池替身的情况下发起调用 —— 这类一律
@@ -42,25 +40,12 @@ export function hubPath() {
 //   slotsOf    : 把「一个明文 key」翻译成该 adapter 期望的槽位数组
 //   shape      : 'api_key' = 可独立驱动；'oauth' = 需要 DSH 账号池，仅报告能力
 //
-// 为什么 modelscope 用 slots、opencode 用 identitySlots：两者在 hub 里是两套骨架——
-// modelscope 的 `slots()` 返回 `{id, apiKey}`；opencode 的 `identitySlots()` 还要求
-// `kind: 'account' | 'anonymous'`（决定付费目录可见性与指纹派生）。照抄对方的形状会
-// 让「账号槽」被当成匿名槽，直接表现是「key 有效却看不到付费模型」。
+// 为什么现在没有 shape: 'api_key' 的条目：modelscope / opencode 两家已按契约 v2 §7
+// 从本表与 sidecar/providers/ 一起删除，而**其余 OAuth 型 provider 依赖 DSH 账号池**，
+// 在 sidecar 里没有替身。所以本侧不再提供任何「粘贴一把 key 就能驱动」的 adapter——
+// 那种形态由主进程的内置目录 + 直连出站承担（少一层进程，也少一处明文 key 落点）。
+// 表里仍保留 shape 字段：若将来重新登记 apiKey 型 adapter，判定分支已在 adapterFor 里。
 const ADAPTERS = {
-  modelscope: {
-    module: 'lib/modelscope-adapter.js',
-    cls: 'ModelscopeAdapter',
-    slotOption: 'slots',
-    shape: 'api_key',
-    slotsOf: (apiKey) => [{ id: 'fr-slot', apiKey }],
-  },
-  opencode: {
-    module: 'lib/opencode-adapter.js',
-    cls: 'OpencodeAdapter',
-    slotOption: 'identitySlots',
-    shape: 'api_key',
-    slotsOf: (apiKey) => [{ id: 'fr-slot', kind: 'account', apiKey, enabled: true }],
-  },
   // 以下是「模块可装载、调用需 DSH 账号池」的 provider：登记它们是为了让
   // health/deps 能如实报告「17 家里哪几家 adapter 模块在位」，而不是假装全部不可用。
   cline: { module: 'lib/cline-adapter.js', cls: 'ClineAdapter', shape: 'oauth' },
@@ -90,7 +75,8 @@ const ADAPTERS = {
 function baseOptions(apiKey, slotOption, slotsOf) {
   const slots = slotsOf(apiKey);
   return {
-    // 槽位：只有 apiKey 型 adapter 会用到
+    // 槽位：只有 apiKey 型 adapter 会用到（当前表里没有这类条目，保留机制因为它
+    // 是把「一把明文 key」翻译成 DSH 槽位形状的唯一入口）
     [slotOption]: async () => slots,
     // 目录拉取：adapter 自己在远端失败时会回退静态表，这里给真 fetch
     fetchRemoteCatalog: undefined,
@@ -182,7 +168,9 @@ export async function probe() {
     adapters: [],
   };
   try {
-    await loadModule('lib/modelscope-adapter.js');
+    // 用任意一个仍在表里的模块探「hub 根 + 依赖钩子是否可用」：modelscope 曾充当这个
+    // 探针，它下线后换 cline（同属「模块可装载」的一类，不涉及账号池实例化）。
+    await loadModule('lib/cline-adapter.js');
     out.hubOk = true;
   } catch (e) {
     out.depsDetail = out.depsDetail || e.message;

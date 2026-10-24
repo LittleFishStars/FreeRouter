@@ -154,7 +154,7 @@ func TestContractContributionSubmitFlow(t *testing.T) {
 	}}, ContributionOptions{})
 
 	res, err := svc.Submit(ctx, Submission{
-		OwnerAccountID: 7, Provider: "modelscope", BaseURL: "https://api.example.com/v1",
+		OwnerAccountID: 7, Provider: "demo-provider", BaseURL: "https://api.example.com/v1",
 		APIKey: "sk-secret-value-123", ClaimedModel: "m1", Label: "我的 key",
 	})
 	if err != nil {
@@ -185,7 +185,7 @@ func TestContractContributionSubmitFlow(t *testing.T) {
 	// 幂等：同账户同 key 再提交一次 → 复用同一行，不新建。
 	before := len(fs.credentials)
 	res2, err := svc.Submit(ctx, Submission{
-		OwnerAccountID: 7, Provider: "modelscope", BaseURL: "https://api.example.com/v1",
+		OwnerAccountID: 7, Provider: "demo-provider", BaseURL: "https://api.example.com/v1",
 		APIKey: "sk-secret-value-123", ClaimedModel: "m1",
 	})
 	if err != nil {
@@ -506,7 +506,7 @@ func TestContractRedactionSingleSource(t *testing.T) {
 		"upstream_error code=no_candidate",
 		"code=E_DEPENDENCY_MISSING",
 		"password=hunter2hunter2",
-		"普通文本：provider=modelscope 装载成功",
+		"普通文本：provider=demo-provider 装载成功",
 	}
 	for _, in := range corpus {
 		if got, want := redactText(in), dshprovider.RedactLine(in); got != want {

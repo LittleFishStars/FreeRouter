@@ -1,0 +1,1455 @@
+{
+ "_source": "tingly-box internal/catalog/providers.json（2026-10-24 提取；只取事实字段：端点与模型 id）",
+ "_note": "protocol 一律 openai —— 这里只收 base_url_openai 存在的条目；只有 anthropic 端点的（anthropic-com）不进目录",
+ "count": 52,
+ "providers": [
+  {
+   "id": "baichuan-com",
+   "name": "Baichuan AI (CN)",
+   "base_url": "https://api.baichuan-ai.com/v1",
+   "protocol": "openai",
+   "vendor_family": "baichuan",
+   "region": "cn",
+   "website": "https://platform.baichuan-ai.com",
+   "api_doc": "https://platform.baichuan-ai.com/docs/api",
+   "models": []
+  },
+  {
+   "id": "baidubce-com",
+   "name": "Baidu Qianfan (CN)",
+   "base_url": "https://qianfan.baidubce.com/v2",
+   "protocol": "openai",
+   "vendor_family": "baidu",
+   "region": "cn",
+   "website": "https://qianfan.cloud.baidu.com",
+   "api_doc": "https://cloud.baidu.com/doc/qianfan/s/Hmh4suq26",
+   "models": [
+    {
+     "id": "ernie-5.0-thinking-latest"
+    }
+   ]
+  },
+  {
+   "id": "baidubce-com-coding",
+   "name": "Baidu Qianfan Coding Plan (CN)",
+   "base_url": "https://qianfan.baidubce.com/v2/coding",
+   "protocol": "openai",
+   "vendor_family": "baidu",
+   "region": "cn",
+   "website": "https://qianfan.cloud.baidu.com",
+   "api_doc": "https://cloud.baidu.com/doc/qianfan/s/imlg0beiu",
+   "models": [
+    {
+     "id": "qianfan-code-latest"
+    },
+    {
+     "id": "ernie-4.5-turbo-20260402"
+    },
+    {
+     "id": "deepseek-v3.2"
+    },
+    {
+     "id": "deepseek-v4-flash"
+    },
+    {
+     "id": "deepseek-v4-pro"
+    },
+    {
+     "id": "glm-5"
+    },
+    {
+     "id": "glm-5.1"
+    },
+    {
+     "id": "kimi-k2.5"
+    },
+    {
+     "id": "minimax-m2.5"
+    },
+    {
+     "id": "glm-5.2"
+    }
+   ]
+  },
+  {
+   "id": "bigmodel-cn",
+   "name": "Bigmodel (CN)",
+   "base_url": "https://open.bigmodel.cn/api/paas/v4",
+   "protocol": "openai",
+   "vendor_family": "zai",
+   "region": "cn",
+   "website": "https://bigmodel.cn/",
+   "api_doc": "https://docs.bigmodel.cn/cn/api/introduction",
+   "models": [
+    {
+     "id": "glm-4.5"
+    },
+    {
+     "id": "glm-4.5-air"
+    },
+    {
+     "id": "glm-4.6"
+    },
+    {
+     "id": "glm-4.7"
+    },
+    {
+     "id": "glm-5.2"
+    },
+    {
+     "id": "glm-5.3"
+    },
+    {
+     "id": "glm-5.3-flash"
+    },
+    {
+     "id": "glm-5.3-flashx"
+    }
+   ]
+  },
+  {
+   "id": "bigmodel-cn-coding",
+   "name": "Bigmodel GLM Coding Plan (CN)",
+   "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+   "protocol": "openai",
+   "vendor_family": "zai",
+   "region": "cn",
+   "website": "https://bigmodel.cn/",
+   "api_doc": "https://docs.bigmodel.cn/cn/api/introduction",
+   "models": [
+    {
+     "id": "glm-5.3"
+    },
+    {
+     "id": "glm-5.3-flash"
+    },
+    {
+     "id": "glm-5.2"
+    },
+    {
+     "id": "glm-5-turbo"
+    },
+    {
+     "id": "glm-4.7"
+    }
+   ]
+  },
+  {
+   "id": "cerebras-ai",
+   "name": "Cerebras",
+   "base_url": "https://api.cerebras.ai/v1",
+   "protocol": "openai",
+   "vendor_family": "cerebras",
+   "region": "global",
+   "website": "https://cerebras.ai",
+   "api_doc": "https://inference-docs.cerebras.ai/introduction",
+   "models": [
+    {
+     "id": "gpt-oss-120b"
+    },
+    {
+     "id": "qwen-3.8-27b"
+    }
+   ]
+  },
+  {
+   "id": "cohere-com",
+   "name": "Cohere",
+   "base_url": "https://api.cohere.ai/compatibility/v1",
+   "protocol": "openai",
+   "vendor_family": "cohere",
+   "region": "global",
+   "website": "https://cohere.com",
+   "api_doc": "https://docs.cohere.com/v2/reference/about",
+   "models": [
+    {
+     "id": "command-a-plus-05-2026"
+    },
+    {
+     "id": "command-a-03-2025"
+    },
+    {
+     "id": "command-a-reasoning-08-2025"
+    },
+    {
+     "id": "command-a-vision-07-2025"
+    },
+    {
+     "id": "command-a-translate-08-2025"
+    },
+    {
+     "id": "north-mini-code-1-0"
+    },
+    {
+     "id": "north-small-translate-1-0"
+    },
+    {
+     "id": "command-r7b-12-2024"
+    },
+    {
+     "id": "command-r-08-2024"
+    },
+    {
+     "id": "command-r-plus-08-2024"
+    }
+   ]
+  },
+  {
+   "id": "dashscope-cn",
+   "name": "Aliyun Dashscope (CN)",
+   "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+   "protocol": "openai",
+   "vendor_family": "alibaba",
+   "region": "cn",
+   "website": "https://bailian.console.aliyun.com/",
+   "api_doc": "https://bailian.console.aliyun.com/console?tab=api#/api",
+   "models": [
+    {
+     "id": "qwen-max"
+    },
+    {
+     "id": "qwen-plus"
+    },
+    {
+     "id": "qwen-long"
+    },
+    {
+     "id": "qwen3.7-max"
+    },
+    {
+     "id": "qwen3.7-plus"
+    },
+    {
+     "id": "qwen3.7-flash"
+    },
+    {
+     "id": "qwen3.8-max"
+    },
+    {
+     "id": "qwen3.8-flash"
+    },
+    {
+     "id": "qwen3.8-max-0902"
+    }
+   ]
+  },
+  {
+   "id": "dashscope-cn-coding",
+   "name": "Qwen Coding Plan (CN)",
+   "base_url": "https://coding.dashscope.aliyuncs.com/v1",
+   "protocol": "openai",
+   "vendor_family": "alibaba",
+   "region": "cn",
+   "website": "https://bailian.console.aliyun.com/",
+   "api_doc": "https://bailian.console.aliyun.com/console?tab=api#/api",
+   "models": [
+    {
+     "id": "qwen3-coder-plus"
+    },
+    {
+     "id": "qwen3.5-plus"
+    },
+    {
+     "id": "qwen3-max-2026-01-23"
+    },
+    {
+     "id": "qwen3-coder-next"
+    },
+    {
+     "id": "glm-5"
+    },
+    {
+     "id": "glm-4.7"
+    },
+    {
+     "id": "MiniMax-M2.5"
+    },
+    {
+     "id": "kimi-k2.5"
+    },
+    {
+     "id": "qwen3.7-plus"
+    },
+    {
+     "id": "qwen3.6-plus"
+    }
+   ]
+  },
+  {
+   "id": "dashscope-cn-token",
+   "name": "Qwen Token Plan (CN)",
+   "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+   "protocol": "openai",
+   "vendor_family": "alibaba",
+   "region": "cn",
+   "website": "https://www.aliyun.com/benefit/scene/tokenplan",
+   "api_doc": "https://help.aliyun.com/zh/model-studio/token-plan-overview",
+   "models": [
+    {
+     "id": "auto"
+    },
+    {
+     "id": "qwen3.8-max"
+    },
+    {
+     "id": "qwen3.8-flash"
+    },
+    {
+     "id": "qwen3.7-max"
+    },
+    {
+     "id": "qwen3.7-plus"
+    },
+    {
+     "id": "qwen3.6-flash"
+    },
+    {
+     "id": "deepseek-v4.1-flash"
+    },
+    {
+     "id": "deepseek-v4-pro"
+    },
+    {
+     "id": "deepseek-v4-pro-0813"
+    },
+    {
+     "id": "deepseek-v4-flash-0731"
+    },
+    {
+     "id": "glm-5.3"
+    },
+    {
+     "id": "glm-5.2"
+    }
+   ]
+  },
+  {
+   "id": "dashscope-intl",
+   "name": "Alibaba Dashscope",
+   "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+   "protocol": "openai",
+   "vendor_family": "alibaba",
+   "region": "intl",
+   "website": "https://www.alibabacloud.com/help/en/model-studio/",
+   "api_doc": "https://www.alibabacloud.com/help/en/model-studio/first-api-call-to-qwen",
+   "models": [
+    {
+     "id": "qwen-max"
+    },
+    {
+     "id": "qwen-plus"
+    },
+    {
+     "id": "qwen-long"
+    },
+    {
+     "id": "qwen3.7-max"
+    },
+    {
+     "id": "qwen3.7-plus"
+    },
+    {
+     "id": "qwen3.7-flash"
+    },
+    {
+     "id": "qwen3.8-max"
+    },
+    {
+     "id": "qwen3.8-flash"
+    },
+    {
+     "id": "qwen3.8-max-0902"
+    }
+   ]
+  },
+  {
+   "id": "dashscope-intl-coding",
+   "name": "Qwen Coding Plan",
+   "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
+   "protocol": "openai",
+   "vendor_family": "alibaba",
+   "region": "intl",
+   "website": "https://www.alibabacloud.com/help/en/model-studio/",
+   "api_doc": "https://www.alibabacloud.com/help/en/model-studio/coding-plan",
+   "models": [
+    {
+     "id": "qwen3-coder-plus"
+    },
+    {
+     "id": "qwen3.5-plus"
+    },
+    {
+     "id": "qwen3-max-2026-01-23"
+    },
+    {
+     "id": "qwen3-coder-next"
+    },
+    {
+     "id": "glm-5"
+    },
+    {
+     "id": "glm-4.7"
+    },
+    {
+     "id": "MiniMax-M2.5"
+    },
+    {
+     "id": "kimi-k2.5"
+    },
+    {
+     "id": "qwen3.7-plus"
+    },
+    {
+     "id": "qwen3.6-plus"
+    }
+   ]
+  },
+  {
+   "id": "dashscope-intl-token",
+   "name": "Qwen Token Plan",
+   "base_url": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+   "protocol": "openai",
+   "vendor_family": "alibaba",
+   "region": "intl",
+   "website": "https://www.alibabacloud.com/help/en/model-studio/token-plan-overview",
+   "api_doc": "https://www.alibabacloud.com/help/en/model-studio/token-plan-overview",
+   "models": [
+    {
+     "id": "auto"
+    },
+    {
+     "id": "qwen3.8-max"
+    },
+    {
+     "id": "qwen3.8-flash"
+    },
+    {
+     "id": "qwen3.7-max"
+    },
+    {
+     "id": "qwen3.7-plus"
+    },
+    {
+     "id": "qwen3.6-flash"
+    },
+    {
+     "id": "deepseek-v4.1-flash"
+    },
+    {
+     "id": "deepseek-v4-pro"
+    },
+    {
+     "id": "deepseek-v4-pro-0813"
+    },
+    {
+     "id": "deepseek-v4-flash-0731"
+    },
+    {
+     "id": "glm-5.3"
+    },
+    {
+     "id": "glm-5.2"
+    }
+   ]
+  },
+  {
+   "id": "deepinfra-com",
+   "name": "DeepInfra",
+   "base_url": "https://api.deepinfra.com/v1/openai",
+   "protocol": "openai",
+   "vendor_family": "deepinfra",
+   "region": "global",
+   "website": "https://deepinfra.com",
+   "api_doc": "https://deepinfra.com/docs/advanced/openai_api",
+   "models": []
+  },
+  {
+   "id": "deepseek-com",
+   "name": "Deepseek",
+   "base_url": "https://api.deepseek.com/v1",
+   "protocol": "openai",
+   "vendor_family": "deepseek",
+   "region": "global",
+   "website": "https://deepseek.com",
+   "api_doc": "https://api-docs.deepseek.com/",
+   "models": [
+    {
+     "id": "deepseek-flash"
+    },
+    {
+     "id": "deepseek-v4-pro"
+    }
+   ]
+  },
+  {
+   "id": "fireworks-ai",
+   "name": "Fireworks AI",
+   "base_url": "https://api.fireworks.ai/inference/v1",
+   "protocol": "openai",
+   "vendor_family": "fireworks",
+   "region": "global",
+   "website": "https://fireworks.ai",
+   "api_doc": "https://docs.fireworks.ai/getting-started/quickstart",
+   "models": [
+    {
+     "id": "deepseek-v4-flash"
+    },
+    {
+     "id": "gpt-oss-120b"
+    },
+    {
+     "id": "kimi-k3"
+    },
+    {
+     "id": "glm-5p3"
+    },
+    {
+     "id": "deepseek-v4p1-flash"
+    }
+   ]
+  },
+  {
+   "id": "googleapis-com",
+   "name": "Google Gemini",
+   "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+   "protocol": "openai",
+   "vendor_family": "google",
+   "region": "global",
+   "website": "https://cloud.google.com/vertex-ai",
+   "api_doc": "https://ai.google.dev/gemini-api/docs/openai",
+   "models": [
+    {
+     "id": "gemini-3.8-flash"
+    },
+    {
+     "id": "gemini-3.7-flash"
+    },
+    {
+     "id": "gemini-3.6-flash"
+    },
+    {
+     "id": "gemini-3.5-flash-lite"
+    },
+    {
+     "id": "gemini-3.5-flash"
+    },
+    {
+     "id": "gemini-3.1-pro-preview"
+    },
+    {
+     "id": "gemini-3-flash-preview"
+    }
+   ]
+  },
+  {
+   "id": "groq-com",
+   "name": "Groq",
+   "base_url": "https://api.groq.com/openai/v1",
+   "protocol": "openai",
+   "vendor_family": "groq",
+   "region": "global",
+   "website": "https://groq.com",
+   "api_doc": "https://console.groq.com/docs/overview",
+   "models": [
+    {
+     "id": "claude-haiku-4-5-20251001"
+    },
+    {
+     "id": "llama-3.3-70b-versatile"
+    },
+    {
+     "id": "openai/gpt-oss-120b"
+    },
+    {
+     "id": "openai/gpt-oss-20b"
+    },
+    {
+     "id": "qwen/qwen3.8-27b"
+    }
+   ]
+  },
+  {
+   "id": "hyperbolic-xyz",
+   "name": "Hyperbolic",
+   "base_url": "https://api.hyperbolic.xyz/v1",
+   "protocol": "openai",
+   "vendor_family": "hyperbolic",
+   "region": "global",
+   "website": "https://hyperbolic.xyz",
+   "api_doc": "https://docs.hyperbolic.xyz/docs/inference-api",
+   "models": []
+  },
+  {
+   "id": "kimi-ai-coding",
+   "name": "Kimi Code (Global)",
+   "base_url": "https://api.kimi.ai/coding/v1",
+   "protocol": "openai",
+   "vendor_family": "moonshot",
+   "region": "intl",
+   "website": "https://www.kimi.ai/code",
+   "api_doc": "https://www.kimi.com/code/docs/en/",
+   "models": [
+    {
+     "id": "kimi-for-coding"
+    },
+    {
+     "id": "k3"
+    },
+    {
+     "id": "k3-256k"
+    },
+    {
+     "id": "kimi-for-coding-highspeed"
+    }
+   ]
+  },
+  {
+   "id": "kimi-com-coding",
+   "name": "Kimi Code",
+   "base_url": "https://api.kimi.com/coding/v1",
+   "protocol": "openai",
+   "vendor_family": "moonshot",
+   "region": "cn",
+   "website": "https://www.kimi.com/code",
+   "api_doc": "https://www.kimi.com/code/docs/en/",
+   "models": [
+    {
+     "id": "kimi-for-coding"
+    },
+    {
+     "id": "k3"
+    },
+    {
+     "id": "k3-256k"
+    },
+    {
+     "id": "kimi-for-coding-highspeed"
+    }
+   ]
+  },
+  {
+   "id": "lingyiwanwu-com",
+   "name": "01.AI (CN)",
+   "base_url": "https://api.lingyiwanwu.com/v1",
+   "protocol": "openai",
+   "vendor_family": "01ai",
+   "region": "cn",
+   "website": "https://platform.lingyiwanwu.com",
+   "api_doc": "https://platform.lingyiwanwu.com/docs",
+   "models": []
+  },
+  {
+   "id": "minimax-io",
+   "name": "Minimax",
+   "base_url": "https://api.minimax.io/v1",
+   "protocol": "openai",
+   "vendor_family": "minimax",
+   "region": "intl",
+   "website": "https://www.minimax.io/",
+   "api_doc": "https://platform.minimax.io/docs/api-reference/text-intro",
+   "models": [
+    {
+     "id": "MiniMax-M2"
+    },
+    {
+     "id": "MiniMax-M2.1"
+    },
+    {
+     "id": "MiniMax-M2.1-lightning"
+    },
+    {
+     "id": "MiniMax-M2.5"
+    },
+    {
+     "id": "MiniMax-M3"
+    },
+    {
+     "id": "MiniMax-M2.1-highspeed"
+    },
+    {
+     "id": "MiniMax-M2.5-highspeed"
+    },
+    {
+     "id": "MiniMax-M2.7"
+    },
+    {
+     "id": "MiniMax-M2.7-highspeed"
+    }
+   ]
+  },
+  {
+   "id": "minimaxi-com",
+   "name": "Minimax (CN)",
+   "base_url": "https://api.minimaxi.com/v1",
+   "protocol": "openai",
+   "vendor_family": "minimax",
+   "region": "cn",
+   "website": "https://www.minimaxi.com/",
+   "api_doc": "https://platform.minimaxi.com/docs/api-reference/text-intro",
+   "models": [
+    {
+     "id": "MiniMax-M2"
+    },
+    {
+     "id": "MiniMax-M2.1"
+    },
+    {
+     "id": "MiniMax-M2.1-lightning"
+    },
+    {
+     "id": "MiniMax-M2.5"
+    },
+    {
+     "id": "MiniMax-M3"
+    },
+    {
+     "id": "MiniMax-M2.1-highspeed"
+    },
+    {
+     "id": "MiniMax-M2.5-highspeed"
+    },
+    {
+     "id": "MiniMax-M2.7"
+    },
+    {
+     "id": "MiniMax-M2.7-highspeed"
+    }
+   ]
+  },
+  {
+   "id": "mistral-ai",
+   "name": "Mistral",
+   "base_url": "https://api.mistral.ai/v1",
+   "protocol": "openai",
+   "vendor_family": "mistral",
+   "region": "global",
+   "website": "https://mistral.ai/",
+   "api_doc": "https://docs.mistral.ai/api",
+   "models": [
+    {
+     "id": "mistral-large-2512"
+    },
+    {
+     "id": "mistral-medium-3-5"
+    },
+    {
+     "id": "mistral-small-2603"
+    },
+    {
+     "id": "ministral-14b-2512"
+    },
+    {
+     "id": "ministral-8b-2512"
+    },
+    {
+     "id": "ministral-3b-2512"
+    },
+    {
+     "id": "codestral-2508"
+    },
+    {
+     "id": "zai-glm-5-2"
+    },
+    {
+     "id": "zai-glm-5-3"
+    }
+   ]
+  },
+  {
+   "id": "moonshot-ai",
+   "name": "Kimi (Moonshot AI)",
+   "base_url": "https://api.moonshot.ai/v1",
+   "protocol": "openai",
+   "vendor_family": "moonshot",
+   "region": "intl",
+   "website": "https://www.moonshot.ai/",
+   "api_doc": "https://platform.kimi.ai/docs/api/chat",
+   "models": [
+    {
+     "id": "kimi-k3"
+    },
+    {
+     "id": "kimi-k2.6"
+    },
+    {
+     "id": "kimi-k2.7-code"
+    },
+    {
+     "id": "kimi-k2.7-code-highspeed"
+    }
+   ]
+  },
+  {
+   "id": "moonshot-cn",
+   "name": "Kimi (Moonshot AI) (CN)",
+   "base_url": "https://api.moonshot.cn/v1",
+   "protocol": "openai",
+   "vendor_family": "moonshot",
+   "region": "cn",
+   "website": "https://www.moonshot.cn/",
+   "api_doc": "https://platform.kimi.com/docs/api/chat",
+   "models": [
+    {
+     "id": "kimi-k3"
+    },
+    {
+     "id": "kimi-k2.6"
+    },
+    {
+     "id": "kimi-k2.7-code"
+    },
+    {
+     "id": "kimi-k2.7-code-highspeed"
+    }
+   ]
+  },
+  {
+   "id": "novita-ai",
+   "name": "Novita AI",
+   "base_url": "https://api.novita.ai/openai",
+   "protocol": "openai",
+   "vendor_family": "novita",
+   "region": "global",
+   "website": "https://novita.ai",
+   "api_doc": "https://novita.ai/docs/guides/llm-api",
+   "models": []
+  },
+  {
+   "id": "nvidia-com",
+   "name": "NVIDIA NIM",
+   "base_url": "https://integrate.api.nvidia.com/v1",
+   "protocol": "openai",
+   "vendor_family": "nvidia",
+   "region": "global",
+   "website": "https://build.nvidia.com",
+   "api_doc": "https://docs.nvidia.com/nim/large-language-models/latest/api-reference.html",
+   "models": [
+    {
+     "id": "deepseek-ai/deepseek-v4-flash"
+    },
+    {
+     "id": "deepseek-ai/deepseek-v4.1-flash"
+    },
+    {
+     "id": "moonshotai/kimi-k3"
+    },
+    {
+     "id": "z-ai/glm-5.3"
+    }
+   ]
+  },
+  {
+   "id": "openai-com",
+   "name": "OpenAI",
+   "base_url": "https://api.openai.com/v1",
+   "protocol": "openai",
+   "vendor_family": "openai",
+   "region": "global",
+   "website": "https://openai.com",
+   "api_doc": "https://platform.openai.com/docs/quickstart",
+   "models": [
+    {
+     "id": "gpt-6-astra"
+    },
+    {
+     "id": "gpt-6.1-sol"
+    },
+    {
+     "id": "gpt-6-sol"
+    },
+    {
+     "id": "gpt-6-luna"
+    },
+    {
+     "id": "gpt-5.6-sol"
+    },
+    {
+     "id": "gpt-5.6-terra"
+    },
+    {
+     "id": "gpt-5.6-luna"
+    },
+    {
+     "id": "gpt-5.5"
+    },
+    {
+     "id": "gpt-5.5-pro"
+    },
+    {
+     "id": "gpt-5.4"
+    },
+    {
+     "id": "gpt-5.4-pro"
+    },
+    {
+     "id": "gpt-5.4-mini"
+    },
+    {
+     "id": "gpt-5.4-nano"
+    },
+    {
+     "id": "gpt-4.1"
+    },
+    {
+     "id": "gpt-4.1-mini"
+    },
+    {
+     "id": "gpt-4o"
+    },
+    {
+     "id": "gpt-4o-mini"
+    }
+   ]
+  },
+  {
+   "id": "openrouter-ai",
+   "name": "OpenRouter",
+   "base_url": "https://openrouter.ai/api/v1",
+   "protocol": "openai",
+   "vendor_family": "openrouter",
+   "region": "global",
+   "website": "https://openrouter.ai/",
+   "api_doc": "",
+   "models": []
+  },
+  {
+   "id": "perplexity-ai",
+   "name": "Perplexity",
+   "base_url": "https://api.perplexity.ai",
+   "protocol": "openai",
+   "vendor_family": "perplexity",
+   "region": "global",
+   "website": "https://www.perplexity.ai",
+   "api_doc": "https://docs.perplexity.ai/api-reference/chat-completions-post",
+   "models": []
+  },
+  {
+   "id": "siliconflow-cn",
+   "name": "SiliconFlow (CN)",
+   "base_url": "https://api.siliconflow.cn/v1",
+   "protocol": "openai",
+   "vendor_family": "siliconflow",
+   "region": "cn",
+   "website": "https://siliconflow.cn",
+   "api_doc": "https://docs.siliconflow.cn/cn/userguide/quickstart",
+   "models": []
+  },
+  {
+   "id": "siliconflow-com",
+   "name": "SiliconFlow",
+   "base_url": "https://api.siliconflow.com/v1",
+   "protocol": "openai",
+   "vendor_family": "siliconflow",
+   "region": "intl",
+   "website": "https://siliconflow.com",
+   "api_doc": "https://docs.siliconflow.com/en/userguide/quickstart",
+   "models": []
+  },
+  {
+   "id": "stepfun-ai",
+   "name": "Stepfun",
+   "base_url": "https://api.stepfun.ai/v1",
+   "protocol": "openai",
+   "vendor_family": "stepfun",
+   "region": "intl",
+   "website": "https://platform.stepfun.ai",
+   "api_doc": "https://platform.stepfun.ai/docs/en/quickstart/overview",
+   "models": [
+    {
+     "id": "step-5-preview"
+    },
+    {
+     "id": "step-3.7-flash"
+    },
+    {
+     "id": "step-3.5-flash"
+    },
+    {
+     "id": "step-3.5-flash-2603"
+    }
+   ]
+  },
+  {
+   "id": "stepfun-ai-coding",
+   "name": "Step Plan",
+   "base_url": "https://api.stepfun.ai/step_plan/v1",
+   "protocol": "openai",
+   "vendor_family": "stepfun",
+   "region": "intl",
+   "website": "https://platform.stepfun.ai",
+   "api_doc": "https://platform.stepfun.ai/docs/en/step-plan/overview",
+   "models": [
+    {
+     "id": "step-5-preview"
+    },
+    {
+     "id": "step-3.7-flash"
+    },
+    {
+     "id": "step-3.5-flash"
+    },
+    {
+     "id": "step-3.5-flash-2603"
+    },
+    {
+     "id": "step-router-v1"
+    }
+   ]
+  },
+  {
+   "id": "stepfun-com",
+   "name": "Stepfun (CN)",
+   "base_url": "https://api.stepfun.com/v1",
+   "protocol": "openai",
+   "vendor_family": "stepfun",
+   "region": "cn",
+   "website": "https://platform.stepfun.com",
+   "api_doc": "https://platform.stepfun.com/docs/zh/quickstart/overview",
+   "models": [
+    {
+     "id": "step-5-preview"
+    },
+    {
+     "id": "step-3.7-flash"
+    },
+    {
+     "id": "step-3.5-flash"
+    },
+    {
+     "id": "step-3.5-flash-2603"
+    }
+   ]
+  },
+  {
+   "id": "stepfun-com-coding",
+   "name": "Step Plan (CN)",
+   "base_url": "https://api.stepfun.com/step_plan/v1",
+   "protocol": "openai",
+   "vendor_family": "stepfun",
+   "region": "cn",
+   "website": "https://platform.stepfun.com",
+   "api_doc": "https://platform.stepfun.com/docs/zh/step-plan/overview",
+   "models": [
+    {
+     "id": "step-5-preview"
+    },
+    {
+     "id": "step-3.7-flash"
+    },
+    {
+     "id": "step-3.5-flash"
+    },
+    {
+     "id": "step-3.5-flash-2603"
+    },
+    {
+     "id": "step-router-v1"
+    }
+   ]
+  },
+  {
+   "id": "tencent-com",
+   "name": "Tencent Hunyuan",
+   "base_url": "https://api.hunyuan.cloud.tencent.com/v1",
+   "protocol": "openai",
+   "vendor_family": "tencent",
+   "region": "cn",
+   "website": "https://cloud.tencent.com/product/hunyuan",
+   "api_doc": "https://cloud.tencent.com/document/product/1729/111007",
+   "models": [
+    {
+     "id": "hunyuan-turbos-latest"
+    },
+    {
+     "id": "hunyuan-a13b"
+    },
+    {
+     "id": "hy3"
+    }
+   ]
+  },
+  {
+   "id": "together-xyz",
+   "name": "Together AI",
+   "base_url": "https://api.together.xyz/v1",
+   "protocol": "openai",
+   "vendor_family": "together",
+   "region": "global",
+   "website": "https://together.ai",
+   "api_doc": "https://docs.together.ai/docs/quickstart",
+   "models": [
+    {
+     "id": "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+    },
+    {
+     "id": "Qwen/Qwen3.6-Plus"
+    },
+    {
+     "id": "zai-org/GLM-5.2"
+    },
+    {
+     "id": "deepseek-ai/DeepSeek-V4-Pro-0813"
+    },
+    {
+     "id": "deepseek-ai/DeepSeek-V4.1-Flash"
+    },
+    {
+     "id": "moonshotai/Kimi-K3"
+    },
+    {
+     "id": "zai-org/GLM-5.3"
+    },
+    {
+     "id": "openai/gpt-oss-120b"
+    }
+   ]
+  },
+  {
+   "id": "typesafe-ai",
+   "name": "TypeSafe AI (Jev)",
+   "base_url": "https://api.typesafe.ai/v1",
+   "protocol": "openai",
+   "vendor_family": "typesafe",
+   "region": "global",
+   "website": "https://typesafe.ai/",
+   "api_doc": "",
+   "models": [
+    {
+     "id": "jev-latest"
+    },
+    {
+     "id": "jev-1.13.0"
+    },
+    {
+     "id": "jev-preview"
+    }
+   ]
+  },
+  {
+   "id": "vercel-ai-gateway",
+   "name": "Vercel AI Gateway",
+   "base_url": "https://ai-gateway.vercel.sh/v1",
+   "protocol": "openai",
+   "vendor_family": "vercel",
+   "region": "global",
+   "website": "https://vercel.com/ai-gateway",
+   "api_doc": "https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions",
+   "models": []
+  },
+  {
+   "id": "volces-com",
+   "name": "Volcengine Ark (CN)",
+   "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+   "protocol": "openai",
+   "vendor_family": "bytedance",
+   "region": "cn",
+   "website": "https://www.volcengine.com/product/ark",
+   "api_doc": "https://www.volcengine.com/docs/82379/1298454",
+   "models": [
+    {
+     "id": "doubao-seed-evolving"
+    },
+    {
+     "id": "doubao-seed-2-1-pro-260915"
+    },
+    {
+     "id": "doubao-seed-2-1-lite-260915"
+    },
+    {
+     "id": "doubao-seed-2-1-pro-260628"
+    },
+    {
+     "id": "doubao-seed-2-1-turbo-260628"
+    },
+    {
+     "id": "doubao-seed-2-0-lite-260428"
+    },
+    {
+     "id": "doubao-seed-2-0-mini-260428"
+    },
+    {
+     "id": "glm-5-3-flash-260828"
+    },
+    {
+     "id": "deepseek-v4-1-flash-260910"
+    },
+    {
+     "id": "deepseek-v4-pro-ga-260813"
+    }
+   ]
+  },
+  {
+   "id": "volces-com-coding",
+   "name": "Volcengine Ark Coding Plan (CN)",
+   "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+   "protocol": "openai",
+   "vendor_family": "bytedance",
+   "region": "cn",
+   "website": "https://www.volcengine.com/product/ark",
+   "api_doc": "https://www.volcengine.com/docs/82379/1925114",
+   "models": [
+    {
+     "id": "ark-code-latest"
+    },
+    {
+     "id": "doubao-seed-evolving"
+    },
+    {
+     "id": "doubao-seed-2.1-pro"
+    },
+    {
+     "id": "doubao-seed-2.1-lite"
+    },
+    {
+     "id": "doubao-seed-2.0-mini"
+    },
+    {
+     "id": "minimax-m3"
+    },
+    {
+     "id": "glm-5.3"
+    },
+    {
+     "id": "glm-5.3-flash"
+    },
+    {
+     "id": "deepseek-v4.1-flash"
+    },
+    {
+     "id": "deepseek-v4-flash"
+    },
+    {
+     "id": "deepseek-v4-pro"
+    },
+    {
+     "id": "kimi-k2.7-code"
+    },
+    {
+     "id": "kimi-k2.8-preview"
+    },
+    {
+     "id": "kimi-k3"
+    },
+    {
+     "id": "doubao-seed-code"
+    },
+    {
+     "id": "doubao-seed-2.0-code"
+    },
+    {
+     "id": "doubao-seed-2.0-pro"
+    },
+    {
+     "id": "doubao-seed-2.0-lite"
+    },
+    {
+     "id": "glm-4.7"
+    },
+    {
+     "id": "deepseek-v3.2"
+    },
+    {
+     "id": "kimi-k2.5"
+    },
+    {
+     "id": "minimax-m2.5"
+    },
+    {
+     "id": "glm-5.2"
+    }
+   ]
+  },
+  {
+   "id": "x-ai",
+   "name": "xAI",
+   "base_url": "https://api.x.ai/v1",
+   "protocol": "openai",
+   "vendor_family": "xai",
+   "region": "global",
+   "website": "https://xai.com",
+   "api_doc": "https://docs.x.ai/developers/model-capabilities/text/comparison",
+   "models": [
+    {
+     "id": "grok-3-mini"
+    },
+    {
+     "id": "grok-4.20-0309-reasoning"
+    },
+    {
+     "id": "grok-4.20-0309-non-reasoning"
+    },
+    {
+     "id": "grok-4.20-multi-agent-0309"
+    },
+    {
+     "id": "grok-4.3"
+    },
+    {
+     "id": "grok-4.5"
+    },
+    {
+     "id": "grok-4.6"
+    },
+    {
+     "id": "grok-4.7"
+    },
+    {
+     "id": "grok-build-0.1"
+    }
+   ]
+  },
+  {
+   "id": "xf-yun-com",
+   "name": "iFlytek Spark (CN)",
+   "base_url": "https://spark-api-open.xf-yun.com/v1",
+   "protocol": "openai",
+   "vendor_family": "iflytek",
+   "region": "cn",
+   "website": "https://xinghuo.xfyun.cn",
+   "api_doc": "https://www.xfyun.cn/doc/spark/HTTP调用文档.html",
+   "models": [
+    {
+     "id": "spark-x"
+    }
+   ]
+  },
+  {
+   "id": "xiaomimimo-ams-coding",
+   "name": "Mimo Coding Plan (Europe)",
+   "base_url": "https://token-plan-ams.xiaomimimo.com/v1",
+   "protocol": "openai",
+   "vendor_family": "xiaomi",
+   "region": "intl",
+   "website": "https://platform.xiaomimimo.com",
+   "api_doc": "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/quick-access",
+   "models": [
+    {
+     "id": "mimo-v2.6-pro"
+    },
+    {
+     "id": "mimo-v2.6-flash"
+    }
+   ]
+  },
+  {
+   "id": "xiaomimimo-com",
+   "name": "Xiaomi Mimo",
+   "base_url": "https://api.xiaomimimo.com/v1",
+   "protocol": "openai",
+   "vendor_family": "xiaomi",
+   "region": "global",
+   "website": "https://platform.xiaomimimo.com",
+   "api_doc": "https://platform.xiaomimimo.com/#/docs/api/text-generation/openai-api",
+   "models": [
+    {
+     "id": "mimo-v2.6-pro"
+    },
+    {
+     "id": "mimo-v2.6-flash"
+    },
+    {
+     "id": "mimo-v2.6-pro-ultraspeed"
+    }
+   ]
+  },
+  {
+   "id": "xiaomimimo-com-coding",
+   "name": "Mimo Coding Plan (CN)",
+   "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+   "protocol": "openai",
+   "vendor_family": "xiaomi",
+   "region": "cn",
+   "website": "https://platform.xiaomimimo.com",
+   "api_doc": "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/quick-access",
+   "models": [
+    {
+     "id": "mimo-v2.6-pro"
+    },
+    {
+     "id": "mimo-v2.6-flash"
+    }
+   ]
+  },
+  {
+   "id": "xiaomimimo-sgp-coding",
+   "name": "Mimo Coding Plan (Singapore)",
+   "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+   "protocol": "openai",
+   "vendor_family": "xiaomi",
+   "region": "intl",
+   "website": "https://platform.xiaomimimo.com",
+   "api_doc": "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/quick-access",
+   "models": [
+    {
+     "id": "mimo-v2.6-pro"
+    },
+    {
+     "id": "mimo-v2.6-flash"
+    }
+   ]
+  },
+  {
+   "id": "z-ai",
+   "name": "Z.ai",
+   "base_url": "https://api.z.ai/api/paas/v4",
+   "protocol": "openai",
+   "vendor_family": "zai",
+   "region": "intl",
+   "website": "https://z.ai/",
+   "api_doc": "https://docs.z.ai/guides/develop/http/introduction",
+   "models": [
+    {
+     "id": "glm-4.5"
+    },
+    {
+     "id": "glm-4.5-air"
+    },
+    {
+     "id": "glm-4.6"
+    },
+    {
+     "id": "glm-4.7"
+    },
+    {
+     "id": "glm-5.2"
+    },
+    {
+     "id": "glm-5.3"
+    },
+    {
+     "id": "glm-5.3-flash"
+    },
+    {
+     "id": "glm-5.3-flashx"
+    }
+   ]
+  },
+  {
+   "id": "z-ai-coding",
+   "name": "Z.ai Coding Plan",
+   "base_url": "https://api.z.ai/api/coding/paas/v4",
+   "protocol": "openai",
+   "vendor_family": "zai",
+   "region": "intl",
+   "website": "https://z.ai/",
+   "api_doc": "https://docs.z.ai/guides/develop/http/introduction",
+   "models": [
+    {
+     "id": "glm-5.3"
+    },
+    {
+     "id": "glm-5.3-flash"
+    },
+    {
+     "id": "glm-5.2"
+    },
+    {
+     "id": "glm-5-turbo"
+    },
+    {
+     "id": "glm-4.7"
+    }
+   ]
+  }
+ ]
+}

@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -99,7 +100,7 @@ func TestContractContributionAnonymousEncrypted(t *testing.T) {
 	const key = "sk-live-secret-abcdef1234567890" // 唯一串，便于全库字节搜索
 	res, err := a.Contribution().Submit(ctx, upstream.Submission{
 		OwnerAccountID: owner,
-		Provider:       "modelscope",
+		Provider:       "demo-provider",
 		BaseURL:        srv.URL + "/v1",
 		APIKey:         key,
 		ClaimedModel:   "m1",
@@ -125,7 +126,7 @@ func TestContractContributionAnonymousEncrypted(t *testing.T) {
 	}
 
 	// 入池 = 上游行 enabled；否则「凭据说 active 但候选里没有」是假状态。
-	up := contributeUpstreamOf(t, a, "modelscope", cred)
+	up := contributeUpstreamOf(t, a, "demo-provider", cred)
 	if !up.Enabled {
 		t.Error("入池后上游行应 enabled=true")
 	}
@@ -459,5 +460,97 @@ func TestContractStoreByteScanCoversWAL(t *testing.T) {
 	// 反向：干净文件不误报。
 	if where, _ := findSecretInStoreFiles(dbPath, "definitely-not-present"); where != "" {
 		t.Fatalf("干净数据被误报为泄露：%s", where)
+	}
+}
+
+// TestContractContributionPauseResumeReal 覆盖暂停/恢复的真效果（契约 v2 §5）。
+//
+// 守三件事，缺一条这个功能就是错的：
+//  1. 落点确实是 upstreams.enabled —— 候选池的唯一入口（与撤销同一个开关）；
+//  2. 暂停**不动密钥材料**（密文还能解回原 key）—— 它和撤销的区别就在这里；
+//  3. 未通过鉴定的凭据不能被「恢复」进池 —— 否则一次点击就能把坏 key 放回候选。
+func TestContractContributionPauseResumeReal(t *testing.T) {
+	a := newContributionTestApp(t, nil)
+	ctx := context.Background()
+	owner := newContributorAccount(t, a, "anonymous-contrib-pause")
+	svc := a.Contribution()
+
+	srv := newCatalogServer(t, []string{"m1"}, http.StatusOK)
+	const key = "sk-pause-me-abcdef1234567890"
+	res, err := svc.Submit(ctx, upstream.Submission{
+		OwnerAccountID: owner, Provider: "demo-provider", BaseURL: srv.URL + "/v1",
+		APIKey: key, ClaimedModel: "m1",
+	})
+	if err != nil || !res.InPool {
+		t.Fatalf("前置提交应入池：err=%v res=%+v", err, res)
+	}
+	cred, err := a.store.Repos().Models.LookupCredential(ctx, res.CredentialID)
+	if err != nil {
+		t.Fatalf("读凭据失败：%v", err)
+	}
+	if up := contributeUpstreamOf(t, a, "demo-provider", cred); !up.Enabled {
+		t.Fatal("入池后上游行应 enabled=true")
+	}
+
+	// —— 暂停 ——
+	callable, err := svc.SetPaused(ctx, res.CredentialID, upstream.RevokeActor{AccountID: owner}, true)
+	if err != nil || callable {
+		t.Fatalf("暂停应成功且返回不可调用：callable=%v err=%v", callable, err)
+	}
+	up := contributeUpstreamOf(t, a, "demo-provider", cred)
+	if up.Enabled {
+		t.Error("暂停后上游行必须 enabled=false（否则凭据仍在候选里）")
+	}
+	// 凭据本身仍是 active：暂停是运行时开关，不是生命周期状态。
+	if got, _ := a.store.Repos().Models.LookupCredential(ctx, res.CredentialID); got.Status != string(store.CredActive) {
+		t.Errorf("暂停不应改凭据状态（应保持 active），得 %s", got.Status)
+	}
+	// 密钥材料还在：与撤销（写墓碑）的区别就在这里。
+	if plain, err := a.store.Repos().Secrets.GetSecretByUpstream(ctx, up.ID); err != nil || string(plain) != key {
+		t.Errorf("暂停不应销毁密钥材料：err=%v value=%q", err, plain)
+	}
+
+	// —— 幂等：重复暂停 ——
+	if callable, err := svc.SetPaused(ctx, res.CredentialID, upstream.RevokeActor{AccountID: owner}, true); err != nil || callable {
+		t.Fatalf("重复暂停应幂等（仍不可调用）：callable=%v err=%v", callable, err)
+	}
+	if up := contributeUpstreamOf(t, a, "demo-provider", cred); up.Enabled {
+		t.Error("重复暂停后上游行应仍为 enabled=false")
+	}
+
+	// —— 非属主 ——
+	if _, err := svc.SetPaused(ctx, res.CredentialID, upstream.RevokeActor{AccountID: owner + 1000}, true); !errors.Is(err, upstream.ErrContributionForbidden) {
+		t.Fatalf("他人操作应被拒绝（ErrContributionForbidden），得 %v", err)
+	}
+
+	// —— 恢复 ——
+	callable, err = svc.SetPaused(ctx, res.CredentialID, upstream.RevokeActor{AccountID: owner}, false)
+	if err != nil || !callable {
+		t.Fatalf("恢复应成功且返回可调用：callable=%v err=%v", callable, err)
+	}
+	if up := contributeUpstreamOf(t, a, "demo-provider", cred); !up.Enabled {
+		t.Error("恢复后上游行必须 enabled=true")
+	}
+
+	// —— 未通过鉴定的凭据恢复不起来 ——
+	// 否则「恢复」就是一条把没验过的 key 放回候选池的捷径。
+	badSrv := newCatalogServer(t, nil, http.StatusUnauthorized)
+	bad, err := svc.Submit(ctx, upstream.Submission{
+		OwnerAccountID: owner, Provider: "demo-provider-bad", BaseURL: badSrv.URL + "/v1",
+		APIKey: "sk-bad-key-abcdef1234567890",
+	})
+	if err != nil || bad.InPool {
+		t.Fatalf("401 的 key 不应入池：err=%v res=%+v", err, bad)
+	}
+	badCred, err := a.store.Repos().Models.LookupCredential(ctx, bad.CredentialID)
+	if err != nil {
+		t.Fatalf("读被拒凭据失败：%v", err)
+	}
+	callable, err = svc.SetPaused(ctx, bad.CredentialID, upstream.RevokeActor{AccountID: owner}, false)
+	if err != nil || callable {
+		t.Fatalf("未通过鉴定的凭据不应被恢复成可调用：callable=%v err=%v", callable, err)
+	}
+	if up := contributeUpstreamOf(t, a, "demo-provider-bad", badCred); up.Enabled {
+		t.Error("被拒凭据的上游行必须保持 enabled=false")
 	}
 }

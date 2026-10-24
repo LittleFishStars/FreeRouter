@@ -122,7 +122,11 @@ func (b *tenantBridge) RequestLogs(ctx context.Context, accountID string, f http
 	if err != nil {
 		return nil, 0, err
 	}
-	sf := store.RequestLogFilter{Limit: f.Limit, Offset: f.Offset, Failed: f.Failed}
+	// 字段逐个抄（本文件纪律）：httpapi 的筛选条件必须全部落到 store 的同形字段上，
+	// 漏抄一个就是“前端发了、后端不读”的静默失效（审计 P3 的 error_code）。
+	sf := store.RequestLogFilter{
+		Limit: f.Limit, Offset: f.Offset, Failed: f.Failed, ErrorCode: f.ErrorCode,
+	}
 	if !f.From.IsZero() {
 		sf.From = f.From.Unix()
 	}

@@ -182,10 +182,50 @@ func (s *Server) HandleAccountKeyCreate(deps *AccountKeysDeps) http.HandlerFunc 
 	}
 }
 
+// patchString 把 JSON 的「字段缺省」与「显式 null」区分开。
+//
+// 为什么不用 *string：encoding/json 把缺省字段与 null 都解成 nil，两者在类型上
+// 不可分辨；而本端点的语义恰好要求「缺省=不变、null=清空」，用 *string 的结果
+// 就是前端发 null 想清空却被当成「没给」，过期时间永远清不掉（审计 P1）。
+//
+// 依赖 encoding/json 的两条约定：只在字段出现时调用 UnmarshalJSON，且 null 也会
+// 被送进来（null 不跳过 Unmarshaler）。于是：
+//
+//	Set=false        → 字段缺省（不写）
+//	Set=true, Value=nil → 显式 null（清空）
+//	Set=true, Value=&s   → 字符串（设定）
+type patchString struct {
+	Set   bool    // 字段是否出现在请求体里
+	Value *string // nil = 显式 null
+}
+
+func (n *patchString) UnmarshalJSON(b []byte) error {
+	n.Set = true
+	if string(b) == "null" {
+		n.Value = nil
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	n.Value = &s
+	return nil
+}
+
 // HandleAccountKeyPatch PATCH /api/account/keys/{id}。
 //
-// {"name"?, "expires_at"?(RFC3339 或 null 清除), "allowlist"?: [模型名]}。
-// 三个字段都可选；给了才改。响应 {data:key}。
+// 请求体 {"name"?, "expires_at"?(RFC3339 | null | ""), "allowlist"?: [模型名]}。
+// 三个字段都可选；**只有出现过的字段才会被写**。响应 {data:key}。
+//
+// expires_at 的三值语义（审计 P1，2026-10-24 修复）：
+//
+//	字段缺省                → 不变（今天过期的 Key 明天还是那个时刻）
+//	"expires_at": null      → 清空（永不过期）
+//	"expires_at": "...Z"    → 设定为该时刻（RFC3339）
+//
+// 空串 "" 仍按「清空」处理：旧表单/脚本曾用空串表达同一意图，删掉这条兼容
+// 只会把行为差异留给调用方去猜。
 func (s *Server) HandleAccountKeyPatch(deps *AccountKeysDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sub, ok := subjectFromRequest(r)
@@ -198,10 +238,16 @@ func (s *Server) HandleAccountKeyPatch(deps *AccountKeysDeps) http.HandlerFunc {
 			writeErrorParam(w, http.StatusBadRequest, "invalid_request", "id", "缺少 Key id")
 			return
 		}
+		// 先校验归属再写：expires_at 的写入按 id 直达存储层（deps.SetKeyExpiry
+		// 只做 id 翻译），若把归属检查留到响应阶段，别人的 Key id 就能被改掉
+		// 过期时间。读/写他人 Key 一律 404（04-authz.md，不泄露资源存在性）。
+		if _, ok := s.ownKeyOr404(w, r, deps); !ok {
+			return
+		}
 		var body struct {
-			Name      *string   `json:"name"`
-			ExpiresAt *string   `json:"expires_at"`
-			Allowlist *[]string `json:"allowlist"`
+			Name      *string     `json:"name"`
+			ExpiresAt patchString `json:"expires_at"`
+			Allowlist *[]string   `json:"allowlist"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeErrorParam(w, http.StatusBadRequest, "invalid_request", "body", "请求体不是合法 JSON")
@@ -213,15 +259,21 @@ func (s *Server) HandleAccountKeyPatch(deps *AccountKeysDeps) http.HandlerFunc {
 				return
 			}
 		}
-		if body.ExpiresAt != nil && deps.SetKeyExpiry != nil {
+		if body.ExpiresAt.Set {
 			var t *time.Time
-			if *body.ExpiresAt != "" {
-				parsed, err := time.Parse(time.RFC3339, *body.ExpiresAt)
+			if v := body.ExpiresAt.Value; v != nil && *v != "" {
+				parsed, err := time.Parse(time.RFC3339, *v)
 				if err != nil {
-					writeErrorParam(w, http.StatusBadRequest, "invalid_request", "expires_at", "expires_at 须为 RFC3339 时刻")
+					writeErrorParam(w, http.StatusBadRequest, "invalid_request", "expires_at", "expires_at 须为 RFC3339 时刻或 null")
 					return
 				}
 				t = &parsed
+			}
+			// t == nil 在此处是「清空」的确定语义，不是「不写」——「不写」在前面的
+			// Set 判断就返回了。存储层的 nil 同样表示清空（写 NULL）。
+			if deps.SetKeyExpiry == nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", "Key 过期时间写入未装配", nil)
+				return
 			}
 			if err := deps.SetKeyExpiry(r.Context(), id, t); err != nil {
 				mapKeyErr(w, err)

@@ -14,8 +14,9 @@ import {
   getMyCredential,
   getRecoveryCodeState,
   listMyCredentials,
+  pauseMyCredential,
   regenerateRecoveryCode,
-  setMyCredentialEnabled
+  resumeMyCredential
 } from '../../api/endpoints'
 import type {
   ContributionCredential,
@@ -119,8 +120,20 @@ export function MyCredentialsPage({ def }: PageProps) {
     setBusy(true)
     setError(null)
     try {
-      await setMyCredentialEnabled(c.id, c.status !== 'active')
-      setNotice(c.status === 'active' ? '已暂停这条凭据' : '已恢复这条凭据')
+      // 暂停/恢复是两个独立端点（契约 v2 §5）。提示词用返回的 status 决定，
+      // 不用本地的 c.status 反推——列表可能是几秒前的快照。
+      // 「请求恢复、返回仍是 paused」不是失败：那是后端判该凭据不可恢复
+      // （未通过鉴定的 enabled=false 是判定结果，不是暂停），界面必须说清，
+      // 否则用户会以为按钮没生效。
+      const wantPause = c.status === 'active'
+      const r = wantPause ? await pauseMyCredential(c.id) : await resumeMyCredential(c.id)
+      setNotice(
+        r.data.status === 'paused'
+          ? wantPause
+            ? '已暂停这条凭据'
+            : '该凭据当前不可恢复：未通过鉴定的凭据不会进入候选池'
+          : '已恢复这条凭据'
+      )
       q.reload()
     } catch (e) {
       setError(e)
@@ -209,8 +222,16 @@ export function ContributionCredentialDetailPage({ def }: PageProps) {
     setBusy(true)
     setError(null)
     try {
-      await setMyCredentialEnabled(c!.id, c!.status !== 'active')
-      setNotice(c!.status === 'active' ? '已暂停' : '已恢复')
+      // 同上：写端点返回的 status 才是生效后的状态（幂等重复调用也成立）。
+      const wantPause = c!.status === 'active'
+      const r = wantPause ? await pauseMyCredential(c!.id) : await resumeMyCredential(c!.id)
+      setNotice(
+        r.data.status === 'paused'
+          ? wantPause
+            ? '已暂停'
+            : '该凭据当前不可恢复：未通过鉴定的凭据不会进入候选池'
+          : '已恢复'
+      )
       q.reload()
     } catch (e) {
       setError(e)

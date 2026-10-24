@@ -1,4 +1,4 @@
-// registry.mjs —— 供应商 OAuth 的注册表（15 家，三种交互形态）。
+// registry.mjs —— 供应商 OAuth 的注册表（14 家，三种交互形态）。
 //
 // ## 为什么要有注册表
 //
@@ -141,8 +141,6 @@ const ENDPOINTS = {
   officeace: { apiBase: 'https://codearts.huaweicloud.com', kind: 'vendor' },
   trae: { apiBase: 'https://api.trae.ai', kind: 'vendor' },
   zcode: { apiBase: 'https://api.zcode.ai', kind: 'vendor' },
-  modelscope: { apiBase: 'https://api.modelscope.cn', kind: 'vendor' },
-  opencode: { apiBase: 'https://api.opencode.ai', kind: 'vendor' },
 }
 
 /** 注册表条目：{ id, name, flow, needs?, endpoints }。 */
@@ -625,67 +623,27 @@ register('zcode', {
   },
 })
 
-// astudio 的登录入口（startAstudioLoginFlow）会**自己起一个本机 HTTP 服务**
-// 收微信/账号回调，且微信扫码需要它渲染的页面。sidecar 不监听任何 TCP 端口
-// （红线③），所以这家暂不接入——列在 API_KEY_ONLY 里并写明原因，而不是
-// 给一个会静默失败的入口。
-//
 // ===========================================================================
-// 4. 其余（modelscope / opencode）
-//    上游 auth 模块没有可脱离 IDE 的 OAuth 登录面（只有凭据读取/账号池工具），
-//    所以走「API Key 型贡献」。**显式列出并给原因**，而不是让调用方拿到
-//    一个空对象。
+// 4. 其余：暂无
+//    上一版这里还有 modelscope / opencode 两家「只能粘贴 Key」的条目。贡献入口改
+//    成三分类后，这类需求由**内置 API 目录**（internal/apidir，52 家）承担：目录
+//    本来就是「端点 + 用户粘贴 Key」的形态，不需要 sidecar 再列一遍。两家随之下线
+//    （它们的 sidecar 模块也一并删除，见 tmp/CONTRACT-contribution-v2.md §7）。
 // ===========================================================================
 
-/** 只能走「API Key 型贡献」的 provider（上游没有可脱离 IDE 的 OAuth 登录面）。 */
-/*
- * 剩下的这两家确实没有可用的登录面，但**凭据照样可以贡献**——上游自己用的
- * 就是「粘贴凭据」这条路。所以每一项都带上 base_url 与 steps：
- * base_url 让前端一键填进 API Key 表单，steps 告诉用户去哪儿拿凭据。
+/**
+ * 只能走「API Key 型贡献」的 provider。
  *
- * 依据（来自 dsh-providers-hub 源码，不是推测）：
- *   - modelscope：`modelscope-auth.js` 明确写「没有登录流程，也不能续期」，
- *     凭据是控制台手工生成的 API Key（`ms-…`），上游入口就是粘贴弹窗。
- *   - opencode：`opencode-auth.js` 是账号池/指纹工具，不是登录流程；
- *     凭据就是 API Key。
- *
- * ⚠️ **2026-10-24 修正**：先前这里还有 astudio，理由写的是「`astudio-oauth.js`
- * 明确写没有 OAuth2/PKCE/授权 URL/回调，登录在 Electron 客户端里」。那条判断
- * **是错的**，而且错得很典型：只读了文件头注释里「不存在任何程序化**续期**接口」
- * 这一句，把「没有 refresh」读成了「没有登录」。实际上同文件里就有完整的
- * 微信扫码三件套（`createAstudioWechatQrCode` / `pollAstudioWechatScan` /
- * `bindAstudioWechatSession`）与短信+极验登录，全部是 HTTP 接口、不需要本机
- * 监听。astudio 现已作为 `flow: 'qr'` 正常接入。
- *
- * 教训：判断"上游有没有某能力"要读**导出清单与函数体**，不能只读注释。
- *
- * 为什么不索性把这两家从清单里删掉：删掉之后用户搜不到「这家能不能贡献」，
- * 会以为平台不支持；列出来 + 给替代路径，才是完整回答。
+ * **现在为空**——modelscope / opencode 已按契约 v2 §7 移除：
+ *   - 它们的凭据形态（控制台生成、粘贴使用）与「API 供应商」入口完全一致，
+ *     由 internal/apidir 的目录承载更合适（目录不依赖 sidecar，也不区分登录面）；
+ *   - 保留这个导出而不是删掉它，是因为 index.mjs 的 oauth.list 仍在应答里带
+ *     `api_key_only` 字段——那是 04-sidecar.md 2.3 的应答形状，删字段属于契约变更，
+ *     不该顺手做。语义从「有 N 家替代路径」变成「没有」，形状不变（空数组）。
  */
-export const API_KEY_ONLY = [
-  {
-    id: 'modelscope',
-    name: 'ModelScope',
-    reason: '魔搭没有登录流程：凭据是控制台手工生成的 API Key（ms- 开头），上游入口本身就是"粘贴 Key"',
-    baseUrl: 'https://api-inference.modelscope.cn/v1',
-    steps: [
-      '到 modelscope.cn 控制台 → 访问令牌，生成一个 API Key（ms- 开头）',
-      '点下方「填入端点」把 base URL 带进来，再把 Key 粘到 API Key 输入框',
-    ],
-  },
-  {
-    id: 'opencode',
-    name: 'OpenCode',
-    reason: 'OpenCode 的登录在 adapter 层，上游 auth 只导出账号池指纹工具，不提供可复用的登录流',
-    baseUrl: 'https://opencode.ai/inference/openai/v1',
-    steps: [
-      '到 opencode.ai 生成 API Key',
-      '点下方「填入端点」带入 base URL，把 Key 粘到 API Key 输入框',
-    ],
-  },
-]
+export const API_KEY_ONLY = []
 
-/** 兼容旧名：待接入列表（现在只剩「本就没有 OAuth」的两家）。 */
+/** 兼容旧名：待接入列表（现在恒为空，理由见 API_KEY_ONLY 的注释）。 */
 export const PENDING = API_KEY_ONLY
 
 /** 取一个 provider 的适配器。 */

@@ -43,6 +43,7 @@ import type {
   ChainPreview,
   ContributionCredential,
   ContributionCredentialDetail,
+  ContributionProviderCatalog,
   ContributionStats,
   DeprecationInput,
   DryRunResult,
@@ -118,31 +119,13 @@ export function getAccountStatus() {
 
 // ── 贡献（公共区，未登录可用）─────────────────────────────────────────
 
-export interface ContributeProvider {
-  id: string
-  name: string
-  available: boolean
-  unavailable_reason?: string
-  /**
-   * 不可用的**性质**（后端 ProviderChoice.UnavailableKind）：
-   *  - `config`：我们这边缺配置（如没设 OAuth 客户端 secret），补上就能用
-   *  - `unsupported`：上游没有可脱离 IDE 的 OAuth 登录面，补配置也不会变可用
-   * 两类在界面上必须给不同措辞，否则运维会去翻那几家本来就不该有配置的供应商。
-   */
-  unavailable_kind?: 'config' | 'unsupported'
-  /** 这家的 OpenAI 兼容 base URL（仅 API Key 型的供应商给）。 */
-  suggested_endpoint?: string
-  /** 「去哪儿拿凭据」的操作步骤（仅 API Key 型的供应商给）。 */
-  steps?: string[]
-  /** 交互形态：browser(跳转) | device_code | sms | qr | api_key */
-  flow?: string
-  /** 发起前需要的参数（如 sms 形态要 phone）。 */
-  needs?: string[]
-}
-
-/** GET /api/contributions/providers —— 可用供应商 + 不可用原因 + 交互形态。 */
+/** GET /api/contributions/providers —— 三类入口（反代 / API / 自定义）。
+ *
+ * 形状是 `{data:{categories:[…]}}`（契约 v2 §1）：不再是平铺数组。旧的「api-key」
+ * 伪条目与 api_key_only 供应商已经删除——API Key 贡献由 api 目录 + 自定义表单承担。
+ */
 export function getContributeProviders() {
-  return getList<ContributeProvider>(PATHS.contributeProviders)
+  return getOne<ContributionProviderCatalog>(PATHS.contributeProviders)
 }
 
 /**
@@ -203,22 +186,30 @@ export function cancelOAuthContribution(provider: string, sessionId: string) {
   })
 }
 
-export interface ApiKeyContributionInput {
-  endpoint: string
-  api_key: string
-  label: string
-  claimed_models: string[]
-}
+/**
+ * 贡献提交入参（POST /api/contributions）。两类互斥，用 kind 判别：
+ *   api    → endpoint 由后端从内置目录解析（请求体里不带 endpoint），provider 必填；
+ *   custom → endpoint 必填（任意 OpenAI 兼容端点）。
+ * label 在未登录建号时用作显示名，可留空。
+ */
+export type ContributionSubmitInput =
+  | { kind: 'api'; provider: string; api_key: string; label: string; claimed_models: string[] }
+  | { kind: 'custom'; endpoint: string; api_key: string; label: string; claimed_models: string[] }
 
 export interface ContributeResult {
   accepted: boolean
+  /** 落库后的凭据状态（后端 store 的状态词，不是鉴定结论）。 */
+  status: string
+  verify_status: string
+  /** 幂等复用：同一 (owner, provider, external_id) 重复提交时为 true。 */
+  reused: boolean
   account_created: boolean
   recovery_code?: string
   message?: string
 }
 
-/** 暂定：POST /api/contributions —— API Key 型贡献（服务端永不回显 Key）。 */
-export function submitApiKeyContribution(body: ApiKeyContributionInput) {
+/** POST /api/contributions —— API 供应商 / 自定义端点贡献（服务端永不回显 Key）。 */
+export function submitContribution(body: ContributionSubmitInput) {
   return postWrite<ContributeResult>(PATHS.contributions, body)
 }
 
@@ -673,7 +664,11 @@ export function getUsageOverview() {
   return getOne<UsageOverview>(PATHS.usageOverview)
 }
 
-export interface UsageLogQuery extends PageQuery {
+// UsageLogQuery 不继承 PageQuery：后端只给 limit/offset（没有 cursor 语义），
+// 继承会把 cursor 带进一个后端从未读过的参数，形成「发了但没人读」的静默失效。
+export interface UsageLogQuery {
+  limit?: number
+  offset?: number
   from?: string
   to?: string
   key_id?: string
@@ -701,10 +696,23 @@ export function getMyCredential(id: string) {
   return getOne<ContributionCredentialDetail>(`${PATHS.myCredentials}/${seg(id)}`)
 }
 
-export function setMyCredentialEnabled(id: string, enabled: boolean) {
-  return postWrite<ContributionCredential>(
-    `${PATHS.myCredentials}/${seg(id)}/${enabled ? 'resume' : 'pause'}`
-  )
+/** 凭据启停的返回（契约 v2 §5：`{"data":{"ok":true,"status":"paused"|"enabled"}}`）。 */
+export interface CredentialToggleResult {
+  ok: boolean
+  status: 'paused' | 'enabled'
+}
+
+/**
+ * POST /api/contributions/credentials/{id}/pause —— 暂停自己贡献的凭据。
+ * 会话端点，只能操作属主自己的凭据（非属主 404）；重复调用幂等。
+ */
+export function pauseMyCredential(id: string) {
+  return postWrite<CredentialToggleResult>(`${PATHS.myCredentials}/${seg(id)}/pause`)
+}
+
+/** POST /api/contributions/credentials/{id}/resume —— 恢复（不重置鉴定结论）。 */
+export function resumeMyCredential(id: string) {
+  return postWrite<CredentialToggleResult>(`${PATHS.myCredentials}/${seg(id)}/resume`)
 }
 
 export function getContributionStats(range: 'day' | 'month' = 'month') {
@@ -742,7 +750,6 @@ export type {
   GroupPolicies,
   InboxItem,
   ListEnvelope,
-  ListEnvelope as Envelope,
   PendingAccount,
   SettingsDoc,
   UsageLog,

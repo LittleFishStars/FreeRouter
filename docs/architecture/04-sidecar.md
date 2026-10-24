@@ -340,8 +340,8 @@ credits.query({ provider: string, credentialRef: string }) -> {
 | `loomy` | **扫码**（微信） | `loomy-wechat-login.js` | 是（展示二维码） | 涉及 `loomyPermanentLocked` |
 | `minimax` | **设备码 + PKCE** | `minimax-oauth.js` | 否 | `device_code` + `code_challenge` |
 | `minimaxintl` | **设备码 + PKCE** | `minimax-oauth.js` | 否 | 与 `minimax` 同源 |
-| `modelscope` | 无交互（仅刷新） | `modelscope-auth.js` | 否 | 只有 refresh 逻辑；**首次凭据来源未确认** |
-| `opencode` | 凭据粘贴（API Key） | `opencode-auth.js` | 否 | `apiKey` / `api_key` |
+| ~~`modelscope`~~ | —（2026-10-24 已移出本站支持） | — | — | 见下 |
+| ~~`opencode`~~ | —（2026-10-24 已移出本站支持） | — | — | 见下 |
 | `qoder` | OAuth 回调 + 设备轮询 | `qoder-oauth.js` | 是 | 另有 `pollQoderDeviceToken` |
 | `qodercn` | OAuth 回调 | `qoder-oauth.js`（地区别名） | 是 | 无独立模块 |
 | `raccoon` | **扫码 / 短信** | `raccoon-oauth.js`、`raccoon-login-page.js` | 是 | `qrcode` + `smsCode` 两种入口 |
@@ -350,8 +350,12 @@ credits.query({ provider: string, credentialRef: string }) -> {
 
 分类汇总：OAuth 回调 9 家（accio / autoclaw / buddy / workbuddy / lobsterai / qoder / qodercn /
 trae / zcode）、设备码 2 家（cline / minimax 系，含 minimaxintl）、扫码 2 家（loomy / raccoon）、
-短信 1 家（raccoon，与扫码同 provider）、凭据粘贴 1 家（opencode）、无交互 1 家（modelscope）、
-未知 1 家（codearts）。
+短信 1 家（raccoon，与扫码同 provider）、未知 1 家（codearts）。
+
+> 2026-10-24：`modelscope` 与 `opencode` 已从本站支持清单中移除（用户定案）。
+> 它们在反代列表里恒不可用（一个只有刷新逻辑、一个是账号池工具），用不了也说不清；
+> 同类需求改由「API 供应商」目录承接（`internal/apidir`）。下表与统计仍保留
+> 它们的上游数据，只作为移植历史的记录。
 
 **表中还出现了 3 个非 17 家的模块**（`gemini-oauth.js`、`officeace-auth.js`、`login.js`）：
 它们存在于 lib 目录但当前 `state.json` 里没有对应账号。**这些模块不进入 MVP 的 provider 清单**，
@@ -418,7 +422,7 @@ officeace 605 / modelscope 595 / autoclaw 482。
 
 | 档次 | 家数 | provider | 单家估时 |
 | --- | ---: | --- | ---: |
-| 易（纯 HTTP，无浏览器） | 4 | opencode（粘贴）、modelscope（只刷新）、minimax、cline（设备码） | 1–2 天 |
+| 易（纯 HTTP，无浏览器） | 2 | minimax、cline（设备码） | 1–2 天 |
 | 中（OAuth 回调 + 本地监听） | 9 | accio、autoclaw、buddy、workbuddy、lobsterai、qoder、qodercn、trae、codearts | 2–5 天 |
 | 难（浏览器 / 扫码 / 短信） | 3 | loomy（微信扫码）、raccoon（扫码 + 短信）、zcode（captcha） | 5–15 天 |
 
@@ -454,8 +458,6 @@ Go 重写 HTTP / JSON / SSE 类代码，行数通常是 JS 的 1.2–1.6 倍：
 > 没有 oauth/login 模块。可能实现位于 lib 之外或另一个包。在确认前该 provider 的
 > `loginImplemented = false`，控制台不展示登录入口。
 
-> **待定**：`modelscope` 的初始凭据从哪来。该模块只有刷新逻辑，说明用户是在别处（浏览器/其它
-> 工具）拿到首个 token 后粘进来的。若不支持粘贴，这个 provider 在 FreeRouter 里无法自助接入。
 
 > **待定**：各登录流在**无图形环境**（纯 CLI / 容器）下的完整闭环未验证。设备码类理论上可行，
 > 但需要实测 `openBrowser` 失败时是否仍有可用的降级路径（把 URL 打印给用户）。

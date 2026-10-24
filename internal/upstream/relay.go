@@ -186,7 +186,7 @@ func asDshError(err error, target **dshprovider.Error) bool {
 
 // splitProviderModel 拆 "provider/model" → (provider, model)。
 //
-// 为什么用第一个斜杠：provider 名不含斜杠（sidecar 目录表 17 家全部如此），
+// 为什么用第一个斜杠：provider 名不含斜杠（sidecar 目录表里的名字全部如此），
 // 模型名可能含（vendor 侧有 "org/model" 形态）——第一个斜杠前是 provider。
 func splitProviderModel(realModel string) (string, string) {
 	for i := 0; i < len(realModel); i++ {

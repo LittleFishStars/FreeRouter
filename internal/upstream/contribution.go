@@ -537,6 +537,49 @@ func (s *ContributionService) findContributeUpstream(ctx context.Context, provid
 	return store.Upstream{}, false, nil
 }
 
+// —— 暂停 / 恢复 ——
+
+// SetPaused 暂停（paused=true）或恢复一条贡献凭据，返回操作后的**可调用状态**。
+//
+// 落点是 upstreams.enabled —— 与撤销同一个开关，也是候选池的唯一入口
+// （realModelCandidates 走 ListUpstreams 读 upstreams）。刻意不引入新状态机：
+// 暂停不是凭据生命周期里的一个状态（status 仍回答「这条凭据本身能不能用」），
+// 它只是「先别把它放进候选」的运行时开关，所以只动上游行、不碰密钥材料。
+//
+// 恢复有一道闸：只有 status=active 的凭据能被恢复。未通过鉴定的行 enabled=false
+// 是**判定的结果**而不是暂停造成的，借「恢复」把它打开等于让一把没验过的 key
+// 回到候选池。此时不报错（契约要求幂等 200），只是状态保持不可调用。
+func (s *ContributionService) SetPaused(ctx context.Context, credentialID int64, actor RevokeActor, paused bool) (bool, error) {
+	cred, err := s.store.LookupCredential(ctx, credentialID)
+	if err != nil {
+		return false, fmt.Errorf("upstream: 切换凭据状态前读凭据失败：%w", err)
+	}
+	if !actor.IsAdmin && actor.AccountID != cred.OwnerAccountID {
+		return false, ErrContributionForbidden
+	}
+	if !paused && cred.Status != string(store.CredActive) {
+		return false, nil
+	}
+	up, found, err := s.findContributeUpstream(ctx, cred.Provider, cred.ExternalID)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		// 历史行/改名对不上确定性名字：没有可切换的上游行，凭据本来就不可被调用。
+		// 与 Revoke 同一口径——找不到不是错误，也不假装成功。
+		return false, nil
+	}
+	if err := s.store.UpdateUpstream(ctx, up.ID, up.Name, up.BaseURL, !paused); err != nil {
+		return false, fmt.Errorf("upstream: 切换上游行可调用性失败：%w", err)
+	}
+	if paused {
+		// 暂停期间不记失败（凭据根本不进候选），顺手清掉历史计数：
+		// 否则恢复后一次抖动就会碰上暂停前攒的哨头。
+		s.clearFailures(credentialID)
+	}
+	return !paused, nil
+}
+
 // —— 连续失败自动禁用 ——
 
 // RecordFailure 记一次调用失败；连续达到阈值时把凭据移出候选（disabled）。

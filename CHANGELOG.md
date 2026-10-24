@@ -13,6 +13,24 @@
 
 ### 新增
 
+- **贡献入口重构为三分类：反代供应商 / API 供应商 / 自定义供应商**（2026-10-24）：
+  - 反代供应商（13 家）：用供应商账号登录（OAuth/设备码/扫码/短信），凭据由 sidecar 换出；
+  - API 供应商（52 家）：**内置端点，只需粘贴 Key**。目录落在 `internal/apidir/catalog.json`，
+    自 Tingly Box 的 provider catalog 提取（MPL-2.0；只取事实字段：端点与模型 id，不含其代码）。
+    收录规则：只收有 OpenAI 兼容端点的 active 条目，排除 oauth/gcp_sa/aws_sigv4/azure_key、
+    localhost 自建、带 `{占位符}` 的模板端点，以及 ModelScope/OpenCode；
+  - 自定义供应商：任意 OpenAI 兼容端点（自建网关、局域网服务、其它中转）。
+  - `GET /api/contributions/providers` 改为 `{data:{categories:[…]}}`（破坏性变更，见下）；
+    `POST /api/contributions` 新增 `kind=api|custom`（缺省 custom），`kind=api` 时端点由服务端从
+    目录解析、落库 `upstreams.provider = api:<id>`，客户端自报端点一律忽略——不允许冒名供应商。
+- **贡献凭据暂停 / 恢复**（2026-10-24）：`POST /api/contributions/credentials/{id}/pause|resume`。
+  只切 `upstreams.enabled`（复用既有链路，不建第二套状态机），属主校验、幂等。
+  **恢复仅对 `status=active` 的凭据生效**：未通过鉴定的凭据 `enabled=false` 是判定结果，
+  允许它恢复等于给坏 Key 开一条回候选池的捷径；此时仍 200 但 `status` 保持 `paused`。
+- **贡献统计支持周期窗口**（2026-10-24）：`GET /api/contributions/stats?range=day|month`
+  （UTC 日界；非法值 400 且 `param=range`）。`range` 只作用于调用量三项，
+  凭据数/入池数保持当前快照（否则「我有几条凭据」会变成「本周期新建几条」）。
+
 - **租户面/注册/贡献者面端点落地**（2026-10-23，界面此前按契约先行）：
   - `GET /api/usage/overview`（用量总览：组、Key 统计、额度维度与 reset_at、按模型限额）、
     `GET /api/usage/logs`（调用日志筛选分页）、`GET /api/usage/models`（组授权 ∩ Key 白名单）、
@@ -55,6 +73,28 @@
   发布二进制带 `-tags webui_dist`）。
 
 ### 变更（运维需感知）
+
+- **`GET /api/contributions/providers` 的响应形状改为三分类**（2026-10-24，破坏性）：
+  旧形状是平铺数组（含一个 `flow=api_key` 的伪条目 `api-key`），新形状是
+  `{data:{categories:[{id,name,description,items}]}}`，三组分别是 `reverse_proxy` / `api` / `custom`。
+  同时 `api_key_only` 不再并入反代组（那两家已删），API 目录不依赖 sidecar。
+  自建前端同步改造，**外部脚本若解旧形状会断**。
+- **移除 ModelScope 与 OpenCode 供应商**（2026-10-24 用户定案）：
+  - sidecar：删 `sidecar/providers/{modelscope,opencode}/` 整目录（11 个文件）、`registry.mjs` 的
+    `API_KEY_ONLY` 清空、`index.mjs` 的 PROVIDERS 两行、`hub.mjs` 的 ADAPTERS 两条；
+  - 目录：`internal/apidir` 刻意不含 `modelscope*` / `opencode*`（含 Tingly 目录里的同厂商条目）；
+  - **能力面收缩**：移除后 apiKey 型 adapter 一个不剩，因此 sidecar 的 `models.list` / `infer.stream`
+    只剩「OAuth 型但本侧无账号池」的降级路径（返回 `E_DEPENDENCY_MISSING`）。`sidecar/selftest`
+    的 `chunksToSSE` 端到端用例随之失去驱动方（该链路已无 provider 入口），改为断言降级形态。
+    relay 类上游的目录刷新因此也只记录失败日志，vendor/selfhosted 的 HTTP 目录拉取不受影响。
+- **租户面 `AvailableModel.capabilities` 字段删除**（2026-10-24）：存储层没有能力列，旧实现
+  发恒空对象，界面永远渲染空徽标。不存在的字段不能靠「永远是空」兼容，前端同步不再渲染。
+- **Key 的 `PATCH` 改为三值语义**（2026-10-24）：`expires_at` 缺省=不变、`null`=清空、
+  字符串=设定，空串仍按清空（兼容旧表单）。旧实现用 `*string`，null 与缺省同义——
+  「想清空」永远清不掉。同一写路径顺带修了「拿别人的 Key id 能清掉过期时间」的越权（归属检查前置）。
+- **`GET /api/usage/logs` 改 offset 分页并支持 `error_code`**（2026-10-24）：前端曾发 `cursor`
+  （后端从未读过）与 `error_code`（后端忽略）；现在后端认 `offset` 与 `error_code`（精确匹配，
+  与 `status` 正交），COUNT 与列表共用同一 where，翻页总数不再错位。信封字段不变。
 
 - **首次启动改为进程自动生成随机口令并创建管理员**（2026-10-23 定案）：
   旧行为是浏览器打开 `/setup` 由用户填显示名与口令；新行为是启动时生成 20 字符

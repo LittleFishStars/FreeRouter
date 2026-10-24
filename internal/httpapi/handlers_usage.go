@@ -93,9 +93,13 @@ type UsageLogFilter struct {
 	From, To time.Time
 	KeyID    *int64
 	Model    string // 抽象模型名（桥负责名字→id）
-	Failed   bool
-	Limit    int
-	Offset   int
+	// ErrorCode 精确匹配错误码（03-errors 的机器码，如 no_candidate）；
+	// 空串 = 不筛。为什么它不归在 Failed 里：failed 是“有没有错”，错误码是
+	// “错在哪”，两者正交——“所有失败”与“no_candidate 失败”都是合法查询。
+	ErrorCode string
+	Failed    bool
+	Limit     int
+	Offset    int
 }
 
 // UsageSessionRow 是我的会话行。
@@ -197,8 +201,9 @@ func (s *Server) HandleUsageOverview(deps *TenantUsageDeps) http.HandlerFunc {
 	}
 }
 
-// HandleUsageLogs GET /api/usage/logs?limit=&offset=&from=&to=&key_id=&model=&status=。
-// from/to 是 RFC3339；status 是 ok|failed。limit 上限 200。
+// HandleUsageLogs GET /api/usage/logs?limit=&offset=&from=&to=&key_id=&model=&status=&error_code=。
+// from/to 是 RFC3339；status 是 ok|failed；error_code 是精确匹配（空 = 不筛）。
+// limit 上限 200；offset 从 0 开始（分页只有这一种语义，没有 cursor）。
 func (s *Server) HandleUsageLogs(deps *TenantUsageDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := requireTenant(w, r, deps)
@@ -222,6 +227,8 @@ func (s *Server) HandleUsageLogs(deps *TenantUsageDeps) http.HandlerFunc {
 			}
 		}
 		f.Model = q.Get("model")
+		// error_code 精确匹配：前端“错误码”输入框发的就是它；未传/空串 = 不筛。
+		f.ErrorCode = q.Get("error_code")
 		switch q.Get("status") {
 		case "ok":
 		case "failed":
@@ -278,6 +285,15 @@ func (s *Server) HandleUsageLogs(deps *TenantUsageDeps) http.HandlerFunc {
 }
 
 // HandleUsageModels GET /api/usage/models?key_id=。
+//
+// 响应行只有 {name, display_name, status, replacement}。
+//
+// 为什么不带 capabilities（审计 2.5 的 E 项）：这里曾恒输出
+// "capabilities": {}，但租户侧没有可信数据源——abstract_models 表没有
+// capabilities 列（管理面的能力文档是从 note 的私有前缀折出来的，属于
+// 管理员编辑面，不应透给租户），而前端按 {} 渲染出来的是“上下文窗口
+// 未知、能力未知”的假空行。无值比假值诚实：整条字段删除。
+// 将来真有能力列且可对租户展示时，再加回同名字段。
 func (s *Server) HandleUsageModels(deps *TenantUsageDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := requireTenant(w, r, deps)
@@ -298,7 +314,6 @@ func (s *Server) HandleUsageModels(deps *TenantUsageDeps) http.HandlerFunc {
 			out = append(out, map[string]any{
 				"name":         row.Name,
 				"display_name": row.DisplayName,
-				"capabilities": map[string]any{},
 				"status":       row.Status,
 				"replacement":  row.Replacement,
 			})

@@ -61,11 +61,17 @@ func (r *SessionRepo) ListSessionsByAccount(ctx context.Context, accountID int64
 // RequestLogFilter 是调用日志的筛选与分页。
 //
 // From/To 是 Unix 秒（0 = 不限）；KeyID/ModelID nil = 不筛；
-// Failed = 只看失败（status != 'ok'）；Limit/Offset 由调用方 clamp。
+// Failed = 只看失败（status != 'ok'）；ErrorCode 非空 = 按错误码精确匹配；
+// Limit/Offset 由调用方 clamp。
+//
+// 为什么 ErrorCode 用空串而不是 *string 表示「不筛」：失败行上的错误码总是
+// 一个非空机器码（如 no_candidate），空串不可能误伤某个合法取值；而多一个
+// 指针只会让每个调用方多写一层 nil 判断。
 type RequestLogFilter struct {
 	From, To       int64
 	KeyID, ModelID *int64
 	Failed         bool
+	ErrorCode      string
 	Limit, Offset  int
 }
 
@@ -123,7 +129,12 @@ func (r *UsageRepo) ListRequestLogsByAccount(ctx context.Context, accountID int6
 	if f.Failed {
 		where += " AND r.status <> 'ok'"
 	}
-
+	if f.ErrorCode != "" {
+		// 精确匹配而不是 LIKE：错误码是闭集合的机器码（03-errors），
+		// 前缀/模糊匹配只会把 no_candidate 与 no_candidate_x 这类未来取值混淆。
+		where += " AND r.error_code = ?"
+		args = append(args, f.ErrorCode)
+	}
 	var total int64
 	if err := r.db.QueryRowContext(ctx,
 		`SELECT COUNT(1) FROM requests r WHERE`+where, args...).Scan(&total); err != nil {
@@ -204,14 +215,23 @@ func (r *ModelRepo) ListCredentialsByOwner(ctx context.Context, ownerAccountID i
 	return out, nil
 }
 
-// ContributionUsageByOwner 汇总该账户贡献凭据的调用量（贡献统计页）。
+// ContributionUsageByOwner 汇总该账户贡献凭据自 since 以来的调用量（贡献统计页）。
+//
 // requests.resolved_credential_id 指向被使用的凭据；owner 是凭据属主。
-func (r *UsageRepo) ContributionUsageByOwner(ctx context.Context, ownerAccountID int64) (calls, inTokens, outTokens int64, err error) {
+// since 是 Unix 秒，**0 = 不限**（保留旧行为，也让「全量」不需要另一个方法）。
+// 问询走 ix_requests_credential_ts(resolved_credential_id, ts)：先按凭据等值命中，
+// 再在该凭据的请求上做 ts 区间扫描，不带因 COUNT(1) 退化成全表扫。
+func (r *UsageRepo) ContributionUsageByOwner(ctx context.Context, ownerAccountID, since int64) (calls, inTokens, outTokens int64, err error) {
+	where := ` WHERE c.owner_account_id = ?`
+	args := []any{ownerAccountID}
+	if since > 0 {
+		where += ` AND r.ts >= ?`
+		args = append(args, since)
+	}
 	err = r.db.QueryRowContext(ctx,
 		`SELECT COUNT(1), COALESCE(SUM(in_tokens),0), COALESCE(SUM(out_tokens),0)
 		   FROM requests r
-		   JOIN upstream_credentials c ON c.id = r.resolved_credential_id
-		  WHERE c.owner_account_id = ?`, ownerAccountID).
+		   JOIN upstream_credentials c ON c.id = r.resolved_credential_id`+where, args...).
 		Scan(&calls, &inTokens, &outTokens)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("store: 汇总贡献用量失败: %w", err)

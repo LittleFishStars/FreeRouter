@@ -23,6 +23,7 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
+	"github.com/LittleFishStars/FreeRouter/internal/upstream"
 )
 
 // ---------------------------------------------------------------------------
@@ -372,6 +373,9 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 		Store:     newContributionBridge(a.store, a.Contribution(), a.cfg.Limits.DefaultKeysPerAccount),
 		Hasher:    auth.NewPasswordHasher(a.cfg.Security.PasswordMinLength),
 		Sess:      deps.sess,
+		// 暂停/恢复钉到 ContributionService 的窄方法（落点是 upstream.enabled）；
+		// 不走 contributionBridge：存储桥只负责读写行，开/关候选池的含义归 upstream。
+		Pauser: contributionPauseBridge{svc: a.Contribution()},
 	}
 	// 供应商 OAuth：发起（会话面，返回 authorize_url）+ 回调（裸路径，302 回前端）。
 	// 回调路径由供应商按「端口 + /oauth/callback」构造，不能改到 /api 下。
@@ -397,6 +401,9 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	r.Get("/api/contributions", sessMW(a.server.HandleMyContributions(contribDeps)).(http.HandlerFunc))
 	r.Get("/api/contributions/credentials", sessMW(a.server.HandleMyCredentials(contribDeps)).(http.HandlerFunc))
 	r.Get("/api/contributions/credentials/{id}", sessMW(a.server.HandleMyCredentialDetail(contribDeps)).(http.HandlerFunc))
+	// 暂停/恢复：会话面 + 属主校验。两个端点幂等，重复点不改变状态。
+	r.Post("/api/contributions/credentials/{id}/pause", sessMW(a.server.HandleContributionCredentialPause(contribDeps)).(http.HandlerFunc))
+	r.Post("/api/contributions/credentials/{id}/resume", sessMW(a.server.HandleContributionCredentialResume(contribDeps)).(http.HandlerFunc))
 	r.Get("/api/contributions/stats", sessMW(a.server.HandleContributionStats(contribDeps)).(http.HandlerFunc))
 	r.Get("/api/contributions/recovery-code", sessMW(a.server.HandleRecoveryCodeState(contribDeps)).(http.HandlerFunc))
 	r.Post("/api/contributions/recovery-code/regenerate", sessMW(a.server.HandleRecoveryCodeRegenerate(contribDeps)).(http.HandlerFunc))
@@ -405,6 +412,31 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	a.server.AttachAdmin(a.buildAdminDeps())
 	a.server.MountAdminRoutes(r)
 }
+
+// contributionPauseBridge 把「暂停/恢复」钉到 upstream.ContributionService 的窄方法。
+//
+// 为什么在这里而不是在 public_bridge.go：那个文件装的是「httpapi 窄接口 → store 仓储」
+// 的翻译，而这一条的下游是 upstream 的业务编排（候选池开关 + 失败计数），
+// 两者依赖方向不同。桥只翻译不判定：确认属主与不可恢复情形都在 upstream 侧。
+type contributionPauseBridge struct {
+	svc *upstream.ContributionService
+}
+
+func (b contributionPauseBridge) SetPaused(ctx context.Context, owner, credentialID int64, paused bool) (string, error) {
+	if b.svc == nil {
+		return "", fmt.Errorf("贡献服务未装配")
+	}
+	callable, err := b.svc.SetPaused(ctx, credentialID, upstream.RevokeActor{AccountID: owner}, paused)
+	if err != nil {
+		return "", err
+	}
+	if callable {
+		return "enabled", nil
+	}
+	return "paused", nil
+}
+
+var _ httpapi.ContributionPauser = contributionPauseBridge{}
 
 // accountProfileBridge 实现 httpapi.AccountProfileStore（显示名写面）。
 //

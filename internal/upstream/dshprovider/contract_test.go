@@ -512,13 +512,17 @@ func TestContractRealSidecar(t *testing.T) {
 
 	ctx := context.Background()
 
-	// providers.list 不依赖 hub：必须返回 17 家（04-sidecar.md 6.2 全表）。
+	// providers.list 不依赖 hub：必须返回 15 家。
+	//
+	// 家数的来历：04-sidecar.md 6.2 的全表是 17 家，2026-10-24 按贡献入口 v2 契约
+	// §7 删掉了 modelscope / opencode 两家（它们没有可发起的登录流，凭据形态由
+	// 「API 供应商」入口承担），所以现在是 15。这个断言要跟着契约走，不是跟文档走。
 	ps, err := c.ProvidersList(ctx)
 	if err != nil {
 		t.Fatalf("providers.list：%v", err)
 	}
-	if len(ps) != 17 {
-		t.Fatalf("provider 目录应为 17 家，得 %d", len(ps))
+	if len(ps) != 15 {
+		t.Fatalf("provider 目录应为 15 家（17 - modelscope/opencode），得 %d", len(ps))
 	}
 
 	// credentials.resolve 现在走 $DSH_HOME/.credentials.yaml 的**只读**解析（与 hub 无关），
@@ -543,7 +547,7 @@ func TestContractRealSidecar(t *testing.T) {
 	// 「业务错误不影响通道健康」的活体断言：credits.query 恒为 E_NOT_IMPLEMENTED
 	// （余额端点要的是 DSH 账号对象，sidecar 无账号池替身）。它必须是**结构化错误**
 	// 而不是超时/断连——这正是「缺能力不崩」的核心。
-	_, err = c.Call(ctx, "credits.query", map[string]any{"provider": "modelscope", "credentialRef": "x"})
+	_, err = c.Call(ctx, "credits.query", map[string]any{"provider": "demo-provider", "credentialRef": "x"})
 	if CodeOf(err) != CodeNotImplemented {
 		t.Errorf("credits.query 应回 E_NOT_IMPLEMENTED，得 %v", err)
 	}
@@ -608,7 +612,7 @@ func TestContractStderrRedaction(t *testing.T) {
 		"GET /oauth/callback?code=" + authCode + "&state=xyz HTTP/1.1",
 		`{"access_token":"` + secretToken + `","expires_in":3600}`,
 		long, // 超长行：截断
-		"普通日志：provider=modelscope 装载成功",
+		"普通日志：provider=demo-provider 装载成功",
 	}, "\n") + "\n"
 	c.drainStderr(strings.NewReader(input))
 
@@ -625,7 +629,7 @@ func TestContractStderrRedaction(t *testing.T) {
 		t.Errorf("超长 stderr 行未被截断（应 ≤ %d 字节）", stderrLogMaxBytes)
 	}
 	// 3. 正常内容仍要可读（遮蔽不能把有用信息一起吃掉）。
-	if !strings.Contains(logged, "modelscope") {
+	if !strings.Contains(logged, "demo-provider") {
 		t.Errorf("普通日志不应被遮蔽掉：%s", logged)
 	}
 	// 4. 环形缓冲保留原文：排障要看完整错误（它只在内存里，不进日志系统）。

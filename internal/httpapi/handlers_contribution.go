@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/LittleFishStars/FreeRouter/internal/apidir"
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
 )
 
@@ -24,7 +26,9 @@ import (
 //	GET  /api/contributions                  我的贡献概览（会话）
 //	GET  /api/contributions/credentials      我的凭据列表（会话）
 //	GET  /api/contributions/credentials/{id} 凭据详情（会话，属主校验）
-//	GET  /api/contributions/stats            贡献统计（会话）
+//	GET  /api/contributions/stats            贡献统计（会话，?range=day|month）
+//	POST /api/contributions/credentials/{id}/pause   暂停（会话，属主校验）
+//	POST /api/contributions/credentials/{id}/resume  恢复（会话，属主校验）
 //	GET  /api/contributions/recovery-code    重发恢复码（会话，覆盖旧码）
 //
 // 提交链路委托 upstream.ContributionService（L0 → 落库 → 探测 → 判定），
@@ -32,8 +36,14 @@ import (
 // HTTP 形状与错误映射。恢复码格式 `frv-<accountID>-<secret>`：兑换时先
 // 解析 id 再 Verify(hash)，避免「按码全表扫」。
 //
-// OAuth 型贡献（供应商授权）本版未接：providers 只列 API Key 型，
-// OAuth 区块由前端按 available=false 折叠并给原因。
+// 三条贡献路径（契约 v2 §1）：
+//
+//	反代供应商  供应商账号登录，凭据由 sidecar 换出，走 /api/contributions/oauth/*；
+//	API 供应商  内置端点（internal/apidir）+ 用户粘贴 Key；
+//	自定义      任意 OpenAI 兼容端点 + Key（端点由用户填）。
+//
+// 暂停/恢复只切 upstreams.enabled：凭据与密钥材料都留着，所以它不是撤销
+// （撤销会销毁密文，属管理面的动作）。
 
 // ContributionDeps 是贡献面的依赖。
 type ContributionDeps struct {
@@ -42,8 +52,11 @@ type ContributionDeps struct {
 	Hasher    *auth.PasswordHasher
 	// Sess 用于「带 Cookie 提交」时识别已登录贡献者；nil = 视为未登录。
 	Sess *auth.SessionManager
-	// OAuth 是供应商 OAuth 列表来源（Providers）。nil = 只列 API Key 型。
+	// OAuth 是反代供应商清单来源（reverse_proxy 分类的 items）。
+	// nil = 该分类为空（前端仍能看到 api / custom 两个入口）。
 	OAuth ProviderOAuth
+	// Pauser 切换贡献凭据的可调用性（暂停 / 恢复）；nil = 端点报未装配。
+	Pauser ContributionPauser
 }
 
 // ContributionSubmitter 是贡献提交链路的窄接口（装配桥包装 ContributionService）。
@@ -87,8 +100,8 @@ type ContributionStore interface {
 	CredentialsOf(ctx context.Context, owner int64) ([]ContributionCredentialRow, error)
 	// CredentialOf 读属主的一条凭据（非属主 not_found）。
 	CredentialOf(ctx context.Context, owner, id int64) (*ContributionCredentialRow, error)
-	// ContributionUsage 汇总贡献凭据的调用量。
-	ContributionUsage(ctx context.Context, owner int64) (calls, inTokens, outTokens int64, err error)
+	// ContributionUsage 汇总贡献凭据自 since（Unix 秒，0 = 不限）以来的调用量。
+	ContributionUsage(ctx context.Context, owner int64, since int64) (calls, inTokens, outTokens int64, err error)
 }
 
 // ContributionCredentialRow 是一条贡献凭据的展示行。
@@ -102,59 +115,96 @@ type ContributionCredentialRow struct {
 	LastUsedAt   int64
 }
 
+// ContributionPauser 切换一条贡献凭据的可调用性（暂停 / 恢复）。
+//
+// 为什么是独立窄接口而不是塞进 ContributionStore：切换的落点是 upstreams.enabled，
+// 那个开关的业务含义归 upstream.ContributionService（与撤销同一个入口），
+// 存储仓储只负责写——两个面分开，失败语义才不会被合成一个“可能失败”。
+//
+// SetPaused 返回操作后的可调用状态（"paused" / "enabled"）；重复调用幂等。
+type ContributionPauser interface {
+	SetPaused(ctx context.Context, owner, credentialID int64, paused bool) (string, error)
+}
+
+// 贡献入口的三个分类 id（前端按 id 分 Tab，契约 v2 §1）。
+const (
+	ContributeCategoryReverseProxy = "reverse_proxy"
+	ContributeCategoryAPI          = "api"
+	ContributeCategoryCustom       = "custom"
+)
+
 // HandleContributeProviders GET /api/contributions/providers（公开）。
 //
-// 列表 = 已接入的供应商 OAuth（可用性由 sidecar 与移植状态决定）+ API Key 型
-// （恒可用：它只需要一个 OpenAI 兼容端点）。不可用的供应商**照列**并带
-// unavailable_reason：界面上要显示「为什么不能用」而不是凭空少一个入口。
+// 响应是**三个互斥入口**而不是一张平铺清单（契约 v2 §1）：
+//
+//	reverse_proxy 供应商账号登录，凭据由 sidecar 换出（不接触用户的 Key）
+//	api           内置端点 + 用户粘贴 Key（数据来自 internal/apidir）
+//	custom        任意 OpenAI 兼容端点（入口是表单，清单恒空）
+//
+// 为什么不再平铺：平铺把「要不要登录供应商账号」这个决定性差异藏进了 flow 字段，
+// 前端只能靠猜来分组；分成三类后，每一类的前端交互是确定的。
+//
+// reverse_proxy 的不可用项**照列**并带 unavailable_reason：界面上要显示
+// 「为什么不能用」而不是凭空少一个入口。字段一律发全（空值给零值），
+// 前端的判空逻辑因此只需要一套。
+//
+// api 组是编译进二进制的本地事实数据：不依赖 sidecar，也不存在「今天不可用」，
+// 因此不带 available 字段（前端不必判空）。
 func (s *Server) HandleContributeProviders(deps *ContributionDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rows := make([]map[string]any, 0, 4)
+		reverseProxy := make([]map[string]any, 0, 16)
 		if deps != nil && deps.OAuth != nil {
 			for _, c := range deps.OAuth.Providers(r.Context()) {
-				row := map[string]any{
-					"id":        c.ID,
-					"name":      c.Name,
-					"available": c.Available,
-				}
-				// flow/needs 决定前端渲染哪种交互（跳转 / 设备码 / 二维码 / 手机号）；
-				// 不发的话前端只能一律当跳转处理，session 形态就永远出不来。
-				if c.Flow != "" {
-					row["flow"] = c.Flow
-				}
-				if len(c.Needs) > 0 {
-					row["needs"] = c.Needs
-				}
-				if !c.Available && c.UnavailableReason != "" {
-					row["unavailable_reason"] = c.UnavailableReason
-				}
-				// 两类不可用对运维的含义完全不同（配了就能用 vs 永远不支持），
-				// 前端要据此给不同措辞，所以必须把它发出去。
-				if !c.Available && c.UnavailableKind != "" {
-					row["unavailable_kind"] = c.UnavailableKind
-				}
-				// 替代贡献路径：不能 OAuth 的供应商告诉用户"怎么用 API Key 贡献"。
-				if c.SuggestedEndpoint != "" {
-					row["suggested_endpoint"] = c.SuggestedEndpoint
-				}
-				if len(c.Steps) > 0 {
-					row["steps"] = c.Steps
-				}
-				rows = append(rows, row)
+				// flow/needs 决定前端渲染哪种交互（跳转 / 设备码 / 二维码 / 手机号）。
+				reverseProxy = append(reverseProxy, map[string]any{
+					"id":                 c.ID,
+					"name":               c.Name,
+					"flow":               c.Flow,
+					"needs":              nonNilStrings(c.Needs),
+					"available":          c.Available,
+					"unavailable_reason": c.UnavailableReason,
+					"unavailable_kind":   c.UnavailableKind,
+					"suggested_endpoint": c.SuggestedEndpoint,
+					"steps":              nonNilStrings(c.Steps),
+				})
 			}
 		}
-		// 「API Key 型」不是一个 OAuth 供应商，而是一条**并列的贡献路径**。
-		// 这里带上 flow=api_key，前端据此把它渲染成说明而不是跳转链接——
-		// 之前它 available=true 又不带 flow，前端会生成 /contribute/oauth/api-key
-		// 这个必然 404 的死链（本页已有 API Key 表单，不需要再跳一次）。
-		rows = append(rows, map[string]any{
-			"id":        "api-key",
-			"name":      "OpenAI 兼容端点（API Key）",
-			"available": true,
-			"flow":      "api_key",
+		categories := []map[string]any{
+			{
+				"id":          ContributeCategoryReverseProxy,
+				"name":        "反代供应商",
+				"description": "用供应商账号登录，由 sidecar 换出凭据（不接触你的 Key）",
+				"items":       reverseProxy,
+			},
+			{
+				"id":          ContributeCategoryAPI,
+				"name":        "API 供应商",
+				"description": "内置端点，只需粘贴 Key",
+				"items":       apidir.List(),
+			},
+			{
+				"id":          ContributeCategoryCustom,
+				"name":        "自定义供应商",
+				"description": "任意 OpenAI 兼容端点（自建网关、局域网服务、其它中转站）",
+				// 这一类没有清单：入口就是一张表单，空数组让前端只走一种分支。
+				"items": []any{},
+			},
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"data": map[string]any{"categories": categories},
 		})
-		writeJSON(w, http.StatusOK, map[string]any{"data": rows})
 	}
+}
+
+// nonNilStrings 把 nil 切片换成空切片。
+//
+// JSON 里 null 与 [] 对前端是两种分支，而契约里「没有内容」一律是空数组：
+// 把 nil 漏出去会逼前端同时处理两种形态。
+func nonNilStrings(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
 }
 
 // HandleContributeSubmit POST /api/contributions（公开；未登录自动建号）。
@@ -165,6 +215,10 @@ func (s *Server) HandleContributeSubmit(deps *ContributionDeps) http.HandlerFunc
 			return
 		}
 		var body struct {
+			// kind/provider 是契约 v2 新增的两项：kind=api 时端点由目录解析，
+			// kind=custom（或缺失）时端点由请求体提供。
+			Kind          string   `json:"kind"`
+			Provider      string   `json:"provider"`
 			Endpoint      string   `json:"endpoint"`
 			APIKey        string   `json:"api_key"`
 			Label         string   `json:"label"`
@@ -173,10 +227,13 @@ func (s *Server) HandleContributeSubmit(deps *ContributionDeps) http.HandlerFunc
 		if !decodeJSONBody(w, r, &body) {
 			return
 		}
-		endpoint := strings.TrimSpace(body.Endpoint)
 		apiKey := strings.TrimSpace(body.APIKey)
-		if endpoint == "" || apiKey == "" {
-			writeError(w, http.StatusBadRequest, "invalid_request", "endpoint 与 api_key 必填", nil)
+		endpoint, providerID, ok := resolveSubmissionTarget(w, body.Kind, body.Provider, body.Endpoint)
+		if !ok {
+			return
+		}
+		if apiKey == "" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "api_key 必填", nil)
 			return
 		}
 		claimed := ""
@@ -205,7 +262,7 @@ func (s *Server) HandleContributeSubmit(deps *ContributionDeps) http.HandlerFunc
 
 		outcome, err := deps.Submitter.Submit(r.Context(), ContributionSubmission{
 			OwnerAccountID: owner,
-			Provider:       "api-key",
+			Provider:       providerID,
 			BaseURL:        endpoint,
 			APIKey:         apiKey,
 			ClaimedModel:   claimed,
@@ -237,6 +294,46 @@ func (s *Server) HandleContributeSubmit(deps *ContributionDeps) http.HandlerFunc
 			resp["recovery_code"] = recoveryCode
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": resp})
+	}
+}
+
+// resolveSubmissionTarget 把请求体的 (kind, provider, endpoint) 翻成落库用的
+// (base_url, provider 列值)。校验失败时直接写出应答并返回 ok=false。
+//
+// 三种形态（契约 v2 §3）：
+//
+//	kind=api     endpoint **由后端从目录解析**，请求体里的 endpoint 一律忽略——
+//	             让前端能提交端点等于把「目录是权威」变成一个可绕过的建议；
+//	kind=custom  endpoint 必填（校验沿用 upstream.ValidateTarget）；provider 列存 "custom";
+//	其它取值     400：宁可显式拒绝，也不要按 custom 静默落一条形状不明的凭据。
+//
+// provider 列的两种取值就是契约 §4 的存储口径（不新增表）：api:<catalogID> / custom。
+// 注意这里的 kind 是**贡献类型**，与 upstream.Submission.Kind（vendor/selfhosted 上游
+// 类型，由 BaseURL 自动判定）是两回事，不要互相传递。
+func resolveSubmissionTarget(w http.ResponseWriter, kind, providerID, endpoint string) (string, string, bool) {
+	switch strings.TrimSpace(kind) {
+	case "", "custom":
+		endpoint = strings.TrimSpace(endpoint)
+		if endpoint == "" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "endpoint 与 api_key 必填", nil)
+			return "", "", false
+		}
+		return endpoint, "custom", true
+	case "api":
+		pid := strings.TrimSpace(providerID)
+		p, found := apidir.Get(pid)
+		if !found {
+			writeError(w, http.StatusBadRequest, "invalid_request",
+				"未知的 API 供应商："+pid, nil)
+			return "", "", false
+		}
+		// provider 存 "api:<catalogID>"：同一家的 key 共享幂等键空间，而 base_url
+		// 仍逐条落库——目录将来改端点不会改变历史行的语义。
+		return p.BaseURL, "api:" + pid, true
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_request",
+			"未知的贡献类型："+strings.TrimSpace(kind)+"（仅支持 api / custom）", nil)
+		return "", "", false
 	}
 }
 
@@ -389,10 +486,70 @@ func (s *Server) HandleMyCredentialDetail(deps *ContributionDeps) http.HandlerFu
 	}
 }
 
-// HandleContributionStats GET /api/contributions/stats（会话）。
+// HandleContributionCredentialPause POST /api/contributions/credentials/{id}/pause（会话）。
+//
+// 暂停 = 把该凭据对应的 upstream 行 enabled 置 false。它与撤销共用同一个开关，
+// 但**不动密钥材料**：暂停是「先别用我的 key」，不是「收回我的 key」——
+// 区别在恢复时能不能真的恢复。
+func (s *Server) HandleContributionCredentialPause(deps *ContributionDeps) http.HandlerFunc {
+	return s.handleCredentialPause(deps, true)
+}
+
+// HandleContributionCredentialResume POST .../resume（会话）。
+//
+// 恢复 = 把 upstream 行 enabled 置回 true。只有通过鉴定的凭据（status=active）
+// 才恢复得起来：未通过鉴定的凭据 enabled=false 是**判定结果**，不是暂停造成的，
+// 打开它等于把一把没验过的 key 放进候选池——此时应答仍是 200，但 status
+// 保持 "paused"（幂等，不报错，也不假装成功）。
+func (s *Server) HandleContributionCredentialResume(deps *ContributionDeps) http.HandlerFunc {
+	return s.handleCredentialPause(deps, false)
+}
+
+// handleCredentialPause 是两个幂等操作的共同实现（重复调用状态不变）。
+func (s *Server) handleCredentialPause(deps *ContributionDeps, paused bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		owner, ok := requireContributor(w, r, deps)
+		if !ok {
+			return
+		}
+		if deps.Pauser == nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "暂停/恢复服务未装配", nil)
+			return
+		}
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil || id <= 0 {
+			writeError(w, http.StatusNotFound, "not_found", "接口不存在", nil)
+			return
+		}
+		// 属主校验走既有 CredentialOf 口径：非属主与不存在同形 404，
+		// 不确认他人凭据的存在（与详情端点一致）。
+		if _, err := deps.Store.CredentialOf(r.Context(), owner, id); err != nil {
+			writeError(w, http.StatusNotFound, "not_found", "接口不存在", nil)
+			return
+		}
+		status, err := deps.Pauser.SetPaused(r.Context(), owner, id, paused)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "切换凭据状态失败", nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+			"ok": true, "status": status,
+		}})
+	}
+}
+
+// HandleContributionStats GET /api/contributions/stats（会话，?range=day|month）。
+//
+// range 只影响**调用量三项**（call_count / input_tokens / output_tokens）：凭据数与
+// 入池数是当前快照，不是区间统计——把它们也按区间算会让「我有几条凭据」变成
+// 「我本周期新建了几条」，那是另一个问题（也是另一个端点）。
 func (s *Server) HandleContributionStats(deps *ContributionDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		owner, ok := requireContributor(w, r, deps)
+		if !ok {
+			return
+		}
+		since, ok := contributionStatsSince(w, r.URL.Query().Get("range"), time.Now())
 		if !ok {
 			return
 		}
@@ -401,7 +558,7 @@ func (s *Server) HandleContributionStats(deps *ContributionDeps) http.HandlerFun
 			writeError(w, http.StatusInternalServerError, "internal_error", "读取贡献统计失败", nil)
 			return
 		}
-		calls, inTok, outTok, err := deps.Store.ContributionUsage(r.Context(), owner)
+		calls, inTok, outTok, err := deps.Store.ContributionUsage(r.Context(), owner, since)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", "读取贡献统计失败", nil)
 			return
@@ -421,6 +578,28 @@ func (s *Server) HandleContributionStats(deps *ContributionDeps) http.HandlerFun
 			"input_tokens":        inTok,
 			"output_tokens":       outTok,
 		}})
+	}
+}
+
+// contributionStatsSince 把 range 参数翻成「统计起点」（Unix 秒）。
+//
+// 日界一律 UTC：usage_daily.day 与请求时间戳的日界都是 UTC（05-storage 第 9 节的
+// 既定口径），这里换成本地时区会让统计与用量表对不上账（北京时间凌晨 0-8 点
+// 属于同一天的两个 UTC 日，两个页面的数字会差一整天）。
+//
+// 非法值写 400 并把字段名放进 param：前端要能定位到是哪个请求参数错了。
+func contributionStatsSince(w http.ResponseWriter, raw string, now time.Time) (int64, bool) {
+	utc := now.UTC()
+	day := time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
+	switch strings.TrimSpace(raw) {
+	case "", "day":
+		return day.Unix(), true
+	case "month":
+		return time.Date(utc.Year(), utc.Month(), 1, 0, 0, 0, 0, time.UTC).Unix(), true
+	default:
+		writeErrorParam(w, http.StatusBadRequest, "invalid_request", "range",
+			"range 只支持 day / month")
+		return 0, false
 	}
 }
 
@@ -487,7 +666,8 @@ func requireContributor(w http.ResponseWriter, r *http.Request, deps *Contributi
 }
 
 // renderContributionCredential 渲染前端 ContributionCredential 行。
-// kind 恒 api_key（OAuth 型贡献本版未接）；claimed_model 无列，给空串。
+// kind 恒 api_key（凭据表没有 kind 列，OAuth 与 API Key 贡献的行同形）；
+// claimed_model 无列，给空串。改这两个值要同步前端契约。
 func renderContributionCredential(row ContributionCredentialRow) map[string]any {
 	return map[string]any{
 		"id":             strconv.FormatInt(row.ID, 10),

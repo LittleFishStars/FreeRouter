@@ -387,10 +387,6 @@ export interface InboxItem {
   read_by: string | null
 }
 
-export interface InboxCount {
-  count: number
-}
-
 // ── 租户面（docs/ui/04-tenant.md；端点按 REST 形状暂定）───────────────
 
 export interface ApiKey {
@@ -463,7 +459,9 @@ export interface UsageLog {
 export interface AvailableModel {
   name: string
   display_name: string
-  capabilities: ModelCapabilities
+  // 没有 capabilities 字段：租户侧拿不到可靠的能力数据（存储层无此列），
+  // 后端已移除该字段而不是发一个恒空对象——不存在的字段不能靠「永远是空」来兼容。
+  capabilities?: never
   status: 'active' | 'deprecated' | 'disabled' | string
   replacement?: string | null
   migration_doc?: string
@@ -508,9 +506,77 @@ export interface RecoveryCodeState {
   last_used_at: string | null
 }
 
-// ── 错误页 ─────────────────────────────────────────────────────────────
+// ── 贡献入口三分类（tmp/CONTRACT-contribution-v2.md §1，接口权威）────────
+//
+// 旧的「平铺供应商数组」形状已废弃：它把 OAuth 供应商、API Key 型供应商与
+// 一条伪条目混在一个数组里，前端只能靠 flow 猜语义。现在后端按语义分成三类，
+// 每类一个 id、一组 items，items 的字段各自独立（反代有 flow/available，
+// API 目录没有这些——它恒可用）。
 
-export interface ErrorPageState {
-  code: string
-  requestId?: string
+export type ContributionCategoryId = 'reverse_proxy' | 'api' | 'custom'
+
+/** 反代供应商：用供应商账号登录，凭据由 sidecar 换出（不接触用户的 Key）。 */
+export interface ReverseProxyProvider {
+  id: string
+  name: string
+  /**
+   * 交互形态：用户在供应商侧要做什么。
+   *   browser / browser_callback → 跳转到授权页
+   *   device_code → 跳转后输入设备码
+   *   qr_scan → 本页扫码
+   *   sms → 本页填短信验证码
+   */
+  flow?: string
+  /** 发起前需要的参数（目前只有 sms 形态要 phone）。 */
+  needs?: string[]
+  available: boolean
+  unavailable_reason?: string
+  /**
+   * 不可用的**性质**：
+   *   config → 我们这边缺配置（补上就能用，可操作）
+   *   unsupported → 上游没有可脱离 IDE 的 OAuth 登录面（补配置也不会变）
+   * 两类在界面上必须给不同措辞。
+   */
+  unavailable_kind?: 'config' | 'unsupported'
+  /** 该家 OpenAI 兼容 base URL（仅极少数不可用条目会给，用于引导到自定义入口）。 */
+  suggested_endpoint?: string
+  /** 「去哪儿拿凭据」的操作步骤。 */
+  steps?: string[]
+}
+
+/** 内置 API 目录里的模型条目（只收事实：模型 id）。 */
+export interface ApiProviderModel {
+  id: string
+}
+
+/**
+ * API 供应商：内置端点 + 用户粘贴 Key。来自 `internal/apidir/catalog.json`，
+ * 不依赖 sidecar，**恒可用**（所以没有 available / unavailable_reason 字段）。
+ */
+export interface ApiProviderEntry {
+  id: string
+  name: string
+  base_url: string
+  /** 目前目录只收 openai 协议端点（只有 anthropic 端点的供应商不进目录）。 */
+  protocol: string
+  vendor_family: string
+  /** 主要服务区域（cn / global …），仅作展示提示。 */
+  region: string
+  website: string
+  api_doc: string
+  models: ApiProviderModel[]
+}
+
+/**
+ * 三类入口之一。用 id 做判别联合，页面按 id 取到的 items 才有正确类型
+ * （否则 api 项会被当成反代项去读 available，类型层就该拦下）。
+ */
+export type ContributionProviderCategory =
+  | { id: 'reverse_proxy'; name: string; description: string; items: ReverseProxyProvider[] }
+  | { id: 'api'; name: string; description: string; items: ApiProviderEntry[] }
+  | { id: 'custom'; name: string; description: string; items: [] }
+
+/** GET /api/contributions/providers 的 data。分类顺序由后端给定，页面不要重排。 */
+export interface ContributionProviderCatalog {
+  categories: ContributionProviderCategory[]
 }

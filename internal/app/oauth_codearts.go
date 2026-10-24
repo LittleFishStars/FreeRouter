@@ -127,14 +127,14 @@ type sidecarProvider struct {
 
 // sidecarList 是 oauth.list 的应答。
 type sidecarList struct {
-	Providers  []sidecarProvider `json:"providers"`
+	Providers []sidecarProvider `json:"providers"`
+	// APIKeyOnly 是旧形状的「只能粘贴 Key」清单。贡献入口 v2 已删掉两家
+	// （modelscope / opencode），本进程不再读取它；保留字段是为了能让旧 sidecar
+	// 的应答原样解析（多一个空数组不报错），而新 sidecar 恒返回空。
 	APIKeyOnly []struct {
-		ID     string `json:"id"`
-		Name   string `json:"name"`
-		Reason string `json:"reason"`
-		// baseUrl / steps 是给「替代贡献路径」用的：这三家不能 OAuth 登录，
-		// 但凭据可以走 API Key 表单提交。前端把 baseUrl 一键填进表单、
-		// 把 steps 展示成操作清单，用户才真的能贡献——只说"不支持"等于死胡同。
+		ID      string   `json:"id"`
+		Name    string   `json:"name"`
+		Reason  string   `json:"reason"`
 		BaseURL string   `json:"baseUrl"`
 		Steps   []string `json:"steps"`
 	} `json:"api_key_only"`
@@ -167,10 +167,14 @@ func (b *oauthBridge) availability() (bool, string) {
 	return true, ""
 }
 
-// Providers 列出全部供应商：sidecar 在 → 用它的清单；不在 → 全部标不可用并给原因。
+// Providers 列出**反代供应商**（reverse_proxy 分类的 items）：sidecar 在 → 用它
+// 的清单；不在 → 全部标不可用并给原因。
 //
 // 为什么不可用时仍列出：界面上「这个入口存在但需要 sidecar」比「凭空少 14 个
 // 供应商」更可诊断——用户能自己发现是没起 sidecar。
+//
+// 另两个分类（api / custom）不经过这里：api 组由 internal/apidir 提供（编译进
+// 二进制的本地事实数据，不依赖 sidecar），custom 组恒为空（入口是表单）。
 func (b *oauthBridge) Providers(ctx context.Context) []httpapi.ProviderChoice {
 	avail, reason := b.availability()
 	list, err := b.list(ctx)
@@ -180,7 +184,7 @@ func (b *oauthBridge) Providers(ctx context.Context) []httpapi.ProviderChoice {
 		}
 		return fallbackProviders(avail, reason)
 	}
-	out := make([]httpapi.ProviderChoice, 0, len(list.Providers)+len(list.APIKeyOnly))
+	out := make([]httpapi.ProviderChoice, 0, len(list.Providers))
 	for _, p := range list.Providers {
 		c := httpapi.ProviderChoice{
 			ID: p.ID, Name: p.Name, Flow: p.Flow, Needs: p.Needs,
@@ -198,19 +202,9 @@ func (b *oauthBridge) Providers(ctx context.Context) []httpapi.ProviderChoice {
 		}
 		out = append(out, c)
 	}
-	for _, p := range list.APIKeyOnly {
-		out = append(out, httpapi.ProviderChoice{
-			ID: p.ID, Name: p.Name, Flow: "api_key",
-			// 这几家没有可脱离 IDE 的 OAuth 登录面：标不可用并给原因，界面
-			// 就不会渲染一个「点了必失败」的按钮。但凭据本身仍可贡献，
-			// 所以同时带上替代路径（base URL + 操作步骤）。
-			Available:         false,
-			UnavailableReason: p.Reason,
-			UnavailableKind:   httpapi.UnavailableKindUnsupported,
-			SuggestedEndpoint: p.BaseURL,
-			Steps:             p.Steps,
-		})
-	}
+	// sidecar 的 api_key_only 不再并入：这类需求已由 api 分类（内置目录）承担，
+	// 其 flow 也不再是 api_key。字段仍保留在 sidecarList 里只是为了兼容旧 sidecar
+	// 的应答形状（那份列表现在是空数组）。
 	return out
 }
 

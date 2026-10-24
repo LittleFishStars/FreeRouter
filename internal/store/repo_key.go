@@ -246,7 +246,14 @@ func (r *KeyRepo) SetKeyName(ctx context.Context, id int64, name *string) error 
 }
 
 // SetKeyExpiry 写/清除 Key 的过期时间（租户自助改期）。
-// t 为 nil = 清除（永久有效）；语义与 CreateKey 写入的列一致。
+//
+// t == nil 是「清空」（写 NULL = 永不过期），不是「不改」：本方法一定会执行
+// 一条 UPDATE，调用它就等于宣告过期时间的新值。这与 HTTP 层的三值语义（缺省/
+// null/时刻）分工明确——「缺省=不改」在 httpapi 的解码层就已经返回，永远走不到
+// 这里；能到这里只剩「设成某时刻」和「清成 NULL」两种确定意图。
+//
+// 列语义与 CreateKey 写入的 expires_at 一致（NULL = 永不过期），读侧
+// APIKey.ExpiresAt 为 nil 时也按同一语义解释。
 func (r *KeyRepo) SetKeyExpiry(ctx context.Context, id int64, t *int64) error {
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE api_keys SET expires_at = ? WHERE id = ?`, t, id)

@@ -22,13 +22,13 @@ providers-hub 的实现」。此目录就是那条定案的落点。
 
 ```
 providers/
-├── registry.mjs        15 家的统一注册表：把差异收敛成 3 种交互形态
+├── registry.mjs        14 家的统一注册表：把差异收敛成 3 种交互形态
 ├── sessions.mjs        授权会话簿记（后台轮询 + TTL）
 ├── _shims/             依赖替身（cordis / dsh-credentials / 内存 ctx）
 ├── codearts/           手写移植（PKCE + DPoP + STS 换取 + SDK-HMAC 签名）
 ├── accio/ cline/ gemini/ lobsterai/ loomy/ minimax/ qoder/ raccoon/ trae/
 │                     上游闭包（每家一个目录，文件名保持上游原样）
-├── autoclaw/ astudio/ modelscope/ officeace/ opencode/ zcode/
+├── autoclaw/ astudio/ officeace/ zcode/
 └── ...
 ```
 
@@ -49,16 +49,17 @@ providers/
 
 ## 当前接入状态
 
-已接入 13 家：codearts、gemini、accio、minimax、cline、qoder、loomy、raccoon、
-lobsterai、trae、autoclaw、officeace、zcode。
+已接入 14 家：codearts、gemini、accio、minimax、cline、qoder、loomy、raccoon、
+lobsterai、trae、autoclaw、astudio、officeace、zcode。
 
-走「API Key 型贡献」的 3 家（上游没有可脱离 IDE 的 OAuth 登录面）：
+`API_KEY_ONLY` **为空**（2026-10-24 起）：原先列在这里的 modelscope / opencode 已按
+`tmp/CONTRACT-contribution-v2.md` §7 从本目录删除——它们「控制台生成、粘贴使用」的凭据
+形态与新增的「API 供应商」入口完全一致，由主进程的 `internal/apidir`（52 家，编译进
+二进制的内置目录）承载，不需要 sidecar 再列一遍、也不需要多一层进程。
 
-| provider | 原因 |
-|---|---|
-| modelscope | `auth` 类只有 `status`/`refresh`/`readCredential`，凭据来自粘贴的 API Key |
-| astudio | 登录流自己起本机 HTTP 服务收回调，与 sidecar「不监听任何端口」红线冲突 |
-| opencode | `auth` 导出的是账号池指纹工具（匿名槽位/代际），登录在 adapter 层 |
+> 顺带纠正一条旧判断：astudio 曾因「登录流自己起本机 HTTP 服务」被列在这里，实际它还有
+> 一条纯 HTTP 的微信扫码三件套（`createAstudioWechatQrCode` / `pollAstudioWechatScan` /
+> `bindAstudioWechatSession`），不需要本机监听，现已作为 `flow: 'qr'` 正常接入。
 
 ## 移植纪律
 

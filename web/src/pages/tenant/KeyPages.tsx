@@ -78,7 +78,27 @@ function AllowlistPicker({
   )
 }
 
-/** 把 datetime-local 值转成 RFC3339；空 = 永不过期。 */
+/**
+ * 后端 RFC3339（UTC）→ datetime-local 的 value（本地时区）。
+ *
+ * 为什么必须换算：datetime-local 的 value 不带时区，浏览器按**本地时间**解释。
+ * 直接把后端的 UTC 串 slice(0,16) 填进去，等于把 UTC 时刻当本地时刻；用户不改
+ * 时间直接保存就会把过期时间整体平移一个时区偏移（+08:00 下少 8 小时）。
+ */
+function isoToLocalInput(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  // 把本地时刻换算成“假装是 UTC”的时刻，再取 YYYY-MM-DDTHH:mm 前 16 字符。
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
+}
+
+/**
+ * datetime-local 的值（本地时区）→ 请求体里的 expires_at；空 = 清空（发 null）。
+ *
+ * 返回 null 是**有意的三态里的“清空”**，不是“没填”：后端 PATCH 的 expires_at
+ * 约定是「字段缺省=不变、null=清空、字符串=设定」，而这里始终显式发这个键，
+ * 所以空表单 = 清空过期时间（永不过期）。
+ */
 function expiryToISO(local: string): string | null {
   if (!local) return null
   const d = new Date(local)
@@ -107,7 +127,7 @@ export function KeysPage({ def }: PageProps) {
   useEffect(() => {
     if (!editing) return
     setName(editing.name)
-    setExpiry(editing.expires_at ? editing.expires_at.slice(0, 16) : '')
+    setExpiry(editing.expires_at ? isoToLocalInput(editing.expires_at) : '')
     setAllowlist(editing.allowlist ?? [])
   }, [editing])
 
@@ -116,6 +136,8 @@ export function KeysPage({ def }: PageProps) {
     setBusy(true)
     setError(null)
     try {
+      // expires_at 三态：缺省=不变、null=清空、字符串=设定。这里必须显式传这个键
+      // （留空时值为 null）：省掉它就变成“不变”，过期时间依旧清不掉（审计 P1）。
       await patchKey(editing.id, { name, expires_at: expiryToISO(expiry), allowlist })
       setNotice('已保存（收窄白名单立即生效）')
       setEditing(null)
@@ -162,7 +184,7 @@ export function KeysPage({ def }: PageProps) {
             <Field label="名称" required>
               <input value={name} onChange={(e) => setName(e.target.value)} />
             </Field>
-            <Field label="过期时间" hint="留空 = 永不过期">
+            <Field label="过期时间" hint="留空保存 = 清除过期时间（永不过期）">
               <input type="datetime-local" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
             </Field>
           </div>

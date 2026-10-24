@@ -107,6 +107,14 @@
 | `POST` | `/api/account/keys/{id}/revoke` | 吊销（不可恢复） |
 | `POST` | `/api/account/keys/{id}/rotate` | 换新 secret（旧 Key 立即失效） |
 
+**`PATCH /api/account/keys/{id}` 的三值语义**（以 `expires_at` 为例）：字段**缺省** = 不变、
+`null` = 清空、字符串 = 设定；空串 `""` 仍按清空处理（兼容只发空串的旧表单）。
+**为什么要区分「缺省」与 `null`**：两者在普通的 `*string` 里都是 nil，于是
+「想清空过期时间」与「这次不改过期时间」变成同一个请求——前端发 null 永远清不掉。
+后端用一个显式三态包装（`Set` + `Value`）在解码层把两者分开；非法时间戳仍是
+`400 invalid_request`（`param=expires_at`）。归属检查在写入**之前**
+（拿别人的 Key id 不会改到任何一行，返回 404）。
+
 **Key 明文只返回一次**（创建与 rotate 的响应里）。之后任何读取端点只给 `prefix`（如 `fr-J0Sl…06`），因为库中只存 SHA-256 哈希。理由与恢复码只展示一次相同，见 [../security/05-keys.md](../security/05-keys.md)。
 
 **创建受组策略约束**：所属组的 `can_create_key=false` → 403 `forbidden`；达到 `max_keys` → 409 `conflict`。两者具体见 [../security/03-groups.md](../security/03-groups.md)。
@@ -118,8 +126,18 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/api/usage/overview` | 额度与用量总览 |
-| `GET` | `/api/usage/logs` | 请求日志（游标分页） |
+| `GET` | `/api/usage/logs` | 请求日志（`limit`/`offset` 分页） |
 | `GET` | `/api/usage/models` | 我有权使用的模型 |
+
+**`/api/usage/logs` 的参数**：`limit`（≤200，默认 50）、`offset`、`from`/`to`、
+`key_id`、`model`、`status`（`ok`/`failed`）、`error_code`（**精确匹配**，与 `status` 正交：
+`status=failed&error_code=rate_limited` 是「失败且因限流」）。
+**为什么只有 offset 而没有 cursor**：后端就只认 offset；前端曾发 cursor，
+那条参数从来没人读——属于「发了但没人读」的静默失效，已在 2026-10-24 修掉。
+
+**`/api/usage/models` 的响应没有 `capabilities`**：租户侧拿不到可靠的能力数据
+（存储层没有这一列），旧实现发一个恒空对象，界面因此永远渲染空徽标。
+不存在的字段不能靠「永远是空」来兼容——已删除，前端同步不再渲染。
 
 **为什么租户只能看自己的**：这三条路径的账户过滤在 handler 里硬编码为会话账户，**不接受 `account_id` 参数**。管理面才有按账户筛选的能力（见 02-admin）。
 
@@ -127,93 +145,105 @@
 
 ## 5. 贡献面
 
-贡献分两条路径（详见 [../contributions/01-flow.md](../contributions/01-flow.md)）：
+贡献分**三条入口**（详见 [../contributions/01-flow.md](../contributions/01-flow.md)）：
 
-| 形态 | 入口 | 适用 |
+| 入口 | 端点 | 适用 |
 |---|---|---|
-| API Key 型 | `POST /api/contributions` | 任何 OpenAI 兼容端点 |
-| 供应商 OAuth 型 | `POST /api/contributions/oauth/{provider}` | 16 家（14 家 OAuth + 2 家只能 API Key 型） |
+| 反代供应商 | `POST /api/contributions/oauth/{provider}` | 用供应商账号登录，由 sidecar 换出凭据（13 家） |
+| API 供应商 | `POST /api/contributions`（`kind=api`） | 内置端点 + 粘贴 Key（目录见 5.1.2） |
+| 自定义供应商 | `POST /api/contributions`（`kind=custom`） | 任意 OpenAI 兼容端点（自建网关、局域网服务） |
+
+**为什么分成三类**：三者的「用户要做什么」完全不同——反代是登录一个账号，
+API 供应商是去别处抄一个 Key，自定义是填一个别人没见过的地址。混在一页里，
+用户既不知道该点哪个，也看不懂为什么有的供应商标着「不可用」。
 
 ### 5.1 端点总表
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/api/contributions/providers` | 供应商清单（含可用性、不可用**性质**、交互形态） |
-| `POST` | `/api/contributions` | 提交 API Key 型贡献 |
+| `GET` | `/api/contributions/providers` | 三类入口清单（见 5.1.1） |
+| `POST` | `/api/contributions` | 提交贡献（`kind=api|custom`，见 5.2） |
 | `POST` | `/api/contributions/oauth/{provider}` | 发起 OAuth（`?phone=` 供短信形态） |
 | `POST` | `/api/contributions/oauth/{provider}/poll` | 轮询授权进度 |
 | `POST` | `/api/contributions/oauth/{provider}/cancel` | 取消授权会话 |
 | `GET` | `/api/contributions/oauth/callback` | OAuth 回调（**302 到前端**，非 JSON 端点） |
+| `POST` | `/api/contributions/credentials/{id}/pause` | 暂停我的一条贡献凭据（出池） |
+| `POST` | `/api/contributions/credentials/{id}/resume` | 恢复我的一条贡献凭据（回池） |
 | `POST` | `/api/contributions/recovery` | 用恢复码兑换会话 |
 | `GET` | `/api/contributions` | 我的贡献汇总 |
 | `GET` | `/api/contributions/credentials` | 我贡献的凭据列表 |
 | `GET` | `/api/contributions/credentials/{id}` | 单个凭据详情 |
-| `GET` | `/api/contributions/stats` | 贡献统计 |
+| `GET` | `/api/contributions/stats` | 贡献统计（`?range=day|month`，见 5.5） |
 | `GET` | `/api/contributions/recovery-code` | 恢复码状态（是否已生成） |
 | `POST` | `/api/contributions/recovery-code/regenerate` | 重新生成恢复码（旧码作废） |
 
-#### 5.1.1 不可用的两种性质（`unavailable_kind`）
+#### 5.1.1 `GET /api/contributions/providers` 的三分类
 
-清单里不可用的供应商分两类，性质完全不同，前端必须给不同措辞：
-
-| `unavailable_kind` | 含义 | 例子 | 运维能否改变 |
-|---|---|---|---|
-| `config` | 本站缺配置（如自己没设 OAuth 客户端 secret / 第三方 AccessKey） | 任意 `browser`/`qr` 型供应商在环境变量缺失且无内置默认值时 | ✅ 补上配置即可用 |
-| `unsupported` | 上游确实没有可用的登录面（凭据只能手工粘贴） | `modelscope` / `opencode` | ❌ 补任何配置都不会变可用，**但要走 API Key 型贡献**（见下） |
-
-**为什么这个字段必须存在**：两类在界面上都叫「不可用」会造成两种误判——
-① 运维去翻那三家本来就不该有 OAuth 配置的供应商；② 把缺配置的两家
-误认为产品功能缺失。字段缺失时前端按 `config` 处理（保守：至少提示去查配置）。
-
-响应示例：
+响应把入口按类别分组，**不再是一条平铺清单**：
 
 ```json
-{"data": [
-  {"id": "codearts", "name": "华为云 CodeArts", "available": true, "flow": "device_code"},
-  {"id": "gemini", "name": "Google Gemini", "available": false, "flow": "browser",
-   "unavailable_reason": "未配置 OAuth 客户端：请设 CMDC_PAK_GOOGLE_CLIENT_SECRET",
-   "unavailable_kind": "config"},
-  {"id": "modelscope", "name": "ModelScope", "available": false, "flow": "api_key",
-   "unavailable_reason": "上游 auth 类只有 status/refresh/readCredential…",
-   "unavailable_kind": "unsupported"},
-  {"id": "api-key", "name": "OpenAI 兼容端点（API Key）", "available": true, "flow": "api_key"}
-]}
+{"data": {"categories": [
+  {"id": "reverse_proxy", "name": "反代供应商", "description": "…",
+   "items": [
+     {"id": "trae", "name": "Trae", "flow": "browser", "needs": [], "available": true},
+     {"id": "gemini", "name": "Google Gemini", "flow": "browser", "available": false,
+      "unavailable_reason": "未配置 OAuth 客户端：请设 CMDC_PAK_GOOGLE_CLIENT_SECRET",
+      "unavailable_kind": "config"}
+   ]},
+  {"id": "api", "name": "API 供应商", "description": "内置端点，只需粘贴 Key",
+   "items": [
+     {"id": "deepseek-com", "name": "Deepseek", "base_url": "https://api.deepseek.com/v1",
+      "protocol": "openai", "vendor_family": "deepseek", "region": "global",
+      "website": "https://deepseek.com", "api_doc": "https://api-docs.deepseek.com/",
+      "models": [{"id": "deepseek-flash"}]}
+   ]},
+  {"id": "custom", "name": "自定义供应商", "description": "任意 OpenAI 兼容端点", "items": []}
+]}}
 ```
 
-#### 5.1.2 替代贡献路径（`suggested_endpoint` / `steps`）
+- `reverse_proxy` 的 items 带可用性与交互形态。**不可用分两种性质**（`unavailable_kind`）：
+  `config`＝本站缺配置（补上就能用）、`unsupported`＝上游没有可登录面（补配置也不会变）。
+  前端必须给不同措辞，否则运维会去翻一个本来就不该有的 OAuth 配置。
+- `api` 的 items 来自内置目录 `internal/apidir`（`protocol` 目前恒 `openai`），
+  **不依赖 sidecar**，因此没有 `available` 字段。
+- `custom` 恒为空数组——它的入口是表单而不是清单。
 
-`unavailable_kind=unsupported` 的两家仍然**可以贡献**——只是不通过 OAuth。
-上游自己用的就是"粘贴凭据"这条路，我们把它显式化：
+#### 5.1.2 内置 API 目录
 
-| 字段 | 用途 |
+目录是静态事实表（`internal/apidir/catalog.json`，2026-10-24 从 Tingly Box 的
+provider catalog 提取的事实字段：端点与模型 id，**不含其代码**）。收录规则：
+
+| 规则 | 原因 |
 |---|---|
-| `suggested_endpoint` | 该供应商的 OpenAI 兼容 base URL。前端提供「填入端点」按钮一键填进 API Key 表单 |
-| `steps` | 「去哪儿拿凭据」的操作步骤数组，前端渲染成编号清单 |
+| 只收有 OpenAI 兼容端点的条目 | 本站出口链路是 OpenAI/Anthropic 协议；只有 anthropic 端点的家（如 `anthropic-com`）留给「自定义供应商」手填 |
+| 排除 `oauth` / `gcp_sa` / `aws_sigv4` / `azure_key` | 它们不是「贴一个 Key」的形态 |
+| 排除 `localhost` 自建（ollama / lm-studio / vLLM …） | 需要用户自己起服务，属于「自定义供应商」 |
+| 排除带 `{account_id}` 之类占位符的模板端点 | 内置 URL 不完整，贴进去必失败 |
+| 排除 ModelScope / OpenCode | 2026-10-24 用户要求移除此两家供应商 |
 
-两家的端点与凭据来源（依据 `dsh-providers-hub` 源码，非推测）：
+目录条目的 `models` 只是**建议清单**（供界面点选），不是白名单——用户仍可手填。
 
-| 供应商 | base URL | 凭据从哪来 |
-|---|---|---|
-| `modelscope` | `https://api-inference.modelscope.cn/v1` | 魔搭控制台生成的 API Key（`ms-` 开头）。上游 `modelscope-auth.js` 明确写「没有登录流程，也不能续期」 |
-| `opencode` | `https://opencode.ai/inference/openai/v1` | opencode.ai 生成的 API Key。上游 `opencode-auth.js` 是账号池/指纹工具，不是登录流程 |
+### 5.2 `POST /api/contributions`（api / custom 两类）
 
-> **为什么不在清单里直接删掉这三家**：删掉之后用户搜不到"这家能不能贡献"，
-> 会以为平台不支持。列出来 + 给替代路径，才是完整回答。
-
-> **`api-key` 这一条不是供应商**：它是与 OAuth 并列的贡献路径，`flow` 固定为
-> `api_key`，前端据此渲染成说明（指向同页的 API Key 表单）而**不是跳转链接**
-> ——`/api/contributions/oauth/api-key` 是不存在的端点（404）。
-
-### 5.2 `POST /api/contributions`（API Key 型）
+请求体的 `kind` 决定「端点从哪来」：
 
 ```json
-{
-  "endpoint": "https://api.example.com/v1",
-  "api_key": "sk-……",
-  "label": "我的备用 Key",
-  "claimed_models": ["some-model-id"]
-}
+{"kind": "api", "provider": "deepseek-com", "api_key": "sk-……",
+ "label": "我的备用 Key", "claimed_models": ["deepseek-flash"]}
+
+{"kind": "custom", "endpoint": "https://api.example.com/v1", "api_key": "sk-……",
+ "label": "自建网关", "claimed_models": ["some-model-id"]}
 ```
+
+- `kind` 缺省为 `custom`（旧客户端不带该字段仍可用）。
+- `kind=api` 时 **不要传 endpoint**：端点由服务端从内置目录取（传了也忽略）。
+  目录里没有这个 `provider` → `400 invalid_request`（message 写明未知 id）——
+  不允许客户端自报一个任意端点再冒名某个供应商。
+- `kind=custom` 时 `endpoint` 必填，校验同上游 `ValidateTarget`（回环/内网地址归
+  `selfhosted`，其余归 `vendor`）。
+
+落库的 `upstreams.provider`：反代型为 sidecar 的 provider 名，api 型为
+`api:<catalog id>`，自定义为 `custom`。
 
 **提交即探测**：handler 在落库前后跑 L0/L1 判定（端点可达性、鉴权、目录比对），失败也保留记录（状态落 `pending/unverified`）。判定流水线见 [../models/05-verification.md](../models/05-verification.md)。
 
@@ -281,6 +311,25 @@
 | `POST /api/contributions/recovery-code/regenerate` | 生成新码并作废旧码，明文只返回一次 |
 
 **为什么 OAuth 型的贡献者也可能需要恢复码**：OAuth 型理论上能靠"用同一上游账号再登录一次"找回身份，但那依赖 `LoginByUpstreamOAuth` 通道——**它尚未实现**。所以当前实现给所有匿名贡献者都发恢复码；等该通道落地后可以停发（保留字段与兑换入口，避免历史账户失联）。这处偏差在 [../contributions/01-flow.md](../contributions/01-flow.md) 第 3.1 节有记录。
+
+### 5.5 暂停 / 恢复与统计窗口
+
+**暂停**（`POST /api/contributions/credentials/{id}/pause`）把该凭据从候选池摘下：
+底层是把对应上游行 `enabled=false`——与「凭据被禁用」走同一条路径，
+不做第二套状态机，否则「凭据状态」会在三处各有一套语义。
+**恢复**（`.../resume`）置回 `enabled=true`。两者都幂等、都要求属主
+（非属主 404 `not_found`，与详情端点同一口径）。
+
+**统计窗口**：`GET /api/contributions/stats?range=day|month`：
+
+| 取值 | 起点 |
+|---|---|
+| `day`（缺省） | 今天 0 点（UTC 日界，与 `usage_daily.day` 同一套时间口径） |
+| `month` | 本月 1 日 0 点（UTC） |
+| 其它 | `400 invalid_request`，`param=range` |
+
+**为什么用 UTC 日界而不是本地时区**：用量表的主键是 UTC 日期字符串，
+统计若按本地时区切，会与「按天聚合」的既有数据错位一格。
 
 ---
 

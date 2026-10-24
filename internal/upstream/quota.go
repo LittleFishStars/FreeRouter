@@ -127,7 +127,8 @@ func (q *QuotaProbe) Probe(ctx context.Context, provider string) Quota {
 
 // ProbeAll 对多个 provider 并行探测，顺序与输入一致。
 //
-// 为什么并行：providers.list 有 17 家，串行探测最坏 17×15s；探测是旁路任务，
+// 为什么并行：providers.list 有多家（2026-10-24 起 15 家），串行探测最坏
+// 家数×15s；探测是旁路任务，
 // 慢可以被容忍，但一个 provider 卡死拖住整轮探测会让 /readyz 的配额明细
 // 永远处于陈旧状态。
 func (q *QuotaProbe) ProbeAll(ctx context.Context, providers []string) []Quota {
