@@ -164,7 +164,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	defer func() {
 		// 关闭顺序固定（06-runtime §8）：先 sidecar（可能回写最后一批用量）后库。
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace.Std())
-		_ = stopCancel
+		// 必须调 cancel：WithTimeout 创建的 timer 要显式释放（Go 用法约定，
+		// go vet 的 lostcancel 与 gosec G118 都报这个）。之前写成 `_ = stopCancel`，
+		// 功能上 Stop 会阻塞到完成/超时，但 timer 要等到超时才回收。
+		defer stopCancel()
 		application.Stop(stopCtx)
 		if err := application.Close(); err != nil {
 			log.Warn("存储关闭出错", "err", err)

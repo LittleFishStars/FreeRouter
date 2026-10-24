@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"runtime"
 	"strings"
 	"sync"
@@ -93,7 +94,14 @@ func decodeArgon(s string) (argonParams, []byte, error) {
 		return p, nil, errors.New("argon2id: hash 解码失败")
 	}
 	p.Salt = salt
-	p.KeyLen = uint32(len(hash))
+	// 长度上界检查：KeyLen 要转成 uint32，而 len(hash) 来自自描述串里的
+	// base64 字段——虽然校验器只认自己写出的串，但这里不该依赖"上游一定合法"：
+	// 一个超长哈希会让 uint32 截断，截断后的 KeyLen 与真实字节数不一致，
+	// 后续 Verify 会静默失败而不是报错。
+	if len(hash) > math.MaxUint32 {
+		return p, nil, errors.New("argon2id: 哈希长度超出 uint32 范围")
+	}
+	p.KeyLen = uint32(len(hash)) // #nosec G115 -- 上一行已做 len(hash) > math.MaxUint32 的边界检查
 	return p, hash, nil
 }
 

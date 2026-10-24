@@ -120,7 +120,7 @@ func (b RetryBudget) Backoff(class ErrClass, nextRetry int) time.Duration {
 	if base <= 0 || base > math.MaxInt64/2 {
 		return base
 	}
-	//nolint:gosec // jitter 的熵源质量无关紧要（上限取值非安全用途）。
+	// #nosec G404 -- jitter 的熵源质量无关紧要（只用于错开重试时刻，非安全用途）。
 	return base + time.Duration(rand.Int63n(int64(base)/2+1))
 }
 
