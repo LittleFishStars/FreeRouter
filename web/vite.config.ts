@@ -25,7 +25,26 @@ export default defineConfig({
     emptyOutDir: true,
     // 产物里不暴露源码映射：单二进制分发出去后 sourcemap 等于把源码一起发了。
     sourcemap: false,
-    target: 'es2022'
+    target: 'es2022',
+    rollupOptions: {
+      output: {
+        // 手写分包而不是交给默认策略：MUI 一家就占了大半个 bundle，
+        // 与应用代码混在一个 chunk 里，意味着**改一行业务代码**就让用户
+        // 重新下载整个 MUI。分成 vendor 之后，应用代码的 hash 变化只会
+        // 让那几十 KB 失效，MUI/React 从浏览器缓存直接命中。
+        // 用函数而不是包名清单：@mui/material 只是一层壳，真正的体积在
+        // @mui/system、@mui/utils、@mui/styled-engine、@emotion/* 这些子包里。
+        // 按「是不是 node_modules」划分才不漏；再把 react 单独拎出来，
+        // 因为它几乎从不变动，值得独占一个长期缓存。
+        manualChunks(id: string) {
+          if (!id.includes('node_modules')) return undefined
+          if (/[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler)[\\/]/.test(id)) {
+            return 'react'
+          }
+          return 'vendor'
+        }
+      }
+    }
   },
   server: {
     port: 5173,

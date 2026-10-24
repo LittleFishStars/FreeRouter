@@ -5,6 +5,8 @@
 // admin 给审核队列待办计数，contributor 给凭据状态摘要。
 
 import { Link } from 'react-router-dom'
+import { Box } from '@mui/material'
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
 import { useSession } from '../api/session'
 import { getInboxCount, getUsageOverview, listAccounts, listMyCredentials } from '../api/endpoints'
 import { useApi } from '../hooks/useApi'
@@ -184,7 +186,13 @@ export default function HomePage({ def }: PageProps) {
       <p className="muted">
         会话即将过期时，顶栏会提前提示；改密或管理员禁用会立即吊销全部会话。
       </p>
-      <Badge tone="muted">提示：页面上的 🔒 表示该路由存在危险写操作</Badge>
+      <Badge tone="muted">
+        <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.4 }}>
+          提示：页面上的
+          <LockOutlinedIcon sx={{ fontSize: 12 }} aria-hidden="true" />
+          表示该路由存在危险写操作
+        </Box>
+      </Badge>
     </PageFrame>
   )
 }

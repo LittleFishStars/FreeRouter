@@ -2,9 +2,19 @@
 // 401 一律「用户名或口令错误」，不区分「用户不存在」（后端 LoginService
 // 已把两条分支收敛为同码同文案同工作量，前端不得再区分开）。
 // 429 锁定提示 + Retry-After 剩余秒数。
+//
+// ## 视觉要点（MUI 迁移）
+//
+// 登录页是**产品的第一印象**，但它只有一个任务：让运维少花时间。所以：
+//   - 卡片垂直居中于视口剩余空间，而不是贴在顶部（顶部贴边会让页面显得没做完）；
+//   - 标签用 MUI TextField 的浮动 label，而不是「标签 + 输入框挤一行」——
+//     后者是原生 `<label>包裹 input` 的默认流式布局，在宽屏上会拉出一条长缝；
+//   - 只有一个主操作按钮，且占满卡片宽度（手机上更容易点中）。
 
 import { useState, type FormEvent } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { Alert, Box, Button, Stack, TextField, Typography } from '@mui/material'
+import LoginIcon from '@mui/icons-material/Login'
 import { ApiError, postAuthLogin, type Session } from '../api/client'
 import { useSession } from '../api/session'
 
@@ -34,18 +44,19 @@ export default function LoginPage() {
   const redirectTo = mustChange ? '/account/password' : from
 
   if (session) return <Navigate to={redirectTo} replace /> // 已登录不再展示登录表单
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
     setError(null)
     setSubmitting(true)
     try {
-    const s: Session = await postAuthLogin({ username, password })
-    setSession(s)
-    // 首启随机口令/管理员重置：直接去改密页，不回到原路径。
-    navigate(s.must_change_password ? '/account/password' : from, {
-      replace: true,
-      state: s.must_change_password ? { firstLogin: true } : undefined
-    })
+      const s: Session = await postAuthLogin({ username, password })
+      setSession(s)
+      // 首启随机口令/管理员重置：直接去改密页，不回到原路径。
+      navigate(s.must_change_password ? '/account/password' : from, {
+        replace: true,
+        state: s.must_change_password ? { firstLogin: true } : undefined
+      })
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.code === 'invalid_credentials') {
@@ -65,28 +76,108 @@ export default function LoginPage() {
   }
 
   return (
-    <section className="login-page">
-      <h1>登录</h1>
-      <p className="page-summary">密码登录；会话为 HttpOnly Cookie，浏览器自动管理。</p>
-      {justInited && <p className="placeholder-note">初始化完成——请用刚创建的管理员账户登录。</p>}
-      {passwordChanged && (
-        <p className="placeholder-note">口令已更新，请用新口令重新登录。</p>
-      )}
-      <form className="login-card" onSubmit={onSubmit}>
-        <label>用户名 <span aria-hidden="true">*</span>
-          <input value={username} onInput={(e) => setUsername((e.target as HTMLInputElement).value)} required autoComplete="username" />
-        </label>
-        <label>口令 <span aria-hidden="true">*</span>
-          <input type="password" value={password} onInput={(e) => setPassword((e.target as HTMLInputElement).value)} required autoComplete="current-password" />
-        </label>
-        {error && (
-          <p role="alert" className="form-error">
-            {error}
-            {lockSeconds !== null && `（约 ${lockSeconds} 秒后可再试）`}
-          </p>
+    // minHeight 用视口高度减去顶栏(58)与页脚(约 46)，让卡片在剩余空间里居中
+    <Box
+      sx={{
+        minHeight: 'calc(100vh - 180px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        py: 4
+      }}
+    >
+      <Box sx={{ width: '100%', maxWidth: 400 }}>
+        <Box sx={{ mb: 3 }}>
+          <Typography variant="h1" component="h1" sx={{ mb: 0.5 }}>
+            登录
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            密码登录；会话为 HttpOnly Cookie，浏览器自动管理。
+          </Typography>
+        </Box>
+
+        {justInited && (
+          <Alert severity="success" sx={{ mb: 2 }}>
+            初始化完成——请用刚创建的管理员账户登录。
+          </Alert>
         )}
-        <button type="submit" disabled={submitting}>{submitting ? '正在登录…' : '登录'}</button>
-      </form>
-    </section>
+        {passwordChanged && (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            口令已更新，请用新口令重新登录。
+          </Alert>
+        )}
+
+        <Box
+          component="form"
+          onSubmit={onSubmit}
+          sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+            p: 3,
+            borderRadius: 3,
+            bgcolor: 'background.paper',
+            border: '1px solid',
+            borderColor: 'divider',
+            boxShadow: 1
+          }}
+        >
+          <TextField
+            label="用户名"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            required
+            autoComplete="username"
+            autoFocus
+            fullWidth
+            size="small"
+            slotProps={{ htmlInput: { 'aria-label': '用户名' } }}
+          />
+          <TextField
+            label="口令"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            autoComplete="current-password"
+            fullWidth
+            size="small"
+            slotProps={{ htmlInput: { 'aria-label': '口令' } }}
+          />
+
+          {error && (
+            <Alert severity="error" role="alert">
+              {error}
+              {lockSeconds !== null && `（约 ${lockSeconds} 秒后可再试）`}
+            </Alert>
+          )}
+
+          <Button
+            type="submit"
+            variant="contained"
+            size="large"
+            disabled={submitting}
+            startIcon={<LoginIcon />}
+            sx={{ mt: 0.5 }}
+          >
+            {submitting ? '正在登录…' : '登录'}
+          </Button>
+
+          <Stack direction="row" spacing={1} sx={{ justifyContent: 'center', pt: 0.5 }}>
+            <Typography variant="caption" color="text.secondary">
+              没有账户？
+            </Typography>
+            <Typography
+              variant="caption"
+              component="a"
+              href="#/register"
+              sx={{ color: 'primary.main', fontWeight: 600, textDecoration: 'none' }}
+            >
+              注册
+            </Typography>
+          </Stack>
+        </Box>
+      </Box>
+    </Box>
   )
 }

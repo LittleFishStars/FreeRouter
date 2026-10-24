@@ -128,7 +128,7 @@ export const PAGES: PageDef[] = [
   { path: '/admin/verifications', title: '鉴定队列', summary: '鉴定与复检队列。', nav: 'admin', requires: 'admin', dangerous: true, element: VerificationsPage },
   { path: '/admin/verifications/:id', title: '鉴定结果', summary: '判定与证据明细。', nav: null, requires: 'admin', dangerous: true, element: VerificationDetailPage },
   { path: '/admin/audit', title: '审计日志', summary: 'append-only，只读。', nav: 'admin', requires: 'admin', dangerous: true, element: AuditPage },
-  { path: '/admin/settings', title: '全局设置', summary: '危险项（关闭注册、熔断阈值、代理与正文记录）动作需二次确认。', nav: 'admin', requires: 'admin', dangerous: true, element: SettingsPage },
+  { path: '/admin/settings', title: '全局设置', summary: '启动期配置的只读展示；开放注册与代理相关项改动需二次确认。', nav: 'admin', requires: 'admin', dangerous: true, element: SettingsPage },
 
   // ── 4.4 租户入口（tenant 类）────────────────────────────────
   { path: '/usage', title: '用量与配额', summary: '账户级额度总览（不显示额度来自哪个组）。', nav: 'usage', requires: 'tenant', element: UsagePage },

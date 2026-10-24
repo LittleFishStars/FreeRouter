@@ -4,18 +4,73 @@
 // 另外「接口尚未接入」是独立状态：后端 404 not_found 时不能伪装成错误，
 // 也不能伪造数据——它说明该能力还没上线（与 docs/api/02-admin.md §2.2
 // 对无权限统一 404 的口径一致，界面上分开表述）。
+//
+// ## 迁移到 MUI 时的两条硬约束（本文件的设计边界）
+//
+// 1. **导出签名零改动**。38 个页面文件都只是消费这些组件；把签名改掉的代价是
+//    改 38 个文件、并在这过程中引入与本次重设计无关的回归。
+// 2. **`Field` 与 `DataTable` 的 children 形态不能变**：页面传进来的是原生
+//    `<input>`/`<select>` 和 `<tr>`/`<td>`，不是 MUI 的受控组件。所以这两个
+//    组件只换「外壳」（标签、提示、行距、表头样式），不强行替换内部控件。
+//    原生控件的观感由 theme.ts 的 MuiCssBaseline 统一接管。
 
 import type { ReactNode } from 'react'
+import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
+  Alert,
+  AlertTitle,
+  Box,
+  Card,
+  CardContent,
+  CardHeader,
+  Chip,
+  Divider,
+  Skeleton,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Typography
+} from '@mui/material'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { ApiError, isUnavailable } from '../api/client'
 import { prettyJson } from '../utils/format'
 
 export type Tone = 'ok' | 'warn' | 'err' | 'info' | 'muted'
 
+/** Tone → MUI Chip/Alert 的语义色。muted 用 default（灰）。 */
+const TONE_COLOR: Record<Tone, 'success' | 'warning' | 'error' | 'info' | 'default'> = {
+  ok: 'success',
+  warn: 'warning',
+  err: 'error',
+  info: 'info',
+  muted: 'default'
+}
+
+/** Tone → Alert severity（Banner 用）。muted 在 Alert 里没有对应档，降到 info。 */
+const TONE_SEVERITY: Record<Tone, 'success' | 'warning' | 'error' | 'info'> = {
+  ok: 'success',
+  warn: 'warning',
+  err: 'error',
+  info: 'info',
+  muted: 'info'
+}
+
 export function Badge({ tone = 'muted', children, title }: { tone?: Tone; children: ReactNode; title?: string }) {
   return (
-    <span className={`badge badge-${tone}`} title={title}>
-      {children}
-    </span>
+    <Chip
+      label={children}
+      color={TONE_COLOR[tone]}
+      size="small"
+      variant={tone === 'muted' ? 'outlined' : 'filled'}
+      title={title}
+      sx={{ fontWeight: 600 }}
+    />
   )
 }
 
@@ -31,11 +86,24 @@ export function StatusBadge({ status, label }: { status: string; label: string }
           : status === 'disabled' || status === 'rejected' || status === 'invalid' || status === 'missing' || status === 'error'
             ? 'err'
             : 'muted'
+  // 图标是第二重信号：色盲用户单靠颜色无法区分四态（设计文档明确要求）。
   const icon = tone === 'ok' ? '✓' : tone === 'warn' ? '!' : tone === 'err' ? '×' : tone === 'info' ? '·' : '—'
   return (
-    <span className={`badge badge-${tone}`} title={label}>
-      <span aria-hidden="true">{icon}</span> {label}
-    </span>
+    <Chip
+      label={
+        <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+          <Box component="span" aria-hidden="true" sx={{ fontWeight: 700, opacity: 0.85 }}>
+            {icon}
+          </Box>
+          {label}
+        </Box>
+      }
+      color={TONE_COLOR[tone]}
+      size="small"
+      variant={tone === 'muted' ? 'outlined' : 'filled'}
+      title={label}
+      sx={{ fontWeight: 600 }}
+    />
   )
 }
 
@@ -50,22 +118,41 @@ export function Banner({
   children: ReactNode
 }) {
   return (
-    <div className={`banner banner-${tone}`} role={tone === 'err' ? 'alert' : undefined}>
-      {title && <strong>{title}</strong>}
-      <div>{children}</div>
-    </div>
+    <Alert severity={TONE_SEVERITY[tone]} variant={tone === 'muted' ? 'outlined' : 'standard'}>
+      {title ? <AlertTitle sx={{ fontWeight: 700, mb: 0.25 }}>{title}</AlertTitle> : null}
+      <Box sx={{ '& > :last-child': { mb: 0 } }}>{children}</Box>
+    </Alert>
   )
 }
 
 /** 加载态：骨架屏（不用全屏遮罩，避免等待期间无法离开页面）。 */
 export function LoadingBlock({ rows = 3, label = '正在加载…' }: { rows?: number; label?: string }) {
   return (
-    <div className="loading-block" role="status" aria-live="polite" aria-label={label}>
-      {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} className="skeleton-row" />
-      ))}
-      <span className="sr-only">{label}</span>
-    </div>
+    <Box role="status" aria-live="polite" aria-label={label} sx={{ width: '100%' }}>
+      <Stack spacing={1}>
+        {Array.from({ length: rows }).map((_, i) => (
+          <Skeleton
+            key={i}
+            variant="rounded"
+            height={i === 0 ? 44 : 32}
+            // 逐行略微递减宽度，视觉上像内容在填充而不是几条等长灰条
+            width={i === 0 ? '100%' : `${92 - i * 4}%`}
+          />
+        ))}
+      </Stack>
+      <Box
+        sx={{
+          position: 'absolute',
+          width: 1,
+          height: 1,
+          overflow: 'hidden',
+          clip: 'rect(0 0 0 0)',
+          whiteSpace: 'nowrap'
+        }}
+      >
+        {label}
+      </Box>
+    </Box>
   )
 }
 
@@ -80,25 +167,63 @@ export function EmptyState({
   action?: ReactNode
 }) {
   return (
-    <div className="state-card empty-state">
-      <h3>{title}</h3>
-      {hint && <p>{hint}</p>}
-      {action && <div className="state-action">{action}</div>}
-    </div>
+    <Box
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        textAlign: 'center',
+        gap: 1,
+        py: 6,
+        px: 3,
+        border: '1px dashed',
+        borderColor: 'divider',
+        borderRadius: 2
+      }}
+    >
+      <Typography variant="h3" color="text.secondary">
+        {title}
+      </Typography>
+      {hint ? (
+        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 520 }}>
+          {hint}
+        </Typography>
+      ) : null}
+      {action ? <Box sx={{ mt: 1 }}>{action}</Box> : null}
+    </Box>
   )
 }
 
 /** 接口尚未接入：后端 404 not_found 的专门表述（不伪造数据、不谎报故障）。 */
 export function UnavailableState({ what, retry }: { what: string; retry?: () => void }) {
   return (
-    <div className="state-card unavailable-state">
-      <h3>该功能尚未接入</h3>
-      <p>
-        {what}的接口在当前版本还未提供（服务端返回 <code>not_found</code>）。
-        界面已按契约实现，待后端上线后无需改动即可使用。
-      </p>
-      {retry && <button type="button" onClick={retry}>重新检查</button>}
-    </div>
+    <Alert
+      severity="info"
+      variant="outlined"
+      action={
+        retry ? (
+          <Box
+            component="button"
+            type="button"
+            onClick={retry}
+            sx={{
+              all: 'unset',
+              cursor: 'pointer',
+              fontWeight: 600,
+              fontSize: '0.82rem',
+              color: 'primary.main',
+              px: 1
+            }}
+          >
+            重新检查
+          </Box>
+        ) : undefined
+      }
+    >
+      <AlertTitle sx={{ fontWeight: 700 }}>该功能尚未接入</AlertTitle>
+      {what}的接口在当前版本还未提供（服务端返回 <code>not_found</code>）。界面已按契约实现，待后端上线后无需改动即可使用。
+    </Alert>
   )
 }
 
@@ -111,23 +236,42 @@ export function ErrorState({ error, retry }: { error: unknown; retry?: () => voi
   const code = error instanceof ApiError ? error.code : 'unknown_error'
   const requestId = error instanceof ApiError ? error.requestId : undefined
   return (
-    <div className="state-card error-state" role="alert">
-      <h3>请求失败</h3>
-      <p>{msg}</p>
-      <p className="meta-line">
+    <Alert
+      severity="error"
+      variant="outlined"
+      action={
+        retry ? (
+          <Box
+            component="button"
+            type="button"
+            onClick={retry}
+            sx={{
+              all: 'unset',
+              cursor: 'pointer',
+              fontWeight: 600,
+              fontSize: '0.82rem',
+              color: 'primary.main',
+              px: 1
+            }}
+          >
+            重试
+          </Box>
+        ) : undefined
+      }
+    >
+      <AlertTitle sx={{ fontWeight: 700 }}>请求失败</AlertTitle>
+      <Typography variant="body2" sx={{ mb: 0.5 }}>
+        {msg}
+      </Typography>
+      <Typography variant="caption" color="text.secondary" component="p">
         错误码：<code>{code}</code>
-        {requestId && (
+        {requestId ? (
           <>
             {' · '}请求 ID：<code>{requestId}</code>
           </>
-        )}
-      </p>
-      {retry && (
-        <button type="button" onClick={retry}>
-          重试
-        </button>
-      )}
-    </div>
+        ) : null}
+      </Typography>
+    </Alert>
   )
 }
 
@@ -137,9 +281,12 @@ export function InlineError({ error }: { error: unknown }) {
   const msg = error instanceof Error ? error.message : String(error)
   const code = error instanceof ApiError ? error.code : 'unknown_error'
   return (
-    <p className="inline-error" role="alert">
-      {msg} <span className="muted">（{code}）</span>
-    </p>
+    <Typography variant="body2" color="error" role="alert" sx={{ display: 'flex', gap: 0.5 }}>
+      {msg}
+      <Box component="span" sx={{ color: 'text.secondary' }}>
+        （{code}）
+      </Box>
+    </Typography>
   )
 }
 
@@ -182,14 +329,19 @@ export function Section({
   hint?: ReactNode
 }) {
   return (
-    <section className="panel">
-      <header className="panel-header">
-        <h2>{title}</h2>
-        {actions && <div className="panel-actions">{actions}</div>}
-      </header>
-      {hint && <p className="panel-hint">{hint}</p>}
-      {children}
-    </section>
+    <Card sx={{ mb: 2 }}>
+      <CardHeader
+        title={<Typography variant="h2">{title}</Typography>}
+        action={actions ? <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>{actions}</Box> : undefined}
+        sx={{ pb: hint ? 0.5 : 1, pt: 1.75, px: 2.25 }}
+      />
+      {hint ? (
+        <Typography variant="body2" color="text.secondary" sx={{ px: 2.25, pb: 1 }}>
+          {hint}
+        </Typography>
+      ) : null}
+      <CardContent sx={{ pt: hint ? 1 : 1.5, px: 2.25, '&:last-child': { pb: 2.25 } }}>{children}</CardContent>
+    </Card>
   )
 }
 
@@ -208,64 +360,127 @@ export function Field({
   children: ReactNode
 }) {
   return (
-    <label className={`field${error ? ' field-invalid' : ''}`}>
-      <span className="field-label">
+    // className="field" 是页面级布局契约：.field-row > .field 靠它做
+    // 「一行多列、列宽 12rem 起」的排布。MUI 化时漏掉这个类会让所有表单
+    // 退化成单列全宽——这是肉眼最难发现、但影响最大的一类回归。
+    <Stack spacing={0.5} className="field" sx={{ width: '100%' }}>
+      <Typography
+        component="label"
+        variant="body2"
+        sx={{ fontWeight: 600, color: error ? 'error.main' : 'text.primary', display: 'inline-flex', gap: 0.25 }}
+      >
         {label}
-        {required && (
-          <span aria-hidden="true" className="required">
-            {' '}*
-          </span>
-        )}
-      </span>
+        {required ? (
+          <Box component="span" aria-hidden="true" sx={{ color: 'error.main' }}>
+            *
+          </Box>
+        ) : null}
+      </Typography>
       {children}
-      {error ? <span className="field-error">{error}</span> : hint ? <span className="field-hint">{hint}</span> : null}
-    </label>
+      {error ? (
+        <Typography variant="caption" color="error" sx={{ mt: 0.25 }}>
+          {error}
+        </Typography>
+      ) : hint ? (
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.25 }}>
+          {hint}
+        </Typography>
+      ) : null}
+    </Stack>
   )
 }
 
-/** 表格容器：窄屏转卡片由 CSS 断点承担。 */
+/** 表格容器：窄屏横向滚动（原 CSS 的「转卡片」在 MUI 下改为滚动容器）。 */
 export function DataTable({ headers, children, empty }: { headers: ReactNode[]; children: ReactNode; empty?: boolean }) {
   return (
-    <div className="table-wrap">
-      <table className="data-table">
-        <thead>
-          <tr>
+    /* 不再画外框：表格基本都长在 Section 的 Card 里，两层边框会让每个列表
+       都像"卡片套卡片"。表头底色 + 行分隔线已经足够界定表格边界。 */
+    <TableContainer>
+      <Table size="small" sx={{ minWidth: 640 }}>
+        <TableHead>
+          <TableRow>
             {headers.map((h, i) => (
-              <th key={i}>{h}</th>
+              <TableCell key={i}>{h}</TableCell>
             ))}
-          </tr>
-        </thead>
-        <tbody>{empty ? (
-          <tr>
-            <td colSpan={headers.length} className="table-empty">暂无数据</td>
-          </tr>
-        ) : children}</tbody>
-      </table>
-    </div>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {empty ? (
+            <TableRow>
+              <TableCell colSpan={headers.length}>
+                <Typography variant="body2" color="text.secondary" sx={{ py: 3, textAlign: 'center' }}>
+                  暂无数据
+                </Typography>
+              </TableCell>
+            </TableRow>
+          ) : (
+            children
+          )}
+        </TableBody>
+      </Table>
+    </TableContainer>
   )
 }
 
 /** 键值详情列表。 */
 export function KeyValues({ items }: { items: { label: string; value: ReactNode }[] }) {
   return (
-    <dl className="kv">
-      {items.map((it) => (
-        <div key={it.label} className="kv-row">
-          <dt>{it.label}</dt>
-          <dd>{it.value}</dd>
-        </div>
+    <Box component="dl" sx={{ m: 0 }}>
+      {items.map((it, i) => (
+        <Box key={it.label}>
+          {i > 0 ? <Divider sx={{ my: 0.75 }} /> : null}
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: { xs: '1fr', sm: '180px 1fr' },
+              gap: { xs: 0.25, sm: 2 },
+              alignItems: 'baseline',
+              py: 0.25
+            }}
+          >
+            <Typography component="dt" variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
+              {it.label}
+            </Typography>
+            <Typography component="dd" variant="body2" sx={{ m: 0, wordBreak: 'break-word' }}>
+              {it.value}
+            </Typography>
+          </Box>
+        </Box>
       ))}
-    </dl>
+    </Box>
   )
 }
 
 /** 折叠的机器可读详情（错误码/证据/审计 detail）。 */
 export function JsonDetails({ summary = '查看原始数据', value }: { summary?: string; value: unknown }) {
   return (
-    <details className="json-details">
-      <summary>{summary}</summary>
-      <pre>{prettyJson(value)}</pre>
-    </details>
+    <Accordion
+      // 折叠面板自带上下边框，与所在 Card 的边框叠在一起会显脏——只留分隔线。
+      sx={{ border: 0, '&:before': { display: 'none' }, bgcolor: 'transparent' }}
+    >
+      <AccordionSummary expandIcon={<ExpandMoreIcon fontSize="small" />} sx={{ px: 0, minHeight: 40 }}>
+        <Typography variant="body2" color="primary" sx={{ fontWeight: 600 }}>
+          {summary}
+        </Typography>
+      </AccordionSummary>
+      <AccordionDetails sx={{ px: 0, pt: 0 }}>
+        <Box
+          component="pre"
+          sx={{
+            m: 0,
+            p: 1.5,
+            borderRadius: 1.5,
+            bgcolor: (t) => (t.palette.mode === 'dark' ? 'rgba(255,255,255,.04)' : 'rgba(15,23,42,.035)'),
+            fontSize: '0.78rem',
+            lineHeight: 1.6,
+            overflow: 'auto',
+            maxHeight: 420
+          }}
+        >
+          {prettyJson(value)}
+        </Box>
+      </AccordionDetails>
+    </Accordion>
   )
 }
 
@@ -275,8 +490,11 @@ export function FormError({ error }: { error: unknown }) {
   const msg = error instanceof Error ? error.message : String(error)
   const code = error instanceof ApiError ? error.code : 'unknown_error'
   return (
-    <p className="form-error" role="alert">
-      {msg} <span className="muted">（{code}）</span>
-    </p>
+    <Typography variant="body2" color="error" role="alert" sx={{ display: 'flex', gap: 0.5 }}>
+      {msg}
+      <Box component="span" sx={{ color: 'text.secondary' }}>
+        （{code}）
+      </Box>
+    </Typography>
   )
 }

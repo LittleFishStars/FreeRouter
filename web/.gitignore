@@ -12,3 +12,8 @@ node_modules/.tmp/
 # 本地环境变量，可能含后端地址/口令，绝不入库
 .env
 .env.*.local
+
+# Playwright 下载的浏览器（视觉验收用）与 npm 兜底缓存：都是机器级数据，
+# 几十到几百兆，绝不入库。
+.cache/
+.npm-cache/

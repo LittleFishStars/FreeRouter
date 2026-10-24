@@ -24,31 +24,60 @@ import {
 import PageFrame from '../PageFrame'
 import type { PageProps } from '../../routes'
 
+// 危险项 = 改错会立即影响全站可用性或安全边界。这里只列**服务端真会返回**
+// 的键：旧表里的 global_budget_cap / record_request_body / login_backoff /
+// lockout_threshold 已经不在 /api/admin/settings 里，留着只会让顶部横幅
+// 宣传一批不存在的项。
 const DANGEROUS_KEYS = new Set([
   'registration_enabled',
-  'global_budget_cap',
+  'registration_requires_approval',
   'trusted_proxies',
-  'record_request_body',
-  'login_backoff',
-  'lockout_threshold'
+  'behind_proxy',
+  'session_ttl'
 ])
 
+// 服务端 /api/admin/settings 的真实键（internal/app/admin_settings_bridge.go 的
+// GetSettings 是唯一事实来源）。之前的映射表里有多条**过期键名**
+// （default_rpm_limit / default_tpm_limit / lockout_threshold…），永远命中不了，
+// 界面上就一直显示 snake_case 原文——看起来像没做完。
 const KEY_LABELS: Record<string, string> = {
+  // security 组
   registration_enabled: '开放注册',
-  registration_rate_limit: '注册 IP 限速阈值',
-  default_group: '默认组',
-  default_account_quota: '新建账户的默认额度',
-  default_rpm_limit: '默认 RPM',
-  default_tpm_limit: '默认 TPM',
-  default_max_concurrency: '默认并发上限',
-  global_budget_cap: '全站当日预算上限（熔断）',
-  record_request_body: '记录请求正文（默认关；开启即脱敏模式）',
-  abnormal_usage_alert: '异常用量告警阈值',
-  trusted_proxies: 'TRUSTED_PROXIES（未配则忽略 X-Forwarded-For）',
-  session_ttl: '会话有效期（默认 24h）',
-  login_backoff: '登录退避',
-  lockout_threshold: '登录锁定阈值',
-  debug_trace_scope: '调试响应头 x-fr-trace 的开放范围'
+  registration_requires_approval: '注册需审核',
+  session_ttl: '会话有效期',
+  password_min_length: '口令最小长度',
+  login_max_failures: '登录失败上限',
+  login_lockout: '锁定时长',
+  behind_proxy: '在反向代理之后',
+  trusted_proxies: '可信代理地址',
+  // limits 组
+  default_rpm: '建账默认 RPM',
+  default_tpm: '建账默认 TPM',
+  default_daily_tokens: '建账默认日 token 上限',
+  default_monthly_tokens: '建账默认月 token 上限',
+  default_max_concurrency: '建账默认并发上限',
+  default_keys_per_account: '每个账户的 Key 上限'
+}
+
+/** 分组中文名（服务端用 security / limits 做分组键）。 */
+const GROUP_LABELS: Record<string, string> = {
+  security: '安全与登录',
+  limits: '默认限额（仅影响新建账户）'
+}
+
+/**
+ * 值的单位说明。之所以要这个：-1 在 limits 里表示"不限"，0 表示"不可用"——
+ * 两个特殊值不加注释，管理员改错一个就变成全站不可用或彻底放开。
+ */
+const VALUE_HINTS: Record<string, string> = {
+  session_ttl: 'Go duration 写法，如 24h / 12h',
+  login_lockout: 'Go duration 写法，如 15m',
+  default_tpm: '-1 = 不限；0 = 不可用',
+  default_rpm: '-1 = 不限；0 = 不可用',
+  default_daily_tokens: '0 = 不限',
+  default_monthly_tokens: '0 = 不限',
+  password_min_length: '不得小于 8',
+  trusted_proxies: '逗号分隔的 CIDR；不配则忽略 X-Forwarded-For'
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -131,9 +160,11 @@ export default function SettingsPage({ def }: PageProps) {
       }
     >
       <Banner tone="muted">
-        修改会写入审计（逐键记录旧值 → 新值）。危险项需要二次确认：
-        {Array.from(DANGEROUS_KEYS).map((k) => ` ${k}`).join('；')}。
-        管理面不提供 IP 允许列表——那是唯一能把管理员自己锁在门外的配置。
+        修改会写入审计（逐键记录旧值 → 新值）。需要二次确认的危险项：
+        {Array.from(DANGEROUS_KEYS)
+          .map((k) => KEY_LABELS[k] ?? k)
+          .join('、')}
+        。管理面不提供 IP 允许列表——那是唯一能把管理员自己锁在门外的配置。
       </Banner>
       <FormError error={error} />
       {notice && <Banner tone="ok">{notice}</Banner>}
@@ -156,7 +187,11 @@ export default function SettingsPage({ def }: PageProps) {
         {(doc) => (
           <>
             {Object.entries(doc).map(([group, values]) => (
-              <Section key={group} title={group} hint="键名保留服务端口径；留空表示不设（由服务端默认值兜底）。">
+              <Section
+            key={group}
+            title={GROUP_LABELS[group] ?? group}
+            hint="这些是启动期配置项：改动需要重启才生效，所以本页只读展示当前生效值。"
+          >
                 {isPlainObject(values) ? (
                   Object.entries(values).map(([key, value]) => (
                     <SettingField
@@ -208,22 +243,24 @@ export default function SettingsPage({ def }: PageProps) {
           impact={[
             `将提交 ${changedKeys.length} 个键的修改`,
             dangerousChanged.length > 0
-              ? `其中危险项：${dangerousChanged.join('、')}`
+              ? `其中危险项：${dangerousChanged.map((k) => KEY_LABELS[k] ?? k).join('、')}`
               : '本次没有危险项变更',
+            // 每条后果描述都对着一个真实存在、且列表里出现过的键。
+            // 写在这里而不是塞进 KEY_LABELS，是因为它是"后果"而不是"名称"。
             dangerousChanged.includes('registration_enabled')
               ? '关闭注册会立刻切断新增账户'
               : '',
-            dangerousChanged.includes('global_budget_cap')
-              ? '熔断阈值配错会导致全站拒绝'
+            dangerousChanged.includes('registration_requires_approval')
+              ? '关闭审核会让新注册账户在注册成功的瞬间就具备调用能力'
               : '',
             dangerousChanged.includes('trusted_proxies')
               ? '代理配置配错会让 IP 限速失效或误封'
               : '',
-            dangerousChanged.includes('record_request_body')
-              ? '开启正文记录会直接把用户内容纳入存储（脱敏模式）'
+            dangerousChanged.includes('behind_proxy')
+              ? '代理开关必须与可信代理列表配套，否则源 IP 判定会错'
               : '',
-            dangerousChanged.includes('login_backoff') || dangerousChanged.includes('lockout_threshold')
-              ? '调松登录退避/锁定阈值会削弱全站唯一的身份防线'
+            dangerousChanged.includes('session_ttl')
+              ? '会话有效期调长会把会话泄露的可利用窗口一起拉长'
               : ''
           ].filter(Boolean)}
           irreversibility="可恢复（再改回来），但设置写入后立即对全站生效，期间可能已放行/拦截请求。"
@@ -252,6 +289,8 @@ function SettingField({
   onChange: (v: unknown) => void
 }) {
   const label = KEY_LABELS[name] ?? name
+  // 危险项的提示优先（它更紧急），否则给单位说明
+  const valueHint = VALUE_HINTS[name]
   if (typeof value === 'boolean') {
     return (
       <label className={`checkbox-line${dangerous ? ' dangerous-field' : ''}`}>
@@ -263,14 +302,14 @@ function SettingField({
   }
   if (typeof value === 'number') {
     return (
-      <Field label={label} hint={dangerous ? '危险项：保存前会二次确认' : undefined}>
+      <Field label={label} hint={dangerous ? '危险项：保存前会二次确认' : valueHint}>
         <input type="number" value={value} onChange={(e) => onChange(Number(e.target.value))} />
       </Field>
     )
   }
   if (typeof value === 'string') {
     return (
-      <Field label={label} hint={dangerous ? '危险项：保存前会二次确认' : undefined}>
+      <Field label={label} hint={dangerous ? '危险项：保存前会二次确认' : valueHint}>
         <input value={value} onChange={(e) => onChange(e.target.value)} />
       </Field>
     )

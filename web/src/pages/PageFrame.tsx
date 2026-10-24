@@ -9,6 +9,9 @@
 // （nav=null）同样能显示「管理层 / 账户列表 / 账户详情」。
 
 import type { ReactNode } from 'react'
+import { Box, Breadcrumbs, Stack, Typography } from '@mui/material'
+import NavigateNextIcon from '@mui/icons-material/NavigateNext'
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
 import { breadcrumbTrail, type PageDef } from '../routes'
 
 export interface PageFrameProps {
@@ -21,33 +24,67 @@ export interface PageFrameProps {
 export default function PageFrame({ def, actions, children }: PageFrameProps) {
   const crumbs = breadcrumbTrail(def)
   return (
-    <section className="page-frame">
+    <Box component="section">
       {crumbs.length > 1 && (
-        <nav aria-label="面包屑" className="breadcrumb">
+        <Breadcrumbs
+          aria-label="面包屑"
+          separator={<NavigateNextIcon sx={{ fontSize: 14 }} />}
+          sx={{
+            mb: 1,
+            '& .MuiBreadcrumbs-ol': { flexWrap: 'wrap' },
+            '& .MuiBreadcrumbs-li': { fontSize: '0.78rem' }
+          }}
+        >
           {crumbs.map((c, i) => (
-            <span key={`${c}-${i}`}>
-              {i > 0 && <span aria-hidden="true"> / </span>}
+            <Typography
+              key={`${c}-${i}`}
+              component="span"
+              variant="caption"
+              // 最后一段是当前页：给正文色以示「你在这里」，其余做灰
+              sx={{ color: i === crumbs.length - 1 ? 'text.secondary' : 'text.disabled' }}
+            >
               {c}
-            </span>
+            </Typography>
           ))}
-        </nav>
+        </Breadcrumbs>
       )}
-      <header className="page-header">
-        <div>
-          <h1>
+
+      <Box
+        component="header"
+        sx={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+          gap: 2,
+          flexWrap: 'wrap',
+          mb: 2.25
+        }}
+      >
+        <Box sx={{ minWidth: 0, flex: '1 1 auto' }}>
+          <Typography variant="h1" component="h1" sx={{ display: 'flex', alignItems: 'center', gap: 1, m: 0 }}>
             {def.title}
             {def.dangerous && (
-              // IA 全站唯一的 🔒 标记：本页存在危险写；提交前必须走统一确认框。
-              <span className="lock-mark" title="本页含危险写操作，提交前须二次确认">
-                {' '}🔒
-              </span>
+              // IA 全站唯一的安全标记：本页存在危险写；提交前必须走统一确认框。
+              // 用 MUI 图标而非 emoji——emoji 在各平台渲染不一致（彩色/黑白/缺字）。
+              <LockOutlinedIcon
+                titleAccess="本页含危险写操作，提交前须二次确认"
+                sx={{ fontSize: 17, color: 'text.disabled', fontWeight: 400 }}
+              />
             )}
-          </h1>
-          <p className="page-summary">{def.summary}</p>
-        </div>
-        <div className="page-actions">{actions}</div>
-      </header>
-      <div className="page-body">{children}</div>
-    </section>
+          </Typography>
+          {/* 「标题下必须有一句话说明」是全站纪律：缺了这句，运维得点进去才知道这页干什么 */}
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, maxWidth: '70ch' }}>
+            {def.summary}
+          </Typography>
+        </Box>
+        {actions ? (
+          <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', alignItems: 'center', pt: 0.5 }}>
+            {actions}
+          </Stack>
+        ) : null}
+      </Box>
+
+      <Box>{children}</Box>
+    </Box>
   )
 }
