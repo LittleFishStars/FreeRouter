@@ -163,10 +163,11 @@ FreeRouter 就是在额度与人之间加的一层：**下面反向代理各大�
 ### 快速开始
 
 ```bash
-make build      # 编译 bin/freerouter（版本信息由 ldflags 注入）
+make web        # 构建前端到 internal/webui/dist（嵌入单二进制的前置）
+make release    # 完整单二进制 bin/freerouter（内嵌前端，日常运行用这个）
+make build      # 纯 Go 快速编译（不含前端，控制台是占位页）
 make test       # 单元测试；make contract 只跑契约测试，make test-race 带竞态检测
 make vet        # go vet；make fmt 格式化；make tidy 整理依赖
-make web        # 构建前端到 internal/webui/dist（嵌入单二进制前必须跑）
 make run        # 用 testdata/config.yaml 前台启动
 ```
 

@@ -23,15 +23,24 @@ LDFLAGS := -X $(PKG)/internal/version.Version=$(VERSION) \
            -X $(PKG)/internal/version.Commit=$(COMMIT) \
            -X $(PKG)/internal/version.BuildTime=$(BUILD_TIME)
 
-.PHONY: all build test test-race vet fmt tidy run print-config check-config contract clean web help docs-baseline docs-check docs-brief
+.PHONY: all build release test test-race vet fmt tidy run print-config check-config contract clean web help docs-baseline docs-check docs-brief
 
 all: build
 
-## build: 编译主二进制到 bin/freerouter（版本信息由 ldflags 注入）
+## build: 编译主二进制（不含前端，控制台是占位页；仅作快速编译检查）
 build:
 	@mkdir -p bin
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/freerouter
-	@echo "已构建 $(BINARY)：$(VERSION) ($(COMMIT))"
+	@echo "已构建 $(BINARY)：$(VERSION) ($(COMMIT))——不含前端，完整版用 make release"
+
+## release: 构建内嵌前端的完整单二进制（日常运行用这个；先跑 make web）
+release:
+	@if [ ! -f internal/webui/dist/index.html ]; then \
+		echo "internal/webui/dist 不存在：先跑 make web 构建前端" >&2; exit 1; \
+	fi
+	@mkdir -p bin
+	$(GO) build -trimpath -tags webui_dist -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/freerouter
+	@echo "已构建 $(BINARY)：$(VERSION) ($(COMMIT))，内嵌前端"
 
 ## test: 跑全部单元测试
 test:
