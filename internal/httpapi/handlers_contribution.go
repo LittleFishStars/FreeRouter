@@ -70,7 +70,7 @@ type ContributionSubmission struct {
 	Provider       string
 	BaseURL        string
 	APIKey         string
-	ClaimedModel   string
+	ClaimedModels  []string
 	Label          string
 	Kind           string
 }
@@ -236,11 +236,12 @@ func (s *Server) HandleContributeSubmit(deps *ContributionDeps) http.HandlerFunc
 			writeError(w, http.StatusBadRequest, "invalid_request", "api_key 必填", nil)
 			return
 		}
-		claimed := ""
+		// 声称模型全量收下（去空；判定层的归一见 judgeProbe）。此前只取第一个是
+		// Submission 单模型时代的残留——2026-10-25 起支持多选。
+		claimed := make([]string, 0, len(body.ClaimedModels))
 		for _, m := range body.ClaimedModels {
 			if m = strings.TrimSpace(m); m != "" {
-				claimed = m
-				break // Submission 只支持单个声称模型；多填取第一个（界面提示）
+				claimed = append(claimed, m)
 			}
 		}
 
@@ -265,7 +266,7 @@ func (s *Server) HandleContributeSubmit(deps *ContributionDeps) http.HandlerFunc
 			Provider:       providerID,
 			BaseURL:        endpoint,
 			APIKey:         apiKey,
-			ClaimedModel:   claimed,
+			ClaimedModels:  claimed,
 			Label:          strings.TrimSpace(body.Label),
 		})
 		if err != nil {

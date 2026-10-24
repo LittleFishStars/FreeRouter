@@ -280,7 +280,7 @@ func TestContributionSubmitKindAPI(t *testing.T) {
 		deps, sub, _ := newDeps()
 		w := httptest.NewRecorder()
 		// 请求体里的 endpoint 故意写成错值：后端必须以目录为准。
-		body := `{"kind":"api","provider":"deepseek-com","endpoint":"https://evil.example/v1","api_key":"sk-0123456789abcdef","claimed_models":["deepseek-flash"]}`
+		body := `{"kind":"api","provider":"deepseek-com","endpoint":"https://evil.example/v1","api_key":"sk-0123456789abcdef","claimed_models":["deepseek-flash","deepseek-reasoner"]}`
 		(&Server{}).HandleContributeSubmit(deps)(w, postJSON("7", body))
 		if w.Code != http.StatusOK {
 			t.Fatalf("状态码 = %d，期望 200（body=%s）", w.Code, w.Body.String())
@@ -295,8 +295,8 @@ func TestContributionSubmitKindAPI(t *testing.T) {
 		if !strings.Contains(got.BaseURL, "deepseek") || strings.Contains(got.BaseURL, "evil.example") {
 			t.Errorf("BaseURL 必须来自目录而不是请求体，得 %q", got.BaseURL)
 		}
-		if got.ClaimedModel != "deepseek-flash" {
-			t.Errorf("声称模型应透传，得 %q", got.ClaimedModel)
+		if len(got.ClaimedModels) != 2 || got.ClaimedModels[0] != "deepseek-flash" || got.ClaimedModels[1] != "deepseek-reasoner" {
+			t.Errorf("声称模型应全量透传（不再取第一个），得 %v", got.ClaimedModels)
 		}
 	})
 

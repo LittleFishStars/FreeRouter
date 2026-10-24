@@ -79,10 +79,12 @@ type ContributionStore interface {
 
 // ProbeInput 是一次探测的输入。APIKey 只在本进程内存里流转。
 type ProbeInput struct {
-	Provider     string
-	BaseURL      string
-	APIKey       string
-	ClaimedModel string
+	Provider string
+	BaseURL  string
+	APIKey   string
+	// ClaimedModels 是贡献者声称的模型（可多个、可空）。多选是 2026-10-25 定案：
+	// 一把 key 往往同时提供好几个模型，只让声明一个会让贡献者隐去其余事实。
+	ClaimedModels []string
 }
 
 // ProbeOutput 是一次探测的结果。Detail 必须是**可给贡献者看**的脱敏文本。
@@ -164,9 +166,10 @@ type Submission struct {
 	BaseURL string
 	// APIKey 是明文；只在本次调用内存活。
 	APIKey string
-	// ClaimedModel 是贡献者声称该 key 提供的模型（可空：空则不判定「相符」，
-	// 只做可达性与鉴权，判定落在 unverified）。
-	ClaimedModel string
+	// ClaimedModels 是贡献者声称该 key 提供的模型（可多个、可空：空则不判定「相符」，
+	// 只做可达性与鉴权，判定落在 unverified）。判定口径见 judgeProbe：
+	// 全部命中 verified、部分命中 unverified（复检）、全不命中且目录非空才 suspect。
+	ClaimedModels []string
 	// Label 是给贡献者认领用的可读标签（如 "我的魔搭 key"）。
 	Label string
 	// Kind 是上游类型：vendor（公网端点）或 selfhosted（自建/本机）。
@@ -256,9 +259,9 @@ func (s *ContributionService) Submit(ctx context.Context, sub Submission) (Outco
 	// 探测：网络/鉴权/目录。HTTPProbe 的错误只表达「探测本身跑不了」（如非法 URL），
 	// 连不上是 ProbeOutput.Reachable=false 而不是 error —— 它是判定输入，不是故障。
 	out, probeErr := s.probe.Probe(ctx, ProbeInput{
-		Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, ClaimedModel: sub.ClaimedModel,
+		Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, ClaimedModels: sub.ClaimedModels,
 	})
-	status, verify, evidence := judgeProbe(sub.ClaimedModel, out, probeErr)
+	status, verify, evidence := judgeProbe(sub.ClaimedModels, out, probeErr)
 
 	// 写回判定。两步分开写（status 与 verify_status 不同列），失败要能各自归因。
 	if err := s.store.SetCredentialStatus(ctx, credID, status); err != nil {
@@ -391,17 +394,24 @@ func KeyFingerprint(key string) string {
 
 // judgeProbe 把探测结果映射成 (status, verify_status, evidence)。
 //
-// 判定表（05-verification 5.1 + 02-credentials 5.2 的库内枚举）：
+// 判定表（05-verification 5.1 + 02-credentials 5.2 的库内枚举；2026-10-25 起声称可多选）：
 //
-//	连不上              → disabled + unverified（L0 不通过：端点都不通，谈不上「相符」）
-//	401/403             → disabled + unverified（凭据无效；给可执行原因）
-//	有目录且声称模型命中 → active   + verified
-//	有目录但声称模型缺失 → disabled + suspect  （冒充/填错；给证据，不含探针细节）
-//	无目录（404/非 JSON）→ active   + unverified （冷门模型默认放行，进复检队列）
+//	连不上                 → disabled + unverified（L0 不通过：端点都不通，谈不上「相符」）
+//	401/403                → disabled + unverified（凭据无效；给可执行原因）
+//	未声明模型             → active   + unverified（不判定「相符」，进复检队列）
+//	声称全部命中           → active   + verified
+//	声称部分命中（≥1 <N）  → active   + unverified（放行进复检，证据列命中/未命中明细）
+//	有目录但声称全不命中   → disabled + suspect  （冒充/填错；给证据，不含探针细节）
+//	无目录（404/非 JSON）  → active   + unverified （冷门模型默认放行，进复检队列）
+//
+// 为什么「部分命中」是 unverified 而不是 verified：命中一半说明 key 是真的、但
+// 声称清单掺了水——给它盖章 verified 等于替贡献者背书了全部声称。也不是 suspect：
+// suspect 的语义是「冒充的最强信号」，而「三个里中了一个」恰恰说明不是冒充。
+// 落在 unverified（入池 + 复检队列）是两个误判代价里较小的一个。
 //
 // 为什么「无目录」放行而不是拒绝：05-verification 5.2 的整段论证——「库里没有」不等于
 // 「可疑」，误杀成本高于误放，且有运行时健康与定时复检兜底。
-func judgeProbe(claimed string, out ProbeOutput, probeErr error) (store.CredentialStatus, store.VerifyStatus, string) {
+func judgeProbe(claimed []string, out ProbeOutput, probeErr error) (store.CredentialStatus, store.VerifyStatus, string) {
 	if probeErr != nil {
 		return store.CredDisabled, store.VerifyUnverified,
 			evidenceJSON("L0", "探测无法执行："+redactText(probeErr.Error()))
@@ -414,25 +424,52 @@ func judgeProbe(claimed string, out ProbeOutput, probeErr error) (store.Credenti
 		return store.CredDisabled, store.VerifyUnverified,
 			evidenceJSON("L0", "上游拒绝鉴权（401/403）："+redactText(firstNonEmpty(out.Detail, "鉴权失败")))
 	}
-	claimed = strings.TrimSpace(claimed)
-	if claimed == "" {
+	// 归一：去空、去重，保持声明顺序（证据文本按它列明细）。
+	seen := make(map[string]struct{}, len(claimed))
+	claims := make([]string, 0, len(claimed))
+	for _, c := range claimed {
+		if c = strings.TrimSpace(c); c == "" {
+			continue
+		}
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		claims = append(claims, c)
+	}
+	if len(claims) == 0 {
 		return store.CredActive, store.VerifyUnverified,
 			evidenceJSON("L0", "可达且鉴权通过；未声明模型，记为未鉴定并进复检队列")
 	}
+	hit := make([]string, 0, len(claims))
+	hitSet := make(map[string]struct{}, len(out.UsedModels))
 	for _, m := range out.UsedModels {
-		if m == claimed {
-			return store.CredActive, store.VerifyVerified,
-				evidenceJSON("L1", "声称模型在目录中命中："+claimed)
+		hitSet[m] = struct{}{}
+	}
+	missed := make([]string, 0, len(claims))
+	for _, c := range claims {
+		if _, ok := hitSet[c]; ok {
+			hit = append(hit, c)
+		} else {
+			missed = append(missed, c)
 		}
 	}
-	if len(out.Models) == 0 {
+	switch {
+	case len(missed) == 0:
+		return store.CredActive, store.VerifyVerified,
+			evidenceJSON("L1", fmt.Sprintf("声称的 %d 个模型全部在目录中命中：%s", len(claims), strings.Join(claims, "、")))
+	case len(hit) > 0:
 		return store.CredActive, store.VerifyUnverified,
-			evidenceJSON("L1", "端点未提供模型目录；声称模型 "+claimed+" 暂无法比对，已放行并进入复检队列")
+			evidenceJSON("L1", fmt.Sprintf("声称的 %d 个模型命中 %d 个（%s）；未命中：%s。已放行并进入复检队列",
+				len(claims), len(hit), strings.Join(hit, "、"), strings.Join(missed, "、")))
+	case len(out.Models) == 0:
+		return store.CredActive, store.VerifyUnverified,
+			evidenceJSON("L1", "端点未提供模型目录；声称的 "+strings.Join(claims, "、")+" 暂无法比对，已放行并进入复检队列")
 	}
-	// 有目录但不含声称模型：这是「冒充」的最强信号（05-verification 3 节的强信号之一）。
+	// 有目录但声称全不命中：这是「冒充」的最强信号（05-verification 3 节的强信号之一）。
 	// 证据只说「不在目录」与目录条数，**不列我们的探针细节**（5.3 的脱敏要求）。
 	return store.CredDisabled, store.VerifySuspect,
-		evidenceJSON("L1", fmt.Sprintf("声称模型 %s 不在上游目录（目录共 %d 条）", claimed, len(out.Models)))
+		evidenceJSON("L1", fmt.Sprintf("声称的 %d 个模型均不在上游目录（目录共 %d 条）", len(claims), len(out.Models)))
 }
 
 // evidenceJSON 生成 verify_detail 的 JSON（见 0001_init.sql 的列注释：证据会演化，
@@ -702,6 +739,14 @@ func (p HTTPProbe) Probe(ctx context.Context, in ProbeInput) (ProbeOutput, error
 		return out, nil
 	}
 
+	// 声称集合：目录命中按集合查（O(1)，与声称个数无关）。
+	claimedSet := make(map[string]struct{}, len(in.ClaimedModels))
+	for _, c := range in.ClaimedModels {
+		if c = strings.TrimSpace(c); c != "" {
+			claimedSet[c] = struct{}{}
+		}
+	}
+
 	// 只读 1MiB：目录响应可能很大，超过就是异常（防内存放大）。
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
@@ -720,7 +765,7 @@ func (p HTTPProbe) Probe(ctx context.Context, in ProbeInput) (ProbeOutput, error
 			continue
 		}
 		out.Models = append(out.Models, m.ID)
-		if in.ClaimedModel != "" && m.ID == in.ClaimedModel {
+		if _, ok := claimedSet[m.ID]; ok {
 			out.UsedModels = append(out.UsedModels, m.ID)
 		}
 	}

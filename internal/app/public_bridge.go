@@ -188,7 +188,7 @@ func (b *contributionBridge) Submit(ctx context.Context, sub httpapi.Contributio
 		Provider:       sub.Provider,
 		BaseURL:        sub.BaseURL,
 		APIKey:         sub.APIKey,
-		ClaimedModel:   sub.ClaimedModel,
+		ClaimedModels:  sub.ClaimedModels,
 		Label:          sub.Label,
 		Kind:           sub.Kind,
 	})

@@ -92,7 +92,7 @@ function flowLabel(flow?: string): string {
   return FLOW_LABELS[flow] ?? flow
 }
 
-/** 声称模型：界面允许逗号/空格分隔便于一次粘贴；后端只认第一个（claim 单模型）。 */
+/** 声称模型：文本拆分（自定义表单用，便于一次粘贴多个；后端全量接收）。 */
 function splitModels(v: string): string[] {
   return v
     .split(/[,，\s]+/)
@@ -149,7 +149,9 @@ export default function ContributePage({ def }: PageProps) {
   const [apiSearch, setApiSearch] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [apiLabel, setApiLabel] = useState('')
-  const [apiModel, setApiModel] = useState('')
+  // 声称模型：多选（2026-10-25 定案）——目录 Chip 点选 + 手写回车追加，同一集合。
+  const [apiModels, setApiModels] = useState<string[]>([])
+  const [apiModelInput, setApiModelInput] = useState('')
   const [apiSubmitting, setApiSubmitting] = useState(false)
   const [apiError, setApiError] = useState<unknown>(null)
 
@@ -190,6 +192,10 @@ export default function ContributePage({ def }: PageProps) {
       setApiError(new Error('请先在上方列表选择一家 API 供应商'))
       return
     }
+    if (apiModels.length === 0) {
+      setApiError(new Error('请至少声明一个模型（点选或手写回车添加）'))
+      return
+    }
     setApiError(null)
     setApiSubmitting(true)
     try {
@@ -199,7 +205,7 @@ export default function ContributePage({ def }: PageProps) {
         provider: selectedId,
         api_key: apiKey,
         label: apiLabel,
-        claimed_models: apiModel.trim() ? [apiModel.trim()] : []
+        claimed_models: apiModels
       })
       setResult(r.data)
       setApiKey('') // 同上：Key 不留在内存里
@@ -208,6 +214,28 @@ export default function ContributePage({ def }: PageProps) {
     } finally {
       setApiSubmitting(false)
     }
+  }
+
+  // 声称模型的增删（目录 Chip 与手写输入共用）：去空白、去重，保持选择顺序。
+  function toggleModel(id: string) {
+    const v = id.trim()
+    if (!v) return
+    setApiModels((prev) =>
+      prev.includes(v) ? prev.filter((m) => m !== v) : [...prev, v]
+    )
+  }
+  function appendModelInput() {
+    // 回车确认：一次输入里逗号/空格分隔的多个一并收下（与自定义表单同一套拆分）
+    const ids = splitModels(apiModelInput)
+    if (ids.length === 0) return
+    setApiModels((prev) => {
+      const next = [...prev]
+      for (const id of ids) {
+        if (!next.includes(id)) next.push(id)
+      }
+      return next
+    })
+    setApiModelInput('')
   }
 
   // 结果卡优先：有恢复码走一次性展示（未登录贡献唯一能自助回站的凭据）。
@@ -466,7 +494,7 @@ export default function ContributePage({ def }: PageProps) {
                         selected={p.id === selectedId}
                         onClick={() => {
                           setSelectedId(p.id)
-                          setApiModel('') // 换供应商即清空声称模型：模型 id 是分家的
+                          setApiModels([]) // 换供应商即清空声称模型：模型 id 是分家的
                         }}
                         sx={{ flexDirection: 'column', alignItems: 'flex-start', gap: 0.25 }}
                       >
@@ -527,7 +555,7 @@ export default function ContributePage({ def }: PageProps) {
                         <Field
                           label="声称的模型"
                           required
-                          hint="一次提交只声明一个模型（后端取第一个值）；多填也只会用第一个。"
+                          hint="可声明多个：逗号/空格分隔，例如 deepseek-flash, glm-5.3；鉴定逐个核对。"
                         >
                           <input
                             value={customModels}
@@ -581,31 +609,61 @@ export default function ContributePage({ def }: PageProps) {
                           required
                           hint={
                             selected.models.length > 0
-                              ? '点下面的模型填入，也可以手写目录外的模型名；鉴定核对的是声称与事实是否相符。'
-                              : '这家的目录里没有登记模型，请手写模型名。'
+                              ? '可多选：点下面的模型选中/取消，也可手写目录外的模型名（回车添加）；鉴定核对的是声称与事实是否相符。'
+                              : '这家的目录里没有登记模型，请手写模型名（回车添加，可多个）。'
                           }
                         >
                           <input
-                            value={apiModel}
-                            onChange={(e) => setApiModel(e.target.value)}
-                            required
-                            placeholder="例如 deepseek-flash"
+                            value={apiModelInput}
+                            onChange={(e) => setApiModelInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              // 回车在本表单里默认是提交，这里拦下来做“确认添加”；
+                              // 已选集合为空时才放行默认提交，避免一个模型都没选就交上去。
+                              if (e.key === 'Enter') {
+                                if (splitModels(apiModelInput).length > 0) {
+                                  e.preventDefault()
+                                  appendModelInput()
+                                } else if (apiModels.length === 0) {
+                                  e.preventDefault()
+                                }
+                              }
+                            }}
+                            placeholder={selected.models.length > 0 ? '手写目录外的模型名，回车添加' : '例如 deepseek-flash，回车添加'}
                           />
                         </Field>
                         {selected.models.length > 0 && (
                           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
-                            {selected.models.map((m) => (
-                              <Chip
-                                key={m.id}
-                                label={m.id}
-                                size="small"
-                                variant={apiModel === m.id ? 'filled' : 'outlined'}
-                                color={apiModel === m.id ? 'primary' : 'default'}
-                                onClick={() => setApiModel(m.id)}
-                              />
-                            ))}
+                            {selected.models.map((m) => {
+                              const on = apiModels.includes(m.id)
+                              return (
+                                <Chip
+                                  key={m.id}
+                                  label={m.id}
+                                  size="small"
+                                  variant={on ? 'filled' : 'outlined'}
+                                  color={on ? 'primary' : 'default'}
+                                  onClick={() => toggleModel(m.id)}
+                                />
+                              )
+                            })}
                           </Box>
                         )}
+                        {apiModels.filter((m) => !selected.models.some((c) => c.id === m)).length > 0 && (
+                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+                            {apiModels
+                              .filter((m) => !selected.models.some((c) => c.id === m))
+                              .map((m) => (
+                                <Chip
+                                  key={m}
+                                  label={m}
+                                  size="small"
+                                  color="primary"
+                                  onDelete={() => toggleModel(m)}
+                                />
+                              ))}
+                          </Box>
+                        )}
+
 
                         <Field label="API Key" required hint="提交后不再显示，也不会出现在任何页面。">
                           <input

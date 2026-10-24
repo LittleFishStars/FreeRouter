@@ -26,7 +26,7 @@ import (
 func TestContractContributionJudgeProbe(t *testing.T) {
 	cases := []struct {
 		name    string
-		claimed string
+		claimed []string
 		out     ProbeOutput
 		err     error
 		wantSt  store.CredentialStatus
@@ -41,27 +41,45 @@ func TestContractContributionJudgeProbe(t *testing.T) {
 		},
 		{
 			name:    "401 → 拒绝",
-			claimed: "m1",
+			claimed: []string{"m1"},
 			out:     ProbeOutput{Reachable: true, AuthOK: false, Detail: "HTTP 401"},
 			wantSt:  store.CredDisabled, wantVer: store.VerifyUnverified,
 		},
 		{
 			name:    "声称模型命中 → 入池 verified",
-			claimed: "m1",
+			claimed: []string{"m1"},
 			out:     ProbeOutput{Reachable: true, AuthOK: true, Models: []string{"m1", "m2"}, UsedModels: []string{"m1"}},
 			wantSt:  store.CredActive, wantVer: store.VerifyVerified,
 		},
 		{
 			name:    "有目录但声称模型缺失 → 拒绝 suspect",
-			claimed: "gpt-4",
+			claimed: []string{"gpt-4"},
 			out:     ProbeOutput{Reachable: true, AuthOK: true, Models: []string{"m1", "m2"}},
 			wantSt:  store.CredDisabled, wantVer: store.VerifySuspect,
 		},
 		{
 			name:    "无目录（冷门）→ 放行 unverified",
-			claimed: "cold-model",
+			claimed: []string{"cold-model"},
 			out:     ProbeOutput{Reachable: true, AuthOK: true},
 			wantSt:  store.CredActive, wantVer: store.VerifyUnverified,
+		},
+		{
+			name:    "多选全部命中 → 入池 verified",
+			claimed: []string{"m1", "m2"},
+			out:     ProbeOutput{Reachable: true, AuthOK: true, Models: []string{"m1", "m2", "m3"}, UsedModels: []string{"m1", "m2"}},
+			wantSt:  store.CredActive, wantVer: store.VerifyVerified,
+		},
+		{
+			name:    "多选部分命中 → 放行 unverified（不盖章也不误杀）",
+			claimed: []string{"m1", "gpt-4"},
+			out:     ProbeOutput{Reachable: true, AuthOK: true, Models: []string{"m1", "m2"}, UsedModels: []string{"m1"}},
+			wantSt:  store.CredActive, wantVer: store.VerifyUnverified,
+		},
+		{
+			name:    "多选全不命中且目录非空 → 拒绝 suspect",
+			claimed: []string{"gpt-4", "claude-x"},
+			out:     ProbeOutput{Reachable: true, AuthOK: true, Models: []string{"m1", "m2"}},
+			wantSt:  store.CredDisabled, wantVer: store.VerifySuspect,
 		},
 		{
 			name: "未声明模型且鉴权通过 → 放行 unverified",
@@ -71,7 +89,7 @@ func TestContractContributionJudgeProbe(t *testing.T) {
 		},
 		{
 			name:    "探测自身失败（非法 URL）→ 拒绝，证据脱敏",
-			claimed: "m1",
+			claimed: []string{"m1"},
 			err:     errors.New("构造探测请求失败：parse url"),
 			wantSt:  store.CredDisabled, wantVer: store.VerifyUnverified,
 		},
@@ -155,7 +173,7 @@ func TestContractContributionSubmitFlow(t *testing.T) {
 
 	res, err := svc.Submit(ctx, Submission{
 		OwnerAccountID: 7, Provider: "demo-provider", BaseURL: "https://api.example.com/v1",
-		APIKey: "sk-secret-value-123", ClaimedModel: "m1", Label: "我的 key",
+		APIKey: "sk-secret-value-123", ClaimedModels: []string{"m1"}, Label: "我的 key",
 	})
 	if err != nil {
 		t.Fatalf("提交失败：%v", err)
@@ -186,7 +204,7 @@ func TestContractContributionSubmitFlow(t *testing.T) {
 	before := len(fs.credentials)
 	res2, err := svc.Submit(ctx, Submission{
 		OwnerAccountID: 7, Provider: "demo-provider", BaseURL: "https://api.example.com/v1",
-		APIKey: "sk-secret-value-123", ClaimedModel: "m1",
+		APIKey: "sk-secret-value-123", ClaimedModels: []string{"m1"},
 	})
 	if err != nil {
 		t.Fatalf("幂等提交失败：%v", err)
@@ -208,7 +226,7 @@ func TestContractContributionRejectKeepsEvidence(t *testing.T) {
 
 	res, err := svc.Submit(ctx, Submission{
 		OwnerAccountID: 9, Provider: "fake", BaseURL: "https://api.example.com/v1",
-		APIKey: "sk-not-gpt4-key", ClaimedModel: "gpt-4",
+		APIKey: "sk-not-gpt4-key", ClaimedModels: []string{"gpt-4"},
 	})
 	if err != nil {
 		t.Fatalf("拒绝不是 error：%v", err)
@@ -237,7 +255,7 @@ func TestContractContributionRevoke(t *testing.T) {
 	}}, ContributionOptions{})
 	res, err := svc.Submit(ctx, Submission{
 		OwnerAccountID: 3, Provider: "p", BaseURL: "https://api.example.com/v1",
-		APIKey: "sk-revoke-me-1234", ClaimedModel: "m1",
+		APIKey: "sk-revoke-me-1234", ClaimedModels: []string{"m1"},
 	})
 	if err != nil {
 		t.Fatalf("提交失败：%v", err)
@@ -275,7 +293,7 @@ func TestContractContributionFailureDisables(t *testing.T) {
 	}}, ContributionOptions{FailThreshold: 3})
 	res, err := svc.Submit(ctx, Submission{
 		OwnerAccountID: 5, Provider: "p", BaseURL: "https://api.example.com/v1",
-		APIKey: "sk-flaky-key-12345", ClaimedModel: "m1",
+		APIKey: "sk-flaky-key-12345", ClaimedModels: []string{"m1"},
 	})
 	if err != nil {
 		t.Fatalf("提交失败：%v", err)

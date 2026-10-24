@@ -229,7 +229,7 @@ provider catalog 提取的事实字段：端点与模型 id，**不含其代码*
 
 ```json
 {"kind": "api", "provider": "deepseek-com", "api_key": "sk-……",
- "label": "我的备用 Key", "claimed_models": ["deepseek-flash"]}
+ "label": "我的备用 Key", "claimed_models": ["deepseek-flash", "deepseek-reasoner"]}
 
 {"kind": "custom", "endpoint": "https://api.example.com/v1", "api_key": "sk-……",
  "label": "自建网关", "claimed_models": ["some-model-id"]}
@@ -241,6 +241,21 @@ provider catalog 提取的事实字段：端点与模型 id，**不含其代码*
   不允许客户端自报一个任意端点再冒名某个供应商。
 - `kind=custom` 时 `endpoint` 必填，校验同上游 `ValidateTarget`（回环/内网地址归
   `selfhosted`，其余归 `vendor`）。
+
+**`claimed_models` 可多选**（2026-10-25 起；此前只取第一个）：一把 key 往往同时提供
+好几个模型，只让声明一个会迫使贡献者隐去其余事实。提交后的 L1 目录比对按条判定：
+
+| 声称 vs 目录 | status | verify_status |
+|---|---|---|
+| 全部命中 | active | `verified` |
+| 部分命中（≥1 且 <N） | active | `unverified`（入池 + 复检队列，证据列命中/未命中明细） |
+| 目录非空但全不命中 | disabled | `suspect`（冒充的最强信号） |
+| 端点无目录 | active | `unverified`（放行 + 复检） |
+| 未声明任何模型 | active | `unverified`（不判定「相符」） |
+
+**为什么「部分命中」不盖章也不误杀**：命中一半说明 key 是真的、但声称清单掺了水——
+给 `verified` 等于替贡献者背书全部声称；给 `suspect` 又过了（「三个里中了一个」恰恰
+说明不是冒充）。`unverified` 是两个误判代价里较小的一个。
 
 落库的 `upstreams.provider`：反代型为 sidecar 的 provider 名，api 型为
 `api:<catalog id>`，自定义为 `custom`。

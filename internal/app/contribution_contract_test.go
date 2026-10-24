@@ -103,7 +103,7 @@ func TestContractContributionAnonymousEncrypted(t *testing.T) {
 		Provider:       "demo-provider",
 		BaseURL:        srv.URL + "/v1",
 		APIKey:         key,
-		ClaimedModel:   "m1",
+		ClaimedModels:  []string{"m1"},
 		Label:          "我的魔搭 key",
 	})
 	if err != nil {
@@ -266,7 +266,7 @@ func TestContractContributionRevokeReal(t *testing.T) {
 	const key = "sk-revoke-me-abcdef1234567890"
 	res, err := a.Contribution().Submit(ctx, upstream.Submission{
 		OwnerAccountID: owner, Provider: "p", BaseURL: srv.URL + "/v1",
-		APIKey: key, ClaimedModel: "m1",
+		APIKey: key, ClaimedModels: []string{"m1"},
 	})
 	if err != nil {
 		t.Fatalf("提交失败：%v", err)
@@ -316,7 +316,7 @@ func TestContractContributionFailureDisablesReal(t *testing.T) {
 	srv := newCatalogServer(t, []string{"m1"}, http.StatusOK)
 	res, err := a.Contribution().Submit(ctx, upstream.Submission{
 		OwnerAccountID: owner, Provider: "p", BaseURL: srv.URL + "/v1",
-		APIKey: "sk-flaky-abcdef123456", ClaimedModel: "m1",
+		APIKey: "sk-flaky-abcdef123456", ClaimedModels: []string{"m1"},
 	})
 	if err != nil {
 		t.Fatalf("提交失败：%v", err)
@@ -479,7 +479,7 @@ func TestContractContributionPauseResumeReal(t *testing.T) {
 	const key = "sk-pause-me-abcdef1234567890"
 	res, err := svc.Submit(ctx, upstream.Submission{
 		OwnerAccountID: owner, Provider: "demo-provider", BaseURL: srv.URL + "/v1",
-		APIKey: key, ClaimedModel: "m1",
+		APIKey: key, ClaimedModels: []string{"m1"},
 	})
 	if err != nil || !res.InPool {
 		t.Fatalf("前置提交应入池：err=%v res=%+v", err, res)
