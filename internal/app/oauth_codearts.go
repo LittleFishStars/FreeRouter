@@ -184,10 +184,12 @@ func (b *oauthBridge) Providers(ctx context.Context) []httpapi.ProviderChoice {
 		switch {
 		case !avail:
 			c.UnavailableReason = reason
+			c.UnavailableKind = httpapi.UnavailableKindConfig
 		case p.Unavailable != "":
 			// sidecar 在、但这家缺配置（如没设 OAuth 客户端 secret）。
 			c.Available = false
 			c.UnavailableReason = p.Unavailable
+			c.UnavailableKind = httpapi.UnavailableKindConfig
 		}
 		out = append(out, c)
 	}
@@ -197,7 +199,8 @@ func (b *oauthBridge) Providers(ctx context.Context) []httpapi.ProviderChoice {
 			// 这两家没有可脱离 IDE 的 OAuth 登录面：标不可用并给原因，界面
 			// 就不会渲染一个「点了必失败」的按钮（API Key 型贡献入口始终在）。
 			Available:         false,
-			UnavailableReason: p.Reason + "（请改用下方 API Key 型贡献）",
+			UnavailableReason: p.Reason,
+			UnavailableKind:   httpapi.UnavailableKindUnsupported,
 		})
 	}
 	return out
@@ -217,6 +220,7 @@ func fallbackProviders(avail bool, reason string) []httpapi.ProviderChoice {
 	for _, n := range fallbackNames {
 		out = append(out, httpapi.ProviderChoice{
 			ID: n[0], Name: n[1], Available: avail, UnavailableReason: reason,
+			UnavailableKind: httpapi.UnavailableKindConfig,
 		})
 	}
 	return out

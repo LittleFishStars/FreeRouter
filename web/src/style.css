@@ -834,6 +834,53 @@ a.metric:hover {
   background: var(--surface-2);
 }
 
+/* 不可用项现在是两行：名称+标签 / 原因。原因比名称小一档，避免抢注意力 */
+.provider-name {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-weight: 600;
+}
+
+.provider-reason {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* 标签：缺配置 = 可操作的提醒（琥珀）；仅 API Key 型 = 中性说明（灰紫） */
+.provider-tag {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+}
+
+.provider-unavailable[data-unavailable='config'] .provider-tag {
+  color: var(--warn);
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+}
+
+.provider-unavailable[data-unavailable='unsupported'] .provider-tag {
+  color: var(--primary);
+  border-color: var(--border);
+  background: var(--primary-soft);
+}
+
+/* 供方网格里每格现在内容更高，行距略放 */
+.provider-grid li {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
 .member-list {
   list-style: none;
   padding: 0;

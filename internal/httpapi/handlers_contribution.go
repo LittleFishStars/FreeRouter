@@ -128,13 +128,23 @@ func (s *Server) HandleContributeProviders(deps *ContributionDeps) http.HandlerF
 				if !c.Available && c.UnavailableReason != "" {
 					row["unavailable_reason"] = c.UnavailableReason
 				}
+				// 两类不可用对运维的含义完全不同（配了就能用 vs 永远不支持），
+				// 前端要据此给不同措辞，所以必须把它发出去。
+				if !c.Available && c.UnavailableKind != "" {
+					row["unavailable_kind"] = c.UnavailableKind
+				}
 				rows = append(rows, row)
 			}
 		}
+		// 「API Key 型」不是一个 OAuth 供应商，而是一条**并列的贡献路径**。
+		// 这里带上 flow=api_key，前端据此把它渲染成说明而不是跳转链接——
+		// 之前它 available=true 又不带 flow，前端会生成 /contribute/oauth/api-key
+		// 这个必然 404 的死链（本页已有 API Key 表单，不需要再跳一次）。
 		rows = append(rows, map[string]any{
 			"id":        "api-key",
 			"name":      "OpenAI 兼容端点（API Key）",
 			"available": true,
+			"flow":      "api_key",
 		})
 		writeJSON(w, http.StatusOK, map[string]any{"data": rows})
 	}

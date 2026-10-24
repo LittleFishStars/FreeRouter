@@ -122,6 +122,13 @@ export interface ContributeProvider {
   name: string
   available: boolean
   unavailable_reason?: string
+  /**
+   * 不可用的**性质**（后端 ProviderChoice.UnavailableKind）：
+   *  - `config`：我们这边缺配置（如没设 OAuth 客户端 secret），补上就能用
+   *  - `unsupported`：上游没有可脱离 IDE 的 OAuth 登录面，补配置也不会变可用
+   * 两类在界面上必须给不同措辞，否则运维会去翻那几家本来就不该有配置的供应商。
+   */
+  unavailable_kind?: 'config' | 'unsupported'
   /** 交互形态：browser(跳转) | device_code | sms | qr | api_key */
   flow?: string
   /** 发起前需要的参数（如 sms 形态要 phone）。 */

@@ -117,8 +117,21 @@ export default function ContributePage({ def }: PageProps) {
               ) : (
                 <ul className="provider-grid">
                   {d.data.map((p) => (
-                    <li key={p.id} className={p.available ? '' : 'provider-unavailable'}>
-                      {p.available ? (
+                    <li
+                      key={p.id}
+                      className={p.available ? '' : 'provider-unavailable'}
+                      // 不可用项要能一眼看出属于哪一类：缺配置（可操作）还是
+                      // 上游不支持（不可操作）。用 data 属性让 CSS 分别上色。
+                      data-unavailable={p.available ? undefined : p.unavailable_kind ?? 'config'}
+                    >
+                      {p.available && p.flow === 'api_key' ? (
+                        // 「API Key 型」是并列的贡献路径，不是 OAuth 供应商：
+                        // 本页右侧就有对应表单，跳出去只会得到一个 404。
+                        <span className="provider-name">
+                          {p.name}
+                          <span className="provider-tag">见右侧表单</span>
+                        </span>
+                      ) : p.available ? (
                         <Link
                           to={`/contribute/oauth/${encodeURIComponent(p.id)}${
                             p.needs?.includes('phone') ? '?needs=phone' : ''
@@ -133,7 +146,20 @@ export default function ContributePage({ def }: PageProps) {
                           {p.name}
                         </Link>
                       ) : (
-                        <span title={p.unavailable_reason ?? '当前不可用'}>{p.name}（不可用）</span>
+                        <>
+                          {/* 原因直接从 tooltip 搬到正文：触屏设备上没有 hover，
+                              藏起来等于没写。措辞按性质分开——「需配置」是可操作项，
+                              「仅 API Key 型」是引导用户换入口，都不该叫"不可用"。 */}
+                          <span className="provider-name">
+                            {p.name}
+                            <span className="provider-tag">
+                              {p.unavailable_kind === 'unsupported' ? '仅 API Key 型' : '需配置'}
+                            </span>
+                          </span>
+                          {p.unavailable_reason && (
+                            <span className="provider-reason">{p.unavailable_reason}</span>
+                          )}
+                        </>
                       )}
                     </li>
                   ))}

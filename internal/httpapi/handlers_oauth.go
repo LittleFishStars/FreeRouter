@@ -94,7 +94,24 @@ type ProviderChoice struct {
 	Needs             []string
 	Available         bool
 	UnavailableReason string
+	// UnavailableKind 区分「不可用」的两种性质，前端据此给不同的措辞：
+	//
+	//	"config"      —— 我们这边缺配置（例如没设 OAuth 客户端 secret），
+	//	                 补上配置就能用，属于运维可操作项。
+	//	"unsupported" —— 上游没有可脱离 IDE 的 OAuth 登录面（或登录流会自己
+	//	                 起 HTTP 服务、与 sidecar「不监听端口」红线冲突），
+	//	                 补任何配置都不会变成可用，只能走 API Key 型贡献。
+	//
+	// 为什么必须分开：两类在界面上都叫"不可用"会让运维去翻配置找那三家
+	// 本来就不该有配置的供应商，也会让他们以为缺配置的三家是产品功能缺失。
+	UnavailableKind string
 }
+
+// 不可用性质常量（见 ProviderChoice.UnavailableKind）。
+const (
+	UnavailableKindConfig      = "config"
+	UnavailableKindUnsupported = "unsupported"
+)
 
 // OAuthOutcome 是一次 OAuth 贡献的结果。
 type OAuthOutcome struct {

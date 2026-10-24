@@ -127,7 +127,7 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/api/contributions/providers` | 供应商清单（含可用性与交互形态） |
+| `GET` | `/api/contributions/providers` | 供应商清单（含可用性、不可用**性质**、交互形态） |
 | `POST` | `/api/contributions` | 提交 API Key 型贡献 |
 | `POST` | `/api/contributions/oauth/{provider}` | 发起 OAuth（`?phone=` 供短信形态） |
 | `POST` | `/api/contributions/oauth/{provider}/poll` | 轮询授权进度 |
@@ -140,6 +140,38 @@
 | `GET` | `/api/contributions/stats` | 贡献统计 |
 | `GET` | `/api/contributions/recovery-code` | 恢复码状态（是否已生成） |
 | `POST` | `/api/contributions/recovery-code/regenerate` | 重新生成恢复码（旧码作废） |
+
+#### 5.1.1 不可用的两种性质（`unavailable_kind`）
+
+清单里不可用的供应商分两类，性质完全不同，前端必须给不同措辞：
+
+| `unavailable_kind` | 含义 | 例子 | 运维能否改变 |
+|---|---|---|---|
+| `config` | 本站缺配置（如没设 OAuth 客户端 secret / 第三方 AccessKey） | `gemini` 缺 `CMDC_PAK_GOOGLE_CLIENT_SECRET`；`loomy` 缺讯飞 `LOOMY_ACCESS_KEY_ID`/`_SECRET` | ✅ 补上配置即可用 |
+| `unsupported` | 上游没有可脱离 IDE 的 OAuth 登录面；或登录流要自己起 HTTP 服务（与 sidecar「不监听端口」红线冲突） | `modelscope` / `astudio` / `opencode` | ❌ 补任何配置都不会变可用，只能走 API Key 型贡献 |
+
+**为什么这个字段必须存在**：两类在界面上都叫「不可用」会造成两种误判——
+① 运维去翻那三家本来就不该有 OAuth 配置的供应商；② 把缺配置的两家
+误认为产品功能缺失。字段缺失时前端按 `config` 处理（保守：至少提示去查配置）。
+
+响应示例：
+
+```json
+{"data": [
+  {"id": "codearts", "name": "华为云 CodeArts", "available": true, "flow": "device_code"},
+  {"id": "gemini", "name": "Google Gemini", "available": false, "flow": "browser",
+   "unavailable_reason": "未配置 OAuth 客户端：请设 CMDC_PAK_GOOGLE_CLIENT_SECRET",
+   "unavailable_kind": "config"},
+  {"id": "modelscope", "name": "ModelScope", "available": false, "flow": "api_key",
+   "unavailable_reason": "上游 auth 类只有 status/refresh/readCredential…",
+   "unavailable_kind": "unsupported"},
+  {"id": "api-key", "name": "OpenAI 兼容端点（API Key）", "available": true, "flow": "api_key"}
+]}
+```
+
+> **`api-key` 这一条不是供应商**：它是与 OAuth 并列的贡献路径，`flow` 固定为
+> `api_key`，前端据此渲染成说明（指向同页的 API Key 表单）而**不是跳转链接**
+> ——`/api/contributions/oauth/api-key` 是不存在的端点（404）。
 
 ### 5.2 `POST /api/contributions`（API Key 型）
 
