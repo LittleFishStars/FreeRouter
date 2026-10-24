@@ -1,10 +1,12 @@
 // Package apidir 是「API 供应商」入口的内置目录（贡献入口三分类之一，
-// 见 docs/ui/05-contributor.md 与 tmp/CONTRACT-contribution-v2.md §2）。
+// 见 docs/ui/05-contributor.md）。
 //
 // # 数据来源
 //
 // catalog.json 由 Tingly Box 的 provider catalog（internal/catalog/providers.json，
-// 2026-10-24 提取）整理而来，**只保留事实字段**：端点、模型 id、官网与文档链接。
+// catalog.json 由 Tingly Box 的 provider catalog（internal/catalog/providers.json，
+// 2026-10-24 首次提取，2026-10-25 修订回加 modelscope/opencode）整理而来，
+// **只保留事实字段**：端点、模型 id、官网与文档链接。
 // 它不是我们的判定逻辑，也不是「哪些供应商能用」的结论——只是「这家叫什么、
 // 端点在哪、文档在哪」的抄录。任何需要推断的东西（可用性、地区合规、费率）
 // 都不在这里。
@@ -17,15 +19,20 @@
 // 承诺「粘贴 Key 就能用」，承诺不了的不收。全表 protocol 恒为 "openai"
 // 正是这条边界的体现，而不是默认值。
 //
-// # 为什么排除 localhost / {占位符} / modelscope / opencode
+// # 为什么排除 localhost / {占位符}
 //
 //   - localhost 与 127.0.0.1：那是用户自己的服务，属于「自定义供应商」入口
 //     （kind=custom，用户自填 base_url），内置目录只描述公网端点；
 //   - 带 {占位符} 的模板 URL（如 https://{region}.example.com/v1）：它不是可
-//     直接使用的端点，收进来会让用户在表单里看到一个永远填不对的地址；
-//   - modelscope / opencode：两家在同一轮改造里被点名移除（源头就没有可复用
-//     的登录面，其凭据形态与「API 供应商」一致）。目录刻意不含它们，
-//     不要再回加——回加等于把一次有意的删除悄悄撤销。
+//     直接使用的端点，收进来会让用户在表单里看到一个永远填不对的地址。
+//
+// # modelscope / opencode 为什么在目录里
+//
+// 2026-10-25 用户澄清：这两家移除的只是**反代（OAuth 登录）形态**——上游
+// 没有可脱离 IDE 的登录面，反代入口恒不可用；但它们的 OpenAI 兼容端点
+// （modelscope-cn / opencode-ai / opencode-go）贴 Key 即用，正是本目录服务的
+// 交互。把「形态不适用」误伤成「供应商整体移除」，用户就没法贡献这两家的
+// Key 了。反代入口的移除在 sidecar（registry/index/hub 的表），与本目录无关。
 //
 // # 边界
 //

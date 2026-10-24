@@ -63,7 +63,7 @@ FreeRouter 的上游供给有两个来源：平台自己配的官方 key（`owne
 | 入口 | 状态 | 说明 |
 |---|---|---|
 | 反代供应商（13 家） | ✅ 已实现 | 用供应商账号登录，凭据由 sidecar 换出：codearts / accio / minimax / cline / qoder / raccoon / lobsterai / trae / autoclaw / officeace / zcode / astudio（微信扫码）/ loomy（扫码）。gemini 与 loomy 的第三方凭据内置默认值，可用环境变量覆盖 |
-| API 供应商（52 家） | ✅ 已实现 | 内置端点 + 粘 Key：目录见 `internal/apidir/catalog.json`（自 Tingly Box 的 provider catalog 提取的事实字段）；提交即探测（L0 + HTTP 可达性/鉴权/目录） |
+| API 供应商（55 家） | ✅ 已实现 | 内置端点 + 粘 Key：目录见 `internal/apidir/catalog.json`（自 Tingly Box 的 provider catalog 提取的事实字段）；提交即探测（L0 + HTTP 可达性/鉴权/目录） |
 | 自定义供应商 | ✅ 已实现 | 任意 OpenAI 兼容端点（自建网关、局域网服务、其它中转站） |
 
 实现方式：按上游 `deepseek-harness-codearts` 的 tsc 产物做**依赖闭包整体提取**
@@ -71,10 +71,12 @@ FreeRouter 的上游供给有两个来源：平台自己配的官方 key（`owne
 收敛成三种交互形态（`redirect` / `device_code` / `sms·qr`）。详见
 [../../sidecar/providers/README.md](../../sidecar/providers/README.md)。
 
-> **家数口径**：反代 **13 家**（全部可登录）+ API 目录 **52 家**（仅 OpenAI 兼容且贴 Key 可用的）
-> + 自定义（无目录）。2026-10-24 移除了 ModelScope 与 OpenCode：前者上游只有刷新逻辑、
-> 没有登录流程，后者是账号池/指纹工具——两家在反代列表里恒不可用，混在页面里只会变成
-> “为什么这两个点了没反应”。它们也不再出现在 API 目录里（那条路已经由另外 52 家覆盖）。
+> **家数口径**：反代 **13 家**（全部可登录）+ API 目录 **55 家**（仅 OpenAI 兼容且贴 Key 可用的）
+> + 自定义（无目录）。2026-10-24 移除了 ModelScope 与 OpenCode 的**反代形态**：前者上游
+> 只有刷新逻辑、没有登录流程，后者是账号池/指纹工具——两家在反代列表里恒不可用，混在
+> 页面里只会变成“为什么这两个点了没反应”。2026-10-25 用户澄清：它们贴 Key 即用的
+> OpenAI 兼容端点（`modelscope-cn` / `opencode-ai` / `opencode-go`）**保留在 API 目录**——
+> 移除的是登录形态，不是供应商本身。
 >
 > **2026-10-24 修正**：本表先前把 astudio 归到「只能 API Key 型」，理由写成
 > 「登录在桌面客户端内、没有可复用的授权 URL」。那是**误读**——`astudio-oauth.js`

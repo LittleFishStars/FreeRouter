@@ -134,7 +134,7 @@ export default function ContributePage({ def }: PageProps) {
   const [customSubmitting, setCustomSubmitting] = useState(false)
   const [customError, setCustomError] = useState<unknown>(null)
 
-  // API 供应商（内置目录 52 家；端点由后端解析，前端只给 provider id + Key）
+  // API 供应商（内置目录 55 家；端点由后端解析，前端只给 provider id + Key）
   const [apiSearch, setApiSearch] = useState('')
   const [apiProviderId, setApiProviderId] = useState('')
   const [apiKey, setApiKey] = useState('')

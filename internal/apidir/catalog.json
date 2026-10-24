@@ -1,7 +1,7 @@
 {
- "_source": "tingly-box internal/catalog/providers.json（2026-10-24 提取；只取事实字段：端点与模型 id）",
- "_note": "protocol 一律 openai —— 这里只收 base_url_openai 存在的条目；只有 anthropic 端点的（anthropic-com）不进目录",
- "count": 52,
+ "_source": "tingly-box internal/catalog/providers.json（2026-10-25 重提取；只取事实字段：端点与模型 id）",
+ "_note": "protocol 一律 openai——这里只收 base_url_openai 存在的条目。modelscope/opencode 于 2026-10-25 按用户澄清回加：只移除反代（OAuth）形态，贴 Key 的 API 形态保留",
+ "count": 55,
  "providers": [
   {
    "id": "baichuan-com",
@@ -756,6 +756,17 @@
    ]
   },
   {
+   "id": "modelscope-cn",
+   "name": "ModelScope (CN)",
+   "base_url": "https://api-inference.modelscope.cn/v1",
+   "protocol": "openai",
+   "vendor_family": "alibaba",
+   "region": "cn",
+   "website": "https://www.modelscope.cn",
+   "api_doc": "https://www.modelscope.cn/docs/model-service/API-Inference/intro",
+   "models": []
+  },
+  {
    "id": "moonshot-ai",
    "name": "Kimi (Moonshot AI)",
    "base_url": "https://api.moonshot.ai/v1",
@@ -898,6 +909,171 @@
     },
     {
      "id": "gpt-4o-mini"
+    }
+   ]
+  },
+  {
+   "id": "opencode-ai",
+   "name": "OpenCode Zen",
+   "base_url": "https://opencode.ai/zen/v1",
+   "protocol": "openai",
+   "vendor_family": "opencode",
+   "region": "global",
+   "website": "https://opencode.ai",
+   "api_doc": "https://opencode.ai/docs/providers/",
+   "models": [
+    {
+     "id": "qwen3.8-max"
+    },
+    {
+     "id": "qwen3.8-flash"
+    },
+    {
+     "id": "qwen3.7-max"
+    },
+    {
+     "id": "qwen3.7-plus"
+    },
+    {
+     "id": "qwen3.6-plus"
+    },
+    {
+     "id": "qwen3.5-plus"
+    },
+    {
+     "id": "deepseek-v4.1-flash"
+    },
+    {
+     "id": "deepseek-v4-pro"
+    },
+    {
+     "id": "deepseek-v4-flash"
+    },
+    {
+     "id": "glm-5.3"
+    },
+    {
+     "id": "glm-5.3-flash"
+    },
+    {
+     "id": "glm-5.2"
+    },
+    {
+     "id": "glm-5.1"
+    },
+    {
+     "id": "kimi-k3"
+    },
+    {
+     "id": "kimi-k2.7-code"
+    },
+    {
+     "id": "kimi-k2.6"
+    },
+    {
+     "id": "minimax-m3"
+    },
+    {
+     "id": "minimax-m2.7"
+    }
+   ]
+  },
+  {
+   "id": "opencode-go",
+   "name": "OpenCode Go",
+   "base_url": "https://opencode.ai/zen/go/v1",
+   "protocol": "openai",
+   "vendor_family": "opencode",
+   "region": "global",
+   "website": "https://opencode.ai",
+   "api_doc": "https://opencode.ai/docs/providers/",
+   "models": [
+    {
+     "id": "kimi-k3"
+    },
+    {
+     "id": "kimi-k2.7-code"
+    },
+    {
+     "id": "kimi-k2.6"
+    },
+    {
+     "id": "glm-5.3"
+    },
+    {
+     "id": "glm-5.3-flash"
+    },
+    {
+     "id": "glm-5.2"
+    },
+    {
+     "id": "glm-5.1"
+    },
+    {
+     "id": "deepseek-v4.1-flash"
+    },
+    {
+     "id": "deepseek-v4-pro"
+    },
+    {
+     "id": "deepseek-v4-flash"
+    },
+    {
+     "id": "qwen3.8-max"
+    },
+    {
+     "id": "qwen3.8-flash"
+    },
+    {
+     "id": "qwen3.7-max"
+    },
+    {
+     "id": "qwen3.7-plus"
+    },
+    {
+     "id": "qwen3.6-plus"
+    },
+    {
+     "id": "minimax-m3"
+    },
+    {
+     "id": "minimax-m2.7"
+    },
+    {
+     "id": "mimo-v2.6-pro"
+    },
+    {
+     "id": "mimo-v2.6-flash"
+    },
+    {
+     "id": "mimo-v2.5"
+    },
+    {
+     "id": "mimo-v2.5-pro"
+    },
+    {
+     "id": "grok-4.7"
+    },
+    {
+     "id": "grok-4.5"
+    },
+    {
+     "id": "grok-4.6"
+    },
+    {
+     "id": "gpt-6-luna"
+    },
+    {
+     "id": "gpt-5.6-luna"
+    },
+    {
+     "id": "longcat-2.0"
+    },
+    {
+     "id": "hy4-preview"
+    },
+    {
+     "id": "hy3"
     }
    ]
   },

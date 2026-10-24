@@ -340,8 +340,8 @@ credits.query({ provider: string, credentialRef: string }) -> {
 | `loomy` | **扫码**（微信） | `loomy-wechat-login.js` | 是（展示二维码） | 涉及 `loomyPermanentLocked` |
 | `minimax` | **设备码 + PKCE** | `minimax-oauth.js` | 否 | `device_code` + `code_challenge` |
 | `minimaxintl` | **设备码 + PKCE** | `minimax-oauth.js` | 否 | 与 `minimax` 同源 |
-| ~~`modelscope`~~ | —（2026-10-24 已移出本站支持） | — | — | 见下 |
-| ~~`opencode`~~ | —（2026-10-24 已移出本站支持） | — | — | 见下 |
+| ~~`modelscope`~~ | —（2026-10-24 已移出反代支持） | — | — | 见下 |
+| ~~`opencode`~~ | —（2026-10-24 已移出反代支持） | — | — | 见下 |
 | `qoder` | OAuth 回调 + 设备轮询 | `qoder-oauth.js` | 是 | 另有 `pollQoderDeviceToken` |
 | `qodercn` | OAuth 回调 | `qoder-oauth.js`（地区别名） | 是 | 无独立模块 |
 | `raccoon` | **扫码 / 短信** | `raccoon-oauth.js`、`raccoon-login-page.js` | 是 | `qrcode` + `smsCode` 两种入口 |
@@ -352,10 +352,11 @@ credits.query({ provider: string, credentialRef: string }) -> {
 trae / zcode）、设备码 2 家（cline / minimax 系，含 minimaxintl）、扫码 2 家（loomy / raccoon）、
 短信 1 家（raccoon，与扫码同 provider）、未知 1 家（codearts）。
 
-> 2026-10-24：`modelscope` 与 `opencode` 已从本站支持清单中移除（用户定案）。
-> 它们在反代列表里恒不可用（一个只有刷新逻辑、一个是账号池工具），用不了也说不清；
-> 同类需求改由「API 供应商」目录承接（`internal/apidir`）。下表与统计仍保留
-> 它们的上游数据，只作为移植历史的记录。
+> 2026-10-24：`modelscope` 与 `opencode` 已从**反代（登录）支持**中移除（用户定案）。
+> 它们在反代列表里恒不可用（一个只有刷新逻辑、一个是账号池工具），用不了也说不清。
+> 同类需求由「API 供应商」目录承接：2026-10-25 用户澄清它们贴 Key 即用的端点
+> （`modelscope-cn` / `opencode-ai` / `opencode-go`）保留在 `internal/apidir`——
+> 移除的是登录形态，不是供应商本身。下表与统计仍保留它们的上游数据，只作为移植历史的记录。
 
 **表中还出现了 3 个非 17 家的模块**（`gemini-oauth.js`、`officeace-auth.js`、`login.js`）：
 它们存在于 lib 目录但当前 `state.json` 里没有对应账号。**这些模块不进入 MVP 的 provider 清单**，

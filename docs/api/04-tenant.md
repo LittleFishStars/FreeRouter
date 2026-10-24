@@ -219,7 +219,7 @@ provider catalog 提取的事实字段：端点与模型 id，**不含其代码*
 | 排除 `oauth` / `gcp_sa` / `aws_sigv4` / `azure_key` | 它们不是「贴一个 Key」的形态 |
 | 排除 `localhost` 自建（ollama / lm-studio / vLLM …） | 需要用户自己起服务，属于「自定义供应商」 |
 | 排除带 `{account_id}` 之类占位符的模板端点 | 内置 URL 不完整，贴进去必失败 |
-| 排除 ModelScope / OpenCode | 2026-10-24 用户要求移除此两家供应商 |
+| **保留** ModelScope / OpenCode 的 key 型条目 | 2026-10-25 用户澄清：这两家移除的只是**反代（OAuth）形态**（上游没有可登录面）；它们的 OpenAI 兼容端点（`modelscope-cn` / `opencode-ai` / `opencode-go`）贴 Key 即用，正是本目录服务的交互 |
 
 目录条目的 `models` 只是**建议清单**（供界面点选），不是白名单——用户仍可手填。
 

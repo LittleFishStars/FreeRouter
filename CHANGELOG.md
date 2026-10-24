@@ -15,10 +15,11 @@
 
 - **贡献入口重构为三分类：反代供应商 / API 供应商 / 自定义供应商**（2026-10-24）：
   - 反代供应商（13 家）：用供应商账号登录（OAuth/设备码/扫码/短信），凭据由 sidecar 换出；
-  - API 供应商（52 家）：**内置端点，只需粘贴 Key**。目录落在 `internal/apidir/catalog.json`，
+  - API 供应商（55 家）：**内置端点，只需粘贴 Key**。目录落在 `internal/apidir/catalog.json`，
     自 Tingly Box 的 provider catalog 提取（MPL-2.0；只取事实字段：端点与模型 id，不含其代码）。
     收录规则：只收有 OpenAI 兼容端点的 active 条目，排除 oauth/gcp_sa/aws_sigv4/azure_key、
-    localhost 自建、带 `{占位符}` 的模板端点，以及 ModelScope/OpenCode；
+    localhost 自建、带 `{占位符}` 的模板端点。**ModelScope / OpenCode 的 key 型条目保留**
+    （2026-10-25 用户澄清：移除的只是反代登录形态，见下）；
   - 自定义供应商：任意 OpenAI 兼容端点（自建网关、局域网服务、其它中转）。
   - `GET /api/contributions/providers` 改为 `{data:{categories:[…]}}`（破坏性变更，见下）；
     `POST /api/contributions` 新增 `kind=api|custom`（缺省 custom），`kind=api` 时端点由服务端从
@@ -79,10 +80,12 @@
   `{data:{categories:[{id,name,description,items}]}}`，三组分别是 `reverse_proxy` / `api` / `custom`。
   同时 `api_key_only` 不再并入反代组（那两家已删），API 目录不依赖 sidecar。
   自建前端同步改造，**外部脚本若解旧形状会断**。
-- **移除 ModelScope 与 OpenCode 供应商**（2026-10-24 用户定案）：
+- **移除 ModelScope 与 OpenCode 的反代（OAuth）形态**（2026-10-24 用户定案；2026-10-25 澄清
+  「只移除反代列表那两个」，key 型条目不在此列）：
   - sidecar：删 `sidecar/providers/{modelscope,opencode}/` 整目录（11 个文件）、`registry.mjs` 的
     `API_KEY_ONLY` 清空、`index.mjs` 的 PROVIDERS 两行、`hub.mjs` 的 ADAPTERS 两条；
-  - 目录：`internal/apidir` 刻意不含 `modelscope*` / `opencode*`（含 Tingly 目录里的同厂商条目）；
+  - API 目录：`modelscope-cn` / `opencode-ai` / `opencode-go` 三条 **保留在 `internal/apidir`**
+    （贴 Key 即用的 OpenAI 兼容端点，正是「API 供应商」入口服务的交互）；
   - **能力面收缩**：移除后 apiKey 型 adapter 一个不剩，因此 sidecar 的 `models.list` / `infer.stream`
     只剩「OAuth 型但本侧无账号池」的降级路径（返回 `E_DEPENDENCY_MISSING`）。`sidecar/selftest`
     的 `chunksToSSE` 端到端用例随之失去驱动方（该链路已无 provider 入口），改为断言降级形态。

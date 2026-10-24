@@ -54,8 +54,9 @@ lobsterai、trae、autoclaw、astudio、officeace、zcode。
 
 `API_KEY_ONLY` **为空**（2026-10-24 起）：原先列在这里的 modelscope / opencode 已按
 `tmp/CONTRACT-contribution-v2.md` §7 从本目录删除——它们「控制台生成、粘贴使用」的凭据
-形态与新增的「API 供应商」入口完全一致，由主进程的 `internal/apidir`（52 家，编译进
-二进制的内置目录）承载，不需要 sidecar 再列一遍、也不需要多一层进程。
+形态与新增的「API 供应商」入口完全一致，由主进程的 `internal/apidir`（55 家，2026-10-25
+起含 modelscope-cn / opencode-ai / opencode-go，编译进二进制的内置目录）承载，
+不需要 sidecar 再列一遍、也不需要多一层进程。
 
 > 顺带纠正一条旧判断：astudio 曾因「登录流自己起本机 HTTP 服务」被列在这里，实际它还有
 > 一条纯 HTTP 的微信扫码三件套（`createAstudioWechatQrCode` / `pollAstudioWechatScan` /

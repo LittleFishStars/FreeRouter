@@ -214,8 +214,8 @@ func TestContributionProvidersCategoriesShape(t *testing.T) {
 	if err := json.Unmarshal(data.Categories[1].Items, &api); err != nil {
 		t.Fatalf("api.items 应是数组：%v", err)
 	}
-	if len(api) != 52 {
-		t.Fatalf("api.items 应来自内置目录的 52 家，得 %d", len(api))
+	if len(api) != 55 {
+		t.Fatalf("api.items 应来自内置目录的 55 家（2026-10-25 回加 modelscope-cn/opencode-ai/opencode-go），得 %d", len(api))
 	}
 	for _, item := range api {
 		if _, ok := item["available"]; ok {

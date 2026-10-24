@@ -12,8 +12,8 @@ import (
 // TestCatalogShape 钉住 catalog.json 的结构不变量。
 func TestCatalogShape(t *testing.T) {
 	rows := List()
-	if len(rows) != 52 {
-		t.Fatalf("目录应有 52 家，得 %d —— 增删条目要同步改本断言与契约文档", len(rows))
+	if len(rows) != 55 {
+		t.Fatalf("目录应有 55 家（52 + 2026-10-25 回加的 modelscope-cn/opencode-ai/opencode-go），得 %d —— 增删条目要同步改本断言与契约文档", len(rows))
 	}
 	if len(rows) != len(load()) {
 		t.Fatal("List 长度应与内部加载结果一致")
@@ -43,11 +43,25 @@ func TestCatalogShape(t *testing.T) {
 	}
 }
 
-// TestRemovedProvidersStayRemoved 钉住本轮点名移除的两家不会被回加。
-func TestRemovedProvidersStayRemoved(t *testing.T) {
-	for _, id := range []string{"modelscope", "modelscope-cn", "opencode", "opencode-ai"} {
+// TestKeyOnlyProvidersStayListed 钉住 2026-10-25 澄清的口径：modelscope /
+// opencode 移除的只是**反代（OAuth）形态**，它们贴 Key 即用的端点必须留在
+// 目录里——这是把「形态不适用」与「供应商整体移除」区分开的可执行副本。
+func TestKeyOnlyProvidersStayListed(t *testing.T) {
+	for _, id := range []string{"modelscope-cn", "opencode-ai", "opencode-go"} {
+		p, ok := Get(id)
+		if !ok {
+			t.Errorf("%s 只移除了反代形态，其 API 端点应留在内置目录", id)
+			continue
+		}
+		if p.BaseURL == "" {
+			t.Errorf("%s 在目录里但端点为空", id)
+		}
+	}
+	// 反代形态的 id（无 -cn/-ai/-go 后缀的裸名）不在本目录——那是 sidecar
+	// 反代表里的名字，两边同名不同物，别混。
+	for _, id := range []string{"modelscope", "opencode"} {
 		if _, ok := Get(id); ok {
-			t.Errorf("%s 已按贡献入口 v2 契约移除，不应回到内置目录", id)
+			t.Errorf("%s 是反代形态的 id，不应出现在 API 目录", id)
 		}
 	}
 }
