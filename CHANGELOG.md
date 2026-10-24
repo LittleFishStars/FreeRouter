@@ -106,6 +106,32 @@
   `ErrGloballyFused`（全局预算熔断）仍为 429 `quota_exceeded`（与分册 §3.1 一致）。
   `Retry-After` 指向命中行的重置时刻（锚点脏数据时宁缺勿错）。
 
+### 重新设计（Web 控制台）
+
+- **组件库迁到 Material UI v9 + Emotion**（2026-10-24）：替换此前"手写 CSS
+  组件"的做法。控制台真正需要的是表格、抽屉、对话框、无障碍与深浅主题的
+  一致性，这些 MUI 现成提供；继续手写意味着每加一个页面都要重做一遍。
+
+  改造刻意分层，不做 38 个页面的全量重写：
+
+  - **组件层重写**：`src/components/ui.tsx` 的 16 个导出（Badge / StatusBadge /
+    Banner / LoadingBlock / EmptyState / UnavailableState / ErrorState /
+    InlineError / AsyncView / Section / Field / DataTable / KeyValues /
+    JsonDetails / FormError）用 MUI 实现，**签名零改动**——页面因此不改一行
+    就获得新外观。
+  - **布局壳重写**：`App.tsx` 换成 MUI `AppBar` + 常驻侧栏 + < 768px 抽屉；
+    侧栏选中态用"浅底 + 主色文字"而不是实心色块（实心块在深色下会把整列
+    压成一串高对比色块）。`PageFrame.tsx` 换成 `Breadcrumbs` + `Typography`。
+  - **设计令牌集中**：新增 `src/theme.ts`（light/dark 两套 `createTheme`，
+    slate/indigo 色阶，正文 14px，表格行高 40px，圆角 10px）。
+  - **深浅色切换**：顶栏按钮；localStorage 记忆 → `prefers-color-scheme`
+    兜底；`<html data-theme>` 让 `style.css` 的原生控件跟着换色。
+  - **产出分包**：`vite.config.ts` 加函数式 `manualChunks`，react 与其余
+    vendor 分开。改业务代码只失效 63 KB 的 chunk，不再重下整个 MUI。
+
+- **登录页重做**：卡片垂直居中、MUI `TextField` 浮动标签、单一主操作按钮、
+  注册入口收进卡片底部。
+
 ### 修复
 
 - **登录后页面不断闪烁、最后空白**（2026-10-23 定案）：根因是 Key 鉴权链
@@ -143,6 +169,33 @@
 
 - **7 个文件未 gofmt**（2026-10-24）：已全部格式化。
 
+- **`Field` 迁移时丢了 `className="field"`**：页面用 `.field-row > .field`
+  做"一行多列"，类名一丢所有表单退化成单列全宽——这是编译能过、肉眼却很难
+  定位的一类回归。补回类名，并给 `.field` 加 `max-width: 34rem` 与
+  `margin-bottom: 0.85rem`（避免单独一个字段拉成 1300px 长条、也避免上一个
+  字段的帮助文本粘到下一个字段的标签上）。
+
+- **全局 `input/select/textarea` 样式污染了 MUI 输入框**：原规则会叠在 MUI
+  `TextField` 上，把 notched outline 变成双线。改为
+  `input:not(.MuiInputBase-input)` 等限定作用域。
+
+- **emoji 当图标**：侧栏与页头的"危险写"标记原用 🔒 emoji，在
+  Linux/macOS/Windows 上渲染成三种不同的彩色图形，在一列纯文字导航里极其
+  抢眼。换成 MUI `LockOutlined` 图标。
+
+- **设置页显示 snake_case 原文**：`SettingsPage` 的 `KEY_LABELS` 映射表里
+  存的是**过期键名**（`default_rpm_limit` / `lockout_threshold` /
+  `global_budget_cap` 等），永远命中不了服务端真实返回的键，界面就一直
+  显示 `default_daily_tokens` 这样的原文。按 `admin_settings_bridge.go` 的
+  真实键重写映射，并补六条单位说明（`-1 = 不限；0 = 不可用` 这类特殊值
+  不加注释，改错一个就变成全站不可用）。分组标题也改为中文；
+  `DANGEROUS_KEYS` 与确认框的影响清单同步到真实键。
+
+- **表格双边框**：`DataTable` 自带外框，而它基本都长在 `Section` 的 Card 里，
+  形成"卡片套卡片"。去掉内层外框，靠表头底色与行分隔线界定边界。
+
+- **窄屏表格加首列吸附**：横滑时首列（名称/ID）固定，始终知道在看哪一行。
+
 ### 文档
 
 - **新增 `docs/api/04-tenant.md`**（租户与贡献者 API，228 行）：此前
@@ -162,6 +215,12 @@
 
 - **`docs/OPEN-QUESTIONS.md` 索引同步**：条目数 205 → 207、篇数 30 → 31，
   新增 `api/04-tenant.md` 分组（Q206/Q207）。
+
+- `docs/ui/06-design.md` 第 7 节与第 10 节按实际实现改写：组件库从
+  约定的 shadcn/ui + Tailwind 改为 MUI v9；第 10 节那张"实现级约束"表
+  从"设想"改成"实际技术形态 + 状态"。同时如实记录一处**与原文不符**的
+  偏差：手机端宽表仍是横向滚动 + 首列吸附，没有做成卡片列表（原因与
+  后续建议写在该节，并新增 Q208 待定）。
 
 ### 废弃
 
