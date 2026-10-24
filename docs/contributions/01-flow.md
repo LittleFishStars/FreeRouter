@@ -63,7 +63,7 @@ FreeRouter 的上游供给有两个来源：平台自己配的官方 key（`owne
 | API Key（OpenAI 兼容端点） | ✅ 已实现 | 提交即探测（L0 + HTTP 可达性/鉴权/目录），失败也保留记录 |
 | 供应商 OAuth（11 家，开箱可用） | ✅ 已实现 | codearts / accio / minimax / cline / qoder / raccoon / lobsterai / trae / autoclaw / officeace / zcode |
 | 供应商 OAuth（2 家，需配一个第三方凭据） | ✅ 已实现 | gemini（`CMDC_PAK_GOOGLE_CLIENT_SECRET`）、loomy（讯飞 AccessKey 对）。未配置时清单里列出但 `available=false` 并写明要设哪个变量 |
-| 供应商 OAuth（3 家，走 API Key 型） | ➖ 不适用 | modelscope（上游无登录入出接口）、astudio（登录流要自己起本机 HTTP 服务，与 sidecar 不监听端口冲突）、opencode（登录在 adapter 层） |
+| 供应商 OAuth（3 家，只能走 API Key 型） | ➖ 不适用 OAuth，✅ 可贡献 | modelscope（上游明确"没有登录流程"）、astudio（登录在桌面客户端内，无可复用的授权 URL/回调）、opencode（上游 auth 是账号池工具）。这三家的**凭据仍可贡献**：清单里带 `suggested_endpoint` + `steps`，前端一键填端点后走 API Key 表单 |
 
 实现方式：按上游 `deepseek-harness-codearts` 的 tsc 产物做**依赖闭包整体提取**
 （83 个文件，不手抄），由 `sidecar/providers/registry.mjs` 把 16 家的差异收敛成
@@ -71,6 +71,8 @@ FreeRouter 的上游供给有两个来源：平台自己配的官方 key（`owne
 [../../sidecar/providers/README.md](../../sidecar/providers/README.md)。
 
 > **家数口径**：本表合计 **16 家**（11 开箱 + 2 需配凭据 + 3 走 API Key 型）。
+> 注意「走 API Key 型」不等于「不能贡献」——只是不经过 OAuth，见
+> [../api/04-tenant.md](../api/04-tenant.md) 第 5.1.2 节的替代路径。
 > 上游 providers-hub 的查证清单是 **17 个渠道**；本站移植覆盖了其中 16 个，
 > 差额 1 家需在 providers-hub 侧复核具体是哪个渠道（本表只列已实际接入的，
 > 不把未接入的算进"支持"里）。

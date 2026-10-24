@@ -471,21 +471,55 @@ register('zcode', {
 // ===========================================================================
 
 /** 只能走「API Key 型贡献」的 provider（上游没有可脱离 IDE 的 OAuth 登录面）。 */
+/*
+ * 这三家没有可用的 OAuth 登录面，但**凭据照样可以贡献**——上游自己用的就是
+ * 「粘贴凭据」这条路。所以每一项都带上 base_url 与 steps：
+ * base_url 让前端一键填进 API Key 表单，steps 告诉用户去哪儿拿凭据。
+ *
+ * 各家的依据（都来自 dsh-providers-hub 的源码注释，不是推测）：
+ *   - modelscope：`modelscope-auth.js` 明确写「没有登录流程，也不能续期」，
+ *     凭据是控制台手工生成的 API Key（`ms-…`），上游入口就是粘贴弹窗。
+ *   - astudio：`astudio-oauth.js` 明确写「没有 OAuth2 / PKCE / 授权 URL / 回调」，
+ *     登录是 Electron 客户端里的微信扫码，授权页与回调都握在客户端手里。
+ *     上游能「用」是因为它跑在用户本机、能直接读 `astron-session.json`；
+ *     FreeRouter 是服务端，读不到别人的桌面文件，所以只能请用户把
+ *     `modelBearerToken` 粘过来。
+ *   - opencode：`opencode-auth.js` 是账号池/指纹工具，不是登录流程；
+ *     凭据就是 API Key。
+ *
+ * 为什么不索性从清单里删掉：删掉之后用户搜不到「这家能不能贡献」，
+ * 会以为平台不支持；列出来 + 给替代路径，才是完整回答。
+ */
 export const API_KEY_ONLY = [
   {
     id: 'modelscope',
     name: 'ModelScope',
-    reason: '上游 auth 类只有 status/refresh/readCredential，没有登录入出（凭据来自粘贴的 API Key）',
+    reason: '魔搭没有登录流程：凭据是控制台手工生成的 API Key（ms- 开头），上游入口本身就是"粘贴 Key"',
+    baseUrl: 'https://api-inference.modelscope.cn/v1',
+    steps: [
+      '到 modelscope.cn 控制台 → 访问令牌，生成一个 API Key（ms- 开头）',
+      '点下方「填入端点」把 base URL 带进来，再把 Key 粘到 API Key 输入框',
+    ],
   },
   {
     id: 'astudio',
     name: 'Astudio',
-    reason: '上游登录流会自己起本机 HTTP 服务收回调，与 sidecar「不监听端口」红线冲突；纯函数面待抽取',
+    reason: 'AStudio 的登录是桌面客户端里的微信扫码，授权页与回调都在客户端内，没有可程序化走完的 OAuth',
+    baseUrl: 'https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1',
+    steps: [
+      '先在 AStudio 桌面客户端登录，从本机会话文件 astron-session.json 里取出 modelBearerToken',
+      '点下方「填入端点」带入 base URL，把 token 粘到 API Key 输入框',
+    ],
   },
   {
     id: 'opencode',
     name: 'OpenCode',
-    reason: '上游 auth 导出的是账号池指纹工具（匿名槽位/代际），登录在 adapter 层；用 API Key 型贡献',
+    reason: 'OpenCode 的登录在 adapter 层，上游 auth 只导出账号池指纹工具，不提供可复用的登录流',
+    baseUrl: 'https://opencode.ai/inference/openai/v1',
+    steps: [
+      '到 opencode.ai 生成 API Key',
+      '点下方「填入端点」带入 base URL，把 Key 粘到 API Key 输入框',
+    ],
   },
 ]
 

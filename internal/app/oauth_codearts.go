@@ -132,6 +132,11 @@ type sidecarList struct {
 		ID     string `json:"id"`
 		Name   string `json:"name"`
 		Reason string `json:"reason"`
+		// baseUrl / steps 是给「替代贡献路径」用的：这三家不能 OAuth 登录，
+		// 但凭据可以走 API Key 表单提交。前端把 baseUrl 一键填进表单、
+		// 把 steps 展示成操作清单，用户才真的能贡献——只说"不支持"等于死胡同。
+		BaseURL string   `json:"baseUrl"`
+		Steps   []string `json:"steps"`
 	} `json:"api_key_only"`
 }
 
@@ -196,11 +201,14 @@ func (b *oauthBridge) Providers(ctx context.Context) []httpapi.ProviderChoice {
 	for _, p := range list.APIKeyOnly {
 		out = append(out, httpapi.ProviderChoice{
 			ID: p.ID, Name: p.Name, Flow: "api_key",
-			// 这两家没有可脱离 IDE 的 OAuth 登录面：标不可用并给原因，界面
-			// 就不会渲染一个「点了必失败」的按钮（API Key 型贡献入口始终在）。
+			// 这几家没有可脱离 IDE 的 OAuth 登录面：标不可用并给原因，界面
+			// 就不会渲染一个「点了必失败」的按钮。但凭据本身仍可贡献，
+			// 所以同时带上替代路径（base URL + 操作步骤）。
 			Available:         false,
 			UnavailableReason: p.Reason,
 			UnavailableKind:   httpapi.UnavailableKindUnsupported,
+			SuggestedEndpoint: p.BaseURL,
+			Steps:             p.Steps,
 		})
 	}
 	return out

@@ -817,7 +817,7 @@ a.metric:hover {
   margin: 0.5rem 0;
 }
 
-.provider-grid li {
+.provider-grid > li {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 0.55rem 0.75rem;
@@ -851,6 +851,27 @@ a.metric:hover {
 }
 
 /* 标签：缺配置 = 可操作的提醒（琥珀）；仅 API Key 型 = 中性说明（灰紫） */
+/* 替代路径的操作清单：序号列表，比一段长文案更容易照着做 */
+.provider-steps {
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.provider-steps li {
+  margin-bottom: 0.15rem;
+}
+
+.provider-fill {
+  align-self: flex-start;
+  margin-top: 0.4rem;
+  padding: 0.2rem 0.5rem;
+  min-height: 0;
+  font-size: 0.76rem;
+}
+
 .provider-tag {
   flex-shrink: 0;
   font-size: 0.68rem;
@@ -875,7 +896,9 @@ a.metric:hover {
 }
 
 /* 供方网格里每格现在内容更高，行距略放 */
-.provider-grid li {
+/* 子选择器，不是后代选择器：每家内部现在有 <ol> 步骤列表，
+   用 `.provider-grid li` 会把每条步骤也套上卡片边框（实测就是这样）。 */
+.provider-grid > li {
   display: flex;
   flex-direction: column;
   justify-content: center;

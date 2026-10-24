@@ -134,6 +134,46 @@
 
 ### 修复
 
+- **授权页"不会跳转"**（2026-10-24 用户报障）：`zcode` / `officeace`
+  （`flow=browser`）与 `minimax` / `cline` / `qoder`（`flow=device_code`）点进去
+  只显示"等待授权…"，什么都不发生。
+
+  根因是把 `mode`（我们怎么收结果）当成了"要不要用户去操作"。这两个维度
+  独立：`mode=session` 只说明结果靠 sidecar 后台轮询取得，**不说明用户不用
+  去供应商页面**。于是这五家全被推进轮询分支，页面既没跳转也没给下一步。
+
+  修复：判据改成 `flow`（用户在供应商侧要做什么）——`browser`/`device_code`
+  需要离开本页，`qr`/`sms` 不需要。`session` 形态改用**新标签**打开授权页
+  （本页继续轮询，`session_id` 不丢；之前若整页跳走会连会话一起带走）。
+  设备码形态把验证码移到按钮**上方**（先看码再跳），并加"若新标签被拦截，
+  点这里即可"的兜底说明。实测：zcode/minimax 会开新标签，raccoon（扫码）
+  正确不跳。
+
+- **`.provider-grid li` 用了后代选择器**：给供应商卡片内部新增 `<ol>` 步骤
+  列表后，每条步骤都被套上了卡片边框（嵌套一层框）。改为子选择器
+  `.provider-grid > li`。
+
+### 新增
+
+- **不能 OAuth 的三家现在能真正贡献了**：`modelscope` / `astudio` /
+  `opencode` 之前只显示"不可用"+一句原因，用户看到的是死胡同。
+
+  查 `dsh-providers-hub` 源码确认：上游的"能用"本来就是**粘贴凭据**——
+  `modelscope-auth.js` 明写「没有登录流程，也不能续期」；`astudio-oauth.js`
+  明写「没有 OAuth2 / PKCE / 授权 URL / 回调」（登录在 Electron 客户端内）；
+  `opencode-auth.js` 是账号池指纹工具。DSH 之所以能"用"astudio，是因为它跑
+  在用户本机、能直接读 `astron-session.json`；本服务是服务端，读不到别人的
+  桌面文件。
+
+  所以适配方向不是硬造 OAuth，而是把**替代路径显式化**：
+
+  - `registry.mjs` 的 `API_KEY_ONLY` 每项补 `baseUrl` + `steps`；
+  - 后端 `ProviderChoice` 增 `SuggestedEndpoint` / `Steps`，providers 端点下发
+    `suggested_endpoint` / `steps`；
+  - 前端把步骤渲染成编号清单，并提供「填入端点」按钮一键填进 API Key 表单
+    （`astudio` 的 base 是 `/model-gateway/v1` 而不是直觉上的 `/v1`——按上游
+    实测值给，避免用户拼出一路 404）。
+
 - **登录后页面不断闪烁、最后空白**（2026-10-23 定案）：根因是 Key 鉴权链
   （全局 `r.Use`）把前端尚未接入的 `/api/usage/overview` 等请求拦成
   `401 invalid_api_key`，而 client 把任何 401 当作「会话失效」跳登录页；

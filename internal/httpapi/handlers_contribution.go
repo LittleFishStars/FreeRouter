@@ -133,6 +133,13 @@ func (s *Server) HandleContributeProviders(deps *ContributionDeps) http.HandlerF
 				if !c.Available && c.UnavailableKind != "" {
 					row["unavailable_kind"] = c.UnavailableKind
 				}
+				// 替代贡献路径：不能 OAuth 的供应商告诉用户"怎么用 API Key 贡献"。
+				if c.SuggestedEndpoint != "" {
+					row["suggested_endpoint"] = c.SuggestedEndpoint
+				}
+				if len(c.Steps) > 0 {
+					row["steps"] = c.Steps
+				}
 				rows = append(rows, row)
 			}
 		}

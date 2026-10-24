@@ -129,6 +129,10 @@ export interface ContributeProvider {
    * 两类在界面上必须给不同措辞，否则运维会去翻那几家本来就不该有配置的供应商。
    */
   unavailable_kind?: 'config' | 'unsupported'
+  /** 这家的 OpenAI 兼容 base URL（仅 API Key 型的供应商给）。 */
+  suggested_endpoint?: string
+  /** 「去哪儿拿凭据」的操作步骤（仅 API Key 型的供应商给）。 */
+  steps?: string[]
   /** 交互形态：browser(跳转) | device_code | sms | qr | api_key */
   flow?: string
   /** 发起前需要的参数（如 sms 形态要 phone）。 */

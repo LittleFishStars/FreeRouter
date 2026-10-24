@@ -105,6 +105,11 @@ type ProviderChoice struct {
 	// 为什么必须分开：两类在界面上都叫"不可用"会让运维去翻配置找那三家
 	// 本来就不该有配置的供应商，也会让他们以为缺配置的三家是产品功能缺失。
 	UnavailableKind string
+	// SuggestedEndpoint / Steps 是「不能用 OAuth，但可以这样贡献」的替代路径：
+	// SuggestedEndpoint 是这家的 OpenAI 兼容 base URL（前端一键填进 API Key
+	// 表单），Steps 是"去哪儿拿凭据"的操作清单。对可用的供应商留空。
+	SuggestedEndpoint string
+	Steps             []string
 }
 
 // 不可用性质常量（见 ProviderChoice.UnavailableKind）。

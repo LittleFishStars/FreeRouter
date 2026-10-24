@@ -159,6 +159,28 @@ export default function ContributePage({ def }: PageProps) {
                           {p.unavailable_reason && (
                             <span className="provider-reason">{p.unavailable_reason}</span>
                           )}
+                          {/* 不能 OAuth 不等于不能贡献：把替代路径写出来，
+                              否则用户看到的就是"这家不行"然后走掉。 */}
+                          {p.steps && p.steps.length > 0 && (
+                            <ol className="provider-steps">
+                              {p.steps.map((s2, i) => (
+                                <li key={i}>{s2}</li>
+                              ))}
+                            </ol>
+                          )}
+                          {p.suggested_endpoint && (
+                            <button
+                              type="button"
+                              className="btn-ghost provider-fill"
+                              onClick={() => {
+                                setEndpoint(p.suggested_endpoint!)
+                                // 把焦点送进 Key 输入框：用户下一步一定是粘 Key
+                                document.getElementById('contribute-api-key')?.focus()
+                              }}
+                            >
+                              填入端点
+                            </button>
+                          )}
                         </>
                       )}
                     </li>
@@ -177,6 +199,7 @@ export default function ContributePage({ def }: PageProps) {
             </Field>
             <Field label="API Key" required hint="提交后不再显示，也不会出现在任何页面。">
               <input
+                id="contribute-api-key"
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
@@ -244,13 +267,35 @@ export function ContributeOAuthPage({ def }: PageProps) {
     startOAuthContribution(provider, phone)
       .then((r) => {
         const d = r.data
+        // **先判断"要不要用户去供应商那边操作"，再判断"我们怎么收结果"。**
+        //
+        // 这两个维度是独立的，早先这里写成"mode 是 session 就不跳"，结果
+        // zcode / officeace（flow=browser，mode=session）和 minimax / cline /
+        // qoder（flow=device_code，mode=session）全都卡在"等待授权…"——
+        // 它们恰恰是必须让用户去登录页/填码的那批。用户看到的就是一个
+        // 什么都不发生的中转页。
+        //
+        // 正确判据是 flow（用户在供应商侧要做什么）：
+        //   browser / device_code → 需要离开本页去完成
+        //   qr  → 本页扫码，不离开
+        //   sms → 本页填码，不离开
+        const needsUserAction = !!d.authorize_url && d.flow !== 'qr' && d.flow !== 'sms'
+
         if (d.mode === 'session' && d.session_id) {
+          // session 形态的结果由 sidecar 后台轮询取得，session_id 必须留在本页。
+          // 所以用新标签打开授权页、本页继续轮询；直接 location.assign 会把
+          // session 一起带走，回来后反而接不上。
           setSession(d)
           setStarting(false)
+          if (needsUserAction) {
+            // effect 里开新窗大概率被浏览器拦（非用户手势），拦了也没关系：
+            // 页面上有醒目的「打开授权页」按钮兜底，点它一定能开。
+            window.open(d.authorize_url, '_blank', 'noopener,noreferrer')
+          }
           return
         }
         if (d.authorize_url) {
-          window.location.assign(d.authorize_url) // redirect：本页就此离开
+          window.location.assign(d.authorize_url) // redirect：本页就此离开，回调回本站
           return
         }
         setError(new Error('服务端没有返回授权地址'))
@@ -360,12 +405,35 @@ export function ContributeOAuthPage({ def }: PageProps) {
           <button type="submit" className="btn-primary">发送验证码</button>
         </form>
       ) : session ? (
-        <Section title="完成授权" hint="本页会自动检测授权结果，完成后自动继续。">
+        <Section
+          title="完成授权"
+          hint={
+            session.flow === 'qr'
+              ? '用手机 App 扫码；本页会自动检测结果，完成后自动继续。'
+              : session.flow === 'sms'
+                ? '收到短信验证码后填在下面；本页会自动提交并继续检测。'
+                : '在新标签页完成授权后回到本页即可——本页一直在后台检测，不需要刷新。'
+          }
+        >
+          {/* device_code 形态必须先让用户看到码，所以码放在按钮**上面** */}
+          {session.user_code && (
+            <p>
+              验证码：<code className="user-code">{session.user_code}</code>
+              <span className="block-meta">在授权页输入该码完成确认</span>
+            </p>
+          )}
           {session.authorize_url && session.flow !== 'qr' && (
             <p>
-              <a href={session.authorize_url} target="_blank" rel="noreferrer" className="btn-primary" style={{ display: 'inline-block' }}>
-                打开授权页
+              <a
+                href={session.authorize_url}
+                target="_blank"
+                rel="noreferrer"
+                className="btn-primary"
+                style={{ display: 'inline-block' }}
+              >
+                {session.flow === 'device_code' ? '打开授权页并输入上方验证码' : '打开授权页'}
               </a>
+              <span className="block-meta muted">若新标签被浏览器拦截，点这里即可。</span>
             </p>
           )}
           {session.flow === 'qr' && session.qr_image_url && (
@@ -374,18 +442,19 @@ export function ContributeOAuthPage({ def }: PageProps) {
               <span className="block-meta">用手机 App 扫码授权</span>
             </p>
           )}
-          {session.user_code && (
-            <p>
-              验证码：<code className="user-code">{session.user_code}</code>
-              <span className="block-meta">在授权页输入该码完成确认</span>
-            </p>
-          )}
           {session.flow === 'sms' && (
             <Field label="短信验证码" required hint="收到验证码后填入，本页会自动提交并继续检测。">
               <input value={smsCode} onChange={(e) => setSmsCode(e.target.value)} autoComplete="one-time-code" inputMode="numeric" />
             </Field>
           )}
-          <p className="muted" aria-live="polite">{session.message ?? '等待授权…'}</p>
+          <p className="muted" aria-live="polite">
+            {session.message ??
+              (session.flow === 'qr'
+                ? '等待扫码…'
+                : session.authorize_url
+                  ? '等待你在授权页完成操作…'
+                  : '等待授权结果…')}
+          </p>
           <FormError error={error} />
           <p>
             <Link
