@@ -153,6 +153,8 @@ export default function ContributePage({ def }: PageProps) {
   // 声称模型：多选（2026-10-25 定案）——目录 Chip 点选 + 手写回车追加，同一集合。
   const [apiModels, setApiModels] = useState<string[]>([])
   const [apiModelInput, setApiModelInput] = useState('')
+  // 自定义模型输入框是否展开（默认收起；见「+ 添加自定义模型」按钮的注释）
+  const [customModelOpen, setCustomModelOpen] = useState(false)
   const [apiSubmitting, setApiSubmitting] = useState(false)
   const [apiError, setApiError] = useState<unknown>(null)
 
@@ -611,54 +613,96 @@ export default function ContributePage({ def }: PageProps) {
                           </Typography>
                         </div>
 
+                        {/* 声称的模型：目录里已知的模型用**复选框列表**列出（勾选即声明），
+                            目录外的模型走「+ 添加自定义模型」。早期版本是「裸输入框 + 点选 Chip」，
+                            同一件事有两套入口：输入框看着像必填、Chip 又像筛选器，用户会以为
+                            「选了下方的还要在上面再写一遍」。 */}
                         <Field
                           label="声称的模型"
                           required
                           hint={
                             selected.models.length > 0
-                              ? '可多选：点下面的模型选中/取消，也可手写回车追加；已选的列在下方（点 ✕ 删除）。'
-                              : '手写模型名回车添加，可多个；已选的列在下方（点 ✕ 删除）。'
+                              ? '勾选这把 Key 实际提供的模型（可多选）；目录里没有的用「添加自定义模型」。'
+                              : '这家的目录里没有登记模型，用「添加自定义模型」手写。'
                           }
                         >
-                          <input
-                            value={apiModelInput}
-                            onChange={(e) => setApiModelInput(e.target.value)}
-                            onKeyDown={(e) => {
-                              // 回车在本表单里默认是提交，这里拦下来做“确认添加”；
-                              // 已选集合为空时才放行默认提交，避免一个模型都没选就交上去。
-                              if (e.key === 'Enter') {
-                                if (splitModels(apiModelInput).length > 0) {
-                                  e.preventDefault()
-                                  appendModelInput()
-                                } else if (apiModels.length === 0) {
-                                  e.preventDefault()
-                                }
-                              }
-                            }}
-                            placeholder={selected.models.length > 0 ? '手写目录外的模型名，回车添加' : '例如 deepseek-flash，回车添加'}
-                            {...PLAIN_FIELD_PROPS}
-                          />
-                        </Field>
-                        {selected.models.length > 0 && (
-                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
-                            {selected.models.map((m) => {
-                              const on = apiModels.includes(m.id)
-                              return (
-                                <Chip
+                          {selected.models.length > 0 && (
+                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+                              {selected.models.map((m) => (
+                                <FormControlLabel
                                   key={m.id}
+                                  sx={{ m: 0, '& .MuiFormControlLabel-label': { fontSize: 13 } }}
+                                  control={
+                                    <Checkbox
+                                      size="small"
+                                      checked={apiModels.includes(m.id)}
+                                      onChange={() => toggleModel(m.id)}
+                                    />
+                                  }
                                   label={m.id}
-                                  size="small"
-                                  variant={on ? 'filled' : 'outlined'}
-                                  color={on ? 'primary' : 'default'}
-                                  onClick={() => toggleModel(m.id)}
-                                  onDelete={on ? () => toggleModel(m.id) : undefined}
                                 />
-                              )
-                            })}
+                              ))}
+                            </Box>
+                          )}
+                        </Field>
+
+                        {/* 自定义模型：默认收起，点「+ 添加自定义模型」才展开输入框。
+                            收起态是**按钮**而不是空输入框：空输入框会被当成必填项，
+                            也会被浏览器当成「登录表单里的用户名框」去自动填充。 */}
+                        {customModelOpen ? (
+                          <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-end' }}>
+                            <Field label="自定义模型名" hint="目录外的模型；回车或点「添加」加入下方已选。">
+                              <input
+                                value={apiModelInput}
+                                onChange={(e) => setApiModelInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    // 回车在本表单里默认是提交；这里改成「确认添加」
+                                    e.preventDefault()
+                                    appendModelInput()
+                                  }
+                                  if (e.key === 'Escape') {
+                                    setCustomModelOpen(false)
+                                    setApiModelInput('')
+                                  }
+                                }}
+                                placeholder="例如 some-model-id"
+                                autoFocus
+                                {...PLAIN_FIELD_PROPS}
+                              />
+                            </Field>
+                            <button
+                              type="button"
+                              className="btn-ghost"
+                              style={{ marginBottom: 4 }}
+                              onClick={appendModelInput}
+                              disabled={splitModels(apiModelInput).length === 0}
+                            >
+                              添加
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-ghost"
+                              style={{ marginBottom: 4 }}
+                              onClick={() => {
+                                setCustomModelOpen(false)
+                                setApiModelInput('')
+                              }}
+                            >
+                              取消
+                            </button>
+                          </Box>
+                        ) : (
+                          <Box>
+                            <button type="button" className="btn-ghost" onClick={() => setCustomModelOpen(true)}>
+                              + 添加自定义模型
+                            </button>
                           </Box>
                         )}
-                        {/* 已选汇总：目录内 + 目录外统一列在这里，删除只能在这里（点 Chip 是选中/取消切换，
-                            汇总行的 ✕ 是明确的移除——两套手势分开，避免「点掉了不想点的」误操作）。 */}
+
+                        {/* 已选汇总：勾选的目录模型与自定义添加的都在这里，统一可 ✕ 移除。
+                            为什么还需要这一行：复选框列表只覆盖目录内模型，必须有一处把
+                            「最终会提交的完整集合」展示出来（含自定义项）。 */}
                         {apiModels.length > 0 && (
                           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, alignItems: 'center' }}>
                             <Typography variant="caption" color="text.secondary">
@@ -675,7 +719,6 @@ export default function ContributePage({ def }: PageProps) {
                             ))}
                           </Box>
                         )}
-
 
                         <Field label="API Key" required hint="提交后不再显示，也不会出现在任何页面。">
                           <input
