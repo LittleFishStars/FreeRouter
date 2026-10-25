@@ -275,9 +275,10 @@ CREATE TABLE abstract_candidates (
     abstract_model_id INTEGER NOT NULL REFERENCES abstract_models(id) ON DELETE CASCADE,
     real_model_id     INTEGER NOT NULL REFERENCES real_models(id)     ON DELETE CASCADE,
     constraint_json   TEXT,                    -- 候选级约束（渠道范围等）
-    weight            INTEGER NOT NULL DEFAULT 0,
+    weight            INTEGER NOT NULL DEFAULT 0,   -- 历史字段（03-strategy 3.3.2）：不参与任何排序，写入恒 0
+    sort_order        INTEGER NOT NULL DEFAULT 0,   -- 声明序（0008）：管理员在候选集编辑器里排的次序；平局决胜按它
     PRIMARY KEY (abstract_model_id, real_model_id)
-) WITHOUT ROWID;
+) WITHOUT ROWID;   -- 正因无 rowid，「保存顺序」必须显式落 sort_order 列，否则不可复现
 CREATE INDEX ix_abstract_candidates_real ON abstract_candidates(real_model_id);
 
 CREATE TABLE real_models (

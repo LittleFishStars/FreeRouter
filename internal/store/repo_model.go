@@ -91,11 +91,18 @@ type RealModel struct {
 }
 
 // Candidate 是抽象模型的一个候选。
+//
+// Weight 是历史字段（03-strategy.md §3.3.2）：内置四种策略全不读它，
+// 界面的输入框也已删除（2026-10-26 用户决定「不设权重」）。字段位保留
+// 只为不破坏既有 DTO 形状与历史数据，写入时恒 0。
 type Candidate struct {
 	AbstractModelID int64
 	RealModelID     int64
 	ConstraintJSON  *string
 	Weight          int64
+	// SortOrder 是声明序：管理员在候选集编辑器里排列的次序。排序条件
+	// 次序相同时按它决定先后。写入时由 SetCandidates 按入参顺序编号。
+	SortOrder int64
 }
 
 // ModelRepo 是模型目录（抽象模型、候选、真实模型）的仓储。
@@ -309,24 +316,36 @@ func (r *ModelRepo) SetCandidates(ctx context.Context, abstractModelID int64, ca
 		`DELETE FROM abstract_candidates WHERE abstract_model_id = ?`, abstractModelID); err != nil {
 		return fmt.Errorf("store: 清空候选失败: %w", err)
 	}
-	for _, c := range cands {
+	// 声明序：按入参切片顺序编号（0 起）。权重已退役（03-strategy §3.3.2），
+	// 恒写 0 —— 保留字段位只为兼容历史数据与人工备注，不再参与任何决策。
+	for i, c := range cands {
 		if _, err := r.db.ExecContext(ctx,
-			`INSERT INTO abstract_candidates(abstract_model_id, real_model_id, constraint_json, weight)
-			 VALUES(?,?,?,?)`,
-			abstractModelID, c.RealModelID, c.ConstraintJSON, c.Weight); err != nil {
+			`INSERT INTO abstract_candidates(abstract_model_id, real_model_id, constraint_json, weight, sort_order)
+			 VALUES(?,?,?,?,?)`,
+			abstractModelID, c.RealModelID, c.ConstraintJSON, 0, i); err != nil {
 			return fmt.Errorf("store: 写候选失败: %w", err)
 		}
 	}
 	return nil
 }
 
-// ListCandidates 列出抽象模型的候选（按 weight 降序，同权重按 id）。
+// ListCandidates 列出抽象模型的候选，**按声明序**（sort_order 升序）。
+//
+// 为什么按声明序而不是权重：权重已退役（03-strategy.md §3.3.2——内置四种
+// 策略全不读它，界面的输入框也已删除）。排序条件次序相同时按管理员在候选集
+// 编辑器里排列的顺序决定先后（2026-10-26 用户决定）——声明的次序本身就是
+// 声明的一部分。
+//
+// real_model_id 只是在 sort_order 相同（理论不该发生：整表替换按入参顺序
+// 编号，编号必不重复）时的防御性决胜，保证读序确定。
+//
+// 读出的 Weight 恒为 0（写入时恒写 0）：字段位留着只为不破坏既有 DTO 形状。
 func (r *ModelRepo) ListCandidates(ctx context.Context, abstractModelID int64) ([]Candidate, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT abstract_model_id, real_model_id, constraint_json, weight
+		`SELECT abstract_model_id, real_model_id, constraint_json, weight, sort_order
 		   FROM abstract_candidates
 		  WHERE abstract_model_id = ?
-		  ORDER BY weight DESC, real_model_id`, abstractModelID)
+		  ORDER BY sort_order, real_model_id`, abstractModelID)
 	if err != nil {
 		return nil, fmt.Errorf("store: 列出候选失败: %w", err)
 	}
@@ -335,7 +354,7 @@ func (r *ModelRepo) ListCandidates(ctx context.Context, abstractModelID int64) (
 	var out []Candidate
 	for rows.Next() {
 		var c Candidate
-		if err := rows.Scan(&c.AbstractModelID, &c.RealModelID, &c.ConstraintJSON, &c.Weight); err != nil {
+		if err := rows.Scan(&c.AbstractModelID, &c.RealModelID, &c.ConstraintJSON, &c.Weight, &c.SortOrder); err != nil {
 			return nil, fmt.Errorf("store: 扫描候选失败: %w", err)
 		}
 		out = append(out, c)

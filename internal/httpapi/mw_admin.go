@@ -516,10 +516,19 @@ func renderAdminAbstractModel(m *AdminAbstractModel) AdminAbstractModelOut {
 }
 
 // AdminCandidateItem 是抽象模型的一个候选（§8.2）。
+//
+// 候选集是**声明式**的：只声明真实模型 × 渠道范围 × 约束，不绑定凭据。
+// 数组的**顺序**就是声明序（排序条件次序相同时按它决定先后）——所以
+// 整表替换的入参顺序不是随意的，PUT 收到的数组顺序会被原样保存。
 type AdminCandidateItem struct {
-	RealModelID string          `json:"real_model_id"`
-	Constraint  json.RawMessage `json:"constraint,omitempty"`
-	Weight      int64           `json:"weight"`
+	RealModelID string `json:"real_model_id"`
+	// Constraint 是候选级约束原文（渠道范围等），透传给路由层解释；
+	// 管理面不解释它的内容（声明是不透明 JSON，读时解释）。
+	Constraint json.RawMessage `json:"constraint,omitempty"`
+	// Weight 是历史字段（03-strategy.md §3.3.2）：内置四种策略全不读它，
+	// 界面上的输入框已删除。字段位保留只为不破坏既有 DTO 形状——**请求里
+	// 给了会被忽略**（服务端恒写 0），响应里恒为 0。
+	Weight int64 `json:"weight"`
 	// AvailableInstances 是运行时展开的可用凭据实例数——**响应字段，
 	// 请求里给了也忽略**（§8.2：它由运行时状态决定，不可写）。
 	AvailableInstances int64 `json:"available_instances"`

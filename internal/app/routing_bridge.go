@@ -114,7 +114,11 @@ func (b *abstractModelBridge) ListCandidates(ctx context.Context, abstractModelI
 		out = append(out, routing.CandidateDecl{
 			RealModelID: r.RealModelID,
 			Constraint:  parseConstraint(r.ConstraintJSON),
-			Weight:      r.Weight,
+			// Weight 已退役（03-strategy.md §3.3.2）：内置四种策略全不读它，
+			// 界面的输入框也已删除。平局按**声明序**决定，而声明序就是
+			// ListCandidates 的读序（sort_order 升序）——排序层用
+			// sort.SliceStable 保持这个次序，所以这里不需要额外传什么。
+			Weight: 0,
 		})
 	}
 	return out, nil

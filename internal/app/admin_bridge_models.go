@@ -396,7 +396,10 @@ func (mb *modelsBridge) putCandidates(ctx context.Context, models *store.ModelRe
 		if err != nil {
 			return fmt.Errorf("候选 real_model_id %q 非法: %w", c.RealModelID, err)
 		}
-		sc := store.Candidate{AbstractModelID: abstractID, RealModelID: rid, Weight: c.Weight}
+		// 声明序由 SetCandidates 按**入参切片顺序**编号，所以这里不能传
+		// weight（已退役，恒写 0）也不能自己编 sort_order——入参顺序就是
+		// 管理员在界面上排的顺序。
+		sc := store.Candidate{AbstractModelID: abstractID, RealModelID: rid}
 		if len(c.Constraint) > 0 {
 			sc.ConstraintJSON = adminStrPtr(string(c.Constraint))
 		}
@@ -575,8 +578,9 @@ func (mb *modelsBridge) ListCandidates(ctx context.Context, abstractModelID stri
 			inst = insts[rm.UpstreamID]
 		}
 		item := httpapi.AdminCandidateItem{
-			RealModelID:        encodeID(idcode.RealModel, c.RealModelID),
-			Weight:             c.Weight,
+			RealModelID: encodeID(idcode.RealModel, c.RealModelID),
+			// Weight 恒 0（已退役）：字段位留着只为不破坏 DTO 形状。
+			Weight:             0,
 			AvailableInstances: inst,
 		}
 		if c.ConstraintJSON != nil {
@@ -666,7 +670,8 @@ func (mb *modelsBridge) ReplaceCandidates(ctx context.Context, abstractModelID s
 			for _, c := range prev {
 				item := httpapi.AdminCandidateItem{
 					RealModelID: encodeID(idcode.RealModel, c.RealModelID),
-					Weight:      c.Weight,
+					// Weight 恒 0（已退役）。
+					Weight: 0,
 				}
 				if c.ConstraintJSON != nil {
 					item.Constraint = json.RawMessage(*c.ConstraintJSON)
