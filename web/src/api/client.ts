@@ -59,6 +59,8 @@ export const PATHS = {
   adminSettings: '/api/admin/settings',
   adminInbox: '/api/admin/inbox',
   adminInboxCount: '/api/admin/inbox/count',
+  // 候选集编辑器的「供应商 → 模型」两栏数据（契约 §1.1；只读）
+  adminModelSources: '/api/admin/model-sources',
   // 贡献者面（端点未定稿）
   myContributions: '/api/contributions',
   myCredentials: '/api/contributions/credentials',

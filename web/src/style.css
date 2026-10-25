@@ -974,18 +974,6 @@ a.metric-link:hover {
   margin-bottom: 0.35rem;
 }
 
-.candidate-row {
-  border: none;
-  border-radius: var(--radius-sm);
-  padding: 0.65rem;
-  margin-bottom: 0.65rem;
-  display: flex;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  background: var(--fr-block);
-}
-
 .chain-preview {
   font-size: 1.02rem;
 }
@@ -1096,4 +1084,380 @@ a.metric-link:hover {
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+/* ---------- 候选集编辑器：来源栏 + 模型卡片 ---------- */
+
+/* 层级一律用填充色阶画：卡片（--fr-card）里的块（--fr-block），块里再深一档
+   （--fr-inset）。全块不画边框，颜色只给状态，阴影只给浮层。 */
+.source-split {
+  display: grid;
+  grid-template-columns: 17rem minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+@media (max-width: 899px) {
+  .source-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.source-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border-radius: var(--fr-radius-xl);
+  background: var(--fr-block);
+}
+
+/* 搜索框用相对定位把图标压到输入框的左内边：输入框自身的填充与圆角
+   由全局原生控件规则给，这里不加第二层底色。 */
+.source-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.source-search > svg {
+  position: absolute;
+  left: 0.6rem;
+  color: var(--fr-on-surface-variant);
+  pointer-events: none;
+}
+
+.source-search input {
+  width: 100%;
+  padding-left: 1.9rem;
+}
+
+.source-group-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.15rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--fr-on-surface-variant);
+}
+
+.source-group-count {
+  padding: 0 0.4rem;
+  border-radius: var(--fr-radius-full);
+  background: var(--fr-inset);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.source-group-empty {
+  margin: 0.1rem 0 0.3rem 0.5rem;
+  font-size: 0.78rem;
+}
+
+.source-row[data-off='true'] {
+  opacity: 0.55;
+}
+
+.source-off-tag {
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: var(--fr-radius-sm);
+  background: var(--fr-warning-container);
+  color: var(--fr-on-warning-container);
+  font-size: 0.66rem;
+  font-weight: 600;
+}
+
+.source-count {
+  min-width: 1.4rem;
+  text-align: right;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--fr-on-surface-variant);
+}
+
+/* 协议事实徽标：O = OpenAI 兼容端点，A = Anthropic 原生端点。
+   两个徽标都是中性填充：颜色在这里留给状态，不留给事实。 */
+.proto-badges {
+  display: inline-flex;
+  gap: 0.15rem;
+}
+
+.proto-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  border-radius: var(--fr-radius-sm);
+  background: var(--fr-inset);
+  color: var(--fr-on-surface-variant);
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.source-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.source-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.85rem 1rem;
+  border-radius: var(--fr-radius-xl);
+  background: var(--fr-block);
+}
+
+.source-head-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.source-head-name {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.source-head-tag {
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--fr-radius-full);
+  background: var(--fr-inset);
+  color: var(--fr-on-surface-variant);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.source-head-tag[data-tone='warn'] {
+  background: var(--fr-warning-container);
+  color: var(--fr-on-warning-container);
+}
+
+.source-head-facts {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--fr-on-surface-variant);
+}
+
+.source-head-alias,
+.source-head-note {
+  margin: 0;
+  font-size: 0.76rem;
+}
+
+.source-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 0.75rem;
+}
+
+.source-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--fr-radius-xl);
+  background: var(--fr-block);
+  overflow: hidden;
+}
+
+/* 选中态用主色软底 + ✓ 图标，而不是描边（全站不用边框画状态） */
+.source-card[data-selected='true'] {
+  background: var(--fr-primary-soft);
+}
+
+/* 不可选卡片：置灰，原因写在 title 里 */
+.source-card[data-blocked='true'] {
+  opacity: 0.55;
+}
+
+.source-card-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.8rem 0.9rem;
+  cursor: pointer;
+}
+
+.source-card-hit[aria-disabled='true'] {
+  cursor: not-allowed;
+}
+
+.source-card-hit:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--fr-focus-ring);
+}
+
+.source-card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--fr-primary);
+}
+
+.source-card-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--fr-on-surface);
+}
+
+.source-card-sub {
+  font-family: var(--fr-font-mono);
+  font-size: 0.74rem;
+  color: var(--fr-on-surface-variant);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+}
+
+/* 可用实例：只有它带颜色——0 是无凭据支撑（警告），null 是池内（中性） */
+.source-inst {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.source-inst[data-tone='ok'] {
+  color: var(--fr-success);
+}
+
+.source-inst[data-tone='warn'] {
+  color: var(--fr-warning);
+  font-weight: 600;
+}
+
+.source-inst[data-tone='muted'] {
+  color: var(--fr-on-surface-variant);
+}
+
+.source-params {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.7rem 0.9rem 0.85rem;
+  background: var(--fr-inset);
+}
+
+.source-param {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.source-param-wide {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.source-param-label {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--fr-on-surface-variant);
+}
+
+.source-param input[type='number'] {
+  width: 6.5rem;
+}
+
+.source-param-hint {
+  font-size: 0.72rem;
+  color: var(--fr-on-surface-variant);
+}
+
+.source-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+/* 芯片是按钮，这里把全局按钮的尺寸/描边全部收回，只留一枚圆胶囊 */
+.source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-height: 0;
+  padding: 0.22rem 0.55rem;
+  border: 0;
+  border-radius: var(--fr-radius-full);
+  background: var(--fr-block);
+  color: var(--fr-on-surface-variant);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.source-chip:hover:not(:disabled) {
+  background: var(--fr-card);
+}
+
+.source-chip[data-on='true'] {
+  background: var(--fr-primary);
+  color: var(--fr-on-primary);
+  font-weight: 600;
+}
+
+.source-chip[data-on='true']:hover:not(:disabled) {
+  background: var(--fr-primary-hover);
+}
+
+.source-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+.source-footer-sum {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+  color: var(--fr-on-surface-variant);
+}
+
+/* 新接口不可用时的降级清单：至少让已选可见、可移除、可保存 */
+.source-fallback {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.source-fallback li {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.65rem;
+  border-radius: var(--fr-radius-md);
+  background: var(--fr-block);
+  font-size: 0.82rem;
 }

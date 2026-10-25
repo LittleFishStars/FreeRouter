@@ -30,6 +30,7 @@ import type {
   AdminCredential,
   AdminGroup,
   AdminGroupDetail,
+  AdminModelSourcesResponse,
   AdminRealModel,
   AdminRealModelPatch,
   AdminUpstream,
@@ -441,6 +442,14 @@ export async function getCandidates(id: string): Promise<{ candidates: Candidate
     `${PATHS.adminAbstractModels}/${seg(id)}`
   )
   return { candidates: env.candidates ?? [] }
+}
+
+/**
+ * 候选集编辑器的「供应商 → 模型」两栏数据（契约 §1.1）。
+ * 注意它不是 ListEnvelope：响应体就是 `{sources, channels}`，不解信封。
+ */
+export function getModelSources(): Promise<AdminModelSourcesResponse> {
+  return getEnvelope<AdminModelSourcesResponse>(PATHS.adminModelSources)
 }
 
 export function putCandidates(id: string, candidates: Candidate[]) {

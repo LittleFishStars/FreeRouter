@@ -211,6 +211,61 @@ export interface AdminRealModelPatch {
   credit_multiplier?: { in: number; out: number }
 }
 
+// ── 管理面：候选集编辑器（供应商 → 模型）───────────────────────────────
+
+/**
+ * 一个真实模型在候选集编辑器里的只读事实（GET /api/admin/model-sources，契约 §1.1）。
+ * 全部字段都是事实：写回只走候选集的 PUT，这里没有任何可写字段。
+ */
+export interface AdminModelSourceModel {
+  real_model_id: string
+  upstream_model_id: string
+  display_name: string
+  /** 渠道归属；可空 */
+  channel: string | null
+  context_window: number | null
+  modalities: string[]
+  efforts: string[]
+  status: string
+  excluded_from_candidates: boolean
+  /** 恒等于所属来源的 protocols（模型级协议事实不存在，继承来源） */
+  protocols: string[]
+  /** 可展开的凭据实例数：null = 由账号池决定，0 = 无凭据支撑 */
+  available_instances: number | null
+}
+
+/** 候选集编辑器左栏的一行：一个上游来源（契约 §1.1）。 */
+export interface AdminModelSource {
+  id: string
+  kind: UpstreamKind | string
+  name: string
+  /** 上游行原始 name（与 name 不同时在界面上展示它做归因） */
+  upstream_name: string
+  provider_id: string
+  region: string
+  website: string
+  api_doc: string
+  base_url: string
+  enabled: boolean
+  /** 该上游下存在凭据行 */
+  contributed: boolean
+  credential_count: number
+  model_count: number
+  /** 端点协议事实，只允许 "openai" / "anthropic"，openai 恒在前 */
+  protocols: string[]
+  /** null = 数量由 sidecar 账号池决定（relay），0 = 当前无可用凭据 */
+  available_instances: number | null
+  last_seen_at: number | null
+  models: AdminModelSourceModel[]
+}
+
+/** GET /api/admin/model-sources 的响应体（不是 ListEnvelope：没有 data 信封）。 */
+export interface AdminModelSourcesResponse {
+  sources: AdminModelSource[]
+  /** 全池 real_models.channel 去重升序，供渠道范围多选 */
+  channels: string[]
+}
+
 // ── 管理面：抽象模型 ───────────────────────────────────────────────────
 
 export type CapabilityMode = 'strict' | 'filter'
@@ -245,14 +300,34 @@ export interface AdminAbstractModel {
   chain: string[] | null
 }
 
+/** 渠道范围约束的形状（后端 internal/app/routing_bridge.go 的 constraintJSON.ChannelScope）。 */
+export interface CandidateChannelScope {
+  mode: 'any' | 'include' | 'exclude' | string
+  channels?: string[]
+}
+
+/**
+ * 候选约束。
+ *
+ * 除 `channel_scope` 外的键本界面不解释、原样透传；`channel_scope` 声明为
+ * unknown：历史数据里出现过字符串形状（旧界面写 `"all"`，那个形状从来没有
+ * 生效过），所以读取时必须按形状分支，不能假定它一定是 `{mode,channels}`。
+ */
+export interface CandidateConstraint {
+  channel_scope?: unknown
+  /** 与 channel_scope 并列的约束键（constraintJSON 的其余字段，本界面不编辑） */
+  credential_scope?: { mode?: string }
+  require_modalities?: string[]
+  min_context?: number
+  require_efforts?: string[]
+  [key: string]: unknown
+}
+
 export interface Candidate {
   real_model_id: string
-  constraint?: {
-    channel_scope?: string
-    require?: Record<string, unknown>
-  }
+  constraint?: CandidateConstraint
   weight: number
-  /** 响应侧展开结果：声明式候选 → 当前可用凭据实例数 */
+  /** 响应侧展开结果：声明式候选 → 当前可用凭据实例数（桥恒填 0，不能当事实用） */
   available_instances?: number
 }
 
