@@ -15,6 +15,7 @@ import { createRoot } from 'react-dom/client'
 import { CssBaseline, ThemeProvider } from '@mui/material'
 import App from './App'
 import { darkTheme, lightTheme, MODE_STORAGE_KEY } from './theme'
+import { applyCssTokens } from './tokens'
 import { ColorModeContext, type ColorMode } from './colorMode'
 import './style.css'
 
@@ -40,6 +41,8 @@ function Root() {
   useEffect(() => {
     document.documentElement.dataset.theme = mode
     document.documentElement.style.colorScheme = mode
+    // 令牌 → CSS 自定义属性：38 个页面里的原生控件与 style.css 靠它们取色
+    applyCssTokens(mode)
     try {
       localStorage.setItem(MODE_STORAGE_KEY, mode)
     } catch {
@@ -62,6 +65,9 @@ function Root() {
     </ThemeProvider>
   )
 }
+
+// 首帧之前就把令牌写到 <html>：否则原生控件与 style.css 会先闪一帧无色值。
+applyCssTokens(initialMode())
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

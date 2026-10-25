@@ -107,6 +107,8 @@ export default function LoginPage() {
           </Alert>
         )}
 
+        {/* 表单卡：靠「比页面亮一档」站起来，不画边框；它是浮在页面中央的
+            单独一块，所以允许一层 e1 阴影（列表里的卡片不加）。 */}
         <Box
           component="form"
           onSubmit={onSubmit}
@@ -115,11 +117,9 @@ export default function LoginPage() {
             flexDirection: 'column',
             gap: 2,
             p: 3,
-            borderRadius: 3,
+            borderRadius: 3.5,
             bgcolor: 'background.paper',
-            border: '1px solid',
-            borderColor: 'divider',
-            boxShadow: 1
+            boxShadow: 'var(--fr-e1)'
           }}
         >
           <TextField

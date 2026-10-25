@@ -20,64 +20,46 @@
 
 /* ---------- 设计令牌 ---------- */
 
-:root,
+/* 令牌来源：src/tokens.ts 是唯一事实源，main.tsx 在首帧前把每个角色写成
+ * `--fr-*` 自定义属性。这里只把旧名映射过去（38 个页面里的语义类名仍按旧名取色），
+ * 因此改色只需改 tokens.ts，不会出现「CSS 一套、MUI 一套」的漂移。 */
+
+:root {
+  --bg: var(--fr-page);
+  --surface: var(--fr-card);
+  --surface-2: var(--fr-block);
+  --text: var(--fr-on-surface);
+  --muted: var(--fr-on-surface-variant);
+  --border: var(--fr-divider);
+  --border-strong: var(--fr-divider-strong);
+  --primary: var(--fr-primary);
+  --primary-hover: var(--fr-primary-hover);
+  --primary-soft: var(--fr-primary-soft);
+  --primary-contrast: var(--fr-on-primary);
+  --danger: var(--fr-error);
+  --danger-bg: var(--fr-error-container);
+  --danger-border: transparent;
+  --ok: var(--fr-success);
+  --ok-bg: var(--fr-success-container);
+  --ok-border: transparent;
+  --warn: var(--fr-warning);
+  --warn-bg: var(--fr-warning-container);
+  --warn-border: transparent;
+  --info: var(--fr-info);
+  --info-bg: var(--fr-info-container);
+  --info-border: transparent;
+  --radius: var(--fr-radius-xl);
+  --radius-sm: var(--fr-radius-md);
+  --shadow-sm: var(--fr-e1);
+  --focus-ring: var(--fr-focus-ring);
+}
+
+/* 浅色偏好时显式声明（tokens.ts 会把值写到 <html> 上） */
 [data-theme='light'] {
-  --bg: #f8fafc;
-  --surface: #ffffff;
-  --surface-2: #f1f5f9;
-  --text: #1e293b;
-  --muted: #64748b;
-  --border: #e2e8f0;
-  --border-strong: #cbd5e1;
-  --primary: #4f46e5;
-  --primary-hover: #4338ca;
-  --primary-soft: rgba(79, 70, 229, 0.08);
-  --primary-contrast: #ffffff;
-  --danger: #dc2626;
-  --danger-bg: #fef2f2;
-  --danger-border: #fecaca;
-  --ok: #047857;
-  --ok-bg: #ecfdf5;
-  --ok-border: #a7f3d0;
-  --warn: #b45309;
-  --warn-bg: #fffbeb;
-  --warn-border: #fde68a;
-  --info: #0369a1;
-  --info-bg: #f0f9ff;
-  --info-border: #bae6fd;
-  --radius: 10px;
-  --radius-sm: 8px;
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
-  --focus-ring: rgba(79, 70, 229, 0.35);
   color-scheme: light;
 }
 
 [data-theme='dark'] {
-  --bg: #0b1220;
-  --surface: #0f172a;
-  --surface-2: #172033;
-  --text: #f1f5f9;
-  --muted: #94a3b8;
-  --border: rgba(148, 163, 184, 0.16);
-  --border-strong: rgba(148, 163, 184, 0.32);
-  --primary: #818cf8;
-  --primary-hover: #a5b4fc;
-  --primary-soft: rgba(129, 140, 248, 0.14);
-  --primary-contrast: #0b1220;
-  --danger: #f87171;
-  --danger-bg: rgba(248, 113, 113, 0.1);
-  --danger-border: rgba(248, 113, 113, 0.3);
-  --ok: #34d399;
-  --ok-bg: rgba(52, 211, 153, 0.1);
-  --ok-border: rgba(52, 211, 153, 0.3);
-  --warn: #fbbf24;
-  --warn-bg: rgba(251, 191, 36, 0.1);
-  --warn-border: rgba(251, 191, 36, 0.3);
-  --info: #38bdf8;
-  --info-bg: rgba(56, 189, 248, 0.1);
-  --info-border: rgba(56, 189, 248, 0.3);
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --focus-ring: rgba(129, 140, 248, 0.4);
   color-scheme: dark;
 }
 
@@ -105,8 +87,10 @@ textarea:not(.MuiInputBase-input) {
   font: inherit;
   font-size: 0.875rem;
   color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
+  /* 输入框用「填充」而不是「描边」：一档比所在面深（浅色）/ 亮（深色）。
+     描边框在卡片里会变成一屏几十根线，与「用填充画层级」的原则打架。 */
+  background: var(--fr-inset);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   padding: 0.4rem 0.6rem;
   min-height: 34px;
@@ -118,7 +102,7 @@ textarea:not(.MuiInputBase-input) {
 input:not(.MuiInputBase-input):hover:not(:disabled),
 select:not(.MuiSelect-nativeInput):hover:not(:disabled),
 textarea:not(.MuiInputBase-input):hover:not(:disabled) {
-  border-color: var(--muted);
+  border-color: var(--fr-divider-strong);
 }
 
 /* 焦点用"外发光"而不是 outline：outline 在圆角元素上会露出直角 */
@@ -135,7 +119,7 @@ a:focus-visible {
 input:not(.MuiInputBase-input):disabled,
 select:not(.MuiSelect-nativeInput):disabled,
 textarea:not(.MuiInputBase-input):disabled {
-  background: var(--surface-2);
+  background: var(--fr-block);
   color: var(--muted);
   cursor: not-allowed;
 }
@@ -153,6 +137,21 @@ input[type='radio']:not(.MuiInputBase-input) {
 select:not(.MuiSelect-nativeInput)[multiple] {
   min-height: 6rem;
   padding: 0.25rem;
+}
+
+/*
+ * 多选框里被选中的项：浏览器的默认高亮是系统强调色（深色模式下是一整块亮蓝，
+ * 比页面里任何东西都抢眼，而且不受主题控制）。这里压成「主色 12% 底 + 正文色」，
+ * 与站内其他选中态同一套语言。
+ * 注：Firefox/Linux 会用系统主题接管 option 的底色，所以还额外设了
+ * accent-color 兜底——它至少能让勾选框与控制条跟主色一致。
+ */
+select:not(.MuiSelect-nativeInput)[multiple] option:checked {
+  /* Chrome 会忽略 option 的纯色背景，只认渐变（这是被广泛使用的 workaround）；
+     Firefox 认纯色。两条都写，两边都落到主色 12%。!important 顶掉
+     Firefox 的 -moz-system-highlight。 */
+  background: var(--fr-primary-soft) linear-gradient(0deg, var(--fr-primary-soft), var(--fr-primary-soft)) !important;
+  color: var(--text) !important;
 }
 
 textarea:not(.MuiInputBase-input) {
@@ -176,7 +175,7 @@ pre code {
 pre {
   overflow: auto;
   background: var(--surface-2);
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius-sm);
   padding: 0.75rem;
   margin: 0.5rem 0;
@@ -234,9 +233,9 @@ button,
   font-size: 0.875rem;
   font-weight: 600;
   border-radius: var(--radius-sm);
-  padding: 0.4rem 0.85rem;
+  padding: 0.4rem 0.9rem;
   cursor: pointer;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--fr-divider);
   background: var(--surface);
   color: var(--text);
   text-decoration: none;
@@ -274,8 +273,9 @@ button:disabled {
 
 .btn-danger {
   background: var(--danger);
-  border-color: var(--danger);
-  color: #fff;
+  border-color: transparent;
+  /* 深色模式下 --danger 是浅红，白字对比不足；改用「容器档」的深色文字 */
+  color: var(--fr-error-container);
 }
 
 .btn-danger:hover:not(:disabled) {
@@ -325,11 +325,11 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  border-radius: 6px;
-  padding: 0.05rem 0.45rem;
-  font-size: 0.76rem;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.75rem;
   font-weight: 600;
-  border: 1px solid var(--border);
+  border: none;
   background: var(--surface-2);
   margin-right: 0.25rem;
   white-space: nowrap;
@@ -370,7 +370,7 @@ button:disabled {
   flex-direction: column;
   gap: 0.9rem;
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius);
   padding: 1.15rem;
 }
@@ -458,11 +458,11 @@ button:disabled {
 }
 
 .free-confirm {
-  background: var(--warn-bg);
-  border: 1px solid var(--warn-border);
-  border-radius: var(--radius-sm);
-  padding: 0.6rem;
-  margin: 0.4rem 0;
+  /* 底色由外层容器给（未勾选=警告容器，勾上=成功容器），这里只负责排版 */
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
 }
 
 .code-input,
@@ -481,7 +481,7 @@ button:disabled {
   flex-wrap: wrap;
   align-items: flex-end;
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius);
   padding: 0.7rem 0.85rem;
   margin-bottom: 0.9rem;
@@ -557,20 +557,19 @@ button:disabled {
 
 .link-grid a {
   display: block;
-  padding: 0.6rem 0.75rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  padding: 0.7rem 0.85rem;
+  /* 磁贴长在卡片里，要比卡片深一档才看得出来（用 surface 会和卡片同色） */
+  background: var(--fr-block);
+  border: none;
   border-radius: var(--radius-sm);
   text-decoration: none;
   font-weight: 600;
-  transition:
-    border-color 0.12s ease,
-    background-color 0.12s ease;
+  font-size: 0.875rem;
+  transition: background-color 0.12s ease;
 }
 
 .link-grid a:hover {
-  border-color: var(--primary);
-  background: var(--primary-soft);
+  background: var(--fr-inset);
   text-decoration: none;
 }
 
@@ -588,9 +587,12 @@ button:disabled {
 
 .card {
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius);
   padding: 1.1rem;
+  box-shadow: none;
+  /* 卡片本身就是「比页面亮一档」的那一块，不再额外加阴影：
+     列表里的卡片加阴影只会拖慢滚动，且视觉上像浮起来的便签。 */
 }
 
 .card h3 {
@@ -612,7 +614,7 @@ button:disabled {
 
 .placeholder-note {
   background: var(--surface-2);
-  border: 1px dashed var(--border-strong);
+  border: none;
   padding: 0.95rem;
   border-radius: var(--radius);
   color: var(--muted);
@@ -621,44 +623,53 @@ button:disabled {
 /* ---------- 指标卡 ---------- */
 
 .metric-row {
-  display: flex;
-  gap: 0.8rem;
-  flex-wrap: wrap;
-  margin: 0.4rem 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.75rem;
+  margin: 0.5rem 0;
 }
 
 .metric {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
-  min-width: 8.5rem;
-  padding: 0.75rem 0.9rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  gap: 0.35rem;
+  min-width: 9rem;
+  padding: 0.9rem 1rem;
+  /* 指标卡长在 Section 卡片里，取比卡片深一档（block）；悬停再深一档 */
+  background: var(--fr-block);
+  border: none;
   border-radius: var(--radius);
   text-decoration: none;
   color: var(--text);
-  transition:
-    border-color 0.12s ease,
-    transform 0.12s ease;
+  transition: background-color 0.12s ease;
 }
 
-a.metric:hover {
-  border-color: var(--primary);
+a.metric-link {
+  text-decoration: none;
+  display: block;
+}
+
+a.metric-link:hover .metric {
+  background: var(--fr-inset);
+}
+
+a.metric-link:hover {
   text-decoration: none;
 }
 
 .metric-value {
-  font-size: 1.35rem;
-  font-weight: 700;
-  letter-spacing: '-0.02em';
+  /* 数字是仪表盘的主角：1.75rem + tabular-nums，扫一眼就能比大小 */
+  font-size: 1.75rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
   font-variant-numeric: tabular-nums;
-  line-height: 1.2;
+  line-height: 1.15;
 }
 
 .metric-label {
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.8125rem;
+  line-height: 1.4;
 }
 
 /* ---------- 进度条 ---------- */
@@ -704,7 +715,7 @@ a.metric:hover {
   max-width: 46rem;
   margin: 0 auto;
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius);
   padding: 1.35rem;
 }
@@ -755,7 +766,7 @@ a.metric:hover {
   max-height: 90vh;
   overflow: auto;
   padding: 1.35rem;
-  border: 1px solid var(--border);
+  border: none;
   box-shadow: 0 24px 60px rgba(2, 6, 23, 0.45);
 }
 
@@ -792,7 +803,7 @@ a.metric:hover {
 .landing {
   padding: 1.5rem;
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius);
 }
 
@@ -818,10 +829,10 @@ a.metric:hover {
 }
 
 .provider-grid > li {
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius-sm);
   padding: 0.55rem 0.75rem;
-  background: var(--surface);
+  background: var(--fr-block);
 }
 
 .provider-link {
@@ -934,7 +945,7 @@ a.metric:hover {
 }
 
 .candidate-row {
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius-sm);
   padding: 0.65rem;
   margin-bottom: 0.65rem;
@@ -942,7 +953,7 @@ a.metric:hover {
   gap: 0.6rem;
   flex-wrap: wrap;
   align-items: flex-end;
-  background: var(--surface);
+  background: var(--fr-block);
 }
 
 .chain-preview {
@@ -964,7 +975,7 @@ a.metric:hover {
 
 .model-card {
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius);
   padding: 1.1rem;
   display: flex;
@@ -1005,12 +1016,14 @@ a.metric:hover {
 .login-card {
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: 1rem;
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 1.6rem;
-  box-shadow: var(--shadow-sm);
+  border: none;
+  /* 一次性表单卡用最大圆角（与弹窗同档）：它是页面上唯一的一块 */
+  border-radius: var(--fr-radius-xxl);
+  padding: 1.75rem;
+  /* 浮在页面中央的单独一块，给一层 e1 阴影——这是全站少数允许有阴影的地方 */
+  box-shadow: var(--fr-e1);
 }
 
 .account-info {

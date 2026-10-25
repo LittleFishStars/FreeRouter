@@ -55,6 +55,7 @@ import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
 import { ApiError, PATHS, postAuthLogout } from './api/client'
 import { SessionProvider, useSession } from './api/session'
 import { useColorMode } from './colorMode'
+import { SURFACE } from './theme'
 import RequirePage from './components/RequirePage'
 import {
   NAV_LABELS,
@@ -115,29 +116,29 @@ function NavList({ unread, onNavigate }: { unread: number; onNavigate?: () => vo
   const activePage = matchPage(pathname, allPages)
 
   return (
-    <Box sx={{ px: 1.25, py: 1.5 }}>
+    <Box sx={{ px: 1, py: 1.5 }}>
       {visible.map((g) => {
         const pages = pagesOfNav(g)
         if (pages.length === 0) return null
         return (
-          <Box key={g} sx={{ mb: 1.5 }}>
-            {/* 分组标题做成小号大写灰字：层级靠字重与字号，不靠加粗色块 */}
+          <Box key={g} sx={{ mb: 1.75 }}>
+            {/* 分组标题：小号、次要色、不写全大写（中文没有大小写，全大写只对
+                英文标签生效，会让中英混排看起来忽高忽低） */}
             <Typography
               variant="caption"
               sx={{
                 display: 'block',
-                px: 1.25,
-                pb: 0.5,
-                fontWeight: 700,
-                fontSize: '0.68rem',
-                letterSpacing: '.08em',
-                textTransform: 'uppercase',
+                px: 1.5,
+                pb: 0.75,
+                fontWeight: 600,
+                fontSize: '0.6875rem',
+                letterSpacing: '.02em',
                 color: 'text.disabled'
               }}
             >
               {NAV_LABELS[g]}
             </Typography>
-            <List dense disablePadding>
+            <List dense disablePadding sx={{ '& .MuiListItemButton-root': { pl: 1.5 } }}>
               {pages.map((p) => {
                 const active = activePage?.path === p.path
                 return (
@@ -148,16 +149,28 @@ function NavList({ unread, onNavigate }: { unread: number; onNavigate?: () => vo
                     onClick={onNavigate}
                     selected={active}
                     sx={{
-                      py: 0.6,
+                      position: 'relative',
+                      minHeight: 38,
+                      py: 0.4,
                       mb: 0.25,
-                      // 选中态：浅底 + 主色文字 + 左侧 2px 主色竖条（比实心块安静）
+                      borderRadius: 2.5,
+                      color: active ? 'text.primary' : 'text.secondary',
+                      // 选中态照 FlClash：底色保持中性、只多一档，选中靠左侧 3px
+                      // 主色竖条来说。整块铺主色会把侧栏压成一串高对比色块。
                       '&.Mui-selected': {
-                        bgcolor: (t) =>
-                          t.palette.mode === 'dark' ? 'rgba(129,140,248,.14)' : 'rgba(79,70,229,.08)',
-                        color: 'primary.main',
-                        '&:hover': {
-                          bgcolor: (t) =>
-                            t.palette.mode === 'dark' ? 'rgba(129,140,248,.2)' : 'rgba(79,70,229,.12)'
+                        bgcolor: SURFACE.inset,
+                        color: 'text.primary',
+                        '&:hover': { bgcolor: SURFACE.inset },
+                        '&::before': {
+                          content: '""',
+                          position: 'absolute',
+                          left: 4,
+                          top: '50%',
+                          transform: 'translateY(-50%)',
+                          width: 3,
+                          height: 16,
+                          borderRadius: 2,
+                          bgcolor: 'primary.main'
                         }
                       }
                     }}
@@ -167,7 +180,7 @@ function NavList({ unread, onNavigate }: { unread: number; onNavigate?: () => vo
                       slotProps={{
                         primary: {
                           noWrap: true,
-                          sx: { fontSize: '0.855rem', fontWeight: active ? 650 : 500 }
+                          sx: { fontSize: '0.875rem', fontWeight: active ? 600 : 400, letterSpacing: 0 }
                         }
                       }}
                     />
@@ -186,7 +199,7 @@ function NavList({ unread, onNavigate }: { unread: number; onNavigate?: () => vo
                         label={unread > 99 ? '99+' : unread}
                         size="small"
                         color="primary"
-                        sx={{ height: 18, fontSize: '0.68rem', ml: 0.75, '& .MuiChip-label': { px: 0.75 } }}
+                        sx={{ height: 20, fontSize: '0.6875rem', ml: 0.75, '& .MuiChip-label': { px: 0.75 } }}
                         aria-label={`${unread} 条未读`}
                       />
                     )}
@@ -198,12 +211,12 @@ function NavList({ unread, onNavigate }: { unread: number; onNavigate?: () => vo
         )
       })}
       {pendingOnly && (
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.25 }}>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.5 }}>
           审核期间只能访问「待审核」页；审核通过后这里会出现可用入口。
         </Typography>
       )}
       {!pendingOnly && session && session.classes.length === 0 && (
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.25 }}>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.5 }}>
           你的账户尚未获得任何权限类。等待管理员审核通过后即可调用模型。
         </Typography>
       )}
@@ -261,7 +274,7 @@ function AccountMenu() {
     <>
       <Tooltip title="账户">
         <IconButton onClick={(e) => setAnchor(e.currentTarget)} size="small" sx={{ ml: 0.5 }}>
-          <Avatar sx={{ width: 30, height: 30, fontSize: '0.82rem', fontWeight: 700, bgcolor: 'primary.main' }}>
+          <Avatar sx={{ width: 30, height: 30, fontSize: '0.82rem', fontWeight: 700, bgcolor: SURFACE.inset, color: 'text.primary' }}>
             {initial}
           </Avatar>
         </IconButton>
@@ -324,7 +337,11 @@ function Topbar({ unread, onOpenNav }: { unread: number; onOpenNav: () => void }
       elevation={0}
       sx={{
         zIndex: (t) => t.zIndex.drawer + 1,
-        bgcolor: 'background.paper',
+        // chrome 底色：与侧栏同一块「窗口镶边」，比内容区深一档。顶栏以前
+        // 用 background.paper（近白）跟内容区同色，整页缺少顶边界，在长列表
+        // 页里会读成一大块白。
+        bgcolor: SURFACE.chrome,
+        backdropFilter: 'saturate(140%) blur(12px)',
         borderBottom: '1px solid',
         borderColor: 'divider'
       }}
@@ -351,21 +368,21 @@ function Topbar({ unread, onOpenNav }: { unread: number; onOpenNav: () => void }
           <Box
             aria-hidden="true"
             sx={{
-              width: 22,
-              height: 22,
-              borderRadius: 1,
+              width: 24,
+              height: 24,
+              borderRadius: 1.75,
               bgcolor: 'primary.main',
               display: 'grid',
               placeItems: 'center',
               color: 'primary.contrastText',
-              fontSize: '0.72rem',
+              fontSize: '0.7rem',
               fontWeight: 800,
               letterSpacing: '-.03em'
             }}
           >
             FR
           </Box>
-          <Typography sx={{ fontWeight: 750, fontSize: '0.98rem', letterSpacing: '-.01em' }}>
+          <Typography sx={{ fontWeight: 700, fontSize: '0.9375rem', letterSpacing: '-.015em' }}>
             FreeRouter
           </Typography>
         </Box>
@@ -459,8 +476,11 @@ function Footer() {
       component="footer"
       sx={{
         mt: 'auto',
-        px: { xs: 2, md: 3.5 },
+        px: { xs: 2, md: 3 },
         py: 1.5,
+        // 页脚比内容区深一档（与 chrome 同色），下方收边。以前它用 background.paper，
+        // 导致 list 页底部看起来是内容区自己延长出来的。
+        bgcolor: SURFACE.chrome,
         borderTop: '1px solid',
         borderColor: 'divider',
         display: 'flex',
@@ -550,7 +570,17 @@ function Shell() {
         onClose={() => setNavOpen(false)}
         ModalProps={{ keepMounted: true }}
         sx={{ display: { xs: 'block', md: 'none' } }}
-        slotProps={{ paper: { sx: { width: DRAWER_WIDTH } } }}
+        slotProps={{
+          paper: {
+            sx: {
+              width: DRAWER_WIDTH,
+              bgcolor: SURFACE.chrome,
+              backgroundImage: 'none',
+              borderRight: '1px solid',
+              borderColor: 'divider'
+            }
+          }
+        }}
       >
         <Toolbar sx={{ minHeight: { xs: 56, md: 58 } }} />
         <NavList unread={unread} onNavigate={() => setNavOpen(false)} />
@@ -565,10 +595,13 @@ function Shell() {
             display: { xs: 'none', md: 'block' },
             width: DRAWER_WIDTH,
             flexShrink: 0,
+            // chrome：侧栏与顶栏是同一块「窗口镶边」，比内容区深一档，
+            // 交界处留一条细线。跟内容区同色时侧栏会跟卡片连成一片。
+            bgcolor: SURFACE.chrome,
             borderRight: '1px solid',
             borderColor: 'divider',
             position: 'sticky',
-            top: 0,
+            top: 58,
             alignSelf: 'flex-start',
             height: 'calc(100vh - 58px)',
             overflowY: 'auto'
@@ -586,11 +619,12 @@ function Shell() {
             flexDirection: 'column'
           }}
         >
-          <Box sx={{ px: { xs: 2, md: 3.5 }, py: { xs: 2.5, md: 3.5 }, flex: 1 }}>
+          <Box sx={{ px: { xs: 2, md: 3 }, py: { xs: 2.5, md: 3 }, flex: 1 }}>
             <PendingGate />
             <MustChangeGate />
-            {/* 内容区上限：超宽屏上让正文不至于拉成一条 2000px 的长行 */}
-            <Box sx={{ maxWidth: 1400 }}>
+            {/* 内容区不再封顶到 1400px：宽屏上控制台的表格需要横向空间，
+                而长段落已各自用 maxWidth ch 限制可读宽度 */}
+            <Box>
               <Routes>
                 {PAGES.map(toRoute)}
                 {/* catch-all：未匹配路由与非法 /error/:code 共用 404 页；

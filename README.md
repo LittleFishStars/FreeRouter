@@ -174,6 +174,20 @@ make run        # 用 testdata/config.yaml 前台启动
 构建缓存固定在仓库内（`.cache/`，不入库）：本机 `~/.cache` 与 `~/go` 在沙箱下只读，
 Makefile 已把 `GOMODCACHE` / `GOCACHE` / `GOPATH` 指到工作区，无需额外环境变量。
 
+改完前端要看到变化，**必须重跑 `make release`**：`bin/freerouter` 是 `go build -tags
+webui_dist` 时把 `internal/webui/dist` 编译期嵌入的快照，`pnpm build` 只更新 dist。
+
+视觉改动的验收方式（浅色 + 深色 + 移动端逐页截图）：
+
+```bash
+cd web
+PLAYWRIGHT_BROWSERS_PATH=$PWD/.cache/ms-playwright INIT_PW=<当前口令> \
+  node scripts/shots.mjs          # 产物落 ../tmp/ui/shots2/
+```
+
+设计规则见 [`docs/ui/06-design.md`](docs/ui/06-design.md) 2.3（表面层级、颜色只给状态、
+阴影只给浮层），色值唯一事实源是 `web/src/tokens.ts`。
+
 ---
 
 ## 文档

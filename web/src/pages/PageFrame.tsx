@@ -30,9 +30,9 @@ export default function PageFrame({ def, actions, children }: PageFrameProps) {
           aria-label="面包屑"
           separator={<NavigateNextIcon sx={{ fontSize: 14 }} />}
           sx={{
-            mb: 1,
+            mb: 1.25,
             '& .MuiBreadcrumbs-ol': { flexWrap: 'wrap' },
-            '& .MuiBreadcrumbs-li': { fontSize: '0.78rem' }
+            '& .MuiBreadcrumbs-li': { fontSize: '0.75rem' }
           }}
         >
           {crumbs.map((c, i) => (
@@ -57,7 +57,7 @@ export default function PageFrame({ def, actions, children }: PageFrameProps) {
           justifyContent: 'space-between',
           gap: 2,
           flexWrap: 'wrap',
-          mb: 2.25
+          mb: 2.5
         }}
       >
         <Box sx={{ minWidth: 0, flex: '1 1 auto' }}>
@@ -73,7 +73,7 @@ export default function PageFrame({ def, actions, children }: PageFrameProps) {
             )}
           </Typography>
           {/* 「标题下必须有一句话说明」是全站纪律：缺了这句，运维得点进去才知道这页干什么 */}
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, maxWidth: '70ch' }}>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75, maxWidth: '72ch' }}>
             {def.summary}
           </Typography>
         </Box>
@@ -84,6 +84,8 @@ export default function PageFrame({ def, actions, children }: PageFrameProps) {
         ) : null}
       </Box>
 
+      {/* 内容区不再卡在 1400px：宽屏控制台的表格需要横向空间；
+          文字段落由各处自己的 maxWidth ch 限制（如上面那行说明） */}
       <Box>{children}</Box>
     </Box>
   )

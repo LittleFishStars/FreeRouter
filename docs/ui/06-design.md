@@ -48,6 +48,47 @@
 
 **为什么标题下必须有一句话说明**：管理端的页面名（例如"候选集"） 对不熟悉系统的人没有信息量。一句话说明的成本近零， 但它决定了新管理员能否独立操作。
 
+### 2.3 视觉层：用填充画层级，不用边框（2026-10-25 改定）
+
+本节是全站视觉的**硬约束**，参照 [FlClash](https://github.com/chen08209/FlClash) 的界面体系
+（`lib/ui/surface.dart`、`.agents/surfaces.md`）重做了控制台观感。改造前的问题是
+"到处画框"：卡片 1px 描边、表格双层边框、输入框描边、空态虚线、弹层再来一圈——
+一屏几十根线，层级反而看不出来。
+
+**唯一的层级手段是底色。** 四个深度，每一层取比自己所处的面深一档（深色模式下
+反过来：只往上提亮，因为往暗里挖读起来像洞）：
+
+| 层级 | 浅色 | 深色 | 放什么 |
+|---|---|---|---|
+| `page` | `#eef0f4` | `#0c0d10` | 页面底 |
+| `card` | `#fcfcfd` | `#191a1e` | 分区卡片（`Section`） |
+| `block` | `#e9ebf0` | `#212226` | **卡片里**的条目：指标卡、磁贴、列表容器、空态块 |
+| `inset` | `#dfe2e9` | `#292a2f` | `block` 里的更小一块：输入框、选中行、色块 |
+
+规则：
+
+- **卡片没有边框、也没有阴影。** 它靠在页面里"亮一档"站起来。阴影只给**浮层**
+  （弹窗、菜单、抽屉、登录卡、仪表盘指标卡这种单独浮在页面中央的一块）。
+- **结构线只出现在必须的地方**：表格行之间、chrome（侧栏/顶栏/页脚）与内容的交界。
+  且一律是 `onSurface` 的 13% 透明（`--fr-divider`），不随所在面变色。
+- **颜色只给状态**：选中 / 开启 / 失败 / 这一屏唯一的主动作。侧栏的选中态是
+  "中性底 + 左侧 3px 主色竖条"，不是主色块——实心块会把整列侧栏压成一串高对比色块。
+- **语义色用"容器档"**：徽章与横幅是"浅底 + 深字"（`success-container` /
+  `on-success-container`），不是整块饱和色。一屏几十个徽章时后者会糊成一片。
+- **输入框是填充而不是描边**：`--fr-inset` 底 + 透明 1px 边（只在 focus 时给 2px 主色）。
+  这样它和卡片、表格线不会互相打架。原生 `<input>/<select>/<textarea>` 由
+  `style.css` 统一，MUI 的输入框由 `theme.ts` 的 `MuiOutlinedInput` 统一。
+- **`chrome` 是第五个角色**（侧栏 / 顶栏 / 页脚）：它比 `page` 深一档，让窗口镶边
+  与内容区分开。用 `page` 同色时侧栏会跟卡片连成一片。
+- **空态不用虚线框**：虚线在控制台里读起来像"这里坏了"；改成一整块 `block` 填充。
+
+令牌的唯一事实源是 **`web/src/tokens.ts`**（`LIGHT` / `DARK` 两张表 + `RADIUS` / `TYPE`）。
+`main.tsx` 在首帧前把每个角色写成 `<html>` 上的 `--fr-*` 自定义属性，`theme.ts` 用它造两个
+MUI 主题，`style.css` 只引用变量。**改色只改 tokens.ts**——这消除了之前
+"MUI 一套、CSS 一套、改色要动两处"的已知代价。
+
+圆角台阶：`md 12`（按钮/输入框）、`xl 20`（卡片）、`xxl 28`（弹窗、一次性表单卡）。
+
 ## 3. 表单约定
 
 ### 3.1 字段级约定
@@ -256,7 +297,7 @@
 
 | 项 | 实际技术形态 | 状态 |
 |---|---|---|
-| 主题与令牌 | `src/theme.ts`：两个 `createTheme`（light / dark）+ `cssVariables: { cssVarPrefix: 'fr' }`；配色取 slate/indigo 色阶 | ✅ |
+| 主题与令牌 | `src/tokens.ts`（唯一色值源，五个表面层级 + 语义容器色）→ `main.tsx` 写成 `--fr-*` 变量 → `src/theme.ts` 两个 `createTheme`（light / dark，`cssVariables: { cssVarPrefix: 'fr' }`）+ `style.css` 引用变量 | ✅ |
 | 加载态 | MUI `Skeleton`（`ui.tsx` 的 `LoadingBlock`）；列表页默认 3 行 | ✅ |
 | 路由与布局 | React Router 7 + `HashRouter`；路由由 `routes.ts` 的 `PAGES` 表生成，`App.tsx` 只做装配 | ✅ |
 | 导航 | 桌面 MUI `AppBar` + 常驻侧栏；< 768px 收进 `Drawer` 抽屉 | ✅ |
@@ -265,14 +306,14 @@
 | 轮询的例外 | 其余页面一律不轮询 | ✅ |
 | 表单 | 原生 `<input>/<select>/<textarea>` + `Field`（标签/提示/错误统一排版）。**未引入** react-hook-form/zod：表单量级小，校验以后端为准 | ✅（简化） |
 | 危险操作确认 | 自研 `ConfirmDialog`（不可点击遮罩关闭 + 输入名称二次确认），容器样式在 `style.css` | ✅ |
-| 表格 | MUI `Table`；`DataTable` 的 children 契约仍是 `<tr>/<td>`（38 个页面依赖），窄屏横向滚动 + 首列吸附 | ✅ |
+| 表格 | MUI `Table`；`DataTable` 的 children 契约仍是 `<tr>/<td>`（38 个页面依赖）。表头不铺底色、只靠字重与 `onSurfaceVariant` 分层；行悬停给一档填充；**首列吸附只在 < 768px 生效**（sticky 列必须不透明底，那与「表格长在卡片里」冲突） | ✅ |
 | 实时流（审计/日志） | 未实现 | ⬜ P1 |
 | 暗色主题 | 已实现：`localStorage` 记忆 → 系统 `prefers-color-scheme` → 浅色；`<html data-theme>` 驱动 `style.css` 的原生控件令牌 | ✅ |
 
-**为什么组件库的 token 与 `style.css` 各存一份颜色**：`theme.ts` 管 MUI 组件，
-`style.css` 管**原生控件**（页面里的 `<input>/<select>` 与 `muted`/`metric`
-这类语义类名）。两份都从同一批色阶取值，改色要动两处——这是"不想把 38 个
-页面全部改写成 MUI 受控组件"的代价，已明确接受。
+**为什么组件库的 token 与 `style.css` 不各存一份颜色（2026-10-25 改）**：
+色值只写在 `src/tokens.ts`，运行时由 `applyCssTokens` 写成 `--fr-*` 自定义属性；
+`theme.ts` 造 MUI 主题，`style.css` 只引用变量。此前两份色值确实要一起改，
+现在改 tokens.ts 一处即可（见 2.3 节）。
 
 > **待定**：手机断点下管理端的危险操作是否要额外限制？ 在手机上"重输密码 + 确认"的摩擦更大，可能出现管理员改用更宽松操作的倾向。
 

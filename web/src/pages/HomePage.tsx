@@ -16,6 +16,13 @@ import type { PageProps } from '../routes'
 import { classLabel, fmtNum } from '../utils/format'
 
 /** 已登录概览里的单个数字卡。 */
+/**
+ * 仪表盘指标卡：数字是主角、标签是配角、数字用 tabular-nums。
+ *
+ * 视觉取向照 FlClash 的 dashboard 卡：一块「比页面亮一档」的填充方块、
+ * 大圆角、无边框、无阴影；只有可点击的才在悬停时换一档底色。数字刻意
+ * 比标题大得多——运维一眼要的是"多少"，不是"这叫啥"。
+ */
 function Metric({ label, value, to }: { label: string; value: string; to?: string }) {
   const body = (
     <div className="metric">
@@ -23,7 +30,7 @@ function Metric({ label, value, to }: { label: string; value: string; to?: strin
       <span className="metric-label">{label}</span>
     </div>
   )
-  return to ? <Link to={to}>{body}</Link> : body
+  return to ? <Link to={to} className="metric-link">{body}</Link> : body
 }
 
 function AdminSummary() {

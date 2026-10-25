@@ -293,14 +293,16 @@ export default function ContributePage({ def }: PageProps) {
 
       {/* 两栏共用一份确认：左栏点的是授权链接、右栏点的是提交按钮，
           阻断点不同但语义相同——只放一份，避免「这边勾了那边没勾」。 */}
+      {/* 无偿确认条：它是一条「阻断点」，所以允许有强调——未勾选时用警告容器色，
+          勾上后回落成中性填充。整站的边框都改成了填充，这里也一致。 */}
       <Box
         sx={{
           mb: 2,
-          p: 1.25,
-          border: 1,
-          borderRadius: 2,
-          borderColor: freeConfirmed ? 'success.main' : 'divider',
-          bgcolor: 'background.paper'
+          p: 1.5,
+          borderRadius: 3,
+          bgcolor: freeConfirmed ? 'var(--fr-success-container)' : 'var(--fr-warning-container)',
+          color: freeConfirmed ? 'var(--fr-on-success-container)' : 'var(--fr-on-warning-container)',
+          transition: 'background-color .15s ease'
         }}
       >
         <FreeConfirm checked={freeConfirmed} onChange={setFreeConfirmed} />
@@ -465,16 +467,18 @@ export default function ContributePage({ def }: PageProps) {
                       placeholder="例如 deepseek 或 https://"
                     />
                   </Field>
+                  {/* 列表容器用「比卡片深一档的填充」圈定范围，而不是描边：
+                      整站在用填充画层级，一根 1px 线在这里会显得是新来的。 */}
                   <List
                     dense
                     sx={{
                       mt: 1,
                       maxHeight: 360,
                       overflowY: 'auto',
-                      border: 1,
-                      borderColor: 'divider',
-                      borderRadius: 2,
-                      py: 0
+                      bgcolor: 'var(--fr-block)',
+                      borderRadius: 2.5,
+                      py: 0.5,
+                      '& .MuiListItemButton-root': { borderRadius: 2, mx: 0.5 }
                     }}
                   >
                     {/* 自定义项固定置顶、不参与过滤：搜索落空时它是兜底路径，
@@ -499,7 +503,26 @@ export default function ContributePage({ def }: PageProps) {
                           setSelectedId(p.id)
                           setApiModels([]) // 换供应商即清空声称模型：模型 id 是分家的
                         }}
-                        sx={{ flexDirection: 'column', alignItems: 'flex-start', gap: 0.25 }}
+                        sx={{
+                          flexDirection: 'column',
+                          alignItems: 'flex-start',
+                          gap: 0.25,
+                          position: 'relative',
+                          '&.Mui-selected': {
+                            bgcolor: 'var(--fr-inset)',
+                            '&::before': {
+                              content: '""',
+                              position: 'absolute',
+                              left: 0,
+                              top: '50%',
+                              transform: 'translateY(-50%)',
+                              width: 3,
+                              height: 16,
+                              borderRadius: 2,
+                              bgcolor: 'primary.main'
+                            }
+                          }
+                        }}
                       >
                         <Typography variant="body2" sx={{ fontWeight: 600 }}>
                           {p.name}

@@ -24,7 +24,6 @@ import {
   Box,
   Card,
   CardContent,
-  CardHeader,
   Chip,
   Divider,
   Skeleton,
@@ -35,10 +34,12 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  Typography
+  Typography,
+  useTheme
 } from '@mui/material'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { ApiError, isUnavailable } from '../api/client'
+import { SURFACE } from '../theme'
 import { prettyJson } from '../utils/format'
 
 export type Tone = 'ok' | 'warn' | 'err' | 'info' | 'muted'
@@ -167,6 +168,9 @@ export function EmptyState({
   action?: ReactNode
 }) {
   return (
+    // 空态不再用虚线框：虚线在控制台里读起来像「这里坏了 / 还没做完」。
+    // 改成一块比所在面深一档的填充区（FlClash 的做法），它是一块安静的地方，
+    // 不是一根警线。
     <Box
       sx={{
         display: 'flex',
@@ -175,11 +179,10 @@ export function EmptyState({
         justifyContent: 'center',
         textAlign: 'center',
         gap: 1,
-        py: 6,
+        py: 5.5,
         px: 3,
-        border: '1px dashed',
-        borderColor: 'divider',
-        borderRadius: 2
+        bgcolor: SURFACE.block,
+        borderRadius: 3
       }}
     >
       <Typography variant="h3" color="text.secondary">
@@ -329,18 +332,31 @@ export function Section({
   hint?: ReactNode
 }) {
   return (
+    // 卡片的分区头不再用 CardHeader（它自带一套 20px 上下内距，与正文
+    // 自己的间距叠在一起显得头重脚轻）。改成显式 padding 后，标题到正文的
+    // 间距全站一致，且 hint 位置可以精确到 4px 网格。
     <Card sx={{ mb: 2 }}>
-      <CardHeader
-        title={<Typography variant="h2">{title}</Typography>}
-        action={actions ? <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>{actions}</Box> : undefined}
-        sx={{ pb: hint ? 0.5 : 1, pt: 1.75, px: 2.25 }}
-      />
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 1.5,
+          flexWrap: 'wrap',
+          px: 2,
+          pt: 1.75,
+          pb: hint ? 0.5 : 1.25
+        }}
+      >
+        <Typography variant="h2">{title}</Typography>
+        {actions ? <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>{actions}</Box> : null}
+      </Box>
       {hint ? (
-        <Typography variant="body2" color="text.secondary" sx={{ px: 2.25, pb: 1 }}>
+        <Typography variant="body2" color="text.secondary" sx={{ px: 2, pb: 1 }}>
           {hint}
         </Typography>
       ) : null}
-      <CardContent sx={{ pt: hint ? 1 : 1.5, px: 2.25, '&:last-child': { pb: 2.25 } }}>{children}</CardContent>
+      <CardContent sx={{ pt: hint ? 1 : 0.5, px: 2, '&:last-child': { pb: 2 } }}>{children}</CardContent>
     </Card>
   )
 }
@@ -392,11 +408,30 @@ export function Field({
 
 /** 表格容器：窄屏横向滚动（原 CSS 的「转卡片」在 MUI 下改为滚动容器）。 */
 export function DataTable({ headers, children, empty }: { headers: ReactNode[]; children: ReactNode; empty?: boolean }) {
+  const theme = useTheme()
   return (
     /* 不再画外框：表格基本都长在 Section 的 Card 里，两层边框会让每个列表
-       都像"卡片套卡片"。表头底色 + 行分隔线已经足够界定表格边界。 */
-    <TableContainer>
-      <Table size="small" sx={{ minWidth: 640 }}>
+       都像"卡片套卡片"。表头字重 + 行分隔线已经足够界定边界。
+       窄屏首列吸附：横滑时不至丢掉"我在看哪一行"。 */
+    <TableContainer sx={{ mx: -2, px: 2 }}>
+      <Table
+        size="small"
+        sx={{
+          minWidth: 640,
+          // 首列吸附只在窄屏生效：桌面宽度下横向滚动很少发生，而 sticky 列
+          // 必须自带不透明底色（否则内容会从它下面透出来），那与「表格长在
+          // 卡片里、行底色跟着卡片走」冲突。
+          [theme.breakpoints.down('md')]: {
+            '& td:first-of-type, & th:first-of-type': {
+              position: 'sticky',
+              left: 0,
+              zIndex: 1,
+              backgroundColor: 'background.paper'
+            },
+            '& th:first-of-type': { zIndex: 2 }
+          }
+        }}
+      >
         <TableHead>
           <TableRow>
             {headers.map((h, i) => (
@@ -408,7 +443,7 @@ export function DataTable({ headers, children, empty }: { headers: ReactNode[]; 
           {empty ? (
             <TableRow>
               <TableCell colSpan={headers.length}>
-                <Typography variant="body2" color="text.secondary" sx={{ py: 3, textAlign: 'center' }}>
+                <Typography variant="body2" color="text.secondary" sx={{ py: 4, textAlign: 'center' }}>
                   暂无数据
                 </Typography>
               </TableCell>
