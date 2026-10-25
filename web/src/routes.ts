@@ -26,10 +26,8 @@ import {
   IconNavLogs,
   IconNavModels,
   IconNavPassword,
-  IconNavRealModels,
   IconNavSessions,
   IconNavSettings,
-  IconNavUpstreams,
   IconNavUsage,
   IconNavVerifications
 } from './icons'
@@ -53,13 +51,11 @@ import {
   ImportAccountsPage
 } from './pages/admin/AccountPages'
 import { GroupDetailPage, GroupsPage } from './pages/admin/GroupPages'
-import { RealModelsPage } from './pages/admin/RealModelPage'
 import { AbstractModelDetailPage, AbstractModelsPage } from './pages/admin/AbstractModelPage'
 import { CandidatesPage, DeprecationPage } from './pages/admin/DerivationPages'
 import {
   CredentialDetailPage,
   CredentialsPage,
-  UpstreamsPage
 } from './pages/admin/OpsPages'
 import { VerificationDetailPage, VerificationsPage } from './pages/admin/VerificationPages'
 import AuditPage from './pages/admin/AuditPage'
@@ -149,13 +145,11 @@ export const PAGES: PageDef[] = [
   { path: '/admin/accounts/:id', title: '账户详情', summary: '权限类管理、禁用 / 合并 / 合并回滚。', nav: null, requires: 'admin', dangerous: true, element: AccountDetailPage },
   { path: '/admin/groups', title: '组列表', summary: '组是管理员的批量控制单元，不产生成员可见的组织感。', nav: 'admin', requires: 'admin', icon: IconNavGroups, dangerous: true, element: GroupsPage },
   { path: '/admin/groups/:id', title: '组详情', summary: '组成员、模型授权与策略（授权 / 策略 / 成员 / 默认组 / 删组均为危险写）。', nav: null, requires: 'admin', dangerous: true, element: GroupDetailPage },
-  { path: '/admin/real-models', title: '真实模型目录', summary: '含 missing 巡检；真实模型名仅管理员可见。', nav: 'admin', requires: 'admin', icon: IconNavRealModels, dangerous: true, element: RealModelsPage },
   { path: '/admin/abstract-models', title: '抽象模型列表', summary: '对用户暴露的唯一模型命名空间。', nav: 'admin', requires: 'admin', icon: IconNavAbstractModels, dangerous: true, element: AbstractModelsPage },
   { path: '/admin/abstract-models/:id', title: '抽象模型编辑', summary: '能力与策略链编辑（保存类动作需二次确认）。', nav: null, requires: 'admin', dangerous: true, element: AbstractModelDetailPage },
   { path: '/admin/abstract-models/:id/candidates', title: '候选集编辑', summary: '该抽象模型的真实模型候选集与可用实例预览。', nav: null, requires: 'admin', dangerous: true, element: CandidatesPage },
   { path: '/admin/abstract-models/:id/deprecation', title: '弃用配置', summary: '弃用与替代链预览（对应用户可见的 410 Gone）。', nav: null, requires: 'admin', dangerous: true, element: DeprecationPage },
-  { path: '/admin/upstreams', title: '上游管理', summary: 'relay 与 vendor（含 selfhosted）渠道。', nav: 'admin', requires: 'admin', icon: IconNavUpstreams, dangerous: true, element: UpstreamsPage },
-  { path: '/admin/credentials', title: '凭据池', summary: '含平台自有凭据；明文永不显示。', nav: 'admin', requires: 'admin', icon: IconNavCredentials, dangerous: true, element: CredentialsPage },
+  { path: '/admin/credentials', title: '凭据池', summary: '供应商 × 凭据 × 模型；左栏选供应商，右栏两栏；明文永不显示。', nav: 'admin', requires: 'admin', icon: IconNavCredentials, dangerous: true, element: CredentialsPage },
   { path: '/admin/credentials/:id', title: '凭据详情', summary: '封禁动作走统一二次确认框。', nav: null, requires: 'admin', dangerous: true, element: CredentialDetailPage },
   { path: '/admin/verifications', title: '鉴定队列', summary: '鉴定与复检队列。', nav: 'admin', requires: 'admin', icon: IconNavVerifications, dangerous: true, element: VerificationsPage },
   { path: '/admin/verifications/:id', title: '鉴定结果', summary: '判定与证据明细。', nav: null, requires: 'admin', dangerous: true, element: VerificationDetailPage },

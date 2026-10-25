@@ -1600,3 +1600,208 @@ a.metric-link:hover {
 .am-empty {
   font-size: 0.85rem;
 }
+
+/* ── 凭据池（task-5）：供应商两栏 + 凭据/模型两块 ────────────────────── */
+.pool-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.pool-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.1rem;
+}
+
+.pool-head-actions .btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* 右栏两大块：凭据 / 模型（--fr-block 的下一层用 --fr-inset 画行） */
+.pool-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.pool-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.85rem 1rem;
+  border-radius: var(--fr-radius-xl);
+  background: var(--fr-block);
+}
+
+.pool-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.pool-block-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.pool-empty {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.pool-add-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* 凭据行 */
+.pool-cred-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.pool-cred-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--fr-radius-lg);
+  background: var(--fr-inset);
+  color: var(--fr-on-surface);
+  text-decoration: none;
+}
+
+.pool-cred-row:hover {
+  background: var(--fr-primary-soft);
+}
+
+.pool-cred-main {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.pool-cred-main code {
+  font-size: 0.78rem;
+}
+
+.pool-cred-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+}
+
+.pool-cred-time {
+  font-size: 0.72rem;
+  color: var(--fr-on-surface-variant);
+  white-space: nowrap;
+}
+
+/* 左栏供应商行（原生 button 形态） */
+.pool-source-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.pool-source-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0.55rem 0.6rem;
+  border: none;
+  border-radius: var(--fr-radius-lg);
+  background: transparent;
+  color: var(--fr-on-surface);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.pool-source-row:hover {
+  background: var(--fr-inset);
+}
+
+.pool-source-row-active,
+.pool-source-row-active:hover {
+  background: var(--fr-primary-soft);
+  color: var(--fr-primary);
+}
+
+.pool-source-row[data-off='true'] {
+  opacity: 0.55;
+}
+
+.pool-source-row-main {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.pool-source-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.pool-source-row-facts {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+}
+
+/* 模型芯片（右栏模型块；在既有 .am-chip 之上补 button 语义） */
+.pool-block .am-chip {
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.am-chip-name {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.am-chip-tag {
+  padding: 0.05rem 0.35rem;
+  border-radius: var(--fr-radius-full);
+  font-size: 0.66rem;
+  font-weight: 600;
+}
+
+.am-chip-tag[data-tone='muted'] {
+  background: var(--fr-inset);
+  color: var(--fr-on-surface-variant);
+}
+
+.am-chip-tag[data-tone='warn'] {
+  background: var(--fr-warning-container);
+  color: var(--fr-on-warning-container);
+}

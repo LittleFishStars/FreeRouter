@@ -256,7 +256,24 @@ export interface AdminModelSource {
   /** null = 数量由 sidecar 账号池决定（relay），0 = 当前无可用凭据 */
   available_instances: number | null
   last_seen_at: number | null
+  /** 该上游下全部凭据行（upstream_credentials，不筛状态；契约 §1.2） */
+  credentials: AdminSourceCredential[]
   models: AdminModelSourceModel[]
+}
+
+/**
+ * model-sources 里某上游的一条凭据行（契约 §1.2）。
+ * 字段口径与 AdminCredential 对齐但精简：id 是 cred_<n>，时间戳为秒级 number。
+ */
+export interface AdminSourceCredential {
+  id: string
+  /** 形如 api:<目录id> 或 custom */
+  provider: string
+  external_label?: string
+  status: string
+  verify_status: string
+  created_at: number | null
+  last_used_at: number | null
 }
 
 /** GET /api/admin/model-sources 的响应体（不是 ListEnvelope：没有 data 信封）。 */

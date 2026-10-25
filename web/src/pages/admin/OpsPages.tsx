@@ -7,30 +7,43 @@
 // 凭据明文永不显示：界面连「查看」按钮都不提供，任何「点击查看」的实现
 // 都会留下截图/缓存/审计日志的可利用路径，而便利为零。
 
-import { useEffect, useState } from 'react'
-import { IconBack } from '../../icons'
+import { useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   banCredential,
-  changeUpstreamKind,
+  createRealModel,
   createUpstream,
   getCredential,
-  listCredentials,
-  listUpstreams,
+  getModelSources,
   notifyCredential,
+  patchRealModel,
   patchUpstream,
-  suspendCredential,
-  testUpstream
+  refreshRealModels,
+  suspendCredential
 } from '../../api/endpoints'
-import type { AdminCredential, AdminUpstream, UpstreamKind } from '../../api/types'
+import type {
+  AdminCredential,
+  AdminModelSource,
+  AdminModelSourceModel,
+  UpstreamKind
+} from '../../api/types'
 import { useApi } from '../../hooks/useApi'
 import ConfirmDialog from '../../components/ConfirmDialog'
-import { ACTION_ICON, TableAction, TableActions, ToolButton } from '../../components/IconButtons'
-import { IconEdit, IconPlus, IconPower, IconRefresh, IconTest, IconTune, IconView } from '../../icons'
+import { ACTION_ICON, ToolButton } from '../../components/IconButtons'
+import {
+  IconBack,
+  IconCheck,
+  IconEdit,
+  IconExternal,
+  IconPlus,
+  IconPower,
+  IconRefresh,
+  IconSearch
+} from '../../icons'
 import {
   AsyncView,
   Banner,
-  DataTable,
   EmptyState,
   Field,
   FormError,
@@ -39,7 +52,7 @@ import {
   Section,
   StatusBadge
 } from '../../components/ui'
-import { fmtTime, statusLabel } from '../../utils/format'
+import { fmtNum, fmtTime, statusLabel } from '../../utils/format'
 import PageFrame from '../PageFrame'
 import type { PageProps } from '../../routes'
 
@@ -49,30 +62,196 @@ const KIND_LABELS: Record<string, string> = {
   selfhosted: 'selfhosted（自建兼容端点）'
 }
 
-export function UpstreamsPage({ def }: PageProps) {
-  const q = useApi(() => listUpstreams({ limit: 200 }), [])
-  const [creating, setCreating] = useState(false)
-  const [kind, setKind] = useState<UpstreamKind>('vendor')
-  const [name, setName] = useState('')
-  const [baseURL, setBaseURL] = useState('')
-  const [editing, setEditing] = useState<AdminUpstream | null>(null)
-  const [editName, setEditName] = useState('')
-  const [editBase, setEditBase] = useState('')
-  const [kindTarget, setKindTarget] = useState<AdminUpstream | null>(null)
-  const [pendingKind, setPendingKind] = useState<UpstreamKind>('vendor')
-  const [disableTarget, setDisableTarget] = useState<AdminUpstream | null>(null)
-  const [testResult, setTestResult] = useState<{ id: string; value: unknown } | null>(null)
+const KIND_SHORT: Record<string, string> = {
+  relay: 'relay',
+  vendor: 'vendor',
+  selfhosted: 'selfhosted'
+}
+
+const PROTOCOL_GLYPH: Record<string, { letter: string; label: string }> = {
+  openai: { letter: 'O', label: 'OpenAI 兼容端点' },
+  anthropic: { letter: 'A', label: 'Anthropic 原生端点' }
+}
+
+function ProtocolBadges({ protocols }: { protocols: string[] | undefined }) {
+  if (!protocols || protocols.length === 0) return null
+  return (
+    <span className="proto-badges">
+      {protocols.map((p) => (
+        <span key={p} className="proto-badge" title={PROTOCOL_GLYPH[p]?.label ?? p}>
+          {PROTOCOL_GLYPH[p]?.letter ?? p}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+function regionSuffix(s: { name: string; region: string }): string {
+  if (!s.region) return ''
+  const tag = s.region.toUpperCase()
+  return s.name.toUpperCase().includes(`(${tag})`) || s.name.toUpperCase() === tag ? '' : `（${tag}）`
+}
+
+function instancesText(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '池内'
+  if (v === 0) return '无凭据'
+  return fmtNum(v)
+}
+
+function instancesTone(v: number | null | undefined): string {
+  if (v === null || v === undefined) return 'muted'
+  return v === 0 ? 'warn' : 'ok'
+}
+
+/** 轻量表单弹窗（非危险操作；危险停用走 ConfirmDialog）。 */
+function PoolModal({
+  open,
+  title,
+  children,
+  footer,
+  onClose
+}: {
+  open: boolean
+  title: string
+  children: ReactNode
+  footer: ReactNode
+  onClose: () => void
+}) {
+  if (!open) return null
+  return (
+    <div className="dialog-overlay" onClick={onClose}>
+      <div
+        className="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {title && <h2>{title}</h2>}
+        <div className="dialog-body">{children}</div>
+        <div className="dialog-actions">{footer}</div>
+      </div>
+    </div>
+  )
+}
+
+function railGroup(
+  title: string,
+  list: AdminModelSource[],
+  activeId: string | null,
+  onSelect: (id: string) => void
+) {
+  return (
+    <div className="source-group">
+      <p className="source-group-title">
+        {title}
+        <span className="source-group-count">{list.length}</span>
+      </p>
+      {list.length === 0 ? (
+        <p className="muted source-group-empty">（无）</p>
+      ) : (
+        <ul className="pool-source-list">
+          {list.map((s) => (
+            <li key={s.id}>
+              <button
+                type="button"
+                className={'pool-source-row' + (s.id === activeId ? ' pool-source-row-active' : '')}
+                data-off={!s.enabled}
+                onClick={() => onSelect(s.id)}
+              >
+                <span className="pool-source-row-main">
+                  <span className="pool-source-row-name">
+                    {s.name}
+                    {regionSuffix(s)}
+                    {!s.enabled && <span className="source-off-tag">已停用</span>}
+                  </span>
+                  <span className="pool-source-row-facts">
+                    <ProtocolBadges protocols={s.protocols} />
+                    <span className="source-count" title={`${s.model_count} 个模型`}>
+                      {s.model_count}
+                    </span>
+                  </span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+// ── 凭据池（供应商两栏：左栏供应商，右栏凭据 + 模型） ───────────────────────
+
+export function CredentialsPage({ def }: PageProps) {
+  const sourcesQ = useApi(() => getModelSources(), [])
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [keyword, setKeyword] = useState('')
+
+  // 通用提交态
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (!editing) return
-    setEditName(editing.name)
-    setEditBase(editing.kind === 'relay' ? '' : editing.base_url)
-  }, [editing])
+  // 添加供应商
+  const [adding, setAdding] = useState(false)
+  const [kind, setKind] = useState<UpstreamKind>('vendor')
+  const [name, setName] = useState('')
+  const [baseURL, setBaseURL] = useState('')
 
-  async function create() {
+  // 编辑供应商
+  const [editing, setEditing] = useState<AdminModelSource | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editBase, setEditBase] = useState('')
+
+  // 停用确认
+  const [disableTarget, setDisableTarget] = useState<AdminModelSource | null>(null)
+
+  // 添加模型
+  const [addingModel, setAddingModel] = useState(false)
+  const [newModelId, setNewModelId] = useState('')
+  const [newDisplay, setNewDisplay] = useState('')
+  const [newCtx, setNewCtx] = useState('')
+
+  // 编辑模型
+  const [editingModel, setEditingModel] = useState<AdminModelSourceModel | null>(null)
+  const [emDisplay, setEmDisplay] = useState('')
+  const [emCtx, setEmCtx] = useState('')
+  const [emExcluded, setEmExcluded] = useState(false)
+
+  const sources = useMemo(() => sourcesQ.data?.sources ?? [], [sourcesQ.data])
+  const contributed = sources.filter((s) => s.contributed)
+  const platform = sources.filter((s) => !s.contributed)
+  const active = sources.find((s) => s.id === activeId) ?? sources[0] ?? null
+
+  function visibleSources(list: AdminModelSource[]): AdminModelSource[] {
+    const kw = keyword.trim().toLowerCase()
+    if (!kw) return list
+    return list.filter((s) => {
+      if (s.name.toLowerCase().includes(kw) || s.upstream_name.toLowerCase().includes(kw)) return true
+      return s.models.some(
+        (m) =>
+          m.display_name.toLowerCase().includes(kw) ||
+          m.upstream_model_id.toLowerCase().includes(kw)
+      )
+    })
+  }
+
+  async function refreshDir() {
+    setBusy(true)
+    setError(null)
+    try {
+      await refreshRealModels()
+      setNotice('已触发目录刷新；结果会在后台任务完成后体现。')
+      sourcesQ.reload()
+    } catch (e) {
+      setError(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function createUpstreamSubmit() {
     setBusy(true)
     setError(null)
     try {
@@ -82,11 +261,11 @@ export function UpstreamsPage({ def }: PageProps) {
         base_url: kind === 'relay' ? undefined : baseURL,
         enabled: true
       })
-      setCreating(false)
+      setAdding(false)
       setName('')
       setBaseURL('')
-      setNotice('上游已创建')
-      q.reload()
+      setNotice('供应商已创建')
+      sourcesQ.reload()
     } catch (e) {
       setError(e)
     } finally {
@@ -104,8 +283,8 @@ export function UpstreamsPage({ def }: PageProps) {
         ...(editing.kind === 'relay' ? {} : { base_url: editBase })
       })
       setEditing(null)
-      setNotice('上游已保存')
-      q.reload()
+      setNotice('已保存')
+      sourcesQ.reload()
     } catch (e) {
       setError(e)
     } finally {
@@ -113,12 +292,12 @@ export function UpstreamsPage({ def }: PageProps) {
     }
   }
 
-  async function setEnabled(u: AdminUpstream, enabled: boolean) {
+  async function setEnabled(s: AdminModelSource, enabled: boolean) {
     setBusy(true)
     setError(null)
     try {
-      await patchUpstream(u.id, { enabled })
-      q.reload()
+      await patchUpstream(s.id, { enabled })
+      sourcesQ.reload()
     } catch (e) {
       setError(e)
     } finally {
@@ -126,13 +305,47 @@ export function UpstreamsPage({ def }: PageProps) {
     }
   }
 
-  async function test(u: AdminUpstream) {
+  async function createModelSubmit() {
+    if (!active) return
     setBusy(true)
     setError(null)
-    setTestResult(null)
     try {
-      const r = await testUpstream(u.id)
-      setTestResult({ id: u.id, value: r.data })
+      await createRealModel({
+        upstream_id: active.id,
+        upstream_model_id: newModelId.trim(),
+        ...(newDisplay.trim() ? { display_name: newDisplay.trim() } : {}),
+        ...(newCtx !== '' ? { context_window: Number(newCtx) } : {})
+      })
+      setAddingModel(false)
+      setNotice('已登记')
+      sourcesQ.reload()
+    } catch (e) {
+      setError(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function startEditModel(m: AdminModelSourceModel) {
+    setEditingModel(m)
+    setEmDisplay(m.display_name)
+    setEmCtx(m.context_window === null ? '' : String(m.context_window))
+    setEmExcluded(m.excluded_from_candidates)
+  }
+
+  async function saveModelEdit() {
+    if (!editingModel) return
+    setBusy(true)
+    setError(null)
+    try {
+      await patchRealModel(editingModel.real_model_id, {
+        display_name: emDisplay,
+        ...(emCtx === '' ? { context_window: null } : { context_window: Number(emCtx) }),
+        excluded_from_candidates: emExcluded
+      })
+      setEditingModel(null)
+      setNotice('已保存（写入 source=override，目录刷新不再覆盖）')
+      sourcesQ.reload()
     } catch (e) {
       setError(e)
     } finally {
@@ -144,168 +357,325 @@ export function UpstreamsPage({ def }: PageProps) {
     <PageFrame
       def={def}
       actions={
-        <ToolButton primary icon={<IconPlus size={ACTION_ICON} />} onClick={() => setCreating((v) => !v)}>
-          {creating ? '收起' : '新建上游'}
-        </ToolButton>
+        <>
+          <ToolButton icon={<IconRefresh size={ACTION_ICON} />} onClick={() => void refreshDir()} busy={busy}>
+            刷新目录
+          </ToolButton>
+          <ToolButton primary icon={<IconPlus size={ACTION_ICON} />} onClick={() => setAdding(true)}>
+            添加供应商
+          </ToolButton>
+        </>
       }
     >
       <Banner tone="muted">
-        relay 不填地址（sidecar 直连 provider adapter）；vendor 必填官方地址；selfhosted 填自建端点。
-        禁用上游会立即让依赖它的候选不可用。
+        凭据明文永不显示，界面也不提供「查看」。手工添加的模型写入 <code>source=override</code>，
+        之后的目录刷新不会覆盖其显示名与上下文窗口。
       </Banner>
       <FormError error={error} />
       {notice && <Banner tone="ok">{notice}</Banner>}
 
-      {creating && (
-        <Section title="新建上游">
-          <div className="field-row">
-            <Field label="类型" required>
-              <select
-                value={kind}
-                onChange={(e) => {
-                  const k = e.target.value as UpstreamKind
-                  setKind(k)
-                  if (k === 'relay') setBaseURL('')
-                }}
-              >
-                {Object.entries(KIND_LABELS).map(([v, l]) => (
-                  <option key={v} value={v}>{l}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="名称" required>
-              <input value={name} onChange={(e) => setName(e.target.value)} />
-            </Field>
-            {kind !== 'relay' && (
-              <Field label="base_url" required hint="vendor 填官方地址；selfhosted 填自建兼容端点。">
-                <input value={baseURL} onChange={(e) => setBaseURL(e.target.value)} placeholder="https://…" />
-              </Field>
-            )}
-            {kind === 'relay' && (
-              <p className="muted">relay 由 sidecar 直连 providers-hub，不需要也不会接受地址。</p>
-            )}
-            <button type="button" className="btn-primary" onClick={() => void create()} disabled={busy || !name.trim() || (kind !== 'relay' && !baseURL.trim())}>
-              {busy ? '正在创建…' : '创建'}
-            </button>
-          </div>
-        </Section>
-      )}
+      <AsyncView state={sourcesQ} loadingRows={6}>
+        {() => (
+          <div className="source-split">
+            <div className="source-rail">
+              <div className="source-search">
+                <IconSearch size="sm" />
+                <input
+                  value={keyword}
+                  onChange={(e) => setKeyword(e.target.value)}
+                  placeholder="搜索供应商或模型"
+                  aria-label="搜索供应商或模型"
+                />
+              </div>
+              {railGroup('贡献凭据', visibleSources(contributed), active?.id ?? null, setActiveId)}
+              {railGroup('平台渠道', visibleSources(platform), active?.id ?? null, setActiveId)}
+              {keyword &&
+                visibleSources(contributed).length === 0 &&
+                visibleSources(platform).length === 0 && <p className="muted">没有匹配的来源或模型。</p>}
+            </div>
 
-      {editing && (
-        <Section title={`编辑上游 ${editing.name}`} actions={<button type="button" className="btn-ghost" onClick={() => setEditing(null)}>取消</button>}>
-          <div className="field-row">
-            <Field label="名称">
-              <input value={editName} onChange={(e) => setEditName(e.target.value)} />
-            </Field>
-            {editing.kind !== 'relay' && (
-              <Field label="base_url">
-                <input value={editBase} onChange={(e) => setEditBase(e.target.value)} />
-              </Field>
-            )}
-            <button type="button" className="btn-primary" onClick={() => void saveEdit()} disabled={busy}>
-              保存
-            </button>
-          </div>
-        </Section>
-      )}
-
-      {testResult && (
-        <Section title="连通性测试结果" actions={<button type="button" className="btn-ghost" onClick={() => setTestResult(null)}>关闭</button>}>
-          <JsonDetails summary="查看原始结果" value={testResult.value} />
-        </Section>
-      )}
-
-      <AsyncView
-        state={q}
-        loadingRows={5}
-        empty={(d) =>
-          d.data.length === 0 ? (
-            <EmptyState title="还没有上游" hint="配置 relay / vendor / selfhosted 渠道后，真实模型目录才能发现模型。" action={<button type="button" onClick={() => setCreating(true)}>新建上游</button>} />
-          ) : null
-        }
-      >
-        {(d) => (
-          <Section title={`上游（${d.total ?? d.data.length}）`}>
-            <DataTable headers={['类型', '名称', 'base_url', '归属', '启用', '最后连通', '操作']}>
-              {d.data.map((u) => (
-                <tr key={u.id}>
-                  <td>{u.kind}</td>
-                  <td>{u.name}</td>
-                  <td className="cell-wrap">
-                    {u.kind === 'relay' ? <span className="muted">sidecar 直连（无地址）</span> : <code>{u.base_url}</code>}
-                  </td>
-                  <td>{u.owner_account_id ? '贡献者凭据' : '平台自有'}</td>
-                  <td>
-                    <StatusBadge status={u.enabled ? 'active' : 'disabled'} label={u.enabled ? '启用' : '已禁用'} />
-                  </td>
-                  <td>{fmtTime(u.last_seen_at)}</td>
-                  <td className="cell-actions">
-                    <TableActions>
-                      <TableAction
-                        icon={<IconEdit size={ACTION_ICON} />}
-                        label="编辑上游"
-                        onClick={() => setEditing(u)}
-                      />
-                      <TableAction
-                        icon={<IconTest size={ACTION_ICON} />}
-                        label="测试连通性"
-                        busy={busy}
-                        onClick={() => void test(u)}
-                      />
-                      {u.enabled ? (
-                        <TableAction
-                          icon={<IconPower size={ACTION_ICON} />}
-                          label="禁用上游"
-                          tone="danger"
-                          onClick={() => setDisableTarget(u)}
-                        />
-                      ) : (
-                        <TableAction
-                          icon={<IconPower size={ACTION_ICON} />}
-                          label="启用上游"
-                          busy={busy}
-                          onClick={() => void setEnabled(u, true)}
-                        />
+            <div className="source-detail">
+              {active === null ? (
+                <EmptyState
+                  title="先从左侧选一个供应商"
+                  hint="左栏按「贡献凭据 / 平台渠道」分组列出；选中后这里显示它的凭据与真实模型。"
+                />
+              ) : (
+                <div className="pool-detail">
+                  <div className="source-head">
+                    <div className="source-head-title">
+                      <span className="source-head-name">{active.name}</span>
+                      {regionSuffix(active) && (
+                        <span className="source-head-tag">{regionSuffix(active).replace(/[（）]/g, '')}</span>
                       )}
-                      <TableAction
-                        icon={<IconTune size={ACTION_ICON} />}
-                        label="改类型（relay / vendor / selfhosted）"
+                      <span className="source-head-tag">{KIND_SHORT[active.kind] ?? active.kind}</span>
+                      {!active.enabled && (
+                        <span className="source-head-tag" data-tone="warn">已停用</span>
+                      )}
+                      {active.website && (
+                        <a className="icon-link" href={active.website} target="_blank" rel="noreferrer noopener">
+                          <IconExternal size={ACTION_ICON} />
+                          官网
+                        </a>
+                      )}
+                    </div>
+                    <p className="source-head-facts">
+                      <code>{active.base_url || '未提供端点'}</code>
+                      <span>凭据 {fmtNum(active.credential_count)}</span>
+                      <span>模型 {fmtNum(active.model_count)}</span>
+                      <span className="source-inst" data-tone={instancesTone(active.available_instances)}>
+                        可用实例 {instancesText(active.available_instances)}
+                      </span>
+                      <ProtocolBadges protocols={active.protocols} />
+                    </p>
+                    <div className="pool-head-actions">
+                      {active.enabled ? (
+                        <button type="button" className="btn-ghost" onClick={() => setDisableTarget(active)} disabled={busy}>
+                          <IconPower size="sm" />
+                          停用
+                        </button>
+                      ) : (
+                        <button type="button" className="btn-ghost" onClick={() => void setEnabled(active, true)} disabled={busy}>
+                          <IconPower size="sm" />
+                          启用
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="btn-ghost"
                         onClick={() => {
-                          setKindTarget(u)
-                          setPendingKind(u.kind === 'vendor' ? 'selfhosted' : 'vendor')
+                          setEditName(active.name)
+                          setEditBase(active.kind === 'relay' ? '' : active.base_url)
+                          setEditing(active)
                         }}
-                      />
-                    </TableActions>
-                  </td>
-                </tr>
-              ))}
-            </DataTable>
-          </Section>
+                        disabled={busy}
+                      >
+                        <IconEdit size="sm" />
+                        编辑
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="pool-blocks">
+                    <div className="pool-block">
+                      <div className="pool-block-head">
+                        <span className="pool-block-title">凭据（{active.credentials.length}）</span>
+                        <Link to="/contribute" className="am-add-chip">
+                          <IconPlus size="xs" />
+                          添加凭据
+                        </Link>
+                      </div>
+                      {active.credentials.length === 0 ? (
+                        <p className="muted pool-empty">还没有凭据，去贡献入口添加。</p>
+                      ) : (
+                        <ul className="pool-cred-list">
+                          {active.credentials.map((c) => (
+                            <li key={c.id}>
+                              <Link className="pool-cred-row" to={`/admin/credentials/${encodeURIComponent(c.id)}`}>
+                                <span className="pool-cred-main">
+                                  <code>{c.id}</code>
+                                  <span>{c.external_label ?? '贡献凭据'}</span>
+                                </span>
+                                <span className="pool-cred-badges">
+                                  <StatusBadge status={c.status} label={statusLabel(c.status)} />
+                                  <StatusBadge status={c.verify_status} label={statusLabel(c.verify_status)} />
+                                </span>
+                                <span className="pool-cred-time">{fmtTime(c.created_at)}</span>
+                              </Link>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    <div className="pool-block">
+                      <div className="pool-block-head">
+                        <span className="pool-block-title">模型（{active.models.length}）</span>
+                        <button type="button" className="btn-ghost pool-add-chip-btn" onClick={() => setAddingModel(true)} disabled={busy}>
+                          <IconPlus size="xs" />
+                          添加模型
+                        </button>
+                      </div>
+                      {active.models.length === 0 ? (
+                        <p className="muted pool-empty">还没有模型，刷新目录或手工添加。</p>
+                      ) : (
+                        <div className="am-chip-row">
+                          {active.models.map((m) => {
+                            const excluded = m.excluded_from_candidates
+                            const missing = m.status === 'missing'
+                            return (
+                              <button
+                                key={m.real_model_id}
+                                type="button"
+                                className={'am-chip' + (missing ? ' am-chip-missing' : '')}
+                                onClick={() => startEditModel(m)}
+                                title={excluded ? '已从候选中排除，点按编辑' : missing ? '已消失，点按编辑' : '点按编辑'}
+                              >
+                                <span className="am-chip-name">{m.display_name}</span>
+                                {!missing && !excluded && <IconCheck size="xs" />}
+                                {missing && <span className="am-chip-tag" data-tone="muted">已消失</span>}
+                                {excluded && <span className="am-chip-tag" data-tone="warn">已排除</span>}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </AsyncView>
 
-      <Section title="类型口径">
-        <ul className="plain-list">
-          <li>kind 的变更走独立端点并标危险：它改变的是「这条上游怎么被调用」，不是名字或开关。</li>
-          <li>relay 调用路径全程不经过 HTTP 网关，填地址在保存前就会被拒绝。</li>
-          <li>禁用前请确认当前有多少候选依赖该上游（确认框会要求输入名称）。</li>
-          <li>secret_present 只告诉你有密文行，永远不会返回密文本身。</li>
-        </ul>
-      </Section>
+      {/* 添加供应商弹窗 */}
+      <PoolModal
+        open={adding}
+        title="添加供应商"
+        onClose={() => setAdding(false)}
+        footer={
+          <>
+            <button type="button" className="btn-ghost" onClick={() => setAdding(false)}>取消</button>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={busy || !name.trim() || (kind !== 'relay' && !baseURL.trim())}
+              onClick={() => void createUpstreamSubmit()}
+            >
+              {busy ? '正在创建…' : '创建'}
+            </button>
+          </>
+        }
+      >
+        <div className="field-row">
+          <Field label="类型" required>
+            <select
+              value={kind}
+              onChange={(e) => {
+                const k = e.target.value as UpstreamKind
+                setKind(k)
+                if (k === 'relay') setBaseURL('')
+              }}
+            >
+              {Object.entries(KIND_LABELS).map(([v, l]) => (
+                <option key={v} value={v}>{l}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="名称" required>
+            <input value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          {kind !== 'relay' ? (
+            <Field label="base_url" required hint="vendor 填官方地址；selfhosted 填自建兼容端点。">
+              <input value={baseURL} onChange={(e) => setBaseURL(e.target.value)} placeholder="https://…" />
+            </Field>
+          ) : (
+            <p className="muted">relay 由 sidecar 直连 providers-hub，不需要也不会接受地址。</p>
+          )}
+        </div>
+      </PoolModal>
 
+      {/* 编辑供应商弹窗 */}
+      <PoolModal
+        open={editing !== null}
+        title={`编辑供应商 ${editing?.name ?? ''}`}
+        onClose={() => setEditing(null)}
+        footer={
+          <>
+            <button type="button" className="btn-ghost" onClick={() => setEditing(null)}>取消</button>
+            <button type="button" className="btn-primary" disabled={busy} onClick={() => void saveEdit()}>
+              {busy ? '正在保存…' : '保存'}
+            </button>
+          </>
+        }
+      >
+        <div className="field-row">
+          <Field label="名称">
+            <input value={editName} onChange={(e) => setEditName(e.target.value)} />
+          </Field>
+          {editing && editing.kind !== 'relay' && (
+            <Field label="base_url">
+              <input value={editBase} onChange={(e) => setEditBase(e.target.value)} />
+            </Field>
+          )}
+        </div>
+      </PoolModal>
+
+      {/* 添加模型弹窗 */}
+      <PoolModal
+        open={addingModel}
+        title="添加模型"
+        onClose={() => setAddingModel(false)}
+        footer={
+          <>
+            <button type="button" className="btn-ghost" onClick={() => setAddingModel(false)}>取消</button>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={busy || !newModelId.trim()}
+              onClick={() => void createModelSubmit()}
+            >
+              {busy ? '正在提交…' : '登记'}
+            </button>
+          </>
+        }
+      >
+        <div className="field-row">
+          <Field label="upstream_model_id" required hint="该上游目录里的真实模型 id。">
+            <input value={newModelId} onChange={(e) => setNewModelId(e.target.value)} placeholder="my-model-x" />
+          </Field>
+          <Field label="显示名" hint="可空，缺省取 upstream_model_id。">
+            <input value={newDisplay} onChange={(e) => setNewDisplay(e.target.value)} />
+          </Field>
+          <Field label="上下文窗口" hint="数字，可空。">
+            <input type="number" value={newCtx} onChange={(e) => setNewCtx(e.target.value)} placeholder="如 128000" />
+          </Field>
+        </div>
+      </PoolModal>
+
+      {/* 编辑模型弹窗 */}
+      <PoolModal
+        open={editingModel !== null}
+        title={`编辑模型 ${editingModel?.upstream_model_id ?? ''}`}
+        onClose={() => setEditingModel(null)}
+        footer={
+          <>
+            <button type="button" className="btn-ghost" onClick={() => setEditingModel(null)}>取消</button>
+            <button type="button" className="btn-primary" disabled={busy} onClick={() => void saveModelEdit()}>
+              {busy ? '正在保存…' : '保存'}
+            </button>
+          </>
+        }
+      >
+        <div className="field-row">
+          <Field label="显示名">
+            <input value={emDisplay} onChange={(e) => setEmDisplay(e.target.value)} />
+          </Field>
+          <Field label="上下文窗口" hint="留空表示未知；保存后目录刷新对 override 行不再覆盖。">
+            <input type="number" value={emCtx} onChange={(e) => setEmCtx(e.target.value)} />
+          </Field>
+          <label className="checkbox-line">
+            <input type="checkbox" checked={emExcluded} onChange={(e) => setEmExcluded(e.target.checked)} />
+            从候选中排除
+          </label>
+        </div>
+      </PoolModal>
+
+      {/* 停用确认 */}
       {disableTarget && (
         <ConfirmDialog
           open
-          title={`确认禁用上游 ${disableTarget.name}`}
+          title={`确认停用供应商 ${disableTarget.name}`}
           impact={[
-            `上游 ${disableTarget.name}（${disableTarget.id}）立即停止服务`,
-            '所有依赖该上游的候选在下一次请求时不可用',
+            `供应商 ${disableTarget.name}（${disableTarget.id}）立即停止服务`,
+            '所有依赖该供应商的候选在下一次请求时不可用',
             '依赖它的凭据不会被删除，重新启用即可恢复'
           ]}
           irreversibility="可恢复（重新启用），但期间依赖它的请求已经失败。"
           targetName={disableTarget.name}
-          inputLabel="请输入上游名称以确认"
-          confirmLabel="确认禁用上游"
+          inputLabel="请输入供应商名称以确认"
+          confirmLabel="确认停用"
           busy={busy}
           error={error}
           onCancel={() => setDisableTarget(null)}
@@ -323,126 +693,6 @@ export function UpstreamsPage({ def }: PageProps) {
           }}
         />
       )}
-
-      {kindTarget && (
-        <ConfirmDialog
-          open
-          title={`确认变更上游 ${kindTarget.name} 的调用形态`}
-          impact={[
-            `类型：${kindTarget.kind} → ${pendingKind}`,
-            '所有依赖该上游的候选在下一次请求时走一条完全不同的代码路径',
-            pendingKind === 'relay' ? '改为 relay 后将不接受 base_url' : '改为直连类型后需要填写 base_url'
-          ]}
-          irreversibility="可恢复（改回），但期间路由路径已改变，可能产生一批失败请求。"
-          targetName={kindTarget.name}
-          inputLabel="请输入上游名称以确认"
-          confirmLabel="确认变更类型"
-          busy={busy}
-          error={error}
-          onCancel={() => setKindTarget(null)}
-          onConfirm={async () => {
-            setBusy(true)
-            setError(null)
-            try {
-              await changeUpstreamKind(kindTarget.id, pendingKind)
-              setKindTarget(null)
-              setNotice('上游类型已变更')
-              q.reload()
-            } catch (e) {
-              setError(e)
-            } finally {
-              setBusy(false)
-            }
-          }}
-        />
-      )}
-    </PageFrame>
-  )
-}
-
-// ── 凭据池 ─────────────────────────────────────────────────────────────
-
-export function CredentialsPage({ def }: PageProps) {
-  const [status, setStatus] = useState('')
-  const [verify, setVerify] = useState('')
-  const q = useApi(
-    () =>
-      listCredentials({
-        status: status || undefined,
-        verify_status: verify || undefined,
-        limit: 200
-      }),
-    [status, verify]
-  )
-
-  return (
-    <PageFrame def={def}>
-      <Banner tone="muted">
-        凭据明文永不显示，界面也不提供「查看」。暂停与封禁是两个动作：暂停对应「过一会可能恢复」，
-        封禁对应「被上游封了或鉴定未通过」。
-      </Banner>
-      <div className="toolbar">
-        <label className="toolbar-field">
-          状态
-          <select value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">全部</option>
-            <option value="pending">待鉴定</option>
-            <option value="active">启用</option>
-            <option value="disabled">已暂停/封禁</option>
-            <option value="invalid">已失效</option>
-            <option value="expired">已过期</option>
-          </select>
-        </label>
-        <label className="toolbar-field">
-          鉴定
-          <select value={verify} onChange={(e) => setVerify(e.target.value)}>
-            <option value="">全部</option>
-            <option value="verified">已鉴定</option>
-            <option value="trusted">官方来源</option>
-            <option value="unverified">未鉴定</option>
-            <option value="suspect">未通过</option>
-          </select>
-        </label>
-        <ToolButton icon={<IconRefresh size={ACTION_ICON} />} onClick={q.reload}>刷新</ToolButton>
-      </div>
-
-      <AsyncView
-        state={q}
-        loadingRows={6}
-        empty={(d) =>
-          d.data.length === 0 ? (
-            <EmptyState title="没有匹配的凭据" hint="贡献者提交的凭据与平台自有凭据都会出现在这里；调整筛选或等待新贡献。" />
-          ) : null
-        }
-      >
-        {(d) => (
-          <Section title={`凭据（${d.total ?? d.data.length}）`}>
-            <DataTable headers={['归属账户', '供应商', '外部标签', '状态', '登录可用', '鉴定', '创建时间', '最后使用', '']}>
-              {d.data.map((c) => (
-                <tr key={c.id}>
-                  <td><code>{c.owner_account_id}</code></td>
-                  <td>{c.provider}</td>
-                  <td className="cell-wrap">{c.external_label ?? '—'}</td>
-                  <td><StatusBadge status={c.status} label={statusLabel(c.status)} /></td>
-                  <td>{c.login_enabled ? '是' : '否'}</td>
-                  <td><StatusBadge status={c.verify_status} label={statusLabel(c.verify_status)} /></td>
-                  <td>{fmtTime(c.created_at)}</td>
-                  <td>{fmtTime(c.last_used_at)}</td>
-                  <td className="cell-actions">
-                    <TableActions>
-                      <TableAction
-                        icon={<IconView size={ACTION_ICON} />}
-                        label="凭据详情"
-                        to={`/admin/credentials/${encodeURIComponent(c.id)}`}
-                      />
-                    </TableActions>
-                  </td>
-                </tr>
-              ))}
-            </DataTable>
-          </Section>
-        )}
-      </AsyncView>
     </PageFrame>
   )
 }

@@ -384,10 +384,20 @@ export function getRealModel(id: string) {
   return getOne<AdminRealModel>(`${PATHS.adminRealModels}/${seg(id)}`)
 }
 
+/** 手工添加模型（契约 §1.3）。POST /api/admin/real-models，source=override。
+ * 响应 = 渲染后的 AdminRealModel（同 GET 详情形状）；同 upstream_model_id 已存在时幂等返回既有行。 */
+export function createRealModel(body: {
+  upstream_id: string
+  upstream_model_id: string
+  display_name?: string
+  context_window?: number
+}) {
+  return postWrite<AdminRealModel>(PATHS.adminRealModels, body)
+}
+
 export function refreshRealModels() {
   return postWrite<Record<string, unknown>>(`${PATHS.adminRealModels}/refresh`)
 }
-
 export function patchRealModel(id: string, body: AdminRealModelPatch) {
   return patchWrite<AdminRealModel>(`${PATHS.adminRealModels}/${seg(id)}`, body)
 }
