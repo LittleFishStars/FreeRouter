@@ -1,0 +1,16 @@
+JetBrains Maple Mono — SIL Open Font License 1.1
+
+本目录下的 jbm-*.woff2 是 JetBrains Maple Mono 的**子集**（按界面字符裁剪），
+仅用于 FreeRouter 控制台。未修改字形轮廓，仅移除未使用的字符。
+
+字形版权：
+  Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
+  Copyright 2022 The Maple Mono Project Authors (https://github.com/subframe7536/maple-font)
+  Copyright 2025 Space Time (https://github.com/SpaceTimee/Fusion-JetBrainsMapleMono)
+
+来源：https://github.com/SpaceTimee/Fusion-JetBrainsMapleMono
+
+许可：SIL Open Font License, Version 1.1 —— 全文见
+https://openfontlicense.org 或本目录的 OFL-1.1.txt
+
+重新生成：cd web && python3 scripts/build-fonts.py

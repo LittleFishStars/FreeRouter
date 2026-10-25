@@ -17,6 +17,7 @@ import App from './App'
 import { darkTheme, lightTheme, MODE_STORAGE_KEY } from './theme'
 import { applyCssTokens } from './tokens'
 import { ColorModeContext, type ColorMode } from './colorMode'
+import './fonts.css'
 import './style.css'
 
 /** 读出初始模式：显式选择优先，否则跟随系统。 */

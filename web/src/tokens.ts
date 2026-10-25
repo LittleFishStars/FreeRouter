@@ -148,6 +148,26 @@ export const TYPE = {
   caption: { size: '0.75rem', line: 1.45, weight: 400 }
 } as const
 
+/**
+ * 字体栈（非颜色令牌，两种模式共用）。
+ *
+ * 与 `theme.ts` 里的 `fontFamily` 必须一致：MUI 组件走 theme，页面里的原生
+ * 控件与语义类名走这里。两边都指向同一款字体（JetBrains Maple Mono），
+ * 兜底也相同——否则输入框和它旁边的按钮会长得不是一套东西。
+ */
+const FONT_UI = [
+  '"JetBrains Maple Mono"',
+  'ui-monospace',
+  'SFMono-Regular',
+  'Menlo',
+  'Consolas',
+  '"PingFang SC"',
+  '"Hiragino Sans GB"',
+  '"Microsoft YaHei"',
+  '"Noto Sans CJK SC"',
+  'sans-serif'
+].join(',')
+
 /** 把某个模式的令牌写成 `<html>` 上的 CSS 自定义属性（`--fr-page` 等）。 */
 export function applyCssTokens(mode: 'light' | 'dark'): void {
   const tokens = mode === 'dark' ? DARK : LIGHT
@@ -162,4 +182,6 @@ export function applyCssTokens(mode: 'light' | 'dark'): void {
   root.style.setProperty('--fr-radius-xl', `${RADIUS.xl}px`)
   root.style.setProperty('--fr-radius-xxl', `${RADIUS.xxl}px`)
   root.style.setProperty('--fr-radius-full', `${RADIUS.full}px`)
+  root.style.setProperty('--fr-font-ui', FONT_UI)
+  root.style.setProperty('--fr-font-mono', FONT_UI)
 }

@@ -52,6 +52,9 @@
   --radius-sm: var(--fr-radius-md);
   --shadow-sm: var(--fr-e1);
   --focus-ring: var(--fr-focus-ring);
+  /* 字体栈由 tokens.ts 在运行时写入（与 MUI 主题同源） */
+  --font-ui: var(--fr-font-ui);
+  --font-mono: var(--fr-font-mono);
 }
 
 /* 浅色偏好时显式声明（tokens.ts 会把值写到 <html> 上） */
@@ -67,6 +70,14 @@
 
 * {
   box-sizing: border-box;
+}
+
+/*
+ * 字体在这里也声明一次（MUI 的 CssBaseline 也会设，但它是运行时注入的，
+ * 首帧可能还没到位）。两处同源：都取 tokens.ts 写出的 --fr-font-ui。
+ */
+body {
+  font-family: var(--fr-font-ui);
 }
 
 /*
@@ -160,7 +171,9 @@ textarea:not(.MuiInputBase-input) {
 }
 
 code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* 等宽处与正文同一款字体（它本来就是等宽编程字体），
+     差别只在连字：代码开、正文关，规则在 fonts.css 里 */
+  font-family: var(--fr-font-mono);
   font-size: 0.86em;
   padding: 0.1em 0.32em;
   border-radius: 4px;
@@ -482,7 +495,9 @@ button:disabled {
 
 .code-input,
 .code-block {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* 等宽处与正文同一款字体（它本来就是等宽编程字体），
+     差别只在连字：代码开、正文关，规则在 fonts.css 里 */
+  font-family: var(--fr-font-mono);
   font-size: 0.82rem;
   white-space: pre;
   overflow: auto;
@@ -1011,7 +1026,9 @@ a.metric-link:hover {
 }
 
 .user-code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* 等宽处与正文同一款字体（它本来就是等宽编程字体），
+     差别只在连字：代码开、正文关，规则在 fonts.css 里 */
+  font-family: var(--fr-font-mono);
   font-size: 1.25rem;
   font-weight: 700;
   letter-spacing: 0.12em;

@@ -1,0 +1,105 @@
+/* 界面字体：JetBrains Maple Mono。
+ *
+ * ## 为什么自己托管而不是引 CDN
+ *
+ * 这个控制台是一个**单二进制**：前端产物被 go:embed 打进可执行文件，部署时
+ * 只有那一个文件。引 CDN 会在离线/内网环境下退化成系统字体，界面观感不一致；
+ * 而且会多出一条对外请求，属于不必要的隐私与可用性成本。
+ *
+ * ## 为什么要子集化
+ *
+ * 上游字体每个字重 18.5 MB（全量中日韩 + Nerd Font 图标），直接内嵌不可行。
+ * `web/scripts/build-fonts.py` 按界面实际用到的字符（源码扫描 + 常用汉字表）
+ * 裁出子集，三个字重合计 2.6 MB，随二进制分发。字符集之外的生僻字会回退到
+ * 系统字体（`font-family` 栈的正常行为），不会变豆腐块。
+ *
+ * ## 为什么 `local()` 排在 `url()` 前面
+ *
+ * 装了这款字体的机器直接命中本地版本，**一个字节都不用下载**；没装的机器才
+ * 拉子集。本机字体通常还是完整版（字符更全），所以这个顺序在两种情况下都最优。
+ *
+ * ## 字重
+ *
+ * 只声明 400 / 600 / 700 三档——界面实际用到的视觉档位就这三档（500 会被
+ * CSS 字体匹配落到 400，650 落到 700）。每多一档就是 +870 KB。
+ *
+ * 许可证：SIL Open Font License 1.1，见 src/assets/fonts/LICENSE-fonts.txt。
+ */
+
+@font-face {
+  font-family: 'JetBrains Maple Mono';
+  font-style: normal;
+  font-weight: 400;
+  /* swap：字体没到之前先用系统等宽字体渲染，而不是让整页空白（FOIT）。
+     内网首屏 870 KB 通常几百毫秒，swap 的观感明显好于白屏。 */
+  font-display: swap;
+  src:
+    local('JetBrains Maple Mono Regular'),
+    local('JetBrainsMapleMono-Regular'),
+    local('JetBrains Maple Mono'),
+    url('./assets/fonts/jbm-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Maple Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src:
+    local('JetBrains Maple Mono SemiBold'),
+    local('JetBrainsMapleMono-SemiBold'),
+    url('./assets/fonts/jbm-600.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Maple Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src:
+    local('JetBrains Maple Mono Bold'),
+    local('JetBrainsMapleMono-Bold'),
+    url('./assets/fonts/jbm-700.woff2') format('woff2');
+}
+
+/* 400 档声明的 src 里带 local('JetBrains Maple Mono')：部分系统只注册家族名，
+   不注册 "Regular" 变体名，这条兜底让那些系统也能命中本地字体。 */
+@font-face {
+  font-family: 'JetBrains Maple Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src:
+    local('JetBrains Maple Mono Medium'),
+    local('JetBrainsMapleMono-Medium'),
+    url('./assets/fonts/jbm-400.woff2') format('woff2');
+}
+
+/*
+ * 等宽字体的连字（ligature）默认是开的，JetBrains 系字体会把 `->`、`!=`、
+ * `=>` 合成单个箭头字形。这在**代码块**里是加分项，但在**正文**里会让人
+ * 读不出原始字符（例如说明文字里写 `a -> b` 变成了一个箭头，用户复制时又
+ * 是原始字符，两边对不上）。
+ *
+ * 所以：正文关掉连字，代码处（code/pre）打开。
+ */
+body {
+  font-variant-ligatures: none;
+  font-feature-settings:
+    'calt' 0,
+    'liga' 0;
+}
+
+code,
+kbd,
+pre,
+samp,
+.code-input,
+.code-block,
+.secret-box code,
+.user-code {
+  font-variant-ligatures: contextual common-ligatures;
+  font-feature-settings:
+    'calt' 1,
+    'liga' 1;
+}

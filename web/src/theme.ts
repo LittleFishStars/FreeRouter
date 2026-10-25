@@ -24,13 +24,28 @@
 import { createTheme, alpha, type ThemeOptions } from '@mui/material/styles'
 import { DARK, LIGHT, RADIUS, TYPE } from './tokens'
 
-/** 字体栈：全部用系统字体，不引入 Web Font。 */
+/**
+ * 界面字体：**JetBrains Maple Mono**（2026-10-25 用户指定）。
+ *
+ * 它是等宽字体，中文与拉丁宽度严格 2:1（实测 1200 : 600 单位），所以表格里
+ * 的列天然对齐、`.metric-value` 这类数字不必额外开 tabular-nums 也不会跳。
+ *
+ * 三档字重（400/600/700）由 `src/fonts.css` 的 `@font-face` 提供：装了这款
+ * 字体的机器命中 `local()`（零下载），没装的拉 `assets/fonts/jbm-*.woff2`
+ * 子集（合计 2.6 MB，按界面实际字符裁剪，见 `web/scripts/build-fonts.py`）。
+ *
+ * 后面的系统字体是**兜底**：子集之外的生僻字（用户输入的名字、模型名里可能
+ * 出现）以及字体尚未加载完成的首帧，都会落到它们身上，不会变豆腐块。
+ * 兜底顺序里中文优先排 Noto Sans CJK（Linux）与苹方/雅黑（macOS/Windows）。
+ */
 const fontFamily = [
-  '-apple-system',
-  'BlinkMacSystemFont',
-  '"Segoe UI"',
-  'Roboto',
-  '"Helvetica Neue"',
+  '"JetBrains Maple Mono"',
+  // ── 兜底：等宽（字体没到位时至少保住表格对齐）──
+  'ui-monospace',
+  'SFMono-Regular',
+  'Menlo',
+  'Consolas',
+  // ── 兜底：中文 ──
   '"PingFang SC"',
   '"Hiragino Sans GB"',
   '"Microsoft YaHei"',
@@ -38,15 +53,11 @@ const fontFamily = [
   'sans-serif'
 ].join(',')
 
-const monoFamily = [
-  'ui-monospace',
-  'SFMono-Regular',
-  '"SF Mono"',
-  'Menlo',
-  'Consolas',
-  '"Liberation Mono"',
-  'monospace'
-].join(',')
+/**
+ * 代码处用同一个字体：它本来就是等宽编程字体，再叠一层别的等宽只会让
+ * 代码块与正文的笔画不一致（同一个界面出现两种 monospace 观感）。
+ */
+const monoFamily = fontFamily
 
 /**
  * 两套配色共享的组件默认值。
