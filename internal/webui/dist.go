@@ -34,6 +34,11 @@ func handler() http.Handler {
 		// 仍可被缓存（文件名变则内容变，缓存不会错配）。
 		if r.URL.Path == "/" || strings.HasSuffix(r.URL.Path, ".html") {
 			w.Header().Set("Cache-Control", "no-store")
+		} else {
+			// 其余是带内容 hash 的产物（assets/index-<hash>.js 等）：文件名变则
+			// 内容变，所以可以放心长缓存。写明 immutable 而不是不给头：
+			// 不给头时浏览器会按启发式规则反复发条件请求，白白吃掉一次往返。
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
 		fileServer.ServeHTTP(w, r)
 	})

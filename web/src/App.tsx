@@ -473,6 +473,9 @@ function Footer() {
       <Typography variant="caption">
         FreeRouter 控制台{health.version ? ` · v${health.version}` : ''}
         {built ? ` · ${built}` : ''}
+        {/* 前端构建标识：排查“页面是不是旧版”时唯一能自助回答的东西。
+            （服务端 version 可能恒为 dev——不经 ldflags 的 go build 就会这样。） */}
+        {` · 前端构建 ${__BUILD_STAMP__}`}
       </Typography>
       <Box sx={{ display: 'flex', gap: 2 }}>
         {(['healthz', 'readyz'] as const).map((k) => (

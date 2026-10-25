@@ -47,3 +47,36 @@ func TestContractDistServesIndex(t *testing.T) {
 		}
 	}
 }
+
+// TestContractDistCachePolicy 固化分路径的缓存策略。
+//
+// 这条契约的价值不在于「头对不对」，而在于它挡住的那类事故：
+//   - index.html 被缓存 → 浏览器拿旧清单去找已被新构建删掉的 chunk，
+//     表现为白屏或「页面永远是旧版」（2026-10-25 实际踩到过）；
+//   - 带 hash 的 assets 不给长缓存 → 每次导航都发条件请求，白吃一次往返。
+func TestContractDistCachePolicy(t *testing.T) {
+	// 根路径与 .html：no-store（清单文件不许缓存）
+	for _, path := range []string{"/", "/index.html"} {
+		rec := httptest.NewRecorder()
+		Handler().ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s 的 Cache-Control = %q，期望 no-store", path, got)
+		}
+	}
+
+	// 带内容 hash 的产物：长缓存 + immutable
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	refs := regexp.MustCompile(`\./assets/[\w.-]+`).FindAllString(rec.Body.String(), -1)
+	if len(refs) == 0 {
+		t.Fatal("index.html 未引用任何 ./assets/ 资源")
+	}
+	for _, ref := range refs {
+		r2 := httptest.NewRecorder()
+		Handler().ServeHTTP(r2, httptest.NewRequest("GET", "/"+ref, nil))
+		got := r2.Header().Get("Cache-Control")
+		if !strings.Contains(got, "immutable") || !strings.Contains(got, "max-age=") {
+			t.Errorf("%s 的 Cache-Control = %q，期望 public, max-age=…, immutable", ref, got)
+		}
+	}
+}

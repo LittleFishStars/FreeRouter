@@ -1,9 +1,30 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
+
+// 构建标识：git 短哈希 + 构建时刻。注入进产物，页脚会显示它。
+//
+// 为什么必须有个随产物变化的标识：2026-10-25 排查「多选没生效」花了两轮，
+// 因为页面上只有后端 /api/version —— 而那个值在没有 ldflags 的 go build 下
+// 恒为 dev，看不出前端到底是哪一版。构建标识让「我看到的页面是哪次构建」
+// 在页面本身就能回答，不必去猜浏览器缓存。
+const buildStamp = (() => {
+  let hash = 'nogit'
+  try {
+    hash = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: here }).toString().trim()
+  } catch {
+    /* 非 git 环境（发行包解压后构建）：保留 nogit，不因此让构建失败 */
+  }
+  const t = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const when = `${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`
+  return `${hash} · ${when}`
+})()
+
 // 产物落点：web/ 的同级目录 internal/webui/dist。
 // 为什么是这个目录而不是 web/dist：
 //   go:embed 只能嵌入「自己所在包目录及其子目录」的路径，
@@ -13,6 +34,9 @@ const outDir = resolve(here, '../internal/webui/dist')
 
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __BUILD_STAMP__: JSON.stringify(buildStamp)
+  },
   // 相对路径：产物被 go:embed 打进二进制后，服务它的 URL 前缀由 Go 侧决定
   // （可能是 /、/console/、或被反代挂在子路径）。写死 '/' 会让子路径部署下
   // 所有 assets 404。相对 base 让资源引用变成 ./assets/xxx，
