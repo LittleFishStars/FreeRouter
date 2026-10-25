@@ -233,7 +233,7 @@ export function CandidatesPage({ def }: PageProps) {
       setRows((rs) => rs.filter((_, idx) => idx !== i))
       return
     }
-    setRows((rs) => [...rs, { real_model_id: m.real_model_id, constraint: {}, weight: 100 }])
+    setRows((rs) => [...rs, { real_model_id: m.real_model_id, constraint: {}, weight: 0 }])
   }
 
   function toggleChannel(i: number, channel: string) {
@@ -250,11 +250,14 @@ export function CandidatesPage({ def }: PageProps) {
     setBusy(true)
     setError(null)
     try {
-      // available_instances 是响应字段，请求里不带
+      // available_instances 是响应字段，请求里不带。weight 已退役（服务端
+      // 恒写 0），数组顺序本身就是声明序——排序条件次序相同时按它决定先后，
+      // 所以 rows 的顺序就是线上次序，保存时不做任何重排。
       const payload = rows.map((r) => ({
         real_model_id: r.real_model_id,
         constraint: r.constraint,
-        weight: r.weight
+        // weight 已退役但 DTO 还带这个字段（服务端恒写 0），显式传 0 保持类型满足。
+        weight: 0 as const
       }))
       await putCandidates(id, payload)
       setNotice('候选集已整体替换')
@@ -370,15 +373,6 @@ export function CandidatesPage({ def }: PageProps) {
         </div>
         {selected && idx !== undefined && (
           <div className="source-params">
-            <label className="source-param">
-              <span className="source-param-label">权重</span>
-              <input
-                type="number"
-                min={0}
-                value={rows[idx].weight}
-                onChange={(e) => update(idx, { weight: Number(e.target.value) })}
-              />
-            </label>
             <div className="source-param source-param-wide">
               <span className="source-param-label">渠道范围</span>
               <div className="source-chips">
@@ -462,7 +456,7 @@ export function CandidatesPage({ def }: PageProps) {
         {() => (
           <Section
             title={`候选集（${rows.length} 行）`}
-            hint="点模型卡片加入 / 移出候选集；选中后就地展开权重与渠道范围。权重只在排序链显式含 round-robin 时生效；默认链不使用权重。"
+            hint="点模型卡片加入 / 移出候选集；选中后就地编辑渠道范围。排序条件次序相同时按这里的排列顺序决定先后。"
           >
             {railUnavailable ? (
               <>
@@ -475,7 +469,7 @@ export function CandidatesPage({ def }: PageProps) {
                     {rows.map((r, i) => (
                       <li key={`${r.real_model_id}-${i}`}>
                         <code>{r.real_model_id}</code>
-                        <span className="muted">权重 {r.weight}</span>
+                        <span className="muted">顺序 {i + 1}</span>
                         <span className="muted">渠道范围：{scopeSummary(r.constraint)}</span>
                         <button type="button" className="btn-ghost" onClick={() => removeRow(i)}>
                           移除
@@ -587,7 +581,7 @@ export function CandidatesPage({ def }: PageProps) {
           <li><code>aggregate/*</code> 默认不可选：与上游策略叠加会让问题无法归因。</li>
           <li>可用实例数是运行时展开结果，请求里给值会被忽略。</li>
           <li>渠道范围按 <code>{'{mode,channels}'}</code> 形状写入：一个都不选 = 全部渠道，等价于不写 channel_scope。</li>
-          <li>增删候选与调权重属于「改抽象模型」：保存前需要二次确认。</li>
+          <li>增删候选或调整排列顺序属于「改抽象模型」：保存前需要二次确认；次序相同（平局）时按列表顺序。</li>
         </ul>
         <KeyValues
           items={[

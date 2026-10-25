@@ -1461,3 +1461,142 @@ a.metric-link:hover {
   background: var(--fr-block);
   font-size: 0.82rem;
 }
+
+/* ---------- 抽象模型列表：卡片条（2026-10-26 改版） ---------- */
+/* 形态参考 Tingly Box 的模型胶囊行：一行模型信息，展开后横向候选芯片条。
+   层级照旧用填充色阶：页面卡(--fr-card) > 行卡(--fr-block) > 芯片(--fr-inset)，
+   全程无描边；颜色只给状态（可用数 0 = 警告色徽标，展开 = 主色软底）。 */
+.am-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.am-row {
+  border-radius: var(--fr-radius-xl);
+  background: var(--fr-block);
+  overflow: hidden;
+}
+
+.am-row[data-expanded='true'] {
+  background: var(--fr-primary-soft);
+}
+
+.am-row-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.7rem 0.9rem;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.am-row-main {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+.am-row-main a {
+  text-decoration: none;
+}
+
+.am-row-display {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fr-on-surface-variant);
+}
+
+.am-row-cell {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+.am-row-mode {
+  color: var(--fr-on-surface-variant);
+  font-size: 0.82rem;
+}
+
+.am-row-chain {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  color: var(--fr-on-surface-variant);
+  font-family: var(--fr-font-mono);
+}
+
+.am-row-ops {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.am-row-ops a {
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.am-expand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: var(--fr-radius-full);
+  background: var(--fr-inset);
+  color: var(--fr-on-surface-variant);
+  cursor: pointer;
+}
+
+.am-expand[data-open='true'] svg {
+  transform: rotate(180deg);
+}
+
+/* 展开体：横向芯片条，超出宽度横向滚动（模型多时不折行） */
+.am-expand-body {
+  padding: 0.15rem 0.9rem 0.8rem;
+}
+
+.am-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding: 0.35rem 0.1rem;
+}
+
+.am-chip,
+.am-add-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.75rem;
+  border-radius: var(--fr-radius-full);
+  background: var(--fr-inset);
+  color: var(--fr-on-surface);
+  text-decoration: none;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.am-chip:hover,
+.am-add-chip:hover {
+  background: var(--fr-primary-soft);
+}
+
+.am-add-chip {
+  /* 虚线感来自颜色而不是描边：比普通芯片浅一档，加号图标自带动手暗示 */
+  color: var(--fr-primary);
+}
+
+.am-empty {
+  font-size: 0.85rem;
+}

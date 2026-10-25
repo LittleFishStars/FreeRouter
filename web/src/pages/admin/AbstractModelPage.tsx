@@ -6,28 +6,36 @@
 // 能力模式、排序链与能力声明都属于「改抽象模型」危险写：保存前必须走
 // 统一二次确认框。排序策略只有四种 + 链末 round-robin 平局决胜。
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { IconBack } from '../../icons'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   createAbstractModel,
   dryRunAbstractModel,
   getAbstractModel,
+  getCandidates,
+  getModelSources,
   getReferences,
   listAbstractModels,
   patchAbstractModel
 } from '../../api/endpoints'
-import type { DryRunResult, ModelCapabilities } from '../../api/types'
+import type {
+  AdminAbstractModel,
+  AdminModelSourceModel,
+  Candidate,
+  DryRunResult,
+  ModelCapabilities
+} from '../../api/types'
 import { useApi } from '../../hooks/useApi'
 import { ACTION_ICON, TableAction, TableActions, ToolButton } from '../../components/IconButtons'
-import { IconDelete, IconDown, IconPlus, IconRefresh, IconUp } from '../../icons'
+import { IconCheck, IconChevronDown, IconDelete, IconDown, IconPlus, IconRefresh, IconUp } from '../../icons'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import {
   AsyncView,
   Badge,
   Banner,
-  DataTable,
   EmptyState,
+  LoadingBlock,
   Field,
   FormError,
   JsonDetails,
@@ -53,6 +61,11 @@ const STRATEGIES = [
   ['price', 'price（更便宜）']
 ] as const
 
+type ExpDetail =
+  | { state: 'loading' }
+  | { state: 'ready'; candidates: Candidate[] }
+  | { state: 'error' }
+
 export function AbstractModelsPage({ def }: PageProps) {
   const navigate = useNavigate()
   const [status, setStatus] = useState('')
@@ -60,14 +73,48 @@ export function AbstractModelsPage({ def }: PageProps) {
     () => listAbstractModels({ limit: 200 }),
     [status]
   )
+  // 候选芯片的 display_name 需要真实模型事实（详情端点的候选只给 real_model_id）。
+  const sourcesQ = useApi(() => getModelSources(), [])
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [mode, setMode] = useState('strict')
   const [error, setError] = useState<unknown>(null)
   const [busy, setBusy] = useState(false)
+  // 同时只允许一行展开；展开某行时按需拉它的候选。
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [details, setDetails] = useState<Record<string, ExpDetail>>({})
 
   const rows = (q.data?.data ?? []).filter((m) => !status || m.status === status)
+
+  // real_model_id → 模型事实索引（外面已去重，越靠前的来源先占位）。
+  const modelFacts = useRef(new Map<string, AdminModelSourceModel>())
+  const factsReady = sourcesQ.data !== undefined
+  if (factsReady) {
+    const idx = modelFacts.current
+    for (const s of sourcesQ.data?.sources ?? []) {
+      for (const m of s.models) if (!idx.has(m.real_model_id)) idx.set(m.real_model_id, m)
+    }
+  }
+
+  // 展开某行：若无缓存则拉取详情候选；同时只保留一个展开行。
+  useEffect(() => {
+    if (!expandedId) return
+    const cached = details[expandedId]
+    if (cached) return
+    setDetails((d) => ({ ...d, [expandedId]: { state: 'loading' } }))
+    getCandidates(expandedId)
+      .then((r) => {
+        setDetails((d) => ({ ...d, [expandedId]: { state: 'ready', candidates: r.candidates } }))
+      })
+      .catch(() => {
+        setDetails((d) => ({ ...d, [expandedId]: { state: 'error' } }))
+      })
+  }, [expandedId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function toggle(id: string) {
+    setExpandedId((prev) => (prev === id ? null : id))
+  }
 
   async function submitCreate() {
     setBusy(true)
@@ -154,31 +201,98 @@ export function AbstractModelsPage({ def }: PageProps) {
       >
         {() => (
           <Section title={`抽象模型（${rows.length}）`}>
-            <DataTable headers={['对外名', '显示名', '状态', '候选 / 可用', '能力模式', '排序链', '操作']}>
+            <div className="am-list">
               {rows.map((m) => (
-                <tr key={m.id}>
-                  <td><Link to={`/admin/abstract-models/${encodeURIComponent(m.id)}`}><code>{m.name}</code></Link></td>
-                  <td>{m.display_name}</td>
-                  <td><StatusBadge status={m.status} label={statusLabel(m.status)} /></td>
-                  <td>
-                    <Badge tone={m.available_candidate_count === 0 ? 'warn' : 'muted'}>
-                      {m.candidate_count} / {m.available_candidate_count}
-                    </Badge>
-                  </td>
-                  <td>{m.capability_mode === 'strict' ? '严格' : '过滤'}</td>
-                  <td className="cell-wrap">{(m.strategy ?? []).join(' → ') || '—'}</td>
-                  <td className="cell-actions">
-                    <Link to={`/admin/abstract-models/${encodeURIComponent(m.id)}/candidates`}>候选集</Link>
-                    <Link to={`/admin/abstract-models/${encodeURIComponent(m.id)}/deprecation`}>弃用</Link>
-                  </td>
-                </tr>
+                <ModelRow
+                  key={m.id}
+                  m={m}
+                  expanded={expandedId === m.id}
+                  onToggle={() => toggle(m.id)}
+                  detail={expandedId === m.id ? (details[m.id] ?? undefined) : undefined}
+                  facts={modelFacts.current}
+                />
               ))}
-            </DataTable>
+            </div>
             {rows.length === 0 && <p className="muted">该状态下没有模型。</p>}
           </Section>
         )}
       </AsyncView>
     </PageFrame>
+  )
+}
+
+// 单行模型卡片 + （展开时）横向候选芯片条。
+function ModelRow({
+  m,
+  expanded,
+  onToggle,
+  detail,
+  facts
+}: {
+  m: AdminAbstractModel
+  expanded: boolean
+  onToggle: () => void
+  detail: ExpDetail | undefined
+  facts: Map<string, AdminModelSourceModel>
+}) {
+  const editTo = `/admin/abstract-models/${encodeURIComponent(m.id)}`
+  const candTo = `${editTo}/candidates`
+
+  return (
+    <div className="am-row" data-expanded={expanded}>
+      <div className="am-row-head" onClick={onToggle}>
+        <span className="am-row-main">
+          <Link to={editTo} onClick={(e) => e.stopPropagation()}><code>{m.name}</code></Link>
+        </span>
+        <span className="am-row-display">{m.display_name}</span>
+        <span className="am-row-cell"><StatusBadge status={m.status} label={statusLabel(m.status)} /></span>
+        <span className="am-row-cell">
+          <Badge tone={m.available_candidate_count === 0 ? 'warn' : 'muted'}>
+            {m.candidate_count} / {m.available_candidate_count}
+          </Badge>
+        </span>
+        <span className="am-row-cell am-row-mode">
+          {m.capability_mode === 'strict' ? '严格' : '过滤'}
+        </span>
+        <span className="am-row-chain">{(m.strategy ?? []).join(' → ') || '—'}</span>
+        <span className="am-row-ops" onClick={(e) => e.stopPropagation()}>
+          <Link to={candTo}>候选集</Link>
+          <Link to={`${editTo}/deprecation`}>弃用</Link>
+          <button type="button" className="am-expand" data-open={expanded} onClick={onToggle} aria-expanded={expanded} aria-label={expanded ? '收起候选' : '展开候选'}>
+            <IconChevronDown size="sm" />
+          </button>
+        </span>
+      </div>
+      {expanded && (
+        <div className="am-expand-body">
+          {detail === undefined && <div className="am-explain">展开候选…</div>}
+          {detail?.state === 'loading' && <div className="am-loading"><LoadingBlock rows={1} /></div>}
+          {detail?.state === 'error' && <div className="am-error muted">候选加载失败，请重试。</div>}
+          {detail?.state === 'ready' && (
+            <div className="am-chip-row">
+              {detail.candidates.length === 0 ? (
+                <span className="muted am-empty">尚未配置候选。</span>
+              ) : (
+                detail.candidates.map((c) => {
+                  const fact = facts.get(c.real_model_id)
+                  const name = fact?.display_name ?? c.real_model_id
+                  const supported = c.available_instances !== 0 && c.available_instances !== undefined
+                  return (
+                    <Link key={c.real_model_id} to={candTo} className="am-chip">
+                      <span className="am-chip-name">{name}</span>
+                      {supported && <IconCheck size="xs" />}
+                    </Link>
+                  )
+                })
+              )}
+              <Link to={candTo} className="am-add-chip">
+                <IconPlus size="xs" /> 添加模型
+              </Link>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
