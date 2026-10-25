@@ -119,6 +119,8 @@ func sourceKeys() []string {
 		"id", "kind", "name", "upstream_name", "provider_id", "region", "website",
 		"api_doc", "base_url", "enabled", "contributed", "credential_count",
 		"model_count", "protocols", "available_instances", "last_seen_at", "models",
+		// credentials（凭据池改版 2026-10-26）：每个来源内嵌凭据行，右栏凭据列直接用。
+		"credentials",
 	}
 }
 
@@ -154,6 +156,12 @@ func sourcesFixture() ([]AdminModelSource, []string) {
 			CredentialCount: 1, ModelCount: 1,
 			Protocols: []string{"openai", "anthropic"}, AvailableInstances: &one,
 			LastSeenAt: &seen,
+			// 凭据池改版（pool-merge 契约 §1.2）：up_1 带一条凭据，
+			// up_2/up_3 故意不给（nil）——出站必须规范化成 []。
+			Credentials: []AdminSourceCredential{{
+				ID: "cred_1", Provider: "api:deepseek-com", ExternalLabel: "贡献凭据",
+				Status: "active", VerifyStatus: "unverified", CreatedAt: &seen,
+			}},
 			Models: []AdminModelSourceModel{{
 				RealModelID: "rm_1", UpstreamModelID: "deepseek-flash",
 				DisplayName: "DeepSeek-V4.1-Flash", Channel: &chanOfficial,
@@ -230,6 +238,26 @@ func TestContractModelSourcesWireShape(t *testing.T) {
 		t.Fatalf("模型协议事实应继承来源，得 %v", got)
 	}
 
+	// 凭据池改版（pool-merge 契约 §1.2）：来源内嵌的凭据行字段逐个落位。
+	c0 := asObjects(t, "source.credentials", deepseek["credentials"])
+	if len(c0) != 1 {
+		t.Fatalf("up_1 应有 1 条内嵌凭据，得 %d", len(c0))
+	}
+	assertKeys(t, "credential", c0[0], "id", "provider", "external_label", "status", "verify_status", "created_at", "last_used_at")
+	if c0[0]["id"] != "cred_1" || c0[0]["provider"] != "api:deepseek-com" || c0[0]["status"] != "active" {
+		t.Fatalf("凭据行字段不符：%v", c0[0])
+	}
+	if c0[0]["created_at"] != float64(1761350400) {
+		t.Fatalf("created_at 应是 epoch 秒，得 %v", c0[0]["created_at"])
+	}
+	if v, present := c0[0]["last_used_at"]; !present || v != nil {
+		t.Fatalf("last_used_at 未用过应是 null，得 %v（present=%v）", v, present)
+	}
+	// 没给凭据的来源（up_2/up_3）必须是 [] 而不是 null：同一个「没有」在全站
+	// 只有一种 JSON 形状，前端才能只写一个空态分支。
+	if got := asObjects(t, "relay.credentials", srcs[1]["credentials"]); len(got) != 0 {
+		t.Fatalf("relay 的 credentials 应是 []，得 %v", got)
+	}
 	// ② relay：available_instances 必须是 null——"数量由 sidecar 账号池决定"这件事
 	// 在线上只有 null 能表达；压成 0 会让界面显示「无凭据」，正是这次要修的故障。
 	relay := srcs[1]

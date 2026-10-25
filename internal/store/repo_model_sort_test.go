@@ -179,3 +179,80 @@ func TestContractCandidateWeightIsRetired(t *testing.T) {
 		t.Fatalf("权重已退役，读出应恒为 0，实得 %d", got[0].Weight)
 	}
 }
+
+// TestContractOverrideRowKeepsHumanFields 钉住 UpsertRealModel 的字段级
+// 覆盖规则（01-catalog.md §3.2/§3.3：保护人工字段，不冻整行）。
+//
+// 旧实现的 ON CONFLICT 带 WHERE source='auto'——整行冻结。两个后果：
+// ① 上游后来新增的模态/档位永远同步不进被人工改过的行（能力过期 → 白丢
+//
+//	可用候选）；② 手工登记行在目录重新出现后永远停在 missing。
+//
+// 新实现按字段类分流：上游权威字段恒更新，人工字段只在
+// 「存量是 auto」或「本次入参是人工写」时更新。
+func TestContractOverrideRowKeepsHumanFields(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	models := s.Repos().Models
+	up := aggregateTestUpstream(t, s)
+
+	// 管理员手工登记：显示名自定义、上下文自定义。
+	id, err := models.UpsertRealModel(ctx, RealModel{
+		UpstreamID: up, UpstreamModelID: "m-x", DisplayName: "我的叫法",
+		ContextWindow: ptr64(999999), Source: "override",
+	})
+	if err != nil {
+		t.Fatalf("登记失败: %v", err)
+	}
+
+	// 一轮"刷新"（auto 入参）：人工字段保留，权威字段更新。
+	if _, err := models.UpsertRealModel(ctx, RealModel{
+		UpstreamID: up, UpstreamModelID: "m-x", DisplayName: "catalog-name",
+		ContextWindow: ptr64(1), Modalities: ptrStr(`["text","image"]`),
+		Status: RealModelActive, Source: "auto",
+	}); err != nil {
+		t.Fatalf("刷新 upsert 失败: %v", err)
+	}
+	got, err := models.GetRealModel(ctx, id)
+	if err != nil {
+		t.Fatalf("读失败: %v", err)
+	}
+	if got.DisplayName != "我的叫法" {
+		t.Fatalf("override 行的显示名应被人工保留，得 %q", got.DisplayName)
+	}
+	if got.ContextWindow == nil || *got.ContextWindow != 999999 {
+		t.Fatalf("override 行的上下文应被人工保留，得 %v", got.ContextWindow)
+	}
+	if got.Modalities == nil || *got.Modalities != `["text","image"]` {
+		t.Fatalf("模态是上游权威字段，刷新必须同步进来，得 %v", strOf(got.Modalities))
+	}
+	if got.Source != "override" {
+		t.Fatalf("auto 刷新不得降级 override 标记，得 %q", got.Source)
+	}
+
+	// 管理员再改（PATCH 的读-改-写：override 入参）：人工字段可更新。
+	if _, err := models.UpsertRealModel(ctx, RealModel{
+		UpstreamID: up, UpstreamModelID: "m-x", DisplayName: "改过的叫法",
+		ContextWindow: ptr64(888888), Modalities: ptrStr(`["text","image"]`),
+		Status: RealModelActive, Source: "override",
+	}); err != nil {
+		t.Fatalf("二次人工写失败: %v", err)
+	}
+	got2, err := models.GetRealModel(ctx, id)
+	if err != nil {
+		t.Fatalf("读失败: %v", err)
+	}
+	if got2.DisplayName != "改过的叫法" {
+		t.Fatalf("人工写（override 入参）必须能改 override 行的人工字段，得 %q", got2.DisplayName)
+	}
+}
+
+// ptr64 / ptrStr：可空列的测试指针小工具。
+func ptr64(v int64) *int64    { return &v }
+func ptrStr(v string) *string { return &v }
+func strOf(v *string) string {
+	if v == nil {
+		return "<nil>"
+	}
+	return *v
+}

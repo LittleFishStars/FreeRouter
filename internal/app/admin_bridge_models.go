@@ -31,6 +31,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -802,11 +803,49 @@ func (mb *modelsBridge) ListModelSources(ctx context.Context) ([]httpapi.AdminMo
 	}
 	sort.Strings(channels)
 
+	// 凭据全行（凭据池右栏用）：一次读全表按上游分组，避免 N 次查询。
+	// 与上面 creds 的聚合同一条边，两份读面的「属于哪个上游」答案必须一致。
+	credRows, err := mb.b.repos.Models.ListUpstreamCredentialRows(ctx)
+	if err != nil {
+		return nil, nil, mapStoreErr(err)
+	}
+
 	out := make([]httpapi.AdminModelSource, 0, len(ups))
 	for _, u := range ups {
-		out = append(out, modelSourceOf(u, creds[u.ID], byUpstream[u.ID]))
+		src := modelSourceOf(u, creds[u.ID], byUpstream[u.ID])
+		src.Credentials = sourceCredentialsOf(u.ID, credRows[u.ID])
+		out = append(out, src)
 	}
 	return out, channels, nil
+}
+
+// sourceCredentialsOf 把凭据全行翻成来源内嵌的 DTO 切片。
+//
+// 为什么恒给空切片：前端对「没有凭据」渲染空态，对 null 渲染错误——
+// 同一个语义两种 JSON 形状会让前端多一个分支，而 null 在这里没有额外含义
+// （「未知」不成立：查询失败时整条请求已经 500 了）。
+func sourceCredentialsOf(upstreamID int64, rows []store.UpstreamCredentialRow) []httpapi.AdminSourceCredential {
+	out := make([]httpapi.AdminSourceCredential, 0, len(rows))
+	for i := range rows {
+		r := &rows[i]
+		item := httpapi.AdminSourceCredential{
+			ID:            encodeID(idcode.Credential, r.ID),
+			Provider:      r.Provider,
+			ExternalLabel: r.ExternalLabel,
+			Status:        r.Status,
+			VerifyStatus:  r.VerifyStatus,
+		}
+		if r.CreatedAt > 0 {
+			ts := r.CreatedAt
+			item.CreatedAt = &ts
+		}
+		if r.LastUsedAt > 0 {
+			ts := r.LastUsedAt
+			item.LastUsedAt = &ts
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 // modelSourceOf 把一个上游行 + 它的凭据聚合 + 它的真实模型行翻成契约 §1.1 的来源。
@@ -879,6 +918,78 @@ func providerIDOf(provider string) string {
 		return ""
 	}
 	return strings.TrimPrefix(provider, apiPrefix)
+}
+
+// CreateRealModel 实现 httpapi.AdminRealModelCreator（手工登记模型）。
+//
+// 落库走既有 UpsertRealModel + source=override：这条来源标记让刷新器的
+// ON CONFLICT「只在 source='auto' 行上覆盖」保护生效——管理员手工登记的
+// 显示名/上下文不会被下一轮自动目录擦掉（01-catalog.md §3.3 的字段级
+// 保护语义）。
+//
+// 幂等：先按上游列一次行、比对 upstream_model_id，命中就返回既有行 +
+// created=false。为什么不在 Upsert 之后用 RowsAffected 判新建：upsert 的
+// DO UPDATE 分支对 override 行**静默跳过**（WHERE 挡住），RowsAffected 给 0
+// 既可能是"命中既有 override 行"也可能是"命中 auto 行并更新了"——拿它判
+// created 会把后者误报成未创建。显式先查一次，两条路径的语义都干净。
+//
+// 上游行不存在 → ErrAdminUpstreamNotFound（对外 404）：存在性校验只有桥
+// 拿得到仓储，handler 的 idcode 形状校验拦的是"连形状都不对"。
+func (mb *modelsBridge) CreateRealModel(ctx context.Context, upstreamID int64, upstreamModelID, displayName string, contextWindow *int64, audit httpapi.AdminAuditEntry) (*httpapi.AdminRealModel, bool, string, error) {
+	if _, err := mb.b.repos.Models.GetUpstreamByID(ctx, upstreamID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, false, "", httpapi.ErrAdminUpstreamNotFound
+		}
+		return nil, false, "", mapStoreErr(err)
+	}
+	if displayName == "" {
+		displayName = upstreamModelID
+	}
+	var out *httpapi.AdminRealModel
+	var created bool
+	var auditID string
+	err := mb.b.st.WithTx(ctx, func(tx *store.Repos) error {
+		// 命中既有行（无论 auto/override）：幂等返回，不写审计——什么都没变。
+		// 接管一条 auto 行走 PATCH（有字段可改、值得留痕），这里只做
+		// "有则返回、无则登记"：重放同一请求必须同结果。
+		rows, err := tx.Models.ListRealModelsByUpstream(ctx, upstreamID)
+		if err != nil {
+			return err
+		}
+		for i := range rows {
+			if rows[i].UpstreamModelID == upstreamModelID {
+				out = realModelToAdmin(&rows[i])
+				return nil
+			}
+		}
+		id, err := tx.Models.UpsertRealModel(ctx, store.RealModel{
+			UpstreamID:      upstreamID,
+			UpstreamModelID: upstreamModelID,
+			DisplayName:     displayName,
+			ContextWindow:   contextWindow,
+			Status:          store.RealModelActive,
+			Source:          "override",
+		})
+		if err != nil {
+			return err
+		}
+		fresh, err := tx.Models.GetRealModel(ctx, id)
+		if err != nil {
+			return err
+		}
+		aid, aerr := appendAudit(ctx, tx.Logs, audit)
+		if aerr != nil {
+			return aerr
+		}
+		auditID = aid
+		out = realModelToAdmin(fresh)
+		created = true
+		return nil
+	})
+	if err != nil {
+		return nil, false, "", mapStoreErr(err)
+	}
+	return out, created, auditID, nil
 }
 
 // jsonStringList 解析 real_models 的 JSON 数组原文（modalities / efforts）。

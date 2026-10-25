@@ -472,14 +472,17 @@ func (a *App) buildAdminDeps() *httpapi.AdminDeps {
 	// Models / Sources 是同一个桥的两个窄接口视角（modelsBridge 无状态，只持有
 	// adminBridge）：同一个实现挂两个字段，胜过再造一个只有转发作用的类型。
 	return &httpapi.AdminDeps{
-		Sess:          authDeps.sess,
-		Hasher:        auth.NewPasswordHasher(a.cfg.Security.PasswordMinLength),
-		Accounts:      &accountsBridge{b: b},
-		Groups:        &groupsBridge{b: b},
-		Keys:          &keysCountBridge{b: b},
-		Credentials:   &credentialsBridge{b: b},
-		Models:        &modelsBridge{b: b},
-		Sources:       &modelsBridge{b: b},
+		Sess:        authDeps.sess,
+		Hasher:      auth.NewPasswordHasher(a.cfg.Security.PasswordMinLength),
+		Accounts:    &accountsBridge{b: b},
+		Groups:      &groupsBridge{b: b},
+		Keys:        &keysCountBridge{b: b},
+		Credentials: &credentialsBridge{b: b},
+		Models:      &modelsBridge{b: b},
+		Sources:     &modelsBridge{b: b},
+		// ModelCreate 与 Models/Sources 同源（modelsBridge 无状态）：
+		// 手工登记模型要读上游行、写 real_models 并落审计，全在模型域。
+		ModelCreate:   &modelsBridge{b: b},
 		Upstreams:     &upstreamsBridge{b: b},
 		Verifications: &verificationsBridge{b: b},
 		Audit:         &auditBridge{b: b},

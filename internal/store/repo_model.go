@@ -458,23 +458,44 @@ func (r *ModelRepo) UpsertRealModel(ctx context.Context, m RealModel) (int64, er
 		                         last_seen_at, missing_since)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(upstream_id, upstream_model_id) DO UPDATE SET
-		     display_name   = excluded.display_name,
-		     group_name     = excluded.group_name,
-		     -- channel 是上游事实（不是人工展示字段），随刷新写回；人工解除排除
-		     -- 走 source=override，被下面的 WHERE 挡住，两件事不冲突。
-		     channel        = excluded.channel,
-		     context_window = excluded.context_window,
+		     -- ── 上游权威字段（01-catalog.md §3.2「永远随刷新更新」）──
+		     -- 旧实现用 WHERE real_models.source='auto' 冻结**整行**，与 §3.3
+		     -- 「保护的必须是人工字段，不是整行」直接冲突，造成两类真实故障：
+		     -- ① 手工登记行（override）在目录重新出现后永远停在 missing——
+		     --   status 是上游事实，冻住它等于否认"它回来了"（巡检标 missing
+		     --   的逆过程被卡死）；
+		     -- ② 人工改过一次显示名之后，上游新增的模态/档位永远同步不进来，
+		     --   过滤阶段按过期能力剔除本来可用的候选（§3.3 的原论证）。
+		     -- channel 只在入参非 NULL 时覆盖：一次上游抖动（拿不到渠道）
+		     -- 不该擦掉权威值（§2.3 的映射纪律）。
+		     channel        = CASE WHEN excluded.channel IS NOT NULL
+			                      THEN excluded.channel ELSE real_models.channel END,
 		     modalities     = excluded.modalities,
 		     efforts        = excluded.efforts,
 		     status         = excluded.status,
-		     -- excluded_from_candidates 同样随刷新写回：它是渠道事实而非人工
-		     -- 展示字段。少了这一句，本函数上线前已落库的 aggregate 行会永远
-		     -- 停在 0 上；人工解除排除走 source=override，被下面的 WHERE 挡住，
-		     -- 两件事不冲突。
-		     excluded_from_candidates = excluded.excluded_from_candidates,
 		     last_seen_at   = excluded.last_seen_at,
-		     missing_since  = NULL
-		   WHERE real_models.source = 'auto'`,
+		     -- missing_since 只在"回来了"（status 不再是 missing）时清空；
+		     -- 仍 missing 时保留首次标记时间（COALESCE 语义与 MarkMissing 同源）。
+		     missing_since  = CASE WHEN excluded.status = 'missing'
+			                      THEN COALESCE(real_models.missing_since, excluded.missing_since)
+			                      ELSE NULL END,
+		     -- ── 人工字段与人工决定 ──
+		     -- 写回条件：存量行还是 auto（catalog 值照常覆盖），**或**本次入参
+		     -- 本身就是人工写（source=override——PATCH 是读-改-写，必须能改
+		     -- override 行的人工字段；刷新器恒传 auto，碰不到这一支）。
+		     -- excluded_from_candidates 同规则：管理员的显式解除（override）
+		     -- 不被刷新的渠道前缀逻辑覆盖（repo_model_aggregate_test 钉住）。
+		     display_name   = CASE WHEN real_models.source = 'auto' OR excluded.source = 'override' THEN excluded.display_name   ELSE real_models.display_name   END,
+		     group_name     = CASE WHEN real_models.source = 'auto' OR excluded.source = 'override' THEN excluded.group_name     ELSE real_models.group_name     END,
+		     context_window = CASE WHEN real_models.source = 'auto' OR excluded.source = 'override' THEN excluded.context_window ELSE real_models.context_window END,
+		     hidden         = CASE WHEN real_models.source = 'auto' OR excluded.source = 'override' THEN excluded.hidden         ELSE real_models.hidden         END,
+		     sort_order     = CASE WHEN real_models.source = 'auto' OR excluded.source = 'override' THEN excluded.sort_order     ELSE real_models.sort_order     END,
+		     excluded_from_candidates = CASE WHEN real_models.source = 'auto' OR excluded.source = 'override' THEN excluded.excluded_from_candidates ELSE real_models.excluded_from_candidates END,
+		     -- source 由人工写翻成 override（§3.2 的行级标记语义）。旧实现的
+		     -- SET 里没有 source——桥注释一直声称"人工改写后 source 翻
+		     -- override"，实际从未落库；这里把它兑现。刷新（auto 入参）不
+		     -- 降级 override 标记。
+		     source         = CASE WHEN excluded.source = 'override' THEN 'override' ELSE real_models.source END`,
 		m.UpstreamID, m.UpstreamModelID, m.DisplayName, m.GroupName, channel,
 		m.ContextWindow, m.Modalities, m.Efforts, string(status),
 		boolInt(m.Hidden), boolInt(excluded), m.SortOrder, source,
@@ -777,6 +798,55 @@ func (r *ModelRepo) ListUpstreamCredentials(ctx context.Context) (map[int64]Upst
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: 遍历上游凭据聚合失败: %w", err)
+	}
+	return out, nil
+}
+
+// UpstreamCredentialRow 是一条贡献凭据的全行读面（凭据池右栏用，
+// 与 UpstreamCredentialSummary 的区别：它要的是每一条而不是聚合计数）。
+type UpstreamCredentialRow struct {
+	ID             int64
+	OwnerAccountID int64
+	Provider       string
+	ExternalLabel  string
+	Status         string
+	VerifyStatus   string
+	CreatedAt      int64
+	LastUsedAt     int64 // 0 = 从未用过
+}
+
+// ListUpstreamCredentialRows 按上游列出全部凭据行（不筛状态——管理页
+// 要看全貌）。键是 upstreams.id，值按 created_at 升序、id 升序决胜。
+//
+// 关联边与 ListUpstreamCredentials 相同（secret_ref → upstream_secrets.id
+// → upstream_id，全库唯一一条凭据↔上游的边）：这条边上的行才属于该上游。
+// secret_ref 非数字的行（自定义流程/历史数据）CAST 得 0，join 落空不返回，
+// 与聚合口径一致——两份读面对「哪些凭据属于哪个上游」必须给出同一个答案，
+// 否则凭据池右栏和可用实例数会互相矛盾。
+func (r *ModelRepo) ListUpstreamCredentialRows(ctx context.Context) (map[int64][]UpstreamCredentialRow, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT s.upstream_id, c.id, c.owner_account_id, c.provider, COALESCE(c.external_label, ''),
+		        c.status, c.verify_status, c.created_at, COALESCE(c.last_used_at, 0)
+		   FROM upstream_credentials c
+		   JOIN upstream_secrets s ON s.id = CAST(c.secret_ref AS INTEGER)
+		  ORDER BY c.created_at, c.id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列出上游凭据行失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[int64][]UpstreamCredentialRow)
+	for rows.Next() {
+		var row UpstreamCredentialRow
+		var upstreamID int64
+		if err := rows.Scan(&upstreamID, &row.ID, &row.OwnerAccountID, &row.Provider, &row.ExternalLabel,
+			&row.Status, &row.VerifyStatus, &row.CreatedAt, &row.LastUsedAt); err != nil {
+			return nil, fmt.Errorf("store: 扫描上游凭据行失败: %w", err)
+		}
+		out[upstreamID] = append(out[upstreamID], row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历上游凭据行失败: %w", err)
 	}
 	return out, nil
 }

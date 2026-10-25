@@ -82,6 +82,9 @@ type AdminDeps struct {
 
 	// Refresh 是真实模型目录刷新触发器（POST /real-models/refresh）。
 	Refresh AdminModelRefresher
+	// ModelCreate 是手工登记真实模型（POST /real-models，凭据池改版 2026-10-26
+	// 的「添加模型」）。可空：nil = 该能力未装配，端点按既有惯例 404 not_found。
+	ModelCreate AdminRealModelCreator
 	// UpstreamTest 是上游连通性测试（POST /upstreams/{id}/test）。
 	UpstreamTest AdminUpstreamTester
 	// SettingsView 提供 GET /settings 的分组视图。
@@ -595,6 +598,20 @@ type AdminModelStore interface {
 	CapabilitySnapshot(ctx context.Context) (map[string]json.RawMessage, error)
 }
 
+// AdminRealModelCreator 是手工登记真实模型（POST /real-models，凭据池
+// 改版 2026-10-26 的「添加模型」弹窗）。
+//
+// 为什么是独立窄接口而不是塞进 AdminModelStore：那是全量读写的大接口，
+// 而「手工落一条模型」只需要一个动作；挂在 AdminDeps 上的可选能力越窄，
+// 装配缺失时的 404 语义越精确（deps.need 判的是这个动作有没有人接，
+// 不是「模型功能整体在不在」）。
+type AdminRealModelCreator interface {
+	// CreateRealModel 落库一条手工模型；upstreamID 已由 handler 解码校验。
+	// upstream_model_id 在该上游下已存在时返回既有行 + false（幂等语义，
+	// handler 回 200），新建返回 true。写审计由桥完成（动作 model.manual_add）。
+	CreateRealModel(ctx context.Context, upstreamID int64, upstreamModelID, displayName string, contextWindow *int64, audit AdminAuditEntry) (*AdminRealModel, bool, string, error)
+}
+
 // AdminModelRefresher 是目录刷新触发（POST /real-models/refresh）。
 //
 // 为什么是窄触发器而不是把 upstream.refresh 搬进 httpapi：刷新归
@@ -641,6 +658,26 @@ type AdminModelSource struct {
 	// RFC3339，而本契约明写 epoch 秒——多一层渲染只会让前端拿到两种时间单位。
 	LastSeenAt *int64                  `json:"last_seen_at"`
 	Models     []AdminModelSourceModel `json:"models"`
+	// Credentials 是该上游下的全部凭据行（凭据池改版 2026-10-26）：右栏凭据列
+	// 直接用，前端不再拿 provider 自己去 /credentials 里筛——筛选键（api:<id>
+	// 还是剥前缀后的 id）曾经是两套口径，收在服务端一处后界面不再有第二次
+	// 解释机会。不筛状态：管理页要看全貌（暂停/失效的凭据也是事实）。
+	Credentials []AdminSourceCredential `json:"credentials"`
+}
+
+// AdminSourceCredential 是来源行内嵌的凭据摘要。
+//
+// 字段与 AdminCredential 一致但不带 verify_detail（详情页才有；列表里
+// 那是几百字节的 JSON，几十行凭据叠在一起毫无阅读价值）。时间用 epoch 秒：
+// 与 AdminModelSource.LastSeenAt 同一口径（契约钉过 epoch 秒）。
+type AdminSourceCredential struct {
+	ID            string `json:"id"`
+	Provider      string `json:"provider"`
+	ExternalLabel string `json:"external_label,omitempty"`
+	Status        string `json:"status"`
+	VerifyStatus  string `json:"verify_status"`
+	CreatedAt     *int64 `json:"created_at"`
+	LastUsedAt    *int64 `json:"last_used_at"`
 }
 
 // AdminModelSourceModel 是右栏的一张模型卡。

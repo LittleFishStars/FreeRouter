@@ -53,6 +53,7 @@ func (s *Server) mountAdminModels(r chi.Router, deps *AdminDeps) {
 	r.Get("/model-sources", s.handleAdminModelSources(deps))
 
 	r.Get("/real-models", s.handleAdminRealModelsList(deps))
+	r.Post("/real-models", s.handleAdminRealModelCreate(deps))
 	r.Post("/real-models/refresh", s.handleAdminRealModelsRefresh(deps))
 	r.Get("/real-models/{id}", s.handleAdminRealModelDetail(deps))
 	r.Patch("/real-models/{id}", s.handleAdminRealModelPatch(deps))
@@ -173,6 +174,79 @@ func (s *Server) handleAdminRealModelsRefresh(deps *AdminDeps) http.HandlerFunc 
 			return
 		}
 		adminWriteOK(w, http.StatusOK, res, "")
+	}
+}
+
+// handleAdminRealModelCreate POST /api/admin/real-models——手工登记模型
+// （凭据池改版 2026-10-26，tmp/pool-merge-contract.md §1.3）。
+//
+// 用途：目录自动发现（/v1/models）拿不到、但确实存在的模型，管理员手工
+// 落一条 real_models 行（source=override，字段级刷新保护由此生效）。
+//
+// 校验全部在这一层（§1.3 表）：桥只负责落库与审计。幂等语义：同上游下
+// upstream_model_id 已存在时返回既有行（created=false，HTTP 200），
+// 弹窗重复提交不产生第二行也不报错——「已登记」就是它想要的结果。
+func (s *Server) handleAdminRealModelCreate(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "模型登记", deps.ModelCreate != nil) {
+			return
+		}
+		p, ok := adminActor(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			UpstreamID      string `json:"upstream_id"`
+			UpstreamModelID string `json:"upstream_model_id"`
+			DisplayName     string `json:"display_name"`
+			// ContextWindow 用指针区分「没给」与「给了 0」：0 是非法值，
+			// 而缺省是合法（未知上下文，能力匹配按不设限处理）。
+			ContextWindow *int64 `json:"context_window"`
+		}
+		if _, ok := adminDecodeBoth(w, r, &body); !ok {
+			return
+		}
+		upNum, err := idcode.Decode(idcode.Upstream, body.UpstreamID)
+		if err != nil || body.UpstreamID == "" {
+			adminWriteParamErr(w, "upstream_id", "upstream_id 形状非法（期望 up_<数字>）")
+			return
+		}
+		mid := strings.TrimSpace(body.UpstreamModelID)
+		if mid == "" {
+			adminWriteParamErr(w, "upstream_model_id", "upstream_model_id 不得为空")
+			return
+		}
+		if strings.ContainsAny(mid, " \t\n") {
+			adminWriteParamErr(w, "upstream_model_id", "upstream_model_id 不得含空白字符")
+			return
+		}
+		// aggregate/* 恒不可选（01-catalog §5）：手工通道也不能绕过它——
+		// 绕过等于给「两层策略无法归因」开一个合法入口。
+		if ch, _, ok := strings.Cut(mid, "/"); ok && ch == "aggregate" {
+			adminWriteParamErr(w, "upstream_model_id", "aggregate/* 渠道的模型不可登记为候选来源")
+			return
+		}
+		if body.ContextWindow != nil && *body.ContextWindow <= 0 {
+			adminWriteParamErr(w, "context_window", "context_window 给了就必须大于 0（未知就不传）")
+			return
+		}
+		audit := adminBaseAudit(p, r, "model.manual_add", "upstream:"+body.UpstreamID, "ok")
+		row, created, auditID, err := deps.ModelCreate.CreateRealModel(
+			r.Context(), upNum, mid, strings.TrimSpace(body.DisplayName), body.ContextWindow, audit)
+		if err != nil {
+			mapAdminError(w, err, "真实模型")
+			return
+		}
+		// 新建 201、命中既有 200（幂等）；created 同时进响应供前端区分提示。
+		status := http.StatusOK
+		if created {
+			status = http.StatusCreated
+		}
+		// adminWriteOK 自带 data 信封，这里给信封里的载荷本体。
+		adminWriteOK(w, status, map[string]any{
+			"model":   renderAdminRealModel(row),
+			"created": created,
+		}, auditID)
 	}
 }
 
@@ -1070,6 +1144,9 @@ func normalizeModelSources(rows []AdminModelSource) []AdminModelSource {
 	for i := range rows {
 		if rows[i].Protocols == nil {
 			rows[i].Protocols = []string{}
+		}
+		if rows[i].Credentials == nil {
+			rows[i].Credentials = []AdminSourceCredential{}
 		}
 		if rows[i].Models == nil {
 			rows[i].Models = []AdminModelSourceModel{}
