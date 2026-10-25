@@ -8,6 +8,7 @@
 //   - 合并可回滚（7 天），但回滚只拆回类与资源归属，不回滚已产生的用量与审计。
 
 import { useEffect, useMemo, useState } from 'react'
+import { IconBack } from '../../icons'
 import { Link, useParams } from 'react-router-dom'
 import {
   createAccount,
@@ -25,6 +26,8 @@ import {
 } from '../../api/endpoints'
 import type { AdminAccount, AdminAccountUpdate, AdminGroup, AdminQuota } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
+import { ACTION_ICON, ToolButton } from '../../components/IconButtons'
+import { IconDownload, IconRefresh, IconUpload } from '../../icons'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import OneTimeSecret from '../../components/OneTimeSecret'
 import {
@@ -101,10 +104,17 @@ export function AccountsPage({ def }: PageProps) {
       def={def}
       actions={
         <span className="inline-links">
-          <button type="button" className="btn-ghost" onClick={exportCsv} disabled={rows.length === 0}>
+          <ToolButton
+            icon={<IconDownload size={ACTION_ICON} />}
+            onClick={exportCsv}
+            disabled={rows.length === 0}
+          >
             导出当前结果 CSV
-          </button>
-          <Link to="/admin/accounts/import">导入账户</Link>
+          </ToolButton>
+          <Link to="/admin/accounts/import" className="icon-link">
+            <IconUpload size={ACTION_ICON} />
+            导入账户
+          </Link>
         </span>
       }
     >
@@ -141,7 +151,7 @@ export function AccountsPage({ def }: PageProps) {
             placeholder="显示名 / 用户名 / ID"
           />
         </label>
-        <button type="button" className="btn-ghost" onClick={q.reload}>刷新</button>
+        <ToolButton icon={<IconRefresh size={ACTION_ICON} />} onClick={q.reload}>刷新</ToolButton>
       </div>
 
       <AsyncView
@@ -398,8 +408,8 @@ export function AccountDetailPage({ def }: PageProps) {
       def={def}
       actions={
         <span className="inline-links">
-          <Link to="/admin/accounts">返回列表</Link>
-          <button type="button" className="btn-ghost" onClick={q.reload}>刷新</button>
+          <Link to="/admin/accounts" className="icon-link"><IconBack size={ACTION_ICON} />返回列表</Link>
+          <ToolButton icon={<IconRefresh size={ACTION_ICON} />} onClick={q.reload}>刷新</ToolButton>
         </span>
       }
     >
@@ -730,7 +740,7 @@ export function ImportAccountsPage({ def }: PageProps) {
   }
 
   return (
-    <PageFrame def={def} actions={<Link to="/admin/accounts">返回账户列表</Link>}>
+    <PageFrame def={def} actions={<Link to="/admin/accounts" className="icon-link"><IconBack size={ACTION_ICON} />返回账户列表</Link>}>
       <Banner tone="warn" title="导入即生效">
         导入的账户直接是「正常」状态并进入所选组。密码留空会生成随机值，生成的密码只在本页显示一次。
       </Banner>

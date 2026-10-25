@@ -10,8 +10,7 @@
 
 import type { ReactNode } from 'react'
 import { Box, Breadcrumbs, Stack, Typography } from '@mui/material'
-import NavigateNextIcon from '@mui/icons-material/NavigateNext'
-import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
+import { IconChevronRight, IconLock } from '../icons'
 import { breadcrumbTrail, type PageDef } from '../routes'
 
 export interface PageFrameProps {
@@ -28,7 +27,7 @@ export default function PageFrame({ def, actions, children }: PageFrameProps) {
       {crumbs.length > 1 && (
         <Breadcrumbs
           aria-label="面包屑"
-          separator={<NavigateNextIcon sx={{ fontSize: 14 }} />}
+          separator={<IconChevronRight size="xs" />}
           sx={{
             mb: 1.25,
             '& .MuiBreadcrumbs-ol': { flexWrap: 'wrap' },
@@ -66,10 +65,13 @@ export default function PageFrame({ def, actions, children }: PageFrameProps) {
             {def.dangerous && (
               // IA 全站唯一的安全标记：本页存在危险写；提交前必须走统一确认框。
               // 用 MUI 图标而非 emoji——emoji 在各平台渲染不一致（彩色/黑白/缺字）。
-              <LockOutlinedIcon
-                titleAccess="本页含危险写操作，提交前须二次确认"
-                sx={{ fontSize: 17, color: 'text.disabled', fontWeight: 400 }}
-              />
+              <Box
+                component="span"
+                title="本页含危险写操作，提交前须二次确认"
+                sx={{ display: 'inline-flex', color: 'text.disabled', ml: 0.25 }}
+              >
+                <IconLock size="md" />
+              </Box>
             )}
           </Typography>
           {/* 「标题下必须有一句话说明」是全站纪律：缺了这句，运维得点进去才知道这页干什么 */}

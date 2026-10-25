@@ -221,3 +221,11 @@ FreeRouter 的核心用法是把各大厂 Agent 的个人免费额度**共享**�
 ## 许可证
 
 [MIT](LICENSE)
+
+### 第三方资源
+
+| 资源 | 许可证 | 用途 |
+|---|---|---|
+| [Tabler Icons](https://tabler.io/icons)（`@tabler/icons-react`） | **MIT** | 全站图标。风格参数（线性 / 1.75 线宽 / round 端点 / 四个尺寸档）由 `web/src/icons.tsx` 统一收口，见 [docs/ui/06-design.md](docs/ui/06-design.md) 2.4 |
+| Material UI v9 + Emotion | MIT | 控制台组件库 |
+| Tingly Box provider catalog | MPL-2.0 | 仅取事实字段（端点与模型 id）落到 `internal/apidir/catalog.json`，不含其代码 |

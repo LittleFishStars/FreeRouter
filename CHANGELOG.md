@@ -13,6 +13,23 @@
 
 ### 变更
 
+- **界面改用 Tabler 图标，并确立"用图标代替文字"的规则**（2026-10-25）：
+  - 图标库定为 **[Tabler Icons](https://tabler.io/icons) v3（MIT）**，6239 个、
+    纯线性、24 视口、圆头圆角。`@mui/icons-material` **已移除**（同样 MIT，但
+    默认形态是实心填充，与线性图标混在一列里就是"风格不统一"）。
+  - 新增 `web/src/icons.tsx` 作为唯一图标出口：尺寸只允许 `xs14/sm16/md18/lg22`
+    四档、线宽固定 1.75、统一 `aria-hidden`。**顺带修掉一个真 bug**——Tabler 把
+    `size` 直接写进 SVG 的 `width/height`，传语义档字符串会得到 `width="md"`
+    （非法属性 → 按 0 处理 → 图标整片消失），已在 `glyph()` 里换算成像素。
+  - 新增 `web/src/components/IconButtons.tsx`：`TableAction`（26px 纯图标行内按钮，
+    `label` 必填并同时作 tooltip 与 aria-label）、`TableActions`、`ToolButton`。
+  - **表格操作列全部改成纯图标**（详情/编辑/复制/测试/禁用/启用/吊销/删除/
+    改类型/排除候选…），一行可省下约 200px 宽度；工具栏动作改"图标 + 文字"。
+  - **一级导航项全部加图标**（挂在 `PageDef.icon` 上，图标属于 IA 数据）。
+  - `StatusBadge` 的第二重信号从 `✓ ! × ·` 这类 Unicode 字符换成图标：字符在
+    不同平台落到不同字体的不同字重上，四个徽章会看起来粗细不一。
+  - 危险动作只换颜色（`error.main`）不换形状，危险色仍然只承担一个含义。
+
 - **控制台视觉体系重做：用填充画层级，不再到处画框**（2026-10-25，参照
   [FlClash](https://github.com/chen08209/FlClash) 的界面体系）。旧观感的问题是一屏
   几十根线：卡片 1px 描边、表格双层边框、输入框描边、空态虚线、弹层再来一圈，

@@ -37,9 +37,10 @@ import {
   Typography,
   useTheme
 } from '@mui/material'
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import { IconChevronDown } from '../icons'
 import { ApiError, isUnavailable } from '../api/client'
 import { SURFACE } from '../theme'
+import { ALERT_GLYPH, STATUS_GLYPH } from '../icons'
 import { prettyJson } from '../utils/format'
 
 export type Tone = 'ok' | 'warn' | 'err' | 'info' | 'muted'
@@ -60,6 +61,12 @@ const TONE_SEVERITY: Record<Tone, 'success' | 'warning' | 'error' | 'info'> = {
   err: 'error',
   info: 'info',
   muted: 'info'
+}
+
+/** severity → 已统一的线性图标（MUI Alert 的 icon 槽）。 */
+export function AlertGlyph({ severity }: { severity: 'success' | 'warning' | 'error' | 'info' }) {
+  const G = ALERT_GLYPH[severity]
+  return <G size="md" />
 }
 
 export function Badge({ tone = 'muted', children, title }: { tone?: Tone; children: ReactNode; title?: string }) {
@@ -87,14 +94,16 @@ export function StatusBadge({ status, label }: { status: string; label: string }
           : status === 'disabled' || status === 'rejected' || status === 'invalid' || status === 'missing' || status === 'error'
             ? 'err'
             : 'muted'
-  // 图标是第二重信号：色盲用户单靠颜色无法区分四态（设计文档明确要求）。
-  const icon = tone === 'ok' ? '✓' : tone === 'warn' ? '!' : tone === 'err' ? '×' : tone === 'info' ? '·' : '—'
+  // 图标是第二重信号：色盲用户单靠颜色无法区分四态（设计文档第 8 节）。
+  // 用图标而不是 ✓/!/× 这类 Unicode 字符：字符在不同平台落到不同字体的
+  // 不同字重上，四个徽章里的"符号"会看起来粗细不一（这正是风格不统一）。
+  const Glyph = STATUS_GLYPH[tone]
   return (
     <Chip
       label={
         <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
-          <Box component="span" aria-hidden="true" sx={{ fontWeight: 700, opacity: 0.85 }}>
-            {icon}
+          <Box component="span" sx={{ display: 'inline-flex', opacity: 0.85, ml: -0.25 }}>
+            <Glyph size="xs" />
           </Box>
           {label}
         </Box>
@@ -119,7 +128,12 @@ export function Banner({
   children: ReactNode
 }) {
   return (
-    <Alert severity={TONE_SEVERITY[tone]} variant={tone === 'muted' ? 'outlined' : 'standard'}>
+    <Alert
+      severity={TONE_SEVERITY[tone]}
+      variant={tone === 'muted' ? 'outlined' : 'standard'}
+      // 不给 icon 的话 MUI 会塞它自带的实心图标（与全站线性图标两套画法）
+      icon={<AlertGlyph severity={TONE_SEVERITY[tone]} />}
+    >
       {title ? <AlertTitle sx={{ fontWeight: 700, mb: 0.25 }}>{title}</AlertTitle> : null}
       <Box sx={{ '& > :last-child': { mb: 0 } }}>{children}</Box>
     </Alert>
@@ -493,7 +507,7 @@ export function JsonDetails({ summary = '查看原始数据', value }: { summary
       // 折叠面板自带上下边框，与所在 Card 的边框叠在一起会显脏——只留分隔线。
       sx={{ border: 0, '&:before': { display: 'none' }, bgcolor: 'transparent' }}
     >
-      <AccordionSummary expandIcon={<ExpandMoreIcon fontSize="small" />} sx={{ px: 0, minHeight: 40 }}>
+      <AccordionSummary expandIcon={<IconChevronDown size="md" />} sx={{ px: 0, minHeight: 40 }}>
         <Typography variant="body2" color="primary" sx={{ fontWeight: 600 }}>
           {summary}
         </Typography>

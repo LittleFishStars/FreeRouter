@@ -12,6 +12,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { checkSettingsIp, getSettings, patchSettings } from '../../api/endpoints'
 import type { IpCheckResult } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
+import { ACTION_ICON, ToolButton } from '../../components/IconButtons'
+import { IconCheck, IconSearch } from '../../icons'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import {
   AsyncView,
@@ -150,12 +152,21 @@ export default function SettingsPage({ def }: PageProps) {
       def={def}
       actions={
         <span className="inline-links">
-          <button type="button" className="btn-ghost" onClick={() => void checkIp()} disabled={ipBusy}>
-            {ipBusy ? '正在自检…' : '源 IP 自检'}
-          </button>
-          <button type="button" className="btn-primary" onClick={() => setConfirming(true)} disabled={changedKeys.length === 0 || busy}>
+          <ToolButton
+            icon={<IconSearch size={ACTION_ICON} />}
+            busy={ipBusy}
+            onClick={() => void checkIp()}
+          >
+            源 IP 自检
+          </ToolButton>
+          <ToolButton
+            primary
+            icon={<IconCheck size={ACTION_ICON} />}
+            onClick={() => setConfirming(true)}
+            disabled={changedKeys.length === 0 || busy}
+          >
             保存设置
-          </button>
+          </ToolButton>
         </span>
       }
     >

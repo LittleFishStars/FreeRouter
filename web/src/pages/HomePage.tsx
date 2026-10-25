@@ -6,7 +6,7 @@
 
 import { Link } from 'react-router-dom'
 import { Box } from '@mui/material'
-import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
+import { IconLock } from '../icons'
 import { useSession } from '../api/session'
 import { getInboxCount, getUsageOverview, listAccounts, listMyCredentials } from '../api/endpoints'
 import { useApi } from '../hooks/useApi'
@@ -196,7 +196,7 @@ export default function HomePage({ def }: PageProps) {
       <Badge tone="muted">
         <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.4 }}>
           提示：页面上的
-          <LockOutlinedIcon sx={{ fontSize: 12 }} aria-hidden="true" />
+          <IconLock size="xs" />
           表示该路由存在危险写操作
         </Box>
       </Badge>

@@ -24,7 +24,6 @@ import {
   ListItemButton,
   Typography
 } from '@mui/material'
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import {
   cancelOAuthContribution,
   getContributeProviders,
@@ -41,6 +40,8 @@ import type {
   ContributionProviderCategory
 } from '../api/types'
 import { useApi } from '../hooks/useApi'
+import { ACTION_ICON } from '../components/IconButtons'
+import { IconBack } from '../icons'
 import OneTimeSecret from '../components/OneTimeSecret'
 import {
   AsyncView,
@@ -56,6 +57,7 @@ import PageFrame from './PageFrame'
 import type { PageProps } from '../routes'
 import { FREE_NOTICE } from '../utils/contribute'
 import { PLAIN_FIELD_PROPS, SECRET_FIELD_PROPS } from '../utils/formFields'
+import { IconChevronDown } from '../icons'
 
 /** 自定义供应商在右栏列表里的哨兵 id。
  *
@@ -378,7 +380,7 @@ export default function ContributePage({ def }: PageProps) {
                       disableGutters
                       sx={{ mt: 1, border: 0, '&:before': { display: 'none' }, bgcolor: 'transparent' }}
                     >
-                      <AccordionSummary expandIcon={<ExpandMoreIcon fontSize="small" />} sx={{ px: 0, minHeight: 40 }}>
+                      <AccordionSummary expandIcon={<IconChevronDown size="md" />} sx={{ px: 0, minHeight: 40 }}>
                         <Typography variant="body2" sx={{ fontWeight: 600 }}>
                           暂不可用（{unavailable.length}）
                         </Typography>
@@ -928,7 +930,7 @@ export function ContributeOAuthPage({ def }: PageProps) {
           {result.message}
         </Banner>
         <p>
-          <Link to="/contribute">返回贡献入口</Link>
+          <Link to="/contribute" className="icon-link"><IconBack size={ACTION_ICON} />返回贡献入口</Link>
         </p>
       </PageFrame>
     )
@@ -1026,7 +1028,7 @@ export function ContributeOAuthPage({ def }: PageProps) {
         <>
           <ErrorState error={error} />
           <p>
-            <Link to="/contribute">返回贡献入口</Link>
+            <Link to="/contribute" className="icon-link"><IconBack size={ACTION_ICON} />返回贡献入口</Link>
           </p>
         </>
       )}

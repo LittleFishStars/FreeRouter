@@ -8,6 +8,7 @@
 // 都会留下截图/缓存/审计日志的可利用路径，而便利为零。
 
 import { useEffect, useState } from 'react'
+import { IconBack } from '../../icons'
 import { Link, useParams } from 'react-router-dom'
 import {
   banCredential,
@@ -24,6 +25,8 @@ import {
 import type { AdminCredential, AdminUpstream, UpstreamKind } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
 import ConfirmDialog from '../../components/ConfirmDialog'
+import { ACTION_ICON, TableAction, TableActions, ToolButton } from '../../components/IconButtons'
+import { IconEdit, IconPlus, IconPower, IconRefresh, IconTest, IconTune, IconView } from '../../icons'
 import {
   AsyncView,
   Banner,
@@ -140,7 +143,11 @@ export function UpstreamsPage({ def }: PageProps) {
   return (
     <PageFrame
       def={def}
-      actions={<button type="button" className="btn-primary" onClick={() => setCreating((v) => !v)}>{creating ? '收起' : '新建上游'}</button>}
+      actions={
+        <ToolButton primary icon={<IconPlus size={ACTION_ICON} />} onClick={() => setCreating((v) => !v)}>
+          {creating ? '收起' : '新建上游'}
+        </ToolButton>
+      }
     >
       <Banner tone="muted">
         relay 不填地址（sidecar 直连 provider adapter）；vendor 必填官方地址；selfhosted 填自建端点。
@@ -233,16 +240,42 @@ export function UpstreamsPage({ def }: PageProps) {
                   </td>
                   <td>{fmtTime(u.last_seen_at)}</td>
                   <td className="cell-actions">
-                    <button type="button" className="btn-ghost" onClick={() => setEditing(u)}>编辑</button>
-                    <button type="button" className="btn-ghost" onClick={() => void test(u)} disabled={busy}>测试</button>
-                    {u.enabled ? (
-                      <button type="button" className="btn-danger" onClick={() => setDisableTarget(u)}>禁用…</button>
-                    ) : (
-                      <button type="button" className="btn-ghost" onClick={() => void setEnabled(u, true)} disabled={busy}>启用</button>
-                    )}
-                    <button type="button" className="btn-ghost" onClick={() => { setKindTarget(u); setPendingKind(u.kind === 'vendor' ? 'selfhosted' : 'vendor') }}>
-                      改类型…
-                    </button>
+                    <TableActions>
+                      <TableAction
+                        icon={<IconEdit size={ACTION_ICON} />}
+                        label="编辑上游"
+                        onClick={() => setEditing(u)}
+                      />
+                      <TableAction
+                        icon={<IconTest size={ACTION_ICON} />}
+                        label="测试连通性"
+                        busy={busy}
+                        onClick={() => void test(u)}
+                      />
+                      {u.enabled ? (
+                        <TableAction
+                          icon={<IconPower size={ACTION_ICON} />}
+                          label="禁用上游"
+                          tone="danger"
+                          onClick={() => setDisableTarget(u)}
+                        />
+                      ) : (
+                        <TableAction
+                          icon={<IconPower size={ACTION_ICON} />}
+                          label="启用上游"
+                          busy={busy}
+                          onClick={() => void setEnabled(u, true)}
+                        />
+                      )}
+                      <TableAction
+                        icon={<IconTune size={ACTION_ICON} />}
+                        label="改类型（relay / vendor / selfhosted）"
+                        onClick={() => {
+                          setKindTarget(u)
+                          setPendingKind(u.kind === 'vendor' ? 'selfhosted' : 'vendor')
+                        }}
+                      />
+                    </TableActions>
                   </td>
                 </tr>
               ))}
@@ -370,7 +403,7 @@ export function CredentialsPage({ def }: PageProps) {
             <option value="suspect">未通过</option>
           </select>
         </label>
-        <button type="button" className="btn-ghost" onClick={q.reload}>刷新</button>
+        <ToolButton icon={<IconRefresh size={ACTION_ICON} />} onClick={q.reload}>刷新</ToolButton>
       </div>
 
       <AsyncView
@@ -395,7 +428,15 @@ export function CredentialsPage({ def }: PageProps) {
                   <td><StatusBadge status={c.verify_status} label={statusLabel(c.verify_status)} /></td>
                   <td>{fmtTime(c.created_at)}</td>
                   <td>{fmtTime(c.last_used_at)}</td>
-                  <td><Link to={`/admin/credentials/${encodeURIComponent(c.id)}`}>详情</Link></td>
+                  <td className="cell-actions">
+                    <TableActions>
+                      <TableAction
+                        icon={<IconView size={ACTION_ICON} />}
+                        label="凭据详情"
+                        to={`/admin/credentials/${encodeURIComponent(c.id)}`}
+                      />
+                    </TableActions>
+                  </td>
                 </tr>
               ))}
             </DataTable>
@@ -439,7 +480,7 @@ export function CredentialDetailPage({ def }: PageProps) {
   }
 
   return (
-    <PageFrame def={def} actions={<Link to="/admin/credentials">返回凭据池</Link>}>
+    <PageFrame def={def} actions={<Link to="/admin/credentials" className="icon-link"><IconBack size={ACTION_ICON} />返回凭据池</Link>}>
       <FormError error={error} />
       {notice && <Banner tone="ok">{notice}</Banner>}
 

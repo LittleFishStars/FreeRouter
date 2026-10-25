@@ -7,6 +7,7 @@
 // 统一二次确认框。排序策略只有四种 + 链末 round-robin 平局决胜。
 
 import { useEffect, useState } from 'react'
+import { IconBack } from '../../icons'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   createAbstractModel,
@@ -18,6 +19,8 @@ import {
 } from '../../api/endpoints'
 import type { DryRunResult, ModelCapabilities } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
+import { ACTION_ICON, TableAction, TableActions, ToolButton } from '../../components/IconButtons'
+import { IconDelete, IconDown, IconPlus, IconRefresh, IconUp } from '../../icons'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import {
   AsyncView,
@@ -90,7 +93,11 @@ export function AbstractModelsPage({ def }: PageProps) {
   return (
     <PageFrame
       def={def}
-      actions={<button type="button" className="btn-primary" onClick={() => setCreating((v) => !v)}>{creating ? '收起' : '新建抽象模型'}</button>}
+      actions={
+        <ToolButton primary icon={<IconPlus size={ACTION_ICON} />} onClick={() => setCreating((v) => !v)}>
+          {creating ? '收起' : '新建抽象模型'}
+        </ToolButton>
+      }
     >
       <Banner tone="muted">
         抽象模型是对用户暴露的唯一命名空间。列表里同时显示「候选数 / 可用候选数」：
@@ -129,7 +136,7 @@ export function AbstractModelsPage({ def }: PageProps) {
             ))}
           </select>
         </label>
-        <button type="button" className="btn-ghost" onClick={q.reload}>刷新</button>
+        <ToolButton icon={<IconRefresh size={ACTION_ICON} />} onClick={q.reload}>刷新</ToolButton>
       </div>
 
       <AsyncView
@@ -280,7 +287,7 @@ export function AbstractModelDetailPage({ def }: PageProps) {
       def={def}
       actions={
         <span className="inline-links">
-          <Link to="/admin/abstract-models">返回列表</Link>
+          <Link to="/admin/abstract-models" className="icon-link"><IconBack size={ACTION_ICON} />返回列表</Link>
           <Link to={`/admin/abstract-models/${encodeURIComponent(model.id)}/candidates`}>候选集</Link>
           <Link to={`/admin/abstract-models/${encodeURIComponent(model.id)}/deprecation`}>弃用配置</Link>
         </span>
@@ -347,9 +354,27 @@ export function AbstractModelDetailPage({ def }: PageProps) {
           {strategy.map((s, i) => (
             <li key={s}>
               <code>{s}</code>
-              <button type="button" className="btn-ghost" onClick={() => move(i, -1)} disabled={i === 0}>上移</button>
-              <button type="button" className="btn-ghost" onClick={() => move(i, 1)} disabled={i === strategy.length - 1}>下移</button>
-              <button type="button" className="btn-ghost" onClick={() => setStrategy(strategy.filter((_, idx) => idx !== i))}>移除</button>
+              {/* 策略链每行都重复这三个动作：只给图标，名字走 tooltip */}
+              <TableActions>
+                <TableAction
+                  icon={<IconUp size={ACTION_ICON} />}
+                  label="上移"
+                  disabled={i === 0}
+                  onClick={() => move(i, -1)}
+                />
+                <TableAction
+                  icon={<IconDown size={ACTION_ICON} />}
+                  label="下移"
+                  disabled={i === strategy.length - 1}
+                  onClick={() => move(i, 1)}
+                />
+                <TableAction
+                  icon={<IconDelete size={ACTION_ICON} />}
+                  label="从链中移除"
+                  tone="danger"
+                  onClick={() => setStrategy(strategy.filter((_, idx) => idx !== i))}
+                />
+              </TableActions>
             </li>
           ))}
           {strategy.length === 0 && <li className="muted">链为空：使用默认链 [expiry-first, balance]。</li>}

@@ -9,6 +9,7 @@
 // 人工改判必须填理由：它是覆盖自动结论的动作，理由进审计。
 
 import { useState } from 'react'
+import { IconBack } from '../../icons'
 import { Link, useParams } from 'react-router-dom'
 import {
   getVerification,
@@ -20,6 +21,8 @@ import {
 } from '../../api/endpoints'
 import type { AdminVerification, VerificationEvidence } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
+import { ACTION_ICON, TableAction, TableActions, ToolButton } from '../../components/IconButtons'
+import { IconRefresh, IconView } from '../../icons'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import {
   AsyncView,
@@ -73,7 +76,7 @@ export function VerificationsPage({ def }: PageProps) {
           供应商
           <input value={provider} onChange={(e) => setProvider(e.target.value)} placeholder="provider id" />
         </label>
-        <button type="button" className="btn-ghost" onClick={q.reload}>刷新</button>
+        <ToolButton icon={<IconRefresh size={ACTION_ICON} />} onClick={q.reload}>刷新</ToolButton>
       </div>
 
       <AsyncView
@@ -99,7 +102,15 @@ export function VerificationsPage({ def }: PageProps) {
                     <StatusBadge status={v.verdict} label={statusLabel(v.verdict)} />
                   </td>
                   <td>{v.recheck?.enabled ? `复检中（${fmtTime(v.recheck.last_at)}）` : '否'}</td>
-                  <td><Link to={`/admin/verifications/${encodeURIComponent(v.id)}`}>详情</Link></td>
+                  <td className="cell-actions">
+                    <TableActions>
+                      <TableAction
+                        icon={<IconView size={ACTION_ICON} />}
+                        label="鉴定结果"
+                        to={`/admin/verifications/${encodeURIComponent(v.id)}`}
+                      />
+                    </TableActions>
+                  </td>
                 </tr>
               ))}
             </DataTable>
@@ -154,7 +165,7 @@ export function VerificationDetailPage({ def }: PageProps) {
   }
 
   return (
-    <PageFrame def={def} actions={<Link to="/admin/verifications">返回队列</Link>}>
+    <PageFrame def={def} actions={<Link to="/admin/verifications" className="icon-link"><IconBack size={ACTION_ICON} />返回队列</Link>}>
       <FormError error={error} />
       {notice && <Banner tone="ok">{notice}</Banner>}
       {v.verdict === 'unverified' && (

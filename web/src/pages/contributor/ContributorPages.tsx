@@ -8,6 +8,7 @@
 // 遗漏，而是不应存在。
 
 import { useState } from 'react'
+import { IconBack } from '../../icons'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   getContributionStats,
@@ -24,6 +25,8 @@ import type {
   RecoveryCodeState
 } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
+import { ACTION_ICON, TableAction, TableActions } from '../../components/IconButtons'
+import { IconPower, IconView } from '../../icons'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import OneTimeSecret from '../../components/OneTimeSecret'
 import {
@@ -177,10 +180,20 @@ export function MyCredentialsPage({ def }: PageProps) {
                   <td>{fmtTime(c.created_at)}</td>
                   <td>{c.last_called_at ? fmtTime(c.last_called_at) : '未被调用'}</td>
                   <td className="cell-actions">
-                    <Link to={`/contributions/credentials/${encodeURIComponent(c.id)}`}>详情</Link>
-                    <button type="button" className="btn-ghost" onClick={() => void toggle(c)} disabled={busy || c.status === 'invalid'}>
-                      {c.status === 'active' ? '暂停' : '恢复'}
-                    </button>
+                    <TableActions>
+                      <TableAction
+                        icon={<IconView size={ACTION_ICON} />}
+                        label="凭据详情"
+                        to={`/contributions/credentials/${encodeURIComponent(c.id)}`}
+                      />
+                      <TableAction
+                        icon={<IconPower size={ACTION_ICON} />}
+                        label={c.status === 'active' ? '暂停该凭据' : '恢复该凭据'}
+                        busy={busy}
+                        disabled={c.status === 'invalid'}
+                        onClick={() => void toggle(c)}
+                      />
+                    </TableActions>
                   </td>
                 </tr>
               ))}
@@ -241,7 +254,7 @@ export function ContributionCredentialDetailPage({ def }: PageProps) {
   }
 
   return (
-    <PageFrame def={def} actions={<Link to="/contributions/credentials">返回列表</Link>}>
+    <PageFrame def={def} actions={<Link to="/contributions/credentials" className="icon-link"><IconBack size={ACTION_ICON} />返回列表</Link>}>
       <FormError error={error} />
       {notice && <Banner tone="ok">{notice}</Banner>}
       {c.verdict === 'unverified' && (
@@ -458,7 +471,7 @@ export function RecoveryCodePage({ def }: PageProps) {
   const state: RecoveryCodeState | undefined = q.data
 
   return (
-    <PageFrame def={def} actions={<Link to="/contributions">返回我的贡献</Link>}>
+    <PageFrame def={def} actions={<Link to="/contributions" className="icon-link"><IconBack size={ACTION_ICON} />返回我的贡献</Link>}>
       <Banner tone="muted">
         仅纯 API Key 型账户需要恢复码：这类账户没有密码，也没有可识别的上游账号，
         恢复码是唯一能自助回站的路径。OAuth 型账户用任意用过的账号登录即可，不需要恢复码。

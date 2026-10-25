@@ -19,6 +19,8 @@ import {
 } from '../../api/endpoints'
 import type { InboxItem } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
+import { ACTION_ICON, ToolButton } from '../../components/IconButtons'
+import { IconCheck, IconRefresh } from '../../icons'
 import {
   AsyncView,
   Banner,
@@ -117,9 +119,14 @@ export default function InboxPage({ def }: PageProps) {
     <PageFrame
       def={def}
       actions={
-        <button type="button" onClick={markSelectedRead} disabled={busy || selected.length === 0}>
-          {busy ? '正在提交…' : `标记所选已读（${selected.length}）`}
-        </button>
+        <ToolButton
+          icon={<IconCheck size={ACTION_ICON} />}
+          busy={busy}
+          disabled={selected.length === 0}
+          onClick={markSelectedRead}
+        >
+          {`标记所选已读（${selected.length}）`}
+        </ToolButton>
       }
     >
       <Banner tone="muted">
@@ -153,7 +160,7 @@ export default function InboxPage({ def }: PageProps) {
             <option value="read">已读</option>
           </select>
         </label>
-        <button type="button" className="btn-ghost" onClick={q.reload}>刷新</button>
+        <ToolButton icon={<IconRefresh size={ACTION_ICON} />} onClick={q.reload}>刷新</ToolButton>
       </div>
 
       <FormError error={error} />
@@ -166,7 +173,7 @@ export default function InboxPage({ def }: PageProps) {
             <EmptyState
               title="当前没有待处理事项"
               hint="注册申请、模型目录变动、渠道故障与额度告警都会汇总到这里；空态说明暂时没有需要你动手的事。"
-              action={<button type="button" onClick={q.reload}>刷新</button>}
+              action={<ToolButton icon={<IconRefresh size={ACTION_ICON} />} onClick={q.reload}>刷新</ToolButton>}
             />
           ) : null
         }

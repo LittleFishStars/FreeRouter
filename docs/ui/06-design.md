@@ -89,6 +89,77 @@ MUI 主题，`style.css` 只引用变量。**改色只改 tokens.ts**——这�
 
 圆角台阶：`md 12`（按钮/输入框）、`xl 20`（卡片）、`xxl 28`（弹窗、一次性表单卡）。
 
+### 2.4 图标：一个来源、一套风格（2026-10-25 定）
+
+**原则：能用一个图标说清的动作就不写文字，但纯图标处必须补 `aria-label`。**
+
+#### 唯一来源
+
+| 项 | 定案 |
+|---|---|
+| 图标库 | **[Tabler Icons](https://tabler.io/icons) v3**（`@tabler/icons-react`，6239 个） |
+| 许可证 | **MIT** —— 允许商用/修改/再分发，只要求保留版权声明（随包在 `node_modules/@tabler/icons-react/LICENSE`） |
+| 线型 | 全部线性（outline）；24×24 视口 |
+| 线宽 | **1.75**（Tabler 默认 2 略细，与 14px 正文的笔画更搭） |
+| 端点/拐角 | `stroke-linecap: round` / `stroke-linejoin: round`（大圆角卡片旁边不会扎人） |
+| 尺寸档 | `xs 14` / `sm 16` / `md 18` / `lg 22`，**只允许这四档** |
+
+**已移除 `@mui/icons-material`（2026-10-25）**：它也 MIT，但默认形态是**实心填充**。
+同一个界面里混用实心与线性，正是"风格不统一"最典型的来源——一列图标看起来
+像两个时代的东西。移除后 `package.json` 少一个直接依赖。
+
+#### 一条硬规矩
+
+**所有图标必须从 `web/src/icons.tsx` 导入**，不允许直接 `import { IconX } from
+'@tabler/icons-react'`。那个文件是尺寸/线宽/无障碍默认值的唯一出口：
+
+```tsx
+// ✅
+import { IconView } from '../icons'
+<IconView size="sm" />
+
+// ❌ 尺寸档被绕过、线宽会漂回 2、屏幕阅读器会念第二遍
+import { IconEye } from '@tabler/icons-react'
+<IconEye size={13} stroke={1.8} />
+```
+
+`size` 收语义档（`'xs'|'sm'|'md'|'lg'`）或像素数，由 `glyph()` 统一换算成像素。
+**这一步不能省**：Tabler 把 `size` 直接写进 SVG 的 `width/height`，传字符串
+`"md"` 会得到 `width="md"`——属性非法，浏览器按 0 处理，图标整片消失。
+（实测踩过一次：页面只剩文字与间距。）
+
+#### 什么时候用图标、什么时候用文字
+
+| 场景 | 形态 | 理由 |
+|---|---|---|
+| 一级导航项 | 图标 **+** 文字 | 图标给扫读速度，文字给确认；一列十几行纯灰字很难定位 |
+| 表格操作列（详情/编辑/删除/测试…） | **纯图标**（26px，`TableAction`） | 每行重复同样的名词，一列文字会占 200px 且扫读成本极高 |
+| 工具栏（刷新/导出/新建/保存） | 图标 **+** 文字（`ToolButton`） | 一行只有 2–4 个，值得给文字 |
+| 重复出现的行内动作（策略链的上移/下移/移除） | **纯图标** | 同表格操作列 |
+| 状态徽章 | **纯图标**（`StatusBadge` 内置） | 色盲用户单靠颜色分不清四态（第 8 节）；图标是第二重信号 |
+| 返回/跳转链接 | 图标 **+** 文字（`.icon-link`） | 方向图标（←）能立刻说明"这是回头路" |
+
+**危险动作只换颜色不换形状**（`tone="danger"` → `error.main`）：形状变化会让
+"这一列图标"看起来不是一套东西。颜色在这个界面里只承担一个含义——"这个动作
+有后果"，第二个含义会稀释它。
+
+**不用 emoji 当图标**：emoji 在 Linux/Win/mac 上渲染成三种不同的彩色图形，
+会在一列纯文字导航里跳出来，且无法控制线宽与尺寸。
+
+#### 组件入口
+
+- `src/icons.tsx` —— 图标本身（`IconNavHome` / `IconEdit` / `IconDelete` / …）
+- `src/components/IconButtons.tsx` —— `TableAction`（纯图标行内按钮）、
+  `TableActions`（操作列容器）、`ToolButton`（图标 + 文字工具栏按钮）
+- `PageDef.icon` —— 导航项图标挂在**页面定义**上（图标是这一页的身份，属于 IA 数据）
+
+#### 无障碍
+
+- 图标默认 `aria-hidden="true"`：它几乎总是伴随文字出现，读屏不该念第二遍。
+- **纯图标按钮必须给 `label`**：`TableAction` 的 `label` 同时用作 tooltip 与
+  `aria-label`，且是必填参数（类型层面拦住了漏写）。
+- 工具栏的 `ToolButton` 有可见文字，图标不再单独播报。
+
 ## 3. 表单约定
 
 ### 3.1 字段级约定
@@ -298,6 +369,7 @@ MUI 主题，`style.css` 只引用变量。**改色只改 tokens.ts**——这�
 | 项 | 实际技术形态 | 状态 |
 |---|---|---|
 | 主题与令牌 | `src/tokens.ts`（唯一色值源，五个表面层级 + 语义容器色）→ `main.tsx` 写成 `--fr-*` 变量 → `src/theme.ts` 两个 `createTheme`（light / dark，`cssVariables: { cssVarPrefix: 'fr' }`）+ `style.css` 引用变量 | ✅ |
+| 图标 | **Tabler Icons v3（MIT）**，经 `src/icons.tsx` 统一出口（语义尺寸档 + 固定 1.75 线宽 + round 端点）；`@mui/icons-material` 已移除。纯图标按钮走 `components/IconButtons.tsx`（`label` 必填，同时作 tooltip 与 aria-label） | ✅ |
 | 加载态 | MUI `Skeleton`（`ui.tsx` 的 `LoadingBlock`）；列表页默认 3 行 | ✅ |
 | 路由与布局 | React Router 7 + `HashRouter`；路由由 `routes.ts` 的 `PAGES` 表生成，`App.tsx` 只做装配 | ✅ |
 | 导航 | 桌面 MUI `AppBar` + 常驻侧栏；< 768px 收进 `Drawer` 抽屉 | ✅ |

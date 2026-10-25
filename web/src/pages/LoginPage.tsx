@@ -14,7 +14,8 @@
 import { useState, type FormEvent } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { Alert, Box, Button, Stack, TextField, Typography } from '@mui/material'
-import LoginIcon from '@mui/icons-material/Login'
+import { IconLogin } from '../icons'
+import { AlertGlyph } from '../components/ui'
 import { ApiError, postAuthLogin, type Session } from '../api/client'
 import { useSession } from '../api/session'
 
@@ -97,12 +98,12 @@ export default function LoginPage() {
         </Box>
 
         {justInited && (
-          <Alert severity="success" sx={{ mb: 2 }}>
+          <Alert severity="success" sx={{ mb: 2 }} icon={<AlertGlyph severity="success" />}>
             初始化完成——请用刚创建的管理员账户登录。
           </Alert>
         )}
         {passwordChanged && (
-          <Alert severity="info" sx={{ mb: 2 }}>
+          <Alert severity="info" sx={{ mb: 2 }} icon={<AlertGlyph severity="info" />}>
             口令已更新，请用新口令重新登录。
           </Alert>
         )}
@@ -146,7 +147,7 @@ export default function LoginPage() {
           />
 
           {error && (
-            <Alert severity="error" role="alert">
+            <Alert severity="error" role="alert" icon={<AlertGlyph severity="error" />}>
               {error}
               {lockSeconds !== null && `（约 ${lockSeconds} 秒后可再试）`}
             </Alert>
@@ -157,7 +158,7 @@ export default function LoginPage() {
             variant="contained"
             size="large"
             disabled={submitting}
-            startIcon={<LoginIcon />}
+            startIcon={<IconLogin size="md" />}
             sx={{ mt: 0.5 }}
           >
             {submitting ? '正在登录…' : '登录'}

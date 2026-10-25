@@ -26,6 +26,8 @@ import type {
   DeprecationInput
 } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
+import { ACTION_ICON } from '../../components/IconButtons'
+import { IconBack, IconWarn } from '../../icons'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import {
   AsyncView,
@@ -113,8 +115,17 @@ export function CandidatesPage({ def }: PageProps) {
       def={def}
       actions={
         <span className="inline-links">
-          <Link to={`/admin/abstract-models/${encodeURIComponent(id)}`}>返回编辑</Link>
-          <Link to={`/admin/abstract-models/${encodeURIComponent(id)}/deprecation`}>弃用配置</Link>
+          <Link to={`/admin/abstract-models/${encodeURIComponent(id)}`} className="icon-link">
+            <IconBack size={ACTION_ICON} />
+            返回编辑
+          </Link>
+          <Link
+            to={`/admin/abstract-models/${encodeURIComponent(id)}/deprecation`}
+            className="icon-link"
+          >
+            <IconWarn size={ACTION_ICON} />
+            弃用配置
+          </Link>
         </span>
       }
     >

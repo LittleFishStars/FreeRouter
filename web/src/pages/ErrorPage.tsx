@@ -8,6 +8,8 @@ import { Link, useLocation } from 'react-router-dom'
 import type { PageProps } from '../routes'
 import PageFrame from './PageFrame'
 import { Banner } from '../components/ui'
+import { ACTION_ICON } from '../components/IconButtons'
+import { IconBack } from '../icons'
 
 const ERROR_TEXTS: Record<string, { title: string; what: string; next: string }> = {
   '403': {
@@ -58,7 +60,10 @@ export default function ErrorPage({ def }: PageProps) {
         机器码：<code>{code === '410' ? 'gone' : code === '404' ? 'not_found' : code === '403' ? 'forbidden' : 'internal_error'}</code>
       </p>
       <p>
-        <Link to="/">返回首页</Link>
+        <Link to="/" className="icon-link">
+          <IconBack size={ACTION_ICON} />
+          返回首页
+        </Link>
       </p>
     </PageFrame>
   )

@@ -10,6 +10,7 @@
 //   留空 = 不设（不是 0）；0 在语义上是零额度全拒。
 
 import { useEffect, useMemo, useState } from 'react'
+import { IconBack } from '../../icons'
 import { Link, useParams } from 'react-router-dom'
 import {
   addGroupMembers,
@@ -28,6 +29,8 @@ import {
 import type { AdminGroup, GroupPool, GroupPolicyQuota, GroupPolicies } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
 import ConfirmDialog from '../../components/ConfirmDialog'
+import { ACTION_ICON, TableAction, TableActions, ToolButton } from '../../components/IconButtons'
+import { IconCopy, IconDelete, IconPlus, IconView } from '../../icons'
 import {
   AsyncView,
   Badge,
@@ -82,9 +85,9 @@ export function GroupsPage({ def }: PageProps) {
     <PageFrame
       def={def}
       actions={
-        <button type="button" className="btn-primary" onClick={() => setCreating((v) => !v)}>
+        <ToolButton primary icon={<IconPlus size={ACTION_ICON} />} onClick={() => setCreating((v) => !v)}>
           {creating ? '收起' : '新建组'}
-        </button>
+        </ToolButton>
       }
     >
       <Banner tone="muted">
@@ -163,11 +166,31 @@ export function GroupsPage({ def }: PageProps) {
                   <td>{fmtNum(g.member_count)}</td>
                   <td>{fmtTime(g.created_at)}</td>
                   <td className="cell-actions">
-                    <Link to={`/admin/groups/${encodeURIComponent(g.id)}`}>详情</Link>
-                    <button type="button" className="btn-ghost" onClick={() => { setDuplicating(g); setNewName(`${g.name}-copy`) }}>复制</button>
-                    {!g.is_default && (
-                      <button type="button" className="btn-danger" onClick={() => setDeleting(g)}>删除…</button>
-                    )}
+                    {/* 操作列只给图标：一列文字按钮会让每行重复同样的名词，
+                        且把表格撑宽 200px；名字走 tooltip + aria-label。 */}
+                    <TableActions>
+                      <TableAction
+                        icon={<IconView size={ACTION_ICON} />}
+                        label="组详情"
+                        to={`/admin/groups/${encodeURIComponent(g.id)}`}
+                      />
+                      <TableAction
+                        icon={<IconCopy size={ACTION_ICON} />}
+                        label="复制组"
+                        onClick={() => {
+                          setDuplicating(g)
+                          setNewName(`${g.name}-copy`)
+                        }}
+                      />
+                      {!g.is_default && (
+                        <TableAction
+                          icon={<IconDelete size={ACTION_ICON} />}
+                          label="删除组"
+                          tone="danger"
+                          onClick={() => setDeleting(g)}
+                        />
+                      )}
+                    </TableActions>
                   </td>
                 </tr>
               ))}
@@ -322,7 +345,7 @@ export function GroupDetailPage({ def }: PageProps) {
   )
 
   return (
-    <PageFrame def={def} actions={<Link to="/admin/groups">返回组列表</Link>}>
+    <PageFrame def={def} actions={<Link to="/admin/groups" className="icon-link"><IconBack size={ACTION_ICON} />返回组列表</Link>}>
       <FormError error={error} />
       {notice && <Banner tone="ok">{notice}</Banner>}
 

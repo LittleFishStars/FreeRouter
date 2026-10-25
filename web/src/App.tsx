@@ -45,13 +45,15 @@ import {
   useMediaQuery,
   useTheme
 } from '@mui/material'
-import MenuIcon from '@mui/icons-material/Menu'
-import DarkModeIcon from '@mui/icons-material/DarkMode'
-import LightModeIcon from '@mui/icons-material/LightMode'
-import InboxIcon from '@mui/icons-material/Inbox'
-import LogoutIcon from '@mui/icons-material/Logout'
-import PersonOutlinedIcon from '@mui/icons-material/PersonOutlined'
-import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
+import {
+  IconLock,
+  IconLogout,
+  IconMenu,
+  IconMoon,
+  IconNavInbox,
+  IconSun,
+  IconUser
+} from './icons'
 import { ApiError, PATHS, postAuthLogout } from './api/client'
 import { SessionProvider, useSession } from './api/session'
 import { useColorMode } from './colorMode'
@@ -175,6 +177,22 @@ function NavList({ unread, onNavigate }: { unread: number; onNavigate?: () => vo
                       }
                     }}
                   >
+                    {/* 导航项一律"图标 + 文字"：图标给的是**扫读**速度，
+                        文字给的是**确认**。只有图标时用户要靠猜，只有文字时
+                        一列十几行灰字很难定位。 */}
+                    {p.icon && (
+                      <Box
+                        component="span"
+                        sx={{
+                          display: 'inline-flex',
+                          mr: 1.25,
+                          color: active ? 'primary.main' : 'text.disabled',
+                          transition: 'color .12s ease'
+                        }}
+                      >
+                        <p.icon size="md" />
+                      </Box>
+                    )}
                     <ListItemText
                       primary={p.title}
                       slotProps={{
@@ -188,10 +206,12 @@ function NavList({ unread, onNavigate }: { unread: number; onNavigate?: () => vo
                       <Tooltip title="本页含危险写操作">
                         {/* 用图标而不是 emoji：emoji 在 Linux/Win/mac 上渲染成三种
                             不同的彩色图形，会在一列纯文字导航里跳出来，破坏扫读。 */}
-                        <LockOutlinedIcon
-                          sx={{ fontSize: 13, ml: 0.6, color: 'text.disabled', flexShrink: 0 }}
-                          aria-hidden="true"
-                        />
+                        <Box
+                          component="span"
+                          sx={{ ml: 0.6, display: 'inline-flex', color: 'text.disabled', flexShrink: 0 }}
+                        >
+                          <IconLock size="xs" />
+                        </Box>
                       </Tooltip>
                     )}
                     {p.path === '/admin/inbox' && unread > 0 && (
@@ -311,11 +331,15 @@ function AccountMenu() {
             navigate('/account')
           }}
         >
-          <PersonOutlinedIcon fontSize="small" sx={{ mr: 1.25, color: 'text.secondary' }} />
+          <Box sx={{ mr: 1.25, display: 'inline-flex', color: 'text.secondary' }}>
+            <IconUser size="md" />
+          </Box>
           账户设置
         </MenuItem>
         <MenuItem onClick={logout} disabled={busy}>
-          <LogoutIcon fontSize="small" sx={{ mr: 1.25, color: 'text.secondary' }} />
+          <Box sx={{ mr: 1.25, display: 'inline-flex', color: 'text.secondary' }}>
+            <IconLogout size="md" />
+          </Box>
           {busy ? '正在登出…' : '登出'}
         </MenuItem>
       </Menu>
@@ -349,7 +373,7 @@ function Topbar({ unread, onOpenNav }: { unread: number; onOpenNav: () => void }
       <Toolbar sx={{ minHeight: { xs: 56, md: 58 }, gap: 1 }}>
         {!desktop && (
           <IconButton edge="start" onClick={onOpenNav} size="small" aria-label="打开导航">
-            <MenuIcon />
+            <IconMenu size="md" />
           </IconButton>
         )}
         <Box
@@ -393,7 +417,7 @@ function Topbar({ unread, onOpenNav }: { unread: number; onOpenNav: () => void }
           <Tooltip title={unread > 0 ? `${unread} 条待处理` : '待处理事项'}>
             <IconButton component={Link} to="/admin/inbox" size="small" aria-label="待处理事项">
               <Box sx={{ position: 'relative', display: 'inline-flex' }}>
-                <InboxIcon fontSize="small" />
+                <IconNavInbox size="md" />
                 {unread > 0 && (
                   <Box
                     aria-hidden="true"
@@ -423,7 +447,7 @@ function Topbar({ unread, onOpenNav }: { unread: number; onOpenNav: () => void }
 
         <Tooltip title={mode === 'dark' ? '切换到浅色' : '切换到深色'}>
           <IconButton onClick={toggle} size="small" aria-label="切换深浅色">
-            {mode === 'dark' ? <LightModeIcon fontSize="small" /> : <DarkModeIcon fontSize="small" />}
+            {mode === 'dark' ? <IconSun size="md" /> : <IconMoon size="md" />}
           </IconButton>
         </Tooltip>
 

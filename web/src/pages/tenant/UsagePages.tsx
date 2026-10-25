@@ -17,6 +17,8 @@ import {
 } from '../../api/endpoints'
 import type { UsageLog } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
+import { ACTION_ICON, ToolButton } from '../../components/IconButtons'
+import { IconDownload, IconRefresh } from '../../icons'
 import {
   AsyncView,
   Banner,
@@ -65,7 +67,7 @@ export function UsagePage({ def }: PageProps) {
           <EmptyState
             title="没有可显示的用量数据"
             hint="账户可能还没有被分配额度，或用量接口尚未接入。请稍后刷新，或联系管理员。"
-            action={<button type="button" onClick={q.reload}>刷新</button>}
+            action={<ToolButton icon={<IconRefresh size={ACTION_ICON} />} onClick={q.reload}>刷新</ToolButton>}
           />
         )}
       >
@@ -248,9 +250,13 @@ export function LogsPage({ def }: PageProps) {
       actions={
         // 只导当前页：导全量需要后端另开导出端点（不受 limit 限制），
         // 在这里拼多次请求会让「筛选条件已变、导出还在跑」变成静默的错页。
-        <button type="button" className="btn-ghost" onClick={exportCsv} title="导出当前页" disabled={(q.data?.data.length ?? 0) === 0}>
+        <ToolButton
+          icon={<IconDownload size={ACTION_ICON} />}
+          onClick={exportCsv}
+          disabled={(q.data?.data.length ?? 0) === 0}
+        >
           导出 CSV
-        </button>
+        </ToolButton>
       }
     >
       <Banner tone="muted">
@@ -288,7 +294,7 @@ export function LogsPage({ def }: PageProps) {
           错误码
           <input value={errorCode} onChange={(e) => filterChanged(() => setErrorCode(e.target.value))} placeholder="no_candidate" />
         </label>
-        <button type="button" className="btn-ghost" onClick={q.reload}>刷新</button>
+        <ToolButton icon={<IconRefresh size={ACTION_ICON} />} onClick={q.reload}>刷新</ToolButton>
       </div>
 
       <AsyncView

@@ -292,6 +292,21 @@ button:disabled {
   background: var(--primary-soft);
 }
 
+/* 图标 + 文字的行内链接（例如「导入账户」）：和 ToolButton 同一套间距 */
+.icon-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 0.875rem;
+  text-decoration: none;
+}
+
+.icon-link:hover {
+  text-decoration: none;
+  color: var(--primary-hover);
+}
+
 .btn-link {
   background: none;
   border: none;

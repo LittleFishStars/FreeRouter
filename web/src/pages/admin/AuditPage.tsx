@@ -10,6 +10,8 @@ import { useState } from 'react'
 import { exportAudit, listAudit } from '../../api/endpoints'
 import type { AuditEntry } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
+import { ACTION_ICON, ToolButton } from '../../components/IconButtons'
+import { IconDownload } from '../../icons'
 import {
   AsyncView,
   Banner,
@@ -79,9 +81,9 @@ export default function AuditPage({ def }: PageProps) {
               <option value="csv">CSV</option>
             </select>
           </label>
-          <button type="button" onClick={() => void doExport()} disabled={exporting}>
-            {exporting ? '正在导出…' : '导出当前筛选'}
-          </button>
+          <ToolButton icon={<IconDownload size={ACTION_ICON} />} busy={exporting} onClick={() => void doExport()}>
+            导出当前筛选
+          </ToolButton>
         </span>
       }
     >

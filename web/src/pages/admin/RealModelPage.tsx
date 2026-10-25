@@ -7,7 +7,6 @@
 // 模型层的动作，且要过两条硬校验（目标必须 active、弃用不可逆）。
 
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import {
   excludeRealModel,
   listRealModels,
@@ -16,6 +15,8 @@ import {
 } from '../../api/endpoints'
 import type { AdminRealModel, AdminRealModelPatch } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
+import { ACTION_ICON, TableAction, TableActions } from '../../components/IconButtons'
+import { IconEdit, IconExternal, IconTune } from '../../icons'
 import {
   AsyncView,
   Banner,
@@ -237,15 +238,26 @@ export function RealModelsPage({ def }: PageProps) {
                       : '1 / 1'}
                   </td>
                   <td className="cell-actions">
-                    <button type="button" className="btn-ghost" onClick={() => setEditing(m)}>编辑</button>
-                    <button type="button" className="btn-ghost" onClick={() => void toggleExcluded(m)} disabled={busy}>
-                      {m.excluded_from_candidates ? '恢复候选' : '排除候选'}
-                    </button>
-                    {m.status === 'missing' && (
-                      <Link to="/admin/abstract-models" title="弃用是抽象模型层的动作，需过两条硬校验">
-                        去弃用页
-                      </Link>
-                    )}
+                    <TableActions>
+                      <TableAction
+                        icon={<IconEdit size={ACTION_ICON} />}
+                        label="编辑该模型（显示名 / Credits / 隐藏）"
+                        onClick={() => setEditing(m)}
+                      />
+                      <TableAction
+                        icon={<IconTune size={ACTION_ICON} />}
+                        label={m.excluded_from_candidates ? '恢复进候选集' : '排除出候选集'}
+                        busy={busy}
+                        onClick={() => void toggleExcluded(m)}
+                      />
+                      {m.status === 'missing' && (
+                        <TableAction
+                          icon={<IconExternal size={ACTION_ICON} />}
+                          label="去弃用页（弃用是抽象模型层的动作，需过两条硬校验）"
+                          to="/admin/abstract-models"
+                        />
+                      )}
+                    </TableActions>
                   </td>
                 </tr>
               ))}

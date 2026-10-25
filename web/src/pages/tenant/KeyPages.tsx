@@ -10,6 +10,7 @@
 // 页面走「接口尚未接入」态。
 
 import { useEffect, useState, type FormEvent } from 'react'
+import { IconBack } from '../../icons'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   createKey,
@@ -25,6 +26,8 @@ import {
 import type { ApiKey, ApiKeyCreated, AvailableModel } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
 import ConfirmDialog from '../../components/ConfirmDialog'
+import { ACTION_ICON, TableAction, TableActions } from '../../components/IconButtons'
+import { IconDelete, IconEdit, IconPower } from '../../icons'
 import OneTimeSecret from '../../components/OneTimeSecret'
 import {
   AsyncView,
@@ -227,11 +230,25 @@ export function KeysPage({ def }: PageProps) {
                   <td>{fmtTime(k.last_used_at)}</td>
                   <td>{fmtTime(k.created_at)}</td>
                   <td className="cell-actions">
-                    <button type="button" className="btn-ghost" onClick={() => setEditing(k)}>编辑</button>
-                    <button type="button" className="btn-ghost" onClick={() => void toggle(k)} disabled={busy}>
-                      {k.status === 'active' ? '禁用' : '启用'}
-                    </button>
-                    <button type="button" className="btn-danger" onClick={() => setRevoking(k)}>吊销…</button>
+                    <TableActions>
+                      <TableAction
+                        icon={<IconEdit size={ACTION_ICON} />}
+                        label="编辑 Key（白名单 / 过期 / 名称）"
+                        onClick={() => setEditing(k)}
+                      />
+                      <TableAction
+                        icon={<IconPower size={ACTION_ICON} />}
+                        label={k.status === 'active' ? '禁用（可恢复）' : '启用'}
+                        busy={busy}
+                        onClick={() => void toggle(k)}
+                      />
+                      <TableAction
+                        icon={<IconDelete size={ACTION_ICON} />}
+                        label="吊销（终局，不可恢复）"
+                        tone="danger"
+                        onClick={() => setRevoking(k)}
+                      />
+                    </TableActions>
                   </td>
                 </tr>
               ))}
@@ -323,7 +340,7 @@ export function KeyNewPage({ def }: PageProps) {
   }
 
   return (
-    <PageFrame def={def} actions={<Link to="/usage/keys">返回列表</Link>}>
+    <PageFrame def={def} actions={<Link to="/usage/keys" className="icon-link"><IconBack size={ACTION_ICON} />返回列表</Link>}>
       <Banner tone="muted" title="新建的 Key 默认白名单为空">
         白名单为空时这把 Key 无法发起任何请求（默认拒绝）。额度与速率属于账户，表单里不出现额度字段。
       </Banner>
@@ -393,7 +410,7 @@ export function KeyDetailPage({ def }: PageProps) {
   }
 
   return (
-    <PageFrame def={def} actions={<Link to="/usage/keys">返回列表</Link>}>
+    <PageFrame def={def} actions={<Link to="/usage/keys" className="icon-link"><IconBack size={ACTION_ICON} />返回列表</Link>}>
       <FormError error={error} />
       {notice && <Banner tone="ok">{notice}</Banner>}
 

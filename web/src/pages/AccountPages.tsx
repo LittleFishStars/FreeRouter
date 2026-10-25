@@ -16,6 +16,8 @@ import {
 } from '../api/endpoints'
 import { useSession } from '../api/session'
 import { useApi } from '../hooks/useApi'
+import { ACTION_ICON } from '../components/IconButtons'
+import { IconBack } from '../icons'
 import {
   AsyncView,
   Banner,
@@ -204,7 +206,7 @@ export function PasswordPage({ def }: PageProps) {
       </form>
       {!firstLogin && (
         <p>
-          <Link to="/account">返回账户概览</Link>
+          <Link to="/account" className="icon-link"><IconBack size={ACTION_ICON} />返回账户概览</Link>
         </p>
       )}
     </PageFrame>
@@ -230,7 +232,7 @@ export function SessionsPage({ def }: PageProps) {
   }
 
   return (
-    <PageFrame def={def} actions={<Link to="/account">返回概览</Link>}>
+    <PageFrame def={def} actions={<Link to="/account" className="icon-link"><IconBack size={ACTION_ICON} />返回概览</Link>}>
       <FormError error={error} />
       <AsyncView
         state={q}
