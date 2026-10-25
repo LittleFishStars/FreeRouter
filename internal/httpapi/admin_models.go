@@ -1,4 +1,8 @@
-// admin_models.go —— 真实模型组 + 抽象模型组端点（02-admin §7/§8，task-20 M7）。
+// admin_models.go —— 模型来源 + 真实模型组 + 抽象模型组端点（02-admin §7/§8，task-20 M7）。
+//
+// 模型来源（候选集编辑器的「供应商 → 真实模型」两栏数据；只读、不写审计，
+// 字段口径见 tmp/candidate-sources-contract.md §1.1）：
+//   GET    /api/admin/model-sources              上游 × 真实模型聚合（含全池渠道）
 //
 // 真实模型：
 //   GET    /api/admin/real-models               列表（status/hidden/source/upstream_id 筛选）
@@ -35,6 +39,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -43,6 +48,10 @@ import (
 )
 
 func (s *Server) mountAdminModels(r chi.Router, deps *AdminDeps) {
+	// 模型来源：它是「上游 × 模型」的聚合视图，不属于真实模型或抽象模型任一组，
+	// 但服务的仍是候选集编辑（与 /candidates 同一块界面），所以挂在同一个 mount 里。
+	r.Get("/model-sources", s.handleAdminModelSources(deps))
+
 	r.Get("/real-models", s.handleAdminRealModelsList(deps))
 	r.Post("/real-models/refresh", s.handleAdminRealModelsRefresh(deps))
 	r.Get("/real-models/{id}", s.handleAdminRealModelDetail(deps))
@@ -983,4 +992,100 @@ func (s *Server) handleAdminAbstractReferences(deps *AdminDeps) http.HandlerFunc
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": out})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 模型来源（候选集编辑器的「供应商 → 真实模型」两栏数据，契约 §1/§1.1）
+// ---------------------------------------------------------------------------
+
+// handleAdminModelSources 是 GET /api/admin/model-sources。
+//
+// 只读、不写审计（03-admin.md §1.1：读操作不产生审计行）。装配缺失按既有惯例
+// 走 deps.need → 404 not_found（不确认能力存在）。
+//
+// 响应是**裸对象** {"sources":[...],"channels":[...]}，不包管理面的 data 信封：
+// 契约 §1.1 把这一块直接标成「响应体（200）」，§3 又写明它不是 ListEnvelope
+// （前端 getModelSources 走 getEnvelope 不拆封）。与其它管理端点的 {data:...}
+// 不同是**有意的**——照契约来，别顺手给它加信封。
+func (s *Server) handleAdminModelSources(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "模型来源", deps.Sources != nil) {
+			return
+		}
+		sources, channels, err := deps.Sources.ListModelSources(r.Context())
+		if err != nil {
+			mapAdminError(w, err, "模型来源")
+			return
+		}
+		// 排序与空切片规范化都在出站这一处做（而不是让桥顺手再排一遍）：它们是
+		// **响应形状**的一部分，装配实现换了也不会漂——两处都做必然出现
+		// "桥改了顺序但接口没跟着改"的漂移。
+		sortAdminModelSources(sources)
+		sources = normalizeModelSources(sources)
+		// channels 同 sources：接口实现只要给「去重后的全池渠道」，升序在这一层
+		// 定型（前端多选控件的展示顺序就是它）。
+		sort.Strings(channels)
+		if channels == nil {
+			channels = []string{}
+		}
+
+		// 裸对象，不包 data 信封：见函数头对契约 §1.1/§3 的说明。
+		writeJSON(w, http.StatusOK, map[string]any{
+			"sources":  sources,
+			"channels": channels,
+		})
+	}
+}
+
+// sortAdminModelSources 按契约 §1.1 排序：contributed 降序 → name 升序 → id 升序。
+//
+// 末位用**对外 id 字符串**（up_<n>）比较而不是数字：id 是响应里可见的那个值，
+// 前端不解码也能复现同一顺序；两条来源撞 name（同名不同 kind）时才会用到它，
+// 但"稳定"必须是真的——否则同一份数据两次请求可能给出两种顺序。
+// 三个键构成全序（id 唯一），用 SliceStable 是把这个结论写进代码。
+func sortAdminModelSources(rows []AdminModelSource) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.Contributed != b.Contributed {
+			return a.Contributed
+		}
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		return a.ID < b.ID
+	})
+}
+
+// normalizeModelSources 把可空切片补齐成空切片并返回。
+//
+// 契约里 `[]`（空数组）与 `null` 是两种意思，null 只用于 channel /
+// available_instances / last_seen_at 这几个"值本身可能不存在"的字段。少给一个
+// [] 会让前端拿到 null 后走另一条分支（协议徽标、模态、多选渠道都按数组消费），
+// 而且这种缺失只在空数据下才暴露—正是最难在开发机上撞见的那种。
+func normalizeModelSources(rows []AdminModelSource) []AdminModelSource {
+	if rows == nil {
+		// sources 本身也不能是 null：契约给的就是数组（空池时前端渲染空左栏）。
+		rows = []AdminModelSource{}
+	}
+	for i := range rows {
+		if rows[i].Protocols == nil {
+			rows[i].Protocols = []string{}
+		}
+		if rows[i].Models == nil {
+			rows[i].Models = []AdminModelSourceModel{}
+		}
+		for j := range rows[i].Models {
+			m := &rows[i].Models[j]
+			if m.Modalities == nil {
+				m.Modalities = []string{}
+			}
+			if m.Efforts == nil {
+				m.Efforts = []string{}
+			}
+			if m.Protocols == nil {
+				m.Protocols = []string{}
+			}
+		}
+	}
+	return rows
 }

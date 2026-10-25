@@ -19,6 +19,21 @@
 // 承诺「粘贴 Key 就能用」，承诺不了的不收。全表 protocol 恒为 "openai"
 // 正是这条边界的体现，而不是默认值。
 //
+// # 为什么端点清单里会有 anthropic
+//
+// endpoints 回答的是「这家供应商自己开放了哪些原生协议的端点」这一**事实**，
+// 而不是「我们支持哪些协议」。本站出站链路当前只实现 OpenAI 兼容形态
+// （internal/app/upstream_shim.go 的 adapterForKind 恒取 openai.Adapter()），
+// 所以 anthropic 端点进来是事实标注：管理面用它画徽标，语义是「供应商具备、
+// 本站未接入」，不是「可以用 A 调它」。
+//
+// 为什么不给全表都补一份 anthropic：没有原生 anthropic 端点的供应商补一条，
+// 等于替它承诺它没有的东西；缺键才是「没有这个事实」的正确表达。
+//
+// endpoints.openai 与 base_url 值恒相等、由测试钉住，重复一次是有意的：
+// base_url 的语义是「调用入口」（relay 形态下它甚至不是 HTTP 端点），而端点
+// 清单要的是「协议 → 地址」这一份自洽的事实，不依赖 base_url 怎么解释。
+//
 // # 为什么排除 localhost / {占位符}
 //
 //   - localhost 与 127.0.0.1：那是用户自己的服务，属于「自定义供应商」入口
@@ -59,15 +74,19 @@ var catalogJSON []byte
 // 字段与 catalog.json 逐一对应；JSON 侧键是 snake_case（对外接口原样转发，
 // 前端直接消费），结构体侧用 Go 命名——两者只在下面的 tag 里对齐一次。
 type Provider struct {
-	ID           string  `json:"id"`
-	Name         string  `json:"name"`
-	BaseURL      string  `json:"base_url"`
-	Protocol     string  `json:"protocol"`
-	VendorFamily string  `json:"vendor_family"`
-	Region       string  `json:"region"`
-	Website      string  `json:"website"`
-	APIDoc       string  `json:"api_doc"`
-	Models       []Model `json:"models"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	BaseURL      string `json:"base_url"`
+	Protocol     string `json:"protocol"`
+	VendorFamily string `json:"vendor_family"`
+	Region       string `json:"region"`
+	Website      string `json:"website"`
+	APIDoc       string `json:"api_doc"`
+	// Endpoints 是按协议划分的原生端点清单（见包注释「为什么端点清单里会有
+	// anthropic」）。它与 BaseURL 是两条平行的事实，不是它的派生：BaseURL 是
+	// 「调用入口」，Endpoints 是「有哪些协议的端点」。
+	Endpoints Endpoints `json:"endpoints"`
+	Models    []Model   `json:"models"`
 }
 
 // Model 是目录里的一个模型 id。
@@ -76,6 +95,28 @@ type Provider struct {
 // 那些随供应商自己变化，写进内置表就会过期。
 type Model struct {
 	ID string `json:"id"`
+}
+
+// Endpoints 是一家供应商按协议划分的原生端点清单（键只允许 openai / anthropic，
+// 见包注释「为什么端点清单里会有 anthropic」）。
+type Endpoints struct {
+	OpenAI string `json:"openai"`
+	// Anthropic 缺键（omitempty）而不是空串：空串会让「有 anthropic 端点但地址
+	// 是空的」与「没有 anthropic 端点」变成同一个值，而这两件事的运维动作不同。
+	Anthropic string `json:"anthropic,omitempty"`
+}
+
+// Protocols 返回该供应商具备原生端点的协议，顺序恒 openai 在前。
+//
+// 为什么是方法而不是让调用方自己看 Endpoints：协议列表的顺序本身就是对外契约
+// （管理面徽标、契约 §1.1 的排序），散在各个调用方里拼装，早晚有人写出
+// ["anthropic","openai"] 这种顺序；判断「有没有 anthropic」也只有这一处口径。
+// 返回新切片，调用方改动不会污染目录数据（与 List 返回深拷贝同一条理由）。
+func (p Provider) Protocols() []string {
+	if p.Endpoints.Anthropic == "" {
+		return []string{"openai"}
+	}
+	return []string{"openai", "anthropic"}
 }
 
 // catalog 是 catalog.json 的读入形状。

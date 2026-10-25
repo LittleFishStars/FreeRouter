@@ -43,6 +43,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/LittleFishStars/FreeRouter/internal/apidir"
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
 	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 )
@@ -58,7 +59,7 @@ import (
 // 领域；两处各写一份必然漂移。装配层把 store 仓储钉到这些接口上。
 //
 // 允许为 nil 的可选字段（Refresh/UpstreamTest/SettingsView/SettingsPatch/
-// IPCheck）：与 auth.Stores 同理——nil 表达"这条路径未装配"，用到时统一
+// IPCheck/Sources）：与 auth.Stores 同理——nil 表达"这条路径未装配"，用到时统一
 // 返回 404 + not_found（lead 裁决：未上线的功能不确认其存在，与 §2.2 同一
 // 哲学），而不是 panic；强制实现空方法只会诱导出假成功的假体。
 type AdminDeps struct {
@@ -73,6 +74,7 @@ type AdminDeps struct {
 	Keys          AdminKeyCountStore
 	Credentials   AdminCredentialStore
 	Models        AdminModelStore
+	Sources       AdminModelSourceStore
 	Upstreams     AdminUpstreamStore
 	Verifications AdminVerificationStore
 	Audit         AdminAuditStore
@@ -591,6 +593,137 @@ type AdminModelStore interface {
 type AdminModelRefresher interface {
 	RefreshModels(ctx context.Context) (map[string]any, error)
 }
+
+// ---------------------------------------------------------------------------
+// 模型来源（候选集编辑器的「供应商 → 真实模型」两栏数据，契约 §1.1/§1.2）
+// ---------------------------------------------------------------------------
+
+// AdminModelSource 是左栏的一行：一个上游（贡献凭据 / 平台渠道）。
+//
+// 字段口径逐条见 tmp/candidate-sources-contract.md §1.1，本结构是它在 Go 侧的
+// 唯一副本。三处容易被"顺手改简单"的地方，理由写在这里：
+//   - ProviderID 由凭据的 provider 列（"api:<目录 id>"）剥前缀得到；没有凭据或
+//     不是 "api:" 形态（自定义贡献存的是 "custom"）时是空串。空串的含义是
+//     「这家不是目录里的 API 供应商」，不是「还没查到」——不引入第三种状态。
+//   - Region/Website/APIDoc 是目录事实，目录未命中一律空串。为什么不回填
+//     "总比空着好"的值：这三个字段前端会直接渲染成可点链接，猜一个地址比
+//     没有地址更坏。
+//   - AvailableInstances 是 *int：nil（JSON null）= 数量由 Go 侧不知道的东西
+//     决定（relay 的账号池在 sidecar），0 = 确实一个也展不开。压成 int 会让界面
+//     把「池内可展开」显示成「无凭据」，正是这次要修的静默故障。
+type AdminModelSource struct {
+	ID                 string   `json:"id"`
+	Kind               string   `json:"kind"` // relay / vendor / selfhosted
+	Name               string   `json:"name"`
+	UpstreamName       string   `json:"upstream_name"`
+	ProviderID         string   `json:"provider_id"`
+	Region             string   `json:"region"`
+	Website            string   `json:"website"`
+	APIDoc             string   `json:"api_doc"`
+	BaseURL            string   `json:"base_url"`
+	Enabled            bool     `json:"enabled"`
+	Contributed        bool     `json:"contributed"`
+	CredentialCount    int      `json:"credential_count"`
+	ModelCount         int      `json:"model_count"`
+	Protocols          []string `json:"protocols"`
+	AvailableInstances *int     `json:"available_instances"`
+	// LastSeenAt 是 epoch 秒（契约 §1.1 钉的就是这个单位），nil → JSON null。
+	// 这里不复用 AdminRealModel 那套 Out+adminJSONTime 渲染层：那一套把时间转成
+	// RFC3339，而本契约明写 epoch 秒——多一层渲染只会让前端拿到两种时间单位。
+	LastSeenAt *int64                  `json:"last_seen_at"`
+	Models     []AdminModelSourceModel `json:"models"`
+}
+
+// AdminModelSourceModel 是右栏的一张模型卡。
+//
+// Modalities/Efforts 用 []string 而不是 json.RawMessage：库里是 TEXT 原文，
+// 契约要求「解析失败给 [] 而不是 null」。用 []string 让这条口径由类型本身保证，
+// 而不是靠每个调用方记得补 null；代价是数组里出现非字符串元素时会被判为解析
+// 失败（本列只承载字符串枚举，写侧就是按字符串数组落的）。
+type AdminModelSourceModel struct {
+	RealModelID            string   `json:"real_model_id"`
+	UpstreamModelID        string   `json:"upstream_model_id"`
+	DisplayName            string   `json:"display_name"`
+	Channel                *string  `json:"channel"`
+	ContextWindow          *int64   `json:"context_window"`
+	Modalities             []string `json:"modalities"`
+	Efforts                []string `json:"efforts"`
+	Status                 string   `json:"status"` // active/missing/disabled
+	ExcludedFromCandidates bool     `json:"excluded_from_candidates"`
+	// Protocols 恒等于所属来源的 Protocols：模型级协议事实目前不存在，继承来源；
+	// 将来真有模型级事实时只改这一处（写在这里就是给那次改动留坐标）。
+	Protocols []string `json:"protocols"`
+	// AvailableInstances 同来源口径，但 status != active 或已被排除时恒 0：
+	// 这两种行本来就选不进候选集，"能展开几个"对它们没有意义。
+	AvailableInstances *int `json:"available_instances"`
+}
+
+// AdminModelSourceStore 提供候选集编辑器的「供应商 → 模型」两栏数据。
+//
+// 为什么 channels 单独返回而不是塞进某个来源：它是**全池**事实（所有
+// real_models.channel 的去重非空升序值），不属于任何一行来源；挂在某一行上
+// 会让前端以为它是那一行的属性。实现只需给出「去重后的全池渠道集合」，
+// 升序由出站层统一定型（与 sources 的排序同一处），实现不必关心顺序。
+//
+// 未装配（AdminDeps.Sources == nil）时端点按既有惯例返回 404 not_found。
+type AdminModelSourceStore interface {
+	ListModelSources(ctx context.Context) ([]AdminModelSource, []string, error)
+}
+
+// AdminModelSourceProtocols 给出某来源具备原生端点的协议（契约 §1.2）。
+//
+// 为什么这个口径住在 httpapi 而不是装配桥：它是**响应契约**的一部分（前端徽标
+// 直接消费，"openai 在前"的顺序就是契约），口径的唯一实现必须和 DTO 待在一起，
+// 桥只提供事实（kind + provider_id）。分成两处判定，早晚出现"桥认为这家没有
+// anthropic、接口认为有"这种没人能复现的漂移。
+//
+// relay 恒 ["openai"] 且不查目录：relay 的 base_url 是 sidecar 里的 provider
+// 锚点而不是 HTTP 端点，拿它去查目录得到的结论没有意义；其 adapter 也只吐
+// OpenAI 形态流（internal/app/upstream_shim.go 的 adapterForKind）。
+func AdminModelSourceProtocols(kind, providerID string) []string {
+	if kind == "relay" {
+		return []string{"openai"}
+	}
+	if p, ok := apidir.Get(providerID); ok {
+		return p.Protocols()
+	}
+	// 目录未命中（自定义供应商、自建端点）恒 ["openai"]：默认 OpenAI 兼容。
+	return []string{"openai"}
+}
+
+// AdminModelSourceInstances 给出某来源当前可展开的凭据实例数（契约 §1.1）。
+//
+// nil（JSON null）= 数量由 Go 侧不知道的东西决定；0 = 确实一个都展不开。
+// 判定顺序即契约顺序：停用优先于一切——停用的 relay 是 0 而不是 null，
+// "停用了"是确定结论，不该退化成"不知道"。
+func AdminModelSourceInstances(kind string, enabled bool, credentialCount int) *int {
+	if !enabled {
+		return adminIntPtr(0)
+	}
+	if kind == "relay" {
+		return nil
+	}
+	return adminIntPtr(credentialCount)
+}
+
+// AdminModelSourceModelInstances 给出某张模型卡的可用实例数（契约 §1.1）：
+// 继承所属来源，但选不进候选集的行（非 active / 已排除）恒 0。
+//
+// 字面量 "active" 与 adminRealStatusValid 同源（httpapi 不 import store，
+// 状态字符串在两处都是契约值而不是类型）。
+func AdminModelSourceModelInstances(source *int, status string, excluded bool) *int {
+	if status != "active" || excluded {
+		return adminIntPtr(0)
+	}
+	if source == nil {
+		return nil
+	}
+	return adminIntPtr(*source)
+}
+
+// adminIntPtr 每次返回新指针：契约允许调用方改动自己那份（DTO 出站后就是调用方
+// 的数据），共享同一个变量会让"改一行"变成"改所有行"。
+func adminIntPtr(v int) *int { return &v }
 
 // ---------------------------------------------------------------------------
 // 上游与凭据（§9）

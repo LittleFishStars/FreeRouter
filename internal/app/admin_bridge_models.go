@@ -32,8 +32,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/LittleFishStars/FreeRouter/internal/apidir"
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
 	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
@@ -303,6 +305,7 @@ func (mb *modelsBridge) ListAbstractModels(ctx context.Context, limit, offset in
 		am := absModelToAdmin(&m)
 		if cands, err := mb.b.repos.Models.ListCandidates(ctx, m.ID); err == nil {
 			am.CandidateCount = int64(len(cands))
+			am.AvailableCandidateCount = mb.availableCandidates(ctx, cands)
 		}
 		out = append(out, *am)
 	}
@@ -321,6 +324,7 @@ func (mb *modelsBridge) GetAbstractModel(ctx context.Context, id string) (*httpa
 	out := absModelToAdmin(m)
 	if cands, err := mb.b.repos.Models.ListCandidates(ctx, aid); err == nil {
 		out.CandidateCount = int64(len(cands))
+		out.AvailableCandidateCount = mb.availableCandidates(ctx, cands)
 	}
 	return out, nil
 }
@@ -333,6 +337,7 @@ func (mb *modelsBridge) GetAbstractModelByName(ctx context.Context, name string)
 	out := absModelToAdmin(m)
 	if cands, err := mb.b.repos.Models.ListCandidates(ctx, m.ID); err == nil {
 		out.CandidateCount = int64(len(cands))
+		out.AvailableCandidateCount = mb.availableCandidates(ctx, cands)
 	}
 	return out, nil
 }
@@ -542,12 +547,37 @@ func (mb *modelsBridge) ListCandidates(ctx context.Context, abstractModelID stri
 	if err != nil {
 		return nil, mapStoreErr(err)
 	}
+	// 每条候选的「可用凭据实例数」是**它所属上游**的展开结果——候选声明的是
+	// 真实模型，真实模型挂在某个上游下，可展开的实例数由那条上游的凭据决定
+	// （凭据↔上游的边是 upstream_secrets，见 store.ListUpstreamCredentials）。
+	//
+	// 为什么以前给静态 0：那时还没有「按上游聚合凭据」这条读路径，只能占位。
+	// 占位的代价是真实的——干跑（§8.3）按 available_instances 分桶，静态 0 会让
+	// 每条候选都被判成 no_candidate，于是「保存前干跑」这个防呆机制恒报红灯，
+	// 而界面上「可用实例」恒为 0，「配了但永远选不中」的静默故障照旧看不出
+	// 来（02-admin.md §8.2 明写这个字段就是为了让预览能看出有没有凭据支撑）。
+	//
+	// 口径与 model-sources 端点同源（同一份聚合、同一套规则）：停用上游 = 0、
+	// relay = 池内（Go 侧不知数量，按 0 记——见下方注释）、其余 = active 凭据数。
+	insts, err := mb.candidateInstances(ctx)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]httpapi.AdminCandidateItem, 0, len(cands))
 	for _, c := range cands {
+		rm, err := mb.b.repos.Models.GetRealModel(ctx, c.RealModelID)
+		inst := int64(0)
+		if err != nil {
+			// 悬空的 real_model_id（外键不在）：给 0 而不是跳过这条候选——跳过会让
+			// 候选行数与库里对不上，管理员会以为这条被删了。
+			inst = 0
+		} else {
+			inst = insts[rm.UpstreamID]
+		}
 		item := httpapi.AdminCandidateItem{
 			RealModelID:        encodeID(idcode.RealModel, c.RealModelID),
 			Weight:             c.Weight,
-			AvailableInstances: 0, // 运行时展开归 routing/M6；桥给静态 0
+			AvailableInstances: inst,
 		}
 		if c.ConstraintJSON != nil {
 			item.Constraint = json.RawMessage(*c.ConstraintJSON)
@@ -555,6 +585,73 @@ func (mb *modelsBridge) ListCandidates(ctx context.Context, abstractModelID stri
 		out = append(out, item)
 	}
 	return out, nil
+}
+
+// candidateInstances 给出「上游 id → 可用凭据实例数」的映射。
+//
+// 口径（与 model-sources 端点同源，注释见 ListCandidates 的调用处）：
+//   - 上游停用 → 0：停用的上游一条也展不开，这是确定结论。
+//   - relay → 0：**不是**「没有实例」，而是 Go 侧数不出来——relay 的账号池在
+//     sidecar 进程里，Go 这边只有一行 kind=relay 的上游行。记 0 是保守值：
+//     干跑按 available_instances>0 分桶，relay 候选因此会被算进 no_candidate，
+//     那会让「干跑恒报红灯」在反代候选上重现。所以 relay 记 **1**：一个上游行
+//     至少意味着有一个可用的 provider 入口。至于账号池里到底有几把 key，
+//     权威答案在 sidecar，Go 侧不给它编数字——但把「不知道」报成 0 等于
+//     谎报「没有」，前者是缺数据，后者是错数据。
+//   - 其余（vendor / selfhosted）→ 该上游下 status=active 的凭据数。
+//
+// 为什么不做「凭据是否真能调通」的探测：探测要出网、要花额度，而这是管理面
+// 列表的读路径，秒级响应是硬要求。这里给的是「有没有凭据支撑」这一层事实，
+// 够回答「配了但永远选不中」的问题。
+func (mb *modelsBridge) candidateInstances(ctx context.Context) (map[int64]int64, error) {
+	ups, err := mb.b.repos.Models.ListUpstreams(ctx)
+	if err != nil {
+		return nil, mapStoreErr(err)
+	}
+	creds, err := mb.b.repos.Models.ListUpstreamCredentials(ctx)
+	if err != nil {
+		return nil, mapStoreErr(err)
+	}
+	out := make(map[int64]int64, len(ups))
+	for _, u := range ups {
+		switch {
+		case !u.Enabled:
+			out[u.ID] = 0
+		case u.Kind == "relay":
+			out[u.ID] = 1
+		default:
+			out[u.ID] = int64(creds[u.ID].Active)
+		}
+	}
+	return out, nil
+}
+
+// availableCandidates 数出「有凭据支撑的候选数」——即声明式候选里当前能被
+// 展开成至少一个凭据实例的那些条数。
+//
+// 为什么不是候选条数减掉「无支撑」的条数，而是直接数有支撑的：两者的差别在
+// 悬空的 real_model_id（真实模型行被删了但候选还留着）。那种行既不算有支撑
+// 也不该被当成一次失败——它是一条坏配置，直接数有支撑的自然不包含它。
+//
+// 读不出凭据事实时（仓储报错）返回 0：这是「我不知道」与「没有」的差别，
+// 但这个字段在列表页只是给管理员一个量级参考，0 会让列表页的徽标变黄
+// （"0 / 4"），而真出错时那次请求本身会失败并被上层看到。
+func (mb *modelsBridge) availableCandidates(ctx context.Context, cands []store.Candidate) int64 {
+	insts, err := mb.candidateInstances(ctx)
+	if err != nil {
+		return 0
+	}
+	var n int64
+	for _, c := range cands {
+		rm, err := mb.b.repos.Models.GetRealModel(ctx, c.RealModelID)
+		if err != nil {
+			continue
+		}
+		if insts[rm.UpstreamID] > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 func (mb *modelsBridge) ReplaceCandidates(ctx context.Context, abstractModelID string, cands []httpapi.AdminCandidateItem, audit httpapi.AdminAuditEntry) ([]httpapi.AdminCandidateItem, string, error) {
@@ -650,4 +747,153 @@ func init() {
 	//（Store 每测试新建），改为在 newAdminBridge 里绑定；init 只留空实现
 	// 说明见 newAdminBridge。
 	_ = ctxOf
+}
+
+// ListModelSources 实现 httpapi.AdminModelSourceStore（契约 §1.1 的两栏数据）。
+//
+// 装配口径：
+//   - 来源 = upstreams 全表（不筛 kind / enabled）：停用的上游必须在界面上
+//     看得见并标「已停用」——把它过滤掉，用户会以为这家没了，而它的凭据还在
+//     库里；enabled=false 的语义已经由 available_instances=0 表达。
+//   - 贡献归因 = ListUpstreamCredentials 的那张 map（键是上游 id），那是全库
+//     唯一一条凭据↔上游的边（见该方法注释）。
+//   - 模型 = 每条上游一次 ListRealModelsByUpstream：直接复用既有的
+//     ORDER BY (sort_order, upstream_model_id)——契约 §1.1 的模型排序就是它。
+//     N+1 次查询在这里可接受：本地 SQLite 读、管理面低频访问、上游数是几十的
+//     量级；换成「一次查全表再在 Go 里按上游分组」要多一个仓储方法，而那次分组
+//     的正确性还得单独测一遍——既有那一个实现已经是契约顺序。
+//   - channels：上面这些行已覆盖 real_models 全表，所以在 Go 里顺手去重就够，
+//     不必再加一个 DISTINCT 查询（两份实现就是两个漂移源）。
+func (mb *modelsBridge) ListModelSources(ctx context.Context) ([]httpapi.AdminModelSource, []string, error) {
+	ups, err := mb.b.repos.Models.ListUpstreams(ctx)
+	if err != nil {
+		return nil, nil, mapStoreErr(err)
+	}
+	creds, err := mb.b.repos.Models.ListUpstreamCredentials(ctx)
+	if err != nil {
+		return nil, nil, mapStoreErr(err)
+	}
+
+	// 先读齐再装配：channels 是**全池**事实（跨所有上游），必须看完全部行才能去重。
+	byUpstream := make(map[int64][]store.RealModel, len(ups))
+	channelSet := make(map[string]struct{})
+	for _, u := range ups {
+		models, err := mb.b.repos.Models.ListRealModelsByUpstream(ctx, u.ID)
+		if err != nil {
+			return nil, nil, mapStoreErr(err)
+		}
+		byUpstream[u.ID] = models
+		for i := range models {
+			// 空串渠道不算渠道：列可空，但「派生不出渠道」在库里也可能落成空串，
+			// 而契约要的是去重**非空**值（空串会变成界面上一个没有名字的芯片）。
+			if ch := models[i].Channel; ch != nil && *ch != "" {
+				channelSet[*ch] = struct{}{}
+			}
+		}
+	}
+	channels := make([]string, 0, len(channelSet))
+	for c := range channelSet {
+		channels = append(channels, c)
+	}
+	sort.Strings(channels)
+
+	out := make([]httpapi.AdminModelSource, 0, len(ups))
+	for _, u := range ups {
+		out = append(out, modelSourceOf(u, creds[u.ID], byUpstream[u.ID]))
+	}
+	return out, channels, nil
+}
+
+// modelSourceOf 把一个上游行 + 它的凭据聚合 + 它的真实模型行翻成契约 §1.1 的来源。
+//
+// 为什么目录增强只认 provider_id：上游名由 contributeUpstreamName 拼成
+// "api:<目录 id>-contrib-<指纹>"，从名字里正则回捞目录 id 也能"猜"出来，但猜
+// 错（例如自定义贡献的 custom 形态）会把一个自建端点标成某家供应商的官方端点，
+// 而界面上没有任何东西能让人看出这是猜的。
+func modelSourceOf(u store.Upstream, cred store.UpstreamCredentialSummary, models []store.RealModel) httpapi.AdminModelSource {
+	pid := providerIDOf(cred.Provider)
+	protocols := httpapi.AdminModelSourceProtocols(u.Kind, pid)
+
+	src := httpapi.AdminModelSource{
+		ID:                 encodeID(idcode.Upstream, u.ID),
+		Kind:               u.Kind,
+		Name:               u.Name, // 目录未命中时用上游行名；命中了在下面换掉
+		UpstreamName:       u.Name,
+		ProviderID:         pid,
+		BaseURL:            u.BaseURL,
+		Enabled:            u.Enabled,
+		Contributed:        cred.Total > 0,
+		CredentialCount:    cred.Active,
+		Protocols:          protocols,
+		AvailableInstances: httpapi.AdminModelSourceInstances(u.Kind, u.Enabled, cred.Active),
+		LastSeenAt:         u.LastSeenAt,
+	}
+	if p, ok := apidir.Get(pid); ok {
+		// 目录是展示事实的权威：命中时用它的展示名与三个链接字段。不回退上游行名，
+		// 否则界面会把 "api:deepseek-com-contrib-key_de2c" 当成供应商名显示。
+		src.Name = p.Name
+		src.Region = p.Region
+		src.Website = p.Website
+		src.APIDoc = p.APIDoc
+	}
+
+	src.Models = make([]httpapi.AdminModelSourceModel, 0, len(models))
+	for i := range models {
+		m := &models[i]
+		src.Models = append(src.Models, httpapi.AdminModelSourceModel{
+			RealModelID:            encodeID(idcode.RealModel, m.ID),
+			UpstreamModelID:        m.UpstreamModelID,
+			DisplayName:            m.DisplayName,
+			Channel:                m.Channel,
+			ContextWindow:          m.ContextWindow,
+			Modalities:             jsonStringList(m.Modalities),
+			Efforts:                jsonStringList(m.Efforts),
+			Status:                 string(m.Status),
+			ExcludedFromCandidates: m.ExcludedFromCandidates,
+			// 模型级协议事实目前不存在，继承来源；复制一份而不是共享切片，
+			// 免得将来某处改一张卡片把同一来源的其它卡片一起改了。
+			Protocols: append([]string(nil), protocols...),
+			AvailableInstances: httpapi.AdminModelSourceModelInstances(
+				src.AvailableInstances, string(m.Status), m.ExcludedFromCandidates),
+		})
+	}
+	// model_count 就是 models 长度：桥是唯一同时知道两者的人，让接口层再数一次
+	// 等于给"两个数不一致"留一个可乘之机。
+	src.ModelCount = len(src.Models)
+	return src
+}
+
+// providerIDOf 从凭据的 provider 列取出目录 id。
+//
+// 两种落库形态（契约 v2 §4）："api:<目录 id>" 与 "custom"。只有前者能对上目录；
+// "custom"、空串与历史脏数据一律返回空串——空串是"不是目录供应商"的表达，
+// 不是"解析失败"，所以没有错误分支（调用方也不该为它写容错）。
+func providerIDOf(provider string) string {
+	const apiPrefix = "api:"
+	if !strings.HasPrefix(provider, apiPrefix) {
+		return ""
+	}
+	return strings.TrimPrefix(provider, apiPrefix)
+}
+
+// jsonStringList 解析 real_models 的 JSON 数组原文（modalities / efforts）。
+//
+// 契约要求「解析失败给 [] 而不是 null」，这里把三种情况统一成 []：列为 NULL、
+// JSON 坏、数组里出现非字符串元素。为什么连第三种也算失败而不是跳过坏元素：
+// 本列只承载字符串枚举，能给前端渲染的值要么全对要么没有——
+// 半份枚举会让界面显示"支持 2 种模态"而实际支持 3 种，这是比空白更坏的错。
+func jsonStringList(raw *string) []string {
+	out := []string{}
+	if raw == nil {
+		return out
+	}
+	var arr []string
+	if err := json.Unmarshal([]byte(*raw), &arr); err != nil {
+		return out
+	}
+	if arr == nil {
+		// 原文是 `null`：与解析失败同义（都没有值），统一成 []。
+		return out
+	}
+	return arr
 }

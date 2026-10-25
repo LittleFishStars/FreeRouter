@@ -91,3 +91,79 @@ func TestGetAndListCopy(t *testing.T) {
 		t.Fatal("List 返回的切片被共享了，改动泄漏到了内部状态")
 	}
 }
+
+// TestCatalogEndpointFacts 钉住 endpoints 的三条数据不变量（契约 §2.3）。
+//
+// 守卫的漂移各有具体后果：① endpoints.openai 与 base_url 分叉——两处都自称
+// 「端点」，分叉后 API 目录显示一个地址、贡献入口又落库另一个地址；② anthropic
+// 端点被写成模板/回环地址——它是事实标注（见包注释「为什么端点清单里会有
+// anthropic」），写进假地址等于让徽标说谎，而徽标没有第二处可以校对；③ 带
+// anthropic 端点的条目数变化——那是数据变更，必须有人同步契约 §1.2 与前端文案。
+func TestCatalogEndpointFacts(t *testing.T) {
+	rows := List()
+	withAnthropic := 0
+	for _, p := range rows {
+		if p.Endpoints.OpenAI == "" {
+			t.Errorf("%s 缺 endpoints.openai（契约 §2.3：每条都要有，不许缺键）", p.ID)
+		} else if p.Endpoints.OpenAI != p.BaseURL {
+			t.Errorf("%s 的 endpoints.openai=%q 与 base_url=%q 不一致（不变量：两者恒相等）",
+				p.ID, p.Endpoints.OpenAI, p.BaseURL)
+		}
+		a := p.Endpoints.Anthropic
+		if a == "" {
+			continue
+		}
+		withAnthropic++
+		if strings.Contains(a, "{") || strings.Contains(a, "localhost") ||
+			strings.Contains(a, "127.") {
+			t.Errorf("%s 的 anthropic 端点不该是模板/回环地址：%s", p.ID, a)
+		}
+	}
+	// 32 是 2026-10-26 从本机 Tingly Box registry 实测的值（55 条里 45 条能对上
+	// registry，其中 32 条带 base_url_anthropic）。改数据要同步改本断言。
+	if withAnthropic != 32 {
+		t.Fatalf("带 anthropic 端点的条目数应为 32，得 %d —— 改数据要同步改本断言与契约 §1.2",
+			withAnthropic)
+	}
+}
+
+// TestProviderProtocols 覆盖 Protocols() 的三条契约：顺序恒 openai 在前、
+// 与 endpoints.anthropic 的存在性一一对应、返回的是副本。
+func TestProviderProtocols(t *testing.T) {
+	for _, p := range List() {
+		got := p.Protocols()
+		want := 1
+		if p.Endpoints.Anthropic != "" {
+			want = 2
+		}
+		if len(got) != want {
+			t.Fatalf("%s 应有 %d 个协议，得 %v", p.ID, want, got)
+		}
+		if got[0] != "openai" {
+			t.Fatalf("%s 的协议列表应以 openai 开头，得 %v（顺序即前端徽标的契约）", p.ID, got)
+		}
+		if want == 2 && got[1] != "anthropic" {
+			t.Fatalf("%s 的第二项应为 anthropic，得 %q", p.ID, got[1])
+		}
+	}
+
+	// 无 anthropic 端点的条目退化成 ["openai"]，而不是空列表或带空串的元素。
+	b, ok := Get("baichuan-com")
+	if !ok {
+		t.Fatal("目录里应有 baichuan-com（本用例拿它当「无 anthropic 端点」的样本）")
+	}
+	if got := b.Protocols(); len(got) != 1 || got[0] != "openai" {
+		t.Fatalf("无 anthropic 端点的条目应退化为 [\"openai\"]，得 %v", got)
+	}
+
+	// 返回副本：调用方改动不得泄漏进目录（否则一次赋值会污染全进程的下一次请求）。
+	p, ok := Get("deepseek-com")
+	if !ok {
+		t.Fatal("目录里应有 deepseek-com")
+	}
+	got := p.Protocols()
+	got[0] = "被改坏"
+	if again, _ := Get("deepseek-com"); again.Protocols()[0] != "openai" {
+		t.Fatal("Protocols 返回的切片被共享了，改动泄漏到了内部状态")
+	}
+}

@@ -12,6 +12,9 @@
    "region": "cn",
    "website": "https://platform.baichuan-ai.com",
    "api_doc": "https://platform.baichuan-ai.com/docs/api",
+   "endpoints": {
+    "openai": "https://api.baichuan-ai.com/v1"
+   },
    "models": []
   },
   {
@@ -23,6 +26,10 @@
    "region": "cn",
    "website": "https://qianfan.cloud.baidu.com",
    "api_doc": "https://cloud.baidu.com/doc/qianfan/s/Hmh4suq26",
+   "endpoints": {
+    "openai": "https://qianfan.baidubce.com/v2",
+    "anthropic": "https://qianfan.baidubce.com/anthropic"
+   },
    "models": [
     {
      "id": "ernie-5.0-thinking-latest"
@@ -38,6 +45,10 @@
    "region": "cn",
    "website": "https://qianfan.cloud.baidu.com",
    "api_doc": "https://cloud.baidu.com/doc/qianfan/s/imlg0beiu",
+   "endpoints": {
+    "openai": "https://qianfan.baidubce.com/v2/coding",
+    "anthropic": "https://qianfan.baidubce.com/anthropic/coding"
+   },
    "models": [
     {
      "id": "qianfan-code-latest"
@@ -80,6 +91,10 @@
    "region": "cn",
    "website": "https://bigmodel.cn/",
    "api_doc": "https://docs.bigmodel.cn/cn/api/introduction",
+   "endpoints": {
+    "openai": "https://open.bigmodel.cn/api/paas/v4",
+    "anthropic": "https://open.bigmodel.cn/api/anthropic"
+   },
    "models": [
     {
      "id": "glm-4.5"
@@ -116,6 +131,10 @@
    "region": "cn",
    "website": "https://bigmodel.cn/",
    "api_doc": "https://docs.bigmodel.cn/cn/api/introduction",
+   "endpoints": {
+    "openai": "https://open.bigmodel.cn/api/coding/paas/v4",
+    "anthropic": "https://open.bigmodel.cn/api/anthropic"
+   },
    "models": [
     {
      "id": "glm-5.3"
@@ -143,6 +162,9 @@
    "region": "global",
    "website": "https://cerebras.ai",
    "api_doc": "https://inference-docs.cerebras.ai/introduction",
+   "endpoints": {
+    "openai": "https://api.cerebras.ai/v1"
+   },
    "models": [
     {
      "id": "gpt-oss-120b"
@@ -161,6 +183,9 @@
    "region": "global",
    "website": "https://cohere.com",
    "api_doc": "https://docs.cohere.com/v2/reference/about",
+   "endpoints": {
+    "openai": "https://api.cohere.ai/compatibility/v1"
+   },
    "models": [
     {
      "id": "command-a-plus-05-2026"
@@ -203,6 +228,10 @@
    "region": "cn",
    "website": "https://bailian.console.aliyun.com/",
    "api_doc": "https://bailian.console.aliyun.com/console?tab=api#/api",
+   "endpoints": {
+    "openai": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "anthropic": "https://dashscope.aliyuncs.com/apps/anthropic"
+   },
    "models": [
     {
      "id": "qwen-max"
@@ -242,6 +271,10 @@
    "region": "cn",
    "website": "https://bailian.console.aliyun.com/",
    "api_doc": "https://bailian.console.aliyun.com/console?tab=api#/api",
+   "endpoints": {
+    "openai": "https://coding.dashscope.aliyuncs.com/v1",
+    "anthropic": "https://coding.dashscope.aliyuncs.com/apps/anthropic"
+   },
    "models": [
     {
      "id": "qwen3-coder-plus"
@@ -284,6 +317,9 @@
    "region": "cn",
    "website": "https://www.aliyun.com/benefit/scene/tokenplan",
    "api_doc": "https://help.aliyun.com/zh/model-studio/token-plan-overview",
+   "endpoints": {
+    "openai": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+   },
    "models": [
     {
      "id": "auto"
@@ -332,6 +368,10 @@
    "region": "intl",
    "website": "https://www.alibabacloud.com/help/en/model-studio/",
    "api_doc": "https://www.alibabacloud.com/help/en/model-studio/first-api-call-to-qwen",
+   "endpoints": {
+    "openai": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    "anthropic": "https://dashscope-intl.aliyuncs.com/apps/anthropic"
+   },
    "models": [
     {
      "id": "qwen-max"
@@ -371,6 +411,10 @@
    "region": "intl",
    "website": "https://www.alibabacloud.com/help/en/model-studio/",
    "api_doc": "https://www.alibabacloud.com/help/en/model-studio/coding-plan",
+   "endpoints": {
+    "openai": "https://coding-intl.dashscope.aliyuncs.com/v1",
+    "anthropic": "https://coding.dashscope.aliyuncs.com/apps/anthropic"
+   },
    "models": [
     {
      "id": "qwen3-coder-plus"
@@ -413,6 +457,9 @@
    "region": "intl",
    "website": "https://www.alibabacloud.com/help/en/model-studio/token-plan-overview",
    "api_doc": "https://www.alibabacloud.com/help/en/model-studio/token-plan-overview",
+   "endpoints": {
+    "openai": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+   },
    "models": [
     {
      "id": "auto"
@@ -461,6 +508,10 @@
    "region": "global",
    "website": "https://deepinfra.com",
    "api_doc": "https://deepinfra.com/docs/advanced/openai_api",
+   "endpoints": {
+    "openai": "https://api.deepinfra.com/v1/openai",
+    "anthropic": "https://api.deepinfra.com/anthropic"
+   },
    "models": []
   },
   {
@@ -472,6 +523,10 @@
    "region": "global",
    "website": "https://deepseek.com",
    "api_doc": "https://api-docs.deepseek.com/",
+   "endpoints": {
+    "openai": "https://api.deepseek.com/v1",
+    "anthropic": "https://api.deepseek.com/anthropic"
+   },
    "models": [
     {
      "id": "deepseek-flash"
@@ -490,6 +545,10 @@
    "region": "global",
    "website": "https://fireworks.ai",
    "api_doc": "https://docs.fireworks.ai/getting-started/quickstart",
+   "endpoints": {
+    "openai": "https://api.fireworks.ai/inference/v1",
+    "anthropic": "https://api.fireworks.ai/inference"
+   },
    "models": [
     {
      "id": "deepseek-v4-flash"
@@ -517,6 +576,9 @@
    "region": "global",
    "website": "https://cloud.google.com/vertex-ai",
    "api_doc": "https://ai.google.dev/gemini-api/docs/openai",
+   "endpoints": {
+    "openai": "https://generativelanguage.googleapis.com/v1beta/openai"
+   },
    "models": [
     {
      "id": "gemini-3.8-flash"
@@ -550,6 +612,9 @@
    "region": "global",
    "website": "https://groq.com",
    "api_doc": "https://console.groq.com/docs/overview",
+   "endpoints": {
+    "openai": "https://api.groq.com/openai/v1"
+   },
    "models": [
     {
      "id": "claude-haiku-4-5-20251001"
@@ -577,6 +642,9 @@
    "region": "global",
    "website": "https://hyperbolic.xyz",
    "api_doc": "https://docs.hyperbolic.xyz/docs/inference-api",
+   "endpoints": {
+    "openai": "https://api.hyperbolic.xyz/v1"
+   },
    "models": []
   },
   {
@@ -588,6 +656,9 @@
    "region": "intl",
    "website": "https://www.kimi.ai/code",
    "api_doc": "https://www.kimi.com/code/docs/en/",
+   "endpoints": {
+    "openai": "https://api.kimi.ai/coding/v1"
+   },
    "models": [
     {
      "id": "kimi-for-coding"
@@ -612,6 +683,10 @@
    "region": "cn",
    "website": "https://www.kimi.com/code",
    "api_doc": "https://www.kimi.com/code/docs/en/",
+   "endpoints": {
+    "openai": "https://api.kimi.com/coding/v1",
+    "anthropic": "https://api.kimi.com/coding/"
+   },
    "models": [
     {
      "id": "kimi-for-coding"
@@ -636,6 +711,9 @@
    "region": "cn",
    "website": "https://platform.lingyiwanwu.com",
    "api_doc": "https://platform.lingyiwanwu.com/docs",
+   "endpoints": {
+    "openai": "https://api.lingyiwanwu.com/v1"
+   },
    "models": []
   },
   {
@@ -647,6 +725,10 @@
    "region": "intl",
    "website": "https://www.minimax.io/",
    "api_doc": "https://platform.minimax.io/docs/api-reference/text-intro",
+   "endpoints": {
+    "openai": "https://api.minimax.io/v1",
+    "anthropic": "https://api.minimax.io/anthropic"
+   },
    "models": [
     {
      "id": "MiniMax-M2"
@@ -686,6 +768,10 @@
    "region": "cn",
    "website": "https://www.minimaxi.com/",
    "api_doc": "https://platform.minimaxi.com/docs/api-reference/text-intro",
+   "endpoints": {
+    "openai": "https://api.minimaxi.com/v1",
+    "anthropic": "https://api.minimaxi.com/anthropic"
+   },
    "models": [
     {
      "id": "MiniMax-M2"
@@ -725,6 +811,9 @@
    "region": "global",
    "website": "https://mistral.ai/",
    "api_doc": "https://docs.mistral.ai/api",
+   "endpoints": {
+    "openai": "https://api.mistral.ai/v1"
+   },
    "models": [
     {
      "id": "mistral-large-2512"
@@ -764,6 +853,10 @@
    "region": "cn",
    "website": "https://www.modelscope.cn",
    "api_doc": "https://www.modelscope.cn/docs/model-service/API-Inference/intro",
+   "endpoints": {
+    "openai": "https://api-inference.modelscope.cn/v1",
+    "anthropic": "https://api-inference.modelscope.cn"
+   },
    "models": []
   },
   {
@@ -775,6 +868,10 @@
    "region": "intl",
    "website": "https://www.moonshot.ai/",
    "api_doc": "https://platform.kimi.ai/docs/api/chat",
+   "endpoints": {
+    "openai": "https://api.moonshot.ai/v1",
+    "anthropic": "https://api.moonshot.ai/anthropic"
+   },
    "models": [
     {
      "id": "kimi-k3"
@@ -799,6 +896,10 @@
    "region": "cn",
    "website": "https://www.moonshot.cn/",
    "api_doc": "https://platform.kimi.com/docs/api/chat",
+   "endpoints": {
+    "openai": "https://api.moonshot.cn/v1",
+    "anthropic": "https://api.moonshot.cn/anthropic"
+   },
    "models": [
     {
      "id": "kimi-k3"
@@ -823,6 +924,10 @@
    "region": "global",
    "website": "https://novita.ai",
    "api_doc": "https://novita.ai/docs/guides/llm-api",
+   "endpoints": {
+    "openai": "https://api.novita.ai/openai",
+    "anthropic": "https://api.novita.ai/anthropic"
+   },
    "models": []
   },
   {
@@ -834,6 +939,9 @@
    "region": "global",
    "website": "https://build.nvidia.com",
    "api_doc": "https://docs.nvidia.com/nim/large-language-models/latest/api-reference.html",
+   "endpoints": {
+    "openai": "https://integrate.api.nvidia.com/v1"
+   },
    "models": [
     {
      "id": "deepseek-ai/deepseek-v4-flash"
@@ -858,6 +966,9 @@
    "region": "global",
    "website": "https://openai.com",
    "api_doc": "https://platform.openai.com/docs/quickstart",
+   "endpoints": {
+    "openai": "https://api.openai.com/v1"
+   },
    "models": [
     {
      "id": "gpt-6-astra"
@@ -921,6 +1032,10 @@
    "region": "global",
    "website": "https://opencode.ai",
    "api_doc": "https://opencode.ai/docs/providers/",
+   "endpoints": {
+    "openai": "https://opencode.ai/zen/v1",
+    "anthropic": "https://opencode.ai/zen"
+   },
    "models": [
     {
      "id": "qwen3.8-max"
@@ -987,6 +1102,10 @@
    "region": "global",
    "website": "https://opencode.ai",
    "api_doc": "https://opencode.ai/docs/providers/",
+   "endpoints": {
+    "openai": "https://opencode.ai/zen/go/v1",
+    "anthropic": "https://opencode.ai/zen/go"
+   },
    "models": [
     {
      "id": "kimi-k3"
@@ -1086,6 +1205,10 @@
    "region": "global",
    "website": "https://openrouter.ai/",
    "api_doc": "",
+   "endpoints": {
+    "openai": "https://openrouter.ai/api/v1",
+    "anthropic": "https://openrouter.ai/api"
+   },
    "models": []
   },
   {
@@ -1097,6 +1220,9 @@
    "region": "global",
    "website": "https://www.perplexity.ai",
    "api_doc": "https://docs.perplexity.ai/api-reference/chat-completions-post",
+   "endpoints": {
+    "openai": "https://api.perplexity.ai"
+   },
    "models": []
   },
   {
@@ -1108,6 +1234,10 @@
    "region": "cn",
    "website": "https://siliconflow.cn",
    "api_doc": "https://docs.siliconflow.cn/cn/userguide/quickstart",
+   "endpoints": {
+    "openai": "https://api.siliconflow.cn/v1",
+    "anthropic": "https://api.siliconflow.cn"
+   },
    "models": []
   },
   {
@@ -1119,6 +1249,10 @@
    "region": "intl",
    "website": "https://siliconflow.com",
    "api_doc": "https://docs.siliconflow.com/en/userguide/quickstart",
+   "endpoints": {
+    "openai": "https://api.siliconflow.com/v1",
+    "anthropic": "https://api.siliconflow.com"
+   },
    "models": []
   },
   {
@@ -1130,6 +1264,10 @@
    "region": "intl",
    "website": "https://platform.stepfun.ai",
    "api_doc": "https://platform.stepfun.ai/docs/en/quickstart/overview",
+   "endpoints": {
+    "openai": "https://api.stepfun.ai/v1",
+    "anthropic": "https://api.stepfun.ai/v1/anthropic"
+   },
    "models": [
     {
      "id": "step-5-preview"
@@ -1154,6 +1292,9 @@
    "region": "intl",
    "website": "https://platform.stepfun.ai",
    "api_doc": "https://platform.stepfun.ai/docs/en/step-plan/overview",
+   "endpoints": {
+    "openai": "https://api.stepfun.ai/step_plan/v1"
+   },
    "models": [
     {
      "id": "step-5-preview"
@@ -1181,6 +1322,10 @@
    "region": "cn",
    "website": "https://platform.stepfun.com",
    "api_doc": "https://platform.stepfun.com/docs/zh/quickstart/overview",
+   "endpoints": {
+    "openai": "https://api.stepfun.com/v1",
+    "anthropic": "https://api.stepfun.com/v1/anthropic"
+   },
    "models": [
     {
      "id": "step-5-preview"
@@ -1205,6 +1350,9 @@
    "region": "cn",
    "website": "https://platform.stepfun.com",
    "api_doc": "https://platform.stepfun.com/docs/zh/step-plan/overview",
+   "endpoints": {
+    "openai": "https://api.stepfun.com/step_plan/v1"
+   },
    "models": [
     {
      "id": "step-5-preview"
@@ -1232,6 +1380,10 @@
    "region": "cn",
    "website": "https://cloud.tencent.com/product/hunyuan",
    "api_doc": "https://cloud.tencent.com/document/product/1729/111007",
+   "endpoints": {
+    "openai": "https://api.hunyuan.cloud.tencent.com/v1",
+    "anthropic": "https://api.hunyuan.cloud.tencent.com/anthropic"
+   },
    "models": [
     {
      "id": "hunyuan-turbos-latest"
@@ -1253,6 +1405,9 @@
    "region": "global",
    "website": "https://together.ai",
    "api_doc": "https://docs.together.ai/docs/quickstart",
+   "endpoints": {
+    "openai": "https://api.together.xyz/v1"
+   },
    "models": [
     {
      "id": "meta-llama/Llama-3.3-70B-Instruct-Turbo"
@@ -1289,6 +1444,9 @@
    "region": "global",
    "website": "https://typesafe.ai/",
    "api_doc": "",
+   "endpoints": {
+    "openai": "https://api.typesafe.ai/v1"
+   },
    "models": [
     {
      "id": "jev-latest"
@@ -1310,6 +1468,9 @@
    "region": "global",
    "website": "https://vercel.com/ai-gateway",
    "api_doc": "https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions",
+   "endpoints": {
+    "openai": "https://ai-gateway.vercel.sh/v1"
+   },
    "models": []
   },
   {
@@ -1321,6 +1482,10 @@
    "region": "cn",
    "website": "https://www.volcengine.com/product/ark",
    "api_doc": "https://www.volcengine.com/docs/82379/1298454",
+   "endpoints": {
+    "openai": "https://ark.cn-beijing.volces.com/api/v3",
+    "anthropic": "https://ark.cn-beijing.volces.com/api/v3"
+   },
    "models": [
     {
      "id": "doubao-seed-evolving"
@@ -1363,6 +1528,10 @@
    "region": "cn",
    "website": "https://www.volcengine.com/product/ark",
    "api_doc": "https://www.volcengine.com/docs/82379/1925114",
+   "endpoints": {
+    "openai": "https://ark.cn-beijing.volces.com/api/coding/v3",
+    "anthropic": "https://ark.cn-beijing.volces.com/api/coding"
+   },
    "models": [
     {
      "id": "ark-code-latest"
@@ -1444,6 +1613,10 @@
    "region": "global",
    "website": "https://xai.com",
    "api_doc": "https://docs.x.ai/developers/model-capabilities/text/comparison",
+   "endpoints": {
+    "openai": "https://api.x.ai/v1",
+    "anthropic": "https://api.x.ai/v1"
+   },
    "models": [
     {
      "id": "grok-3-mini"
@@ -1483,6 +1656,9 @@
    "region": "cn",
    "website": "https://xinghuo.xfyun.cn",
    "api_doc": "https://www.xfyun.cn/doc/spark/HTTP调用文档.html",
+   "endpoints": {
+    "openai": "https://spark-api-open.xf-yun.com/v1"
+   },
    "models": [
     {
      "id": "spark-x"
@@ -1498,6 +1674,9 @@
    "region": "intl",
    "website": "https://platform.xiaomimimo.com",
    "api_doc": "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/quick-access",
+   "endpoints": {
+    "openai": "https://token-plan-ams.xiaomimimo.com/v1"
+   },
    "models": [
     {
      "id": "mimo-v2.6-pro"
@@ -1516,6 +1695,10 @@
    "region": "global",
    "website": "https://platform.xiaomimimo.com",
    "api_doc": "https://platform.xiaomimimo.com/#/docs/api/text-generation/openai-api",
+   "endpoints": {
+    "openai": "https://api.xiaomimimo.com/v1",
+    "anthropic": "https://api.xiaomimimo.com/anthropic"
+   },
    "models": [
     {
      "id": "mimo-v2.6-pro"
@@ -1537,6 +1720,9 @@
    "region": "cn",
    "website": "https://platform.xiaomimimo.com",
    "api_doc": "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/quick-access",
+   "endpoints": {
+    "openai": "https://token-plan-cn.xiaomimimo.com/v1"
+   },
    "models": [
     {
      "id": "mimo-v2.6-pro"
@@ -1555,6 +1741,9 @@
    "region": "intl",
    "website": "https://platform.xiaomimimo.com",
    "api_doc": "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/quick-access",
+   "endpoints": {
+    "openai": "https://token-plan-sgp.xiaomimimo.com/v1"
+   },
    "models": [
     {
      "id": "mimo-v2.6-pro"
@@ -1573,6 +1762,10 @@
    "region": "intl",
    "website": "https://z.ai/",
    "api_doc": "https://docs.z.ai/guides/develop/http/introduction",
+   "endpoints": {
+    "openai": "https://api.z.ai/api/paas/v4",
+    "anthropic": "https://api.z.ai/api/anthropic"
+   },
    "models": [
     {
      "id": "glm-4.5"
@@ -1609,6 +1802,10 @@
    "region": "intl",
    "website": "https://z.ai/",
    "api_doc": "https://docs.z.ai/guides/develop/http/introduction",
+   "endpoints": {
+    "openai": "https://api.z.ai/api/coding/paas/v4",
+    "anthropic": "https://api.z.ai/api/anthropic"
+   },
    "models": [
     {
      "id": "glm-5.3"

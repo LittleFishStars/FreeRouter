@@ -710,6 +710,58 @@ func (r *ModelRepo) ListUpstreams(ctx context.Context) ([]Upstream, error) {
 	return out, nil
 }
 
+// UpstreamCredentialSummary 是一个上游下的凭据聚合（管理面的贡献归因用）。
+type UpstreamCredentialSummary struct {
+	UpstreamID int64
+	// Provider 是该上游下凭据的 provider 列值（值形如 "api:<目录 id>" 或 "custom"）。
+	Provider string
+	Total    int // 该上游下全部凭据条数
+	Active   int // 其中 status='active' 的条数
+}
+
+// ListUpstreamCredentials 按上游聚合贡献凭据，键是 upstreams.id。
+//
+// 关联路径是**全库唯一一条凭据↔上游的边**，要照 internal/upstream/contribution.go
+// 的 Submit 落库顺序读：先建 upstreams 行 → 写 upstream_secrets（带 upstream_id）
+// → 凭据的 secret_ref 存密文行 id 的十进制字符串。所以
+// credential.secret_ref →(CAST)→ upstream_secrets.id → upstream_secrets.upstream_id
+// 是唯一走得通的连接。反方向的 upstreams.secret_id 只对「上游自己那把 key」成立，
+// 对贡献凭据不成立——拿它当连接边会把贡献凭据算到别的上游头上。
+//
+// secret_ref 可能是非数字（自定义流程/历史数据）：CAST 得 0，join 自然落空，
+// 该行不进聚合。这是**有意的**：给它加兜底（比如退回字符串比对）会把「关不上」
+// 变成「关到 id=0 的行上」，那是伪造事实，不是容错。
+//
+// c.provider 在聚合查询里是 bare column（SQLite 取组内任意一行）。这里可以这么写，
+// 是因为上游名由 contributeUpstreamName(provider, 指纹) 生成（provider 进了
+// upstreams.name），同一上游不可能挂两种 provider——确定性来自这个不变量，
+// 不来自 SQL 本身。若将来同一上游可挂多家 provider，这里要先改成显式取值。
+func (r *ModelRepo) ListUpstreamCredentials(ctx context.Context) (map[int64]UpstreamCredentialSummary, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT s.upstream_id, c.provider, COUNT(*) AS total,
+		        SUM(CASE WHEN c.status = 'active' THEN 1 ELSE 0 END) AS active
+		   FROM upstream_credentials c
+		   JOIN upstream_secrets s ON s.id = CAST(c.secret_ref AS INTEGER)
+		  GROUP BY s.upstream_id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 聚合上游凭据失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[int64]UpstreamCredentialSummary)
+	for rows.Next() {
+		var s UpstreamCredentialSummary
+		if err := rows.Scan(&s.UpstreamID, &s.Provider, &s.Total, &s.Active); err != nil {
+			return nil, fmt.Errorf("store: 扫描上游凭据聚合失败: %w", err)
+		}
+		out[s.UpstreamID] = s
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历上游凭据聚合失败: %w", err)
+	}
+	return out, nil
+}
+
 // GetUpstreamByID 按 id 读上游行（管理面的公开访问器）。
 //
 // 为什么导出：PATCH / 改形态 / 详情都要「先读旧行」，而之前只有包内的

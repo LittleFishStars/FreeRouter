@@ -469,6 +469,8 @@ var _ httpapi.AccountProfileStore = accountProfileBridge{}
 func (a *App) buildAdminDeps() *httpapi.AdminDeps {
 	b := newAdminBridge(a.store)
 	authDeps := a.buildConsoleAuth()
+	// Models / Sources 是同一个桥的两个窄接口视角（modelsBridge 无状态，只持有
+	// adminBridge）：同一个实现挂两个字段，胜过再造一个只有转发作用的类型。
 	return &httpapi.AdminDeps{
 		Sess:          authDeps.sess,
 		Hasher:        auth.NewPasswordHasher(a.cfg.Security.PasswordMinLength),
@@ -477,6 +479,7 @@ func (a *App) buildAdminDeps() *httpapi.AdminDeps {
 		Keys:          &keysCountBridge{b: b},
 		Credentials:   &credentialsBridge{b: b},
 		Models:        &modelsBridge{b: b},
+		Sources:       &modelsBridge{b: b},
 		Upstreams:     &upstreamsBridge{b: b},
 		Verifications: &verificationsBridge{b: b},
 		Audit:         &auditBridge{b: b},
