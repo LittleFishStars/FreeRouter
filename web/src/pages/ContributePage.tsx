@@ -609,8 +609,8 @@ export default function ContributePage({ def }: PageProps) {
                           required
                           hint={
                             selected.models.length > 0
-                              ? '可多选：点下面的模型选中/取消，也可手写目录外的模型名（回车添加）；鉴定核对的是声称与事实是否相符。'
-                              : '这家的目录里没有登记模型，请手写模型名（回车添加，可多个）。'
+                              ? '可多选：点下面的模型选中/取消，也可手写回车追加；已选的列在下方（点 ✕ 删除）。'
+                              : '手写模型名回车添加，可多个；已选的列在下方（点 ✕ 删除）。'
                           }
                         >
                           <input
@@ -643,24 +643,28 @@ export default function ContributePage({ def }: PageProps) {
                                   variant={on ? 'filled' : 'outlined'}
                                   color={on ? 'primary' : 'default'}
                                   onClick={() => toggleModel(m.id)}
+                                  onDelete={on ? () => toggleModel(m.id) : undefined}
                                 />
                               )
                             })}
                           </Box>
                         )}
-                        {apiModels.filter((m) => !selected.models.some((c) => c.id === m)).length > 0 && (
-                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
-                            {apiModels
-                              .filter((m) => !selected.models.some((c) => c.id === m))
-                              .map((m) => (
-                                <Chip
-                                  key={m}
-                                  label={m}
-                                  size="small"
-                                  color="primary"
-                                  onDelete={() => toggleModel(m)}
-                                />
-                              ))}
+                        {/* 已选汇总：目录内 + 目录外统一列在这里，删除只能在这里（点 Chip 是选中/取消切换，
+                            汇总行的 ✕ 是明确的移除——两套手势分开，避免「点掉了不想点的」误操作）。 */}
+                        {apiModels.length > 0 && (
+                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, alignItems: 'center' }}>
+                            <Typography variant="caption" color="text.secondary">
+                              已选 {apiModels.length} 个：
+                            </Typography>
+                            {apiModels.map((m) => (
+                              <Chip
+                                key={m}
+                                label={m}
+                                size="small"
+                                color="primary"
+                                onDelete={() => toggleModel(m)}
+                              />
+                            ))}
                           </Box>
                         )}
 
