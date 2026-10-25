@@ -55,6 +55,7 @@ import {
 import PageFrame from './PageFrame'
 import type { PageProps } from '../routes'
 import { FREE_NOTICE } from '../utils/contribute'
+import { PLAIN_FIELD_PROPS, SECRET_FIELD_PROPS } from '../utils/formFields'
 
 /** 自定义供应商在右栏列表里的哨兵 id。
  *
@@ -520,7 +521,7 @@ export default function ContributePage({ def }: PageProps) {
 
                   <Box sx={{ mt: 2 }}>
                     {isCustom ? (
-                      <form className="form-card" onSubmit={onSubmitCustom}>
+                      <form className="form-card" name="contribute-custom" autoComplete="off" onSubmit={onSubmitCustom}>
                         <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
                           自定义供应商
                         </Typography>
@@ -534,6 +535,7 @@ export default function ContributePage({ def }: PageProps) {
                             onChange={(e) => setEndpoint(e.target.value)}
                             required
                             placeholder="https://…"
+                            {...PLAIN_FIELD_PROPS}
                           />
                         </Field>
                         <Field label="API Key" required hint="提交后不再显示，也不会出现在任何页面。">
@@ -542,7 +544,7 @@ export default function ContributePage({ def }: PageProps) {
                             value={customKey}
                             onChange={(e) => setCustomKey(e.target.value)}
                             required
-                            autoComplete="off"
+                            {...SECRET_FIELD_PROPS}
                           />
                         </Field>
                         <Field
@@ -550,7 +552,12 @@ export default function ContributePage({ def }: PageProps) {
                           required
                           hint="你自己认得出的名字，例如「备用号」；凭据列表里只能靠它识别。"
                         >
-                          <input value={customLabel} onChange={(e) => setCustomLabel(e.target.value)} required />
+                          <input
+                            value={customLabel}
+                            onChange={(e) => setCustomLabel(e.target.value)}
+                            required
+                            {...PLAIN_FIELD_PROPS}
+                          />
                         </Field>
                         <Field
                           label="声称的模型"
@@ -570,7 +577,7 @@ export default function ContributePage({ def }: PageProps) {
                         </button>
                       </form>
                     ) : selected ? (
-                      <form className="form-card" onSubmit={onSubmitApi}>
+                      <form className="form-card" name="contribute-api" autoComplete="off" onSubmit={onSubmitApi}>
                         <div>
                           <Typography variant="body2" sx={{ fontWeight: 600 }}>
                             {selected.name}
@@ -629,6 +636,7 @@ export default function ContributePage({ def }: PageProps) {
                               }
                             }}
                             placeholder={selected.models.length > 0 ? '手写目录外的模型名，回车添加' : '例如 deepseek-flash，回车添加'}
+                            {...PLAIN_FIELD_PROPS}
                           />
                         </Field>
                         {selected.models.length > 0 && (
@@ -675,11 +683,11 @@ export default function ContributePage({ def }: PageProps) {
                             value={apiKey}
                             onChange={(e) => setApiKey(e.target.value)}
                             required
-                            autoComplete="off"
+                            {...SECRET_FIELD_PROPS}
                           />
                         </Field>
                         <Field label="标签" hint="可选；未登录建号时用作显示名，凭据列表里也只能靠它识别。">
-                          <input value={apiLabel} onChange={(e) => setApiLabel(e.target.value)} />
+                          <input value={apiLabel} onChange={(e) => setApiLabel(e.target.value)} {...PLAIN_FIELD_PROPS} />
                         </Field>
 
                         <FormError error={apiError} />
@@ -1046,7 +1054,7 @@ export function ContributeRecoveryPage({ def }: PageProps) {
       ) : (
         <form className="form-card" onSubmit={onSubmit}>
           <Field label="恢复码" required hint="区分大小写；只可使用一次。">
-            <input value={code} onChange={(e) => setCode(e.target.value)} required autoComplete="off" />
+            <input value={code} onChange={(e) => setCode(e.target.value)} required {...SECRET_FIELD_PROPS} />
           </Field>
           <FormError error={error} />
           <button type="submit" className="btn-primary" disabled={submitting}>
