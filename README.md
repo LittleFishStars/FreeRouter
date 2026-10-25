@@ -227,5 +227,6 @@ FreeRouter 的核心用法是把各大厂 Agent 的个人免费额度**共享**�
 | 资源 | 许可证 | 用途 |
 |---|---|---|
 | [Tabler Icons](https://tabler.io/icons)（`@tabler/icons-react`） | **MIT** | 全站图标。风格参数（线性 / 1.75 线宽 / round 端点 / 四个尺寸档）由 `web/src/icons.tsx` 统一收口，见 [docs/ui/06-design.md](docs/ui/06-design.md) 2.4 |
+| [JetBrains Maple Mono](https://github.com/SpaceTimee/Fusion-JetBrainsMapleMono) | **OFL-1.1** | 界面字体。按界面字符子集化后随二进制分发（`web/src/assets/fonts/`，三档合计 2.6 MB），重新生成见 `web/scripts/build-fonts.py`；许可证与字形版权见该目录 `LICENSE-fonts.txt` |
 | Material UI v9 + Emotion | MIT | 控制台组件库 |
 | Tingly Box provider catalog | MPL-2.0 | 仅取事实字段（端点与模型 id）落到 `internal/apidir/catalog.json`，不含其代码 |

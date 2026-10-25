@@ -160,6 +160,32 @@ import { IconEye } from '@tabler/icons-react'
   `aria-label`，且是必填参数（类型层面拦住了漏写）。
 - 工具栏的 `ToolButton` 有可见文字，图标不再单独播报。
 
+### 2.5 字体（2026-10-25 定）
+
+界面字体：**JetBrains Maple Mono**（等宽 CJK，OFL-1.1）。
+
+它是等宽字体，中文与拉丁宽度严格 **2:1**（实测 1200 : 600 单位），所以：
+表格列天然对齐、`.metric-value` 这类大数字不必额外开 `tabular-nums` 也不会跳。
+这不是"顺手选了一款好看的等宽"，而是上面 2.3 的密度取向在字体层的延续。
+
+**为什么不直接内嵌完整字体**：上游每字重 18.5 MB（全量 CJK 20975 字 + Nerd Font
+图标），16 字重共 294 MB。`web/scripts/build-fonts.py` 按界面实际用到的字符
+（源码扫描 + ASCII + 常用汉字 3500）裁出子集，三档合计 2.6 MB，随单二进制分发。
+
+**四条约定的细则**：
+
+| 约定 | 做法 | 理由 |
+|---|---|---|
+| 来源 | 本地 `local()` 优先，子集 `url()` 兜底 | 装了这款字体的机器**零下载**；没装的才拉 2.6 MB |
+| 字重 | 只声明 400 / 600 / 700 | 界面实际视觉档位就这三档（500 落 400、650 落 700），每多一档 +870 KB |
+| 连字 | 正文关 `calt/liga`，代码处开 | 正文里 `a -> b` 若渲染成箭头，用户看到的与复制到的不一致 |
+| 兜底 | 栈尾接系统等宽与中文族 | 子集外的生僻字（用户输入的名字/模型名）回退而不是豆腐块 |
+
+`theme.ts`（MUI 组件）与 `tokens.ts`（写 `--fr-font-ui` 供 `style.css` 的原生控件用）
+**必须同源**——否则输入框和它旁边的按钮会长得不是一套东西。
+
+源码文案新增了生僻字之后，重跑 `cd web && python3 scripts/build-fonts.py`。
+
 ## 3. 表单约定
 
 ### 3.1 字段级约定
@@ -370,6 +396,7 @@ import { IconEye } from '@tabler/icons-react'
 |---|---|---|
 | 主题与令牌 | `src/tokens.ts`（唯一色值源，五个表面层级 + 语义容器色）→ `main.tsx` 写成 `--fr-*` 变量 → `src/theme.ts` 两个 `createTheme`（light / dark，`cssVariables: { cssVarPrefix: 'fr' }`）+ `style.css` 引用变量 | ✅ |
 | 图标 | **Tabler Icons v3（MIT）**，经 `src/icons.tsx` 统一出口（语义尺寸档 + 固定 1.75 线宽 + round 端点）；`@mui/icons-material` 已移除。纯图标按钮走 `components/IconButtons.tsx`（`label` 必填，同时作 tooltip 与 aria-label） | ✅ |
+| 字体 | **JetBrains Maple Mono**（OFL-1.1，等宽 CJK，中英 2:1）。`src/fonts.css` 声明三档字重，`local()` 优先零下载、`url()` 拉子集（`scripts/build-fonts.py` 生成，合计 2.6 MB，随二进制分发）；`theme.ts` 与 `tokens.ts` 的字体栈同源 | ✅ |
 | 加载态 | MUI `Skeleton`（`ui.tsx` 的 `LoadingBlock`）；列表页默认 3 行 | ✅ |
 | 路由与布局 | React Router 7 + `HashRouter`；路由由 `routes.ts` 的 `PAGES` 表生成，`App.tsx` 只做装配 | ✅ |
 | 导航 | 桌面 MUI `AppBar` + 常驻侧栏；< 768px 收进 `Drawer` 抽屉 | ✅ |

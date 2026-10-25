@@ -25,7 +25,7 @@
 | 栏 | 用户要做什么 | 提交方式 |
 |---|---|---|
 | 左：反代供应商 | 用供应商账号登录（跳转 / 设备码 / 扫码 / 短信） | `POST /api/contributions/oauth/{provider}`，完成后自动加 `contributor` 类 |
-| 右：API 供应商 | 从内置目录（55 家，来自 Tingly Box）选一家，贴 Key（端点自动带出） | `POST /api/contributions`，`kind=api` + `provider=<catalog id>` |
+| 右：API 供应商 | 从内置目录（55 家，来自 Tingly Box）选一家，贴 Key（端点自动带出；**不用填模型**，服务端探测） | `POST /api/contributions`，`kind=api` + `provider=<catalog id>` |
 | 右：自定义供应商（列表置顶项） | 填 base_url + Key + 声称模型（自建网关 / 局域网 / 其它中转） | `POST /api/contributions`，`kind=custom` |
 
 **为什么双栏而不是 Tab 切换**：两类入口是**并列的选择**而不是同一件事的几种形态——
@@ -54,7 +54,7 @@ Key），只是端点来源从内置目录换成用户手填——放在同一�
 |---|---|
 | 标签 | `external_label`，贡献时必填 |
 | 类型 | 供应商 OAuth / API Key |
-| 声称的模型 | **贡献时自己填的那个名字** |
+| 声称的模型 | **贡献时自己填的那个名字**；API 供应商型不再填（服务端探测得出），自定义供应商型仍由贡献者填 |
 | 状态 | 启用 / 暂停 / 封禁 |
 | 鉴定判定 | `verified` / `suspect` / `unverified` / `trusted` |
 | 贡献时间 | —— |

@@ -228,12 +228,18 @@ provider catalog 提取的事实字段：端点与模型 id，**不含其代码*
 请求体的 `kind` 决定「端点从哪来」：
 
 ```json
-{"kind": "api", "provider": "deepseek-com", "api_key": "sk-……",
- "label": "我的备用 Key", "claimed_models": ["deepseek-flash", "deepseek-reasoner"]}
+// kind=api：只给供应商 + Key（2026-10-25 定案，不再要求 claimed_models）
+{"kind": "api", "provider": "deepseek-com", "api_key": "sk-……", "label": "我的备用 Key"}
 
+// kind=custom：端点由客户端提供，claimed_models 仍可选
 {"kind": "custom", "endpoint": "https://api.example.com/v1", "api_key": "sk-……",
  "label": "自建网关", "claimed_models": ["some-model-id"]}
 ```
+
+**`kind=api` 的 `claimed_models` 可选且前端不再传**（2026-10-25）：内置目录里的
+供应商，其模型清单一律由服务端探测 `/models` 得出。让贡献者手抄模型名时，抄的
+名字与实际 id 常不一致（大小写、后缀、版本号），反而制造假阴性。不传时走
+「未声明任何模型」一行（下表末行），落 `active/unverified` 并进复检队列。
 
 - `kind` 缺省为 `custom`（旧客户端不带该字段仍可用）。
 - `kind=api` 时 **不要传 endpoint**：端点由服务端从内置目录取（传了也忽略）。

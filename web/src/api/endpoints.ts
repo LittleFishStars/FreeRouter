@@ -193,7 +193,8 @@ export function cancelOAuthContribution(provider: string, sessionId: string) {
  * label 在未登录建号时用作显示名，可留空。
  */
 export type ContributionSubmitInput =
-  | { kind: 'api'; provider: string; api_key: string; label: string; claimed_models: string[] }
+  // kind=api 不收 claimed_models（2026-10-25 定案）：可用模型由服务端探测得出。
+  | { kind: 'api'; provider: string; api_key: string; label: string }
   | { kind: 'custom'; endpoint: string; api_key: string; label: string; claimed_models: string[] }
 
 export interface ContributeResult {
