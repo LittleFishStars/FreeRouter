@@ -30,16 +30,16 @@ import type { AdminGroup, GroupPool, GroupPolicyQuota, GroupPolicies } from '../
 import { useApi } from '../../hooks/useApi'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import { ACTION_ICON, TableAction, TableActions, ToolButton } from '../../components/IconButtons'
-import { IconCopy, IconDelete, IconPlus, IconView } from '../../icons'
+import { IconChevronDown, IconCopy, IconDelete, IconMembers, IconPlus, IconView } from '../../icons'
 import {
   AsyncView,
   Badge,
   Banner,
-  DataTable,
   EmptyState,
   Field,
   FormError,
   KeyValues,
+  LoadingBlock,
   Section
 } from '../../components/ui'
 import { fmtNum, fmtTime, truncate } from '../../utils/format'
@@ -52,7 +52,96 @@ const UNITS = [
   ['credit', 'Credits']
 ] as const
 
-// ── 列表 ───────────────────────────────────────────────────────────────
+// ── 列表 ─────────────────────────────────────────────────────────────────────
+
+// ExpDetail 是展开区的按需加载态（与抽象模型列表同模式）：列表端点只有
+type ExpDetail =
+  | { state: 'loading' }
+  | { state: 'ready'; models: string[] }
+  | { state: 'error' }
+
+// 单行组卡片 + （展开时）横向授权模型芯片条。形态对齐抽象模型列表的 ModelRow：
+// 一行一组，点击展开同一行下方的芯片条；芯片只展示不做链接（模型对外名 →
+// 编辑页需要 id，列表数据里没有，造一次按名反查的往返不值得——要改授权去组详情）。
+function GroupRow({
+  g,
+  expanded,
+  onToggle,
+  detail,
+  onDuplicate,
+  onDelete
+}: {
+  g: AdminGroup
+  expanded: boolean
+  onToggle: () => void
+  detail: ExpDetail | undefined
+  onDuplicate: () => void
+  onDelete: () => void
+}) {
+  const detailTo = `/admin/groups/${encodeURIComponent(g.id)}`
+  return (
+    <div className="am-row" data-expanded={expanded}>
+      <div className="am-row-head" onClick={onToggle}>
+        <span className="am-row-main">
+          <Link to={detailTo} onClick={(e) => e.stopPropagation()}>
+            <code>{g.name}</code>
+          </Link>
+        </span>
+        <span className="am-row-display">{g.description || '—'}</span>
+        <span className="am-row-cell">{g.is_default && <Badge tone="info">默认</Badge>}</span>
+        <span className="am-row-cell am-row-mode" title="成员数">
+          <IconMembers size="xs" /> {fmtNum(g.member_count)}
+        </span>
+        <span className="am-row-chain">{fmtTime(g.created_at)}</span>
+        <span className="am-row-ops" onClick={(e) => e.stopPropagation()}>
+          <TableActions>
+            <TableAction icon={<IconView size={ACTION_ICON} />} label="组详情" to={detailTo} />
+            <TableAction icon={<IconCopy size={ACTION_ICON} />} label="复制组" onClick={onDuplicate} />
+            {!g.is_default && (
+              <TableAction icon={<IconDelete size={ACTION_ICON} />} label="删除组" tone="danger" onClick={onDelete} />
+            )}
+          </TableActions>
+          <button
+            type="button"
+            className="am-expand"
+            data-open={expanded}
+            onClick={onToggle}
+            aria-expanded={expanded}
+            aria-label={expanded ? '收起授权模型' : '展开授权模型'}
+          >
+            <IconChevronDown size="sm" />
+          </button>
+        </span>
+      </div>
+      {expanded && (
+        <div className="am-expand-body">
+          {detail?.state === 'loading' && (
+            <div className="am-loading">
+              <LoadingBlock rows={1} />
+            </div>
+          )}
+          {detail?.state === 'error' && <div className="am-error muted">授权模型加载失败，请重试。</div>}
+          {detail?.state === 'ready' && (
+            <div className="am-chip-row">
+              {detail.models.length === 0 ? (
+                <span className="muted am-empty">未授权任何模型（继承默认组的全量授权）。</span>
+              ) : (
+                detail.models.map((name) => (
+                  <span key={name} className="am-chip" title="该组授权的抽象模型">
+                    <span className="am-chip-name">{name}</span>
+                  </span>
+                ))
+              )}
+              <Link to={detailTo} className="am-add-chip">
+                <IconView size="xs" /> 组详情里授权
+              </Link>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export function GroupsPage({ def }: PageProps) {
   const q = useApi(() => listGroups({ limit: 100 }), [])
@@ -64,6 +153,25 @@ export function GroupsPage({ def }: PageProps) {
   const [deleting, setDeleting] = useState<AdminGroup | null>(null)
   const [duplicating, setDuplicating] = useState<AdminGroup | null>(null)
   const [newName, setNewName] = useState('')
+  // 卡片条改版（2026-10-26，照抽象模型列表的形态）：同时只允许一行展开，
+  // 展开时按需拉 getGroup(id) 拿授权模型清单（列表端点只有计数）。
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [details, setDetails] = useState<Record<string, ExpDetail>>({})
+
+  useEffect(() => {
+    if (!expandedId) return
+    if (details[expandedId]) return
+    setDetails((d) => ({ ...d, [expandedId]: { state: 'loading' } }))
+    getGroup(expandedId)
+      .then((g) => setDetails((d) => ({ ...d, [expandedId]: { state: 'ready', models: g.models ?? [] } })))
+      .catch(() => setDetails((d) => ({ ...d, [expandedId]: { state: 'error' } })))
+    // details 故意不进依赖：它的变化不该重新触发拉取（缓存命中早退已保证）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandedId])
+
+  function toggle(id: string) {
+    setExpandedId((prev) => (prev === id ? null : id))
+  }
 
   async function submitCreate() {
     setBusy(true)
@@ -157,44 +265,23 @@ export function GroupsPage({ def }: PageProps) {
       >
         {(d) => (
           <Section title={`组（${d.total ?? d.data.length}）`}>
-            <DataTable headers={['组名', '描述', '默认组', '成员数', '创建时间', '操作']}>
+            <div className="am-list">
               {d.data.map((g) => (
-                <tr key={g.id}>
-                  <td><Link to={`/admin/groups/${encodeURIComponent(g.id)}`}>{g.name}</Link></td>
-                  <td className="cell-wrap">{g.description || '—'}</td>
-                  <td>{g.is_default ? <Badge tone="info">默认</Badge> : '—'}</td>
-                  <td>{fmtNum(g.member_count)}</td>
-                  <td>{fmtTime(g.created_at)}</td>
-                  <td className="cell-actions">
-                    {/* 操作列只给图标：一列文字按钮会让每行重复同样的名词，
-                        且把表格撑宽 200px；名字走 tooltip + aria-label。 */}
-                    <TableActions>
-                      <TableAction
-                        icon={<IconView size={ACTION_ICON} />}
-                        label="组详情"
-                        to={`/admin/groups/${encodeURIComponent(g.id)}`}
-                      />
-                      <TableAction
-                        icon={<IconCopy size={ACTION_ICON} />}
-                        label="复制组"
-                        onClick={() => {
-                          setDuplicating(g)
-                          setNewName(`${g.name}-copy`)
-                        }}
-                      />
-                      {!g.is_default && (
-                        <TableAction
-                          icon={<IconDelete size={ACTION_ICON} />}
-                          label="删除组"
-                          tone="danger"
-                          onClick={() => setDeleting(g)}
-                        />
-                      )}
-                    </TableActions>
-                  </td>
-                </tr>
+                <GroupRow
+                  key={g.id}
+                  g={g}
+                  expanded={expandedId === g.id}
+                  onToggle={() => toggle(g.id)}
+                  detail={expandedId === g.id ? (details[g.id] ?? undefined) : undefined}
+                  onDuplicate={() => {
+                    setDuplicating(g)
+                    setNewName(`${g.name}-copy`)
+                  }}
+                  onDelete={() => setDeleting(g)}
+                />
               ))}
-            </DataTable>
+            </div>
+            {d.data.length === 0 && <p className="muted">没有组。</p>}
           </Section>
         )}
       </AsyncView>

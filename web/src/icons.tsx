@@ -170,3 +170,6 @@ export const STATUS_GLYPH = {
   info: IconInfo,
   muted: IconIdle
 } as const
+
+/** 成员数（组行卡）：复用导航账户同款人形图标，语义是"这个组里有几个人"。 */
+export const IconMembers = glyph(TB.IconUsers)

@@ -13,6 +13,28 @@
 
 ### 变更
 
+- **凭据池改版：供应商两栏，并入上游管理与真实模型目录**（2026-10-26 用户决定）：
+  `/admin/credentials` 重写为左栏供应商列表（贡献凭据/平台渠道分组 + O/A 徽标 +
+  搜索），右栏来源头部（启停/编辑）+ 凭据块（行点击进详情，「+ 添加凭据」跳贡献
+  入口）+ 模型块（芯片条，点芯片弹编辑，「+ 添加模型」弹窗手工登记目录自动发现
+  拿不到的模型）。`/admin/upstreams` 与 `/admin/real-models` 两条路由删除。
+  - **新端点**：`POST /api/admin/real-models`（手工登记，source=override，幂等：
+    命中既有行回 200+created=false 不写审计；aggregate/* 拒绝）；
+    `GET /api/admin/model-sources` 每个来源内嵌 `credentials` 数组（不筛状态）。
+  - **修复 UpsertRealModel 的整行冻结缺陷**：旧 ON CONFLICT 带 `WHERE
+    source='auto'`，与 01-catalog.md §3.3「保护人工字段而非整行」直接冲突——
+    手工登记行在目录重新出现后永远停在 missing，人工改过显示名后上游新增的
+    模态/档位永远同步不进来。改为按字段类分流：上游权威字段（channel 仅非
+    NULL 覆盖、modalities/efforts/status/last_seen_at）恒更新；人工字段仅在
+    存量 auto 或本次是人工写时更新；source 由人工写翻 override（桥注释一直
+    声称的行为，SET 里从未兑现）。新增 12 条契约测试钉住。
+
+- **组列表改卡片条**（2026-10-26 用户决定，照抽象模型列表形态）：一行一组，
+  点击展开同一行下方的横向授权模型芯片条（只展示，改授权去组详情）+「组详情里
+  授权」入口芯片；同时只允许一行展开，展开时按需拉 getGroup(id)。新建/复制/
+  删除表单与危险确认全部保留。
+
+
 - **候选集不再设权重，平局按声明序**（2026-10-26 用户决定）：排序条件
   （expiry-first / balance / speed / price）次序相同时，按管理员在候选集
   编辑器里排列的顺序决定先后。
