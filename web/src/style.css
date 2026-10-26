@@ -1549,6 +1549,9 @@ a.metric-link:hover {
   justify-content: center;
   width: 1.9rem;
   height: 1.9rem;
+  padding: 0;
+  border: none;
+  min-height: 0;
   border-radius: var(--fr-radius-full);
   background: var(--fr-inset);
   color: var(--fr-on-surface-variant);
@@ -1968,4 +1971,151 @@ a.metric-link:hover {
 button.am-add-chip {
   border: none;
   min-height: 0;
+}
+
+/* ---------- 候选集编辑弹窗：当前候选芯片条（task-8 收编） ---------- */
+/* 声明序就是数组序：序号 + ←→ 调序 + ✕ 移除 + 点芯片展开渠道范围。
+   层级同其它填充色阶：弹窗底(--fr-card) > 芯片(--fr-block) > 编辑区(--fr-inset)。 */
+.amd-cur {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: var(--fr-radius-xl);
+  background: var(--fr-block);
+  margin-bottom: 0.9rem;
+}
+
+.amd-cur-title {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--fr-on-surface-variant);
+}
+
+.amd-cur-empty {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.amd-cur-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding-bottom: 0.1rem;
+}
+
+.amd-cur-chip {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--fr-radius-md);
+  background: var(--fr-inset);
+  overflow: hidden;
+}
+
+.amd-cur-chip[data-off='true'] {
+  opacity: 0.55;
+}
+
+.amd-cur-chip[data-expanded='true'] {
+  background: var(--fr-primary-soft);
+}
+
+.amd-cur-chip-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.32rem 0.6rem;
+  border: none;
+  min-height: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--fr-on-surface);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.amd-cur-chip-idx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.05rem;
+  height: 1.05rem;
+  border-radius: var(--fr-radius-full);
+  background: var(--fr-card);
+  color: var(--fr-on-surface-variant);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.amd-cur-chip-name {
+  font-weight: 600;
+}
+
+.amd-cur-chip-scope {
+  font-size: 0.72rem;
+  color: var(--fr-on-surface-variant);
+}
+
+.amd-cur-chip-ops {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0 0.45rem 0.3rem;
+}
+
+.amd-cur-op {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  /* 全局 button 规则带 padding 0.9rem + min-height 34 + 边框：border-box 下
+     会把 1.35rem 的内容区挤成 0（图标消失）。图标按钮必须自己清干净。 */
+  padding: 0;
+  border: none;
+  min-height: 0;
+  border-radius: var(--fr-radius-full);
+  background: var(--fr-card);
+  color: var(--fr-on-surface-variant);
+  cursor: pointer;
+}
+
+.amd-cur-op:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.amd-cur-op:hover:not(:disabled) {
+  background: var(--fr-primary-soft);
+  color: var(--fr-primary);
+}
+
+/* 芯片展开的渠道范围编辑区（跨整条宽度，跟在芯片条后面） */
+.amd-cur-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--fr-radius-md);
+  background: var(--fr-card);
+  width: 100%;
+}
+
+/* 行内按钮伪装成链接（「候选集」入口：原来是指向已删除路由的 <Link>） */
+.am-op-link {
+  background: transparent;
+  color: var(--fr-primary);
+  cursor: pointer;
+  font-size: inherit;
+  font-weight: 600;
+  padding: 0;
+  border: none;
+  min-height: 0;
+}
+
+.am-op-link:hover {
+  text-decoration: underline;
 }
