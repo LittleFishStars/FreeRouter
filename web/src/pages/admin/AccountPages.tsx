@@ -591,7 +591,7 @@ export function AccountDetailPage({ def }: PageProps) {
           <>
           <div className="field-row">
             <Field label="目标账户 ID" required hint="合并前请确认对象：这是本操作最贵的错误。">
-              <input value={mergeTarget} onChange={(e) => { setMergeTarget(e.target.value); setMergePlan(null) }} placeholder="acc_…" />
+              <input value={mergeTarget} onChange={(e) => { setMergeTarget(e.target.value); setMergePlan(null) }} placeholder="UUID（36 字符）" />
             </Field>
             <button
               type="button"
@@ -631,8 +631,10 @@ export function AccountDetailPage({ def }: PageProps) {
                   {mergePlan.group_relations} 条组关系；
                   类并集：{mergePlan.source_classes.join(' / ') || '无'} ∪{' '}
                   {mergePlan.target_classes.join(' / ') || '无'}。
+                  {/* 短码取 id 末 8 位，与后端 store.shortCode 同口径：UUID 前段
+                      在所有 id 里都一样，区分度全在随机段；整串塞进 Key 名会撑破列表。 */}
                   {mergePlan.renamed_keys.length > 0 &&
-                    ` 其中 ${mergePlan.renamed_keys.length} 把同名 Key 会被自动改名（追加 -from-${mergePlan.source_id.replace('acc_', '')}）。`}
+                    ` 其中 ${mergePlan.renamed_keys.length} 把同名 Key 会被自动改名（追加 -from-${mergePlan.source_id.slice(-8)}）。`}
                 </Banner>
               )}
             </div>

@@ -1379,19 +1379,20 @@ func adminWriteParamErr(w http.ResponseWriter, param, msg string) {
 	writeErrorParam(w, http.StatusBadRequest, "invalid_request", param, msg)
 }
 
-// idParamValid 解 {id} 类的路径参数并校验 idcode 前缀（lead 裁决①：id
-// 前缀混用必须在解码层失败——拿 acc_1 打 groups 端点不该走到查错表）。
+// idParamValid 校验 {id} 类路径参数的形状。
+//
+// 2026-10-26 UUID 改造：id 不再带前缀（见 internal/idgen 包注释），前缀形参
+// 随之消失。lead 裁决①（跨资源误用不许走到查错表）的**落点因此变了**：
+// 旧世界在解码层按前缀拒（`acc_1` 打 groups 端点直接 400），新世界形状校验
+// 只能判"是不是 UUID"，跨资源的判定挪到「在错误的表里按主键查不到 → 404」。
 //
 // 为什么集中在这里：账户/组/真实模型/抽象模型/上游/凭据/鉴定/审计/收件箱
-// 九个资源面都是同一个形状，各写一份就必然出现「改了期望前缀但忘了改 msg，
-// 或者反过来」的漂移。want 只是给人看的中文资源名，前缀取自 idcode 常量，
-// 所以 400 文案里的「期望 xx_<数字>」与 Decode 的判据永远同源。
-// idParamValid 校验路径参数的形状。
+// 九个资源面共用同一个形状，各写一份就必然出现「改了判据但忘了改文案」的
+// 漂移。want 是给人看的中文资源名，只进 400 文案。
 //
-// 2026-10-26 UUID 改造：id 不再带前缀（见 internal/idgen 包注释），prefix
-// 形参随之消失；错误提示改成期望 UUID。校验通过时返回**归一化后的值**
-// （trim + 小写），调用方拿去解码/查库的就是这一份——带空格的同一个 id
-// 被当成两个不同 id 是数据问题，必须在门口归一。
+// 校验通过时返回**归一化后的值**（trim + 小写）：带空格或大写的同一个 id
+// 若原样传下去，会在库里被当成两个不同 id——那是数据问题，不是显示问题，
+// 必须在门口归一。
 func idParamValid(w http.ResponseWriter, r *http.Request, param, want string) (string, bool) {
 	id, err := idgen.Parse(chi.URLParam(r, param))
 	if err != nil {

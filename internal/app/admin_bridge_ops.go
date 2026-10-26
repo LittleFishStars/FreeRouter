@@ -2,7 +2,7 @@
 //
 // 桥要点：
 //   - relay base_url 空值补定案值 sidecar://<name>（task-20 桥清单 ②）；
-//   - Inbox：AdminInboxFilter → store.InboxFilter 映射 + idcode 转换；
+//   - Inbox：AdminInboxFilter → store.InboxFilter 映射 + related_id 原样透传；
 //     SetRead/MarkReadBatch 与 inbox_read 审计**同事务**（06-audit §3.1）；
 //   - Audit Export：csv|jsonl 两种（csv 按 RFC4180 精神转义引号/逗号，
 //     jsonl 逐行 JSON）——§13 待定项先两者都给；

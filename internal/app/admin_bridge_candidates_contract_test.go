@@ -110,13 +110,6 @@ func seedActiveCredential(t *testing.T, a *App, upstreamID string, provider stri
 	}
 }
 
-// idcodeAbs 现在是恒等：桥对外的 id 就是库内主键（UUID 文本），不再有
-// am_<n> 这层编码（2026-10-26 UUID 改造）。函数保留只为少改调用点。
-func idcodeAbs(t *testing.T, id string) string {
-	t.Helper()
-	return id
-}
-
 // TestContractCandidateInstancesFollowCredentials 钉住「候选的可用实例数来自
 // 凭据事实」：有 active 凭据的上游上的候选 → 有支撑；没有凭据的 → 没支撑。
 func TestContractCandidateInstancesFollowCredentials(t *testing.T) {
@@ -145,7 +138,7 @@ func TestContractCandidateInstancesFollowCredentials(t *testing.T) {
 	seedActiveCredential(t, a, withCredUp, "api:deepseek-com")
 
 	mb := &modelsBridge{b: newAdminBridge(a.store)}
-	items, err := mb.ListCandidates(ctx, idcodeAbs(t, amID))
+	items, err := mb.ListCandidates(ctx, amID)
 	if err != nil {
 		t.Fatalf("列候选失败: %v", err)
 	}
@@ -158,7 +151,7 @@ func TestContractCandidateInstancesFollowCredentials(t *testing.T) {
 	}
 
 	// 无凭据的那条：必须是 0，且这与"有凭据"那���形成对照——不是所有候选都恒 0。
-	itemsNo, err := mb.ListCandidates(ctx, idcodeAbs(t, amIDNoCred))
+	itemsNo, err := mb.ListCandidates(ctx, amIDNoCred)
 	if err != nil {
 		t.Fatalf("列候选失败: %v", err)
 	}
@@ -196,7 +189,7 @@ func TestContractAvailableCandidateCountCountsSupported(t *testing.T) {
 	seedActiveCredential(t, a, up, "api:deepseek-com")
 
 	mb := &modelsBridge{b: newAdminBridge(a.store)}
-	m, err := mb.GetAbstractModel(ctx, idcodeAbs(t, amID))
+	m, err := mb.GetAbstractModel(ctx, amID)
 	if err != nil {
 		t.Fatalf("读抽象模型失败: %v", err)
 	}
@@ -207,7 +200,7 @@ func TestContractAvailableCandidateCountCountsSupported(t *testing.T) {
 		t.Fatalf("有凭据支撑时可用候选应为 1，实得 %d", m.AvailableCandidateCount)
 	}
 
-	mNo, err := mb.GetAbstractModel(ctx, idcodeAbs(t, amIDNo))
+	mNo, err := mb.GetAbstractModel(ctx, amIDNo)
 	if err != nil {
 		t.Fatalf("读抽象模型失败: %v", err)
 	}
@@ -244,7 +237,7 @@ func TestContractDisabledUpstreamHasNoInstances(t *testing.T) {
 	}
 
 	mb := &modelsBridge{b: newAdminBridge(a.store)}
-	items, err := mb.ListCandidates(ctx, idcodeAbs(t, amID))
+	items, err := mb.ListCandidates(ctx, amID)
 	if err != nil {
 		t.Fatalf("列候选失败: %v", err)
 	}

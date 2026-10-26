@@ -441,7 +441,7 @@ var _ httpapi.ContributionPauser = contributionPauseBridge{}
 // accountProfileBridge 实现 httpapi.AccountProfileStore（显示名写面）。
 //
 // 账号 id 从会话主体来（十进制字符串）→ parseID → store 的 int64 主键。
-// 为什么不直接拿 Principal 里的编码 id：认证面（auth）不认 idcode，
+// 为什么不直接拿 Principal 里的 id：认证面（auth）不认 id 的形状约定，
 // 两个面在装配层翻译是既有约定（与 authLoginStores 完全相同）。
 type accountProfileBridge struct {
 	accounts *store.AccountRepo

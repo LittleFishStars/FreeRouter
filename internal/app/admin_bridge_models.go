@@ -1,7 +1,7 @@
 // admin_bridge_models.go —— AdminModelStore → store.ModelRepo（task-23）。
 //
 // 桥要点：
-//   - 真实模型/抽象模型 id 出入站走 idcode(rm_/am_)。
+//   - 真实模型/抽象模型 id 出入站走 idgen 形状校验（前缀体系已废弃）。
 //   - 抽象模型的 capabilities 没有存储列（0001 的 abstract_models 只有
 //     strategy/capability_mode/note 等）——能力声明存在 note 列里的
 //     JSON 文档（前缀标记 admin_caps:{}）。为什么用 note 而不是新列：
@@ -933,7 +933,7 @@ func providerIDOf(provider string) string {
 // created 会把后者误报成未创建。显式先查一次，两条路径的语义都干净。
 //
 // 上游行不存在 → ErrAdminUpstreamNotFound（对外 404）：存在性校验只有桥
-// 拿得到仓储，handler 的 idcode 形状校验拦的是"连形状都不对"。
+// 拿得到仓储，handler 的 idgen 形状校验拦的是"连形状都不对"。
 func (mb *modelsBridge) CreateRealModel(ctx context.Context, upstreamID string, upstreamModelID, displayName string, contextWindow *int64, audit httpapi.AdminAuditEntry) (*httpapi.AdminRealModel, bool, string, error) {
 	if _, err := mb.b.repos.Models.GetUpstreamByID(ctx, upstreamID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {

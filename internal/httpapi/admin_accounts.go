@@ -139,7 +139,7 @@ func adminFilterStatusValid(st string) bool {
 	return false
 }
 
-// accountIDParam 解 /accounts/{id} 路径参数：idcode 前缀校验（lead 裁决①）。
+// accountIDParam 校验 /accounts/{id} 的路径参数形状（UUID，见 internal/idgen）。
 func accountIDParam(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return idParamValid(w, r, "id", "账户")
 }
@@ -608,7 +608,7 @@ func (s *Server) handleAdminAccountMergePrecheck(deps *AdminDeps) http.HandlerFu
 			return
 		}
 		if _, err := idgen.Parse(target); err != nil {
-			adminWriteParamErr(w, "target", "目标账户 id 形状非法（期望 acc_<数字>）")
+			adminWriteParamErr(w, "target", "目标账户 id 形状非法（期望 UUID）")
 			return
 		}
 		plan, err := deps.Accounts.PrecheckMerge(r.Context(), id, target)
@@ -650,7 +650,7 @@ func (s *Server) handleAdminAccountMerge(deps *AdminDeps) http.HandlerFunc {
 			return
 		}
 		if _, err := idgen.Parse(target); err != nil {
-			adminWriteParamErr(w, "target_account_id", "目标账户 id 形状非法（期望 acc_<数字>）")
+			adminWriteParamErr(w, "target_account_id", "目标账户 id 形状非法（期望 UUID）")
 			return
 		}
 		if target == id {

@@ -41,7 +41,7 @@ func (s *Server) mountAdminGroups(r chi.Router, deps *AdminDeps) {
 	r.Delete("/groups/{id}/members/{accountID}", s.handleAdminGroupMemberRemove(deps))
 }
 
-// groupIDParam 解组路径参数：idcode 前缀校验（lead 裁决①——拿 acc_1 打
+// groupIDParam 校验组路径参数形状（lead 裁决①的落点变了：旧世界是"拿 acc_1 打
 // groups 端点必须在解码层失败，而不是去查错表）。
 func groupIDParam(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return idParamValid(w, r, "id", "组")
@@ -377,7 +377,7 @@ func (s *Server) handleAdminGroupMemberRemove(deps *AdminDeps) http.HandlerFunc 
 		}
 		acc := chi.URLParam(r, "accountID")
 		if _, err := idgen.Parse(acc); err != nil {
-			adminWriteParamErr(w, "account_id", "账户 id 形状非法（期望 acc_<数字>）")
+			adminWriteParamErr(w, "account_id", "账户 id 形状非法（期望 UUID）")
 			return
 		}
 		audit := adminBaseAudit(p, r, "group.members_remove", "group:"+id, "ok")

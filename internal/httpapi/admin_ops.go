@@ -394,7 +394,7 @@ func (s *Server) handleAdminCredentialsList(deps *AdminDeps) http.HandlerFunc {
 		}
 		if o := q.Get("owner"); o != "" {
 			if _, err := idgen.Parse(o); err != nil {
-				adminWriteParamErr(w, "owner", "owner 须为 acc_<数字> 形态")
+				adminWriteParamErr(w, "owner", "owner 须为 UUID")
 				return
 			}
 			f.OwnerAccountID = o
@@ -701,7 +701,7 @@ func auditFilterFromQuery(w http.ResponseWriter, r *http.Request) (AdminAuditFil
 	}
 	if a := q.Get("account_id"); a != "" {
 		if _, derr := idgen.Parse(a); derr != nil {
-			adminWriteParamErr(w, "account_id", "account_id 须为 acc_<数字> 形态")
+			adminWriteParamErr(w, "account_id", "account_id 须为 UUID")
 			return f, false
 		}
 		f.AccountID = a

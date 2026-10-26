@@ -69,7 +69,7 @@ func (s *Server) mountAdminModels(r chi.Router, deps *AdminDeps) {
 	r.Get("/abstract-models/{id}/references", s.handleAdminAbstractReferences(deps))
 }
 
-// realModelIDParam / abstractModelIDParam：idcode 前缀校验（lead 裁决①，
+// realModelIDParam / abstractModelIDParam：id 形状校验（lead 裁决①，
 // 跨资源 id 混用在解码层失败）。
 func realModelIDParam(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return idParamValid(w, r, "id", "真实模型")
@@ -109,7 +109,7 @@ func (s *Server) handleAdminRealModelsList(deps *AdminDeps) http.HandlerFunc {
 		var upID string
 		if u := q.Get("upstream_id"); u != "" {
 			if _, err := idgen.Parse(u); err != nil {
-				adminWriteParamErr(w, "upstream_id", "upstream_id 形状非法（期望 up_<数字>）")
+				adminWriteParamErr(w, "upstream_id", "upstream_id 形状非法（期望 UUID）")
 				return
 			}
 			upID = u
@@ -624,7 +624,7 @@ func (s *Server) handleAdminAbstractCandidatesPut(deps *AdminDeps) http.HandlerF
 			c.AvailableInstances = 0 // 响应字段归零，绝不让请求值穿透到桥
 			if c.RealModelID != "" {
 				if _, err := idgen.Parse(c.RealModelID); err != nil {
-					adminWriteParamErr(w, "candidates", fmt.Sprintf("第 %d 条候选的 real_model_id 形状非法（期望 rm_<数字>）", i+1))
+					adminWriteParamErr(w, "candidates", fmt.Sprintf("第 %d 条候选的 real_model_id 形状非法（期望 UUID）", i+1))
 					return
 				}
 			} else {
