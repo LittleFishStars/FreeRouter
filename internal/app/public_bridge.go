@@ -191,7 +191,11 @@ func (b *contributionBridge) Submit(ctx context.Context, sub httpapi.Contributio
 	if b.svc == nil {
 		return httpapi.ContributionOutcome{}, fmt.Errorf("贡献服务未装配")
 	}
+	// 复用 Discover 闸门那次探测（pre 是 *upstream.PreProbe，穿过 httpapi 时
+	// 被装成 any）。类型不匹配就当没探过——宁可多打一次网络，不可误用结果。
+	pre, _ := sub.PreProbe.(*upstream.PreProbe)
 	out, err := b.svc.Submit(ctx, upstream.Submission{
+		PreProbe:       pre,
 		OwnerAccountID: sub.OwnerAccountID,
 		Provider:       sub.Provider,
 		BaseURL:        sub.BaseURL,
@@ -204,12 +208,27 @@ func (b *contributionBridge) Submit(ctx context.Context, sub httpapi.Contributio
 		return httpapi.ContributionOutcome{}, err
 	}
 	return httpapi.ContributionOutcome{
-		CredentialID: out.CredentialID,
-		Status:       string(out.Status),
-		VerifyStatus: string(out.VerifyStatus),
-		InPool:       out.InPool,
-		Reused:       out.Reused,
+		CredentialID:     out.CredentialID,
+		Status:           string(out.Status),
+		VerifyStatus:     string(out.VerifyStatus),
+		InPool:           out.InPool,
+		Reused:           out.Reused,
+		DiscoveredModels: out.DiscoveredModels,
 	}, nil
+}
+
+// Discover 实现 httpapi.ContributionSubmitter 的提交前闸门（理由见
+// upstream.ContributionService.Discover 的注释）。返回的 pre 原样随下一次
+// Submit 传回即可复用这次探测，省掉用户等待路径上的第二次网络往返。
+func (b *contributionBridge) Discover(ctx context.Context, provider, baseURL, apiKey string) ([]string, bool, string, any, error) {
+	if b.svc == nil {
+		return nil, false, "", nil, fmt.Errorf("贡献服务未装配")
+	}
+	models, needClaimed, reason, pre, err := b.svc.Discover(ctx, provider, baseURL, apiKey)
+	if err != nil {
+		return nil, false, "", nil, err
+	}
+	return models, needClaimed, reason, pre, nil
 }
 
 // StatusOf 读账户状态与权限类（待审核页「刷新状态」）。

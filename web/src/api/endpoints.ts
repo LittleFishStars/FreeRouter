@@ -196,7 +196,10 @@ export function cancelOAuthContribution(provider: string, sessionId: string) {
 export type ContributionSubmitInput =
   // kind=api 不收 claimed_models（2026-10-25 定案）：可用模型由服务端探测得出。
   | { kind: 'api'; provider: string; api_key: string; label: string }
-  | { kind: 'custom'; endpoint: string; api_key: string; label: string; claimed_models: string[] }
+  // claimed_models 可为空数组（2026-10-26 决定：自定义供应商的该字段改为非必填，
+  // 留空由服务端探测端点模型目录自动获取；探测不到时后端在落库前退回 400，
+  // param=claimed_models，提示贡献者手工填写）。
+  | { kind: 'custom'; endpoint: string; api_key: string; label: string; claimed_models?: string[] }
 
 export interface ContributeResult {
   accepted: boolean
@@ -208,6 +211,8 @@ export interface ContributeResult {
   account_created: boolean
   recovery_code?: string
   message?: string
+  /** 未声明模型时服务端自动获取到的模型目录（供贡献者确认，不影响本次判定）。 */
+  discovered_models?: string[]
 }
 
 /** POST /api/contributions —— API 供应商 / 自定义端点贡献（服务端永不回显 Key）。 */

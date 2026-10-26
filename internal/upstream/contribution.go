@@ -175,6 +175,20 @@ type Submission struct {
 	// Kind 是上游类型：vendor（公网端点）或 selfhosted（自建/本机）。
 	// 空则按 BaseURL 判定（回环 → selfhosted，其余 → vendor）。
 	Kind string
+	// PreProbe 携带 Discover 那一次探测的结果，让 Submit 不再打第二次网络。
+	// 它是**同包构造**的可选输入：外部（桥）拿到 *PreProbe 后原样传回来，
+	// 不传（nil）时行为与改造前完全一致。
+	PreProbe *PreProbe
+}
+
+// PreProbe 装一次探测的两个返回值（Go 没有"可选的多返回值"，用结构体装）。
+//
+// 为什么要把它做成可跨层传递的值而不是让桥自己缓存：缓存要键、要过期、
+// 要并发保护，而这里的一次性传递根本不需要——探测结果的生命周期就是这一次
+// 提交。做成导出结构体后，桥可以把它当不透明令牌穿过 httpapi 那道接缝。
+type PreProbe struct {
+	Out ProbeOutput
+	Err error
 }
 
 // Outcome 是一次提交的结果（可以直接回给控制台）。
@@ -187,6 +201,43 @@ type Outcome struct {
 	InPool bool
 	// Reused 表示命中「同一账户重复提交同一身份」的幂等路径（没有新建行）。
 	Reused bool
+	// DiscoveredModels 是本次探测拿到的上游模型目录（仅未声明模型时填充）。
+	// 它是「自动获取」的产物：前端据此把模型回显给贡献者确认。
+	DiscoveredModels []string
+}
+
+// Discover 是「自定义供应商未声明模型」的提交前闸门：探一次端点，
+// 把能自动获取到的模型目录回给调用方；拿不到就返回 needClaimed=true，
+// 由调用方在**落任何库之前**退回让用户手工声明。
+//
+// 为什么闸门必须在建账户之前：贡献链路会先建 contributor 账户并发恢复码
+// （handler 侧），若把退回留在 Submit 内部，每次"拿不到目录"的尝试都会留下
+// 一个无凭据的孤儿账户，而用户重试会再留一个。
+//
+// 为什么只有「可达 + 鉴权过 + 目录为空」才要求补声明：填模型能救的只有
+// "列不出目录"这一种。不可达与鉴权失败填了也还是失败，那种情形必须走正常
+// 链路落库留痕（02-credentials 7 节：拒绝也保留记录，它是申诉与惯犯识别的
+// 证据），不能被一个"请先填模型"的提示挡在门外。
+//
+// 探测本身跑不了（probeErr）按"拿不到目录"处理：此时无法证明端点可用，
+// 让贡献者显式声明比替他猜更安全。
+func (s *ContributionService) Discover(ctx context.Context, provider, baseURL, apiKey string) (models []string, needClaimed bool, reason string, pre *PreProbe, err error) {
+	if s.probe == nil {
+		return nil, false, "", nil, errors.New("upstream: 探测能力未装配")
+	}
+	out, probeErr := s.probe.Probe(ctx, ProbeInput{Provider: provider, BaseURL: baseURL, APIKey: apiKey})
+	pre = &PreProbe{Out: out, Err: probeErr}
+	if probeErr != nil {
+		return nil, true, "探测无法执行：" + redactText(probeErr.Error()), pre, nil
+	}
+	if !out.Reachable || !out.AuthOK {
+		// 连不上 / 鉴权不过：填模型也救不了，交给正常链路落库留痕。
+		return nil, false, "", pre, nil
+	}
+	if len(out.Models) == 0 {
+		return nil, true, "端点可达且鉴权通过，但没有列出任何模型", pre, nil
+	}
+	return out.Models, false, "", pre, nil
 }
 
 // Submit 走完 L0 → 落库 → 探测 → 判定 的完整链路。
@@ -228,6 +279,9 @@ func (s *ContributionService) Submit(ctx context.Context, sub Submission) (Outco
 		}, nil
 	}
 
+	// discovered 只在自动获取路径上非空（见函数末尾的 Outcome 装配）。
+	var discovered []string
+
 	// 落库：upstreams 行（承载 base_url 与归属）+ 密文 + 凭据行。
 	// 顺序为什么是 upstreams → secret → credential：credential.secret_ref 指向上一步的
 	// secret id，而 secret 又必须有 upstreams 行（upstream_secrets.upstream_id 有外键）。
@@ -258,10 +312,26 @@ func (s *ContributionService) Submit(ctx context.Context, sub Submission) (Outco
 
 	// 探测：网络/鉴权/目录。HTTPProbe 的错误只表达「探测本身跑不了」（如非法 URL），
 	// 连不上是 ProbeOutput.Reachable=false 而不是 error —— 它是判定输入，不是故障。
-	out, probeErr := s.probe.Probe(ctx, ProbeInput{
-		Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, ClaimedModels: sub.ClaimedModels,
-	})
+	//
+	// 若调用方（自定义供应商的自动获取闸门）已经探过就复用那一次：同一次提交里
+	// 同一把 key 与同一个端点，再打一次网络等于把用户等待的提交延迟翻倍。
+	var out ProbeOutput
+	var probeErr error
+	// 只在同样未声明模型时复用：闸门那次探测的 ProbeInput 不含 ClaimedModels，
+	// 拿它回答"声明过"的判定会算错 UsedModels。
+	if sub.PreProbe != nil && len(sub.ClaimedModels) == 0 {
+		out, probeErr = sub.PreProbe.Out, sub.PreProbe.Err
+	} else {
+		out, probeErr = s.probe.Probe(ctx, ProbeInput{
+			Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, ClaimedModels: sub.ClaimedModels,
+		})
+	}
 	status, verify, evidence := judgeProbe(sub.ClaimedModels, out, probeErr)
+	// 未声明模型时把探测到的目录回给前端（自动获取的产物，供贡献者确认）。
+	// 判定口径不变：仍按未声明走 L0 放行 + 复检队列，由后续探测确定实际模型集。
+	if len(sub.ClaimedModels) == 0 {
+		discovered = append(discovered, out.Models...)
+	}
 
 	// 写回判定。两步分开写（status 与 verify_status 不同列），失败要能各自归因。
 	if err := s.store.SetCredentialStatus(ctx, credID, status); err != nil {
@@ -273,6 +343,7 @@ func (s *ContributionService) Submit(ctx context.Context, sub Submission) (Outco
 	res := Outcome{
 		CredentialID: credID, Status: status, VerifyStatus: verify,
 		Evidence: evidence, InPool: status == store.CredActive,
+		DiscoveredModels: discovered,
 	}
 	if !res.InPool {
 		// 拒绝不是 error：凭据行保留（02-credentials 7 节「失败了也保留记录」——

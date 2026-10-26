@@ -241,6 +241,17 @@ export default function ContributePage({ def }: PageProps) {
           {result.message ?? '凭据已提交。'}
           {result.account_created && ' 已为你的贡献创建一个仅含「贡献者」能力的账户。'}
         </Banner>
+        {result.discovered_models && result.discovered_models.length > 0 && (
+          <Banner tone="info" title="自动获取到的模型">
+            <p className="muted" style={{ margin: 0 }}>
+              这些是探测该端点 <code>/models</code> 得到的条目，凭据仍按「未鉴定」进入复检队列，
+              后续由服务端核对实际可用集——无需你再补声明。
+            </p>
+            <p style={{ margin: '8px 0 0' }}>
+              <code>{result.discovered_models.join('、')}</code>
+            </p>
+          </Banner>
+        )}
         <Section title="下一步">
           <ul className="plain-list">
             <li>已登录：去「我的贡献」查看鉴定进度。</li>
@@ -557,14 +568,12 @@ export default function ContributePage({ def }: PageProps) {
                         </Field>
                         <Field
                           label="声称的模型"
-                          required
-                          hint="可声明多个：逗号/空格分隔，例如 deepseek-flash, glm-5.3；鉴定逐个核对。"
+                          hint="留空则自动获取：提交时我们探测该端点的模型目录，取不到会退回让你填写。手动声明可多个（逗号/空格分隔），鉴定会逐个核对。"
                         >
                           <input
                             value={customModels}
                             onChange={(e) => setCustomModels(e.target.value)}
-                            required
-                            placeholder="例如 deepseek-chat"
+                            placeholder="留空自动获取，或例如 deepseek-chat"
                           />
                         </Field>
                         <FormError error={customError} />

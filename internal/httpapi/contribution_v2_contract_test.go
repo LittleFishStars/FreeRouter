@@ -50,6 +50,9 @@ type fakeContributionStore struct {
 	notFoundID string
 	// usageSince 记录上一次 ContributionUsage 收到的 since（断言 range 真的传下去了）。
 	usageSince int64
+	// contributorCreated 计数：自动获取闸门必须在**建账户之前**退回，
+	// 否则每次"拿不到目录"的尝试都会留下一个无凭据的孤儿 contributor 账户。
+	contributorCreated int
 }
 
 // AccountIDOf 按会话里的账户 id 原样翻译（认证面字符串 id → 贡献链路 int64）。
@@ -59,6 +62,7 @@ func (f *fakeContributionStore) AccountIDOf(_ context.Context, accountID string)
 }
 
 func (f *fakeContributionStore) CreateContributor(context.Context, string) (string, error) {
+	f.contributorCreated++
 	return f.owner, nil
 }
 
@@ -96,13 +100,35 @@ func (f *fakeContributionStore) ContributionUsage(_ context.Context, _ string, s
 }
 
 // fakeSubmitter 记录收到的提交（断言端点被后端解析成了什么）。
-type fakeSubmitter struct{ got []ContributionSubmission }
+type fakeSubmitter struct {
+	got []ContributionSubmission
+	// discover 是自动获取闸门的 canned 应答（零值 = 探到两个模型、不要求补声明）。
+	discoverModels  []string
+	discoverNeed    bool
+	discoverReason  string
+	discoverErr     error
+	discoverCalls   int
+	lastDiscoverReq struct{ provider, baseURL, apiKey string }
+}
 
 func (f *fakeSubmitter) Submit(_ context.Context, sub ContributionSubmission) (ContributionOutcome, error) {
 	f.got = append(f.got, sub)
 	return ContributionOutcome{
 		CredentialID: "id1", Status: "active", VerifyStatus: "verified", InPool: true,
 	}, nil
+}
+
+func (f *fakeSubmitter) Discover(_ context.Context, provider, baseURL, apiKey string) ([]string, bool, string, any, error) {
+	f.discoverCalls++
+	f.lastDiscoverReq.provider, f.lastDiscoverReq.baseURL, f.lastDiscoverReq.apiKey = provider, baseURL, apiKey
+	if f.discoverErr != nil {
+		return nil, false, "", nil, f.discoverErr
+	}
+	models := f.discoverModels
+	if models == nil {
+		models = []string{"m-a", "m-b"}
+	}
+	return models, f.discoverNeed, f.discoverReason, "pre-token", nil
 }
 
 // fakePauser 记录切换请求，并返回固定状态。
@@ -533,4 +559,121 @@ func withURLParam(r *http.Request, id string) *http.Request {
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", id)
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
+}
+
+// TestContributionCustomAutoDiscover 覆盖「自定义供应商的声称模型改为非必填，
+// 没填就自动获取；拿不到就退回让用户填，否则不允许提交」（2026-10-26 用户决定）。
+func TestContributionCustomAutoDiscover(t *testing.T) {
+	newDeps := func() (*ContributionDeps, *fakeSubmitter, *fakeContributionStore) {
+		sub := &fakeSubmitter{}
+		st := &fakeContributionStore{owner: pauseOwner}
+		return &ContributionDeps{Submitter: sub, Store: st, Hasher: auth.NewPasswordHasher(8)}, sub, st
+	}
+	customBody := `{"kind":"custom","endpoint":"https://gw.example/v1","api_key":"sk-0123456789abcdef","label":"我的网关"}`
+
+	t.Run("未填 + 探到目录 → 提交成功并回显模型", func(t *testing.T) {
+		deps, sub, st := newDeps()
+		sub.discoverModels = []string{"deepseek-chat", "deepseek-flash"}
+		w := httptest.NewRecorder()
+		(&Server{}).HandleContributeSubmit(deps)(w, postJSON(pauseOwner, customBody))
+		if w.Code != http.StatusOK {
+			t.Fatalf("应 200，得 %d：%s", w.Code, w.Body.String())
+		}
+		if len(sub.got) != 1 {
+			t.Fatalf("应提交一次，得 %d", len(sub.got))
+		}
+		// 本次仍按"未声明"提交：判定口径不变（L0 放行 + 复检队列）。
+		if len(sub.got[0].ClaimedModels) != 0 {
+			t.Errorf("未填时不得把探测结果当用户声明提交，得 %v", sub.got[0].ClaimedModels)
+		}
+		// 探测结果作为不透明令牌传回，Submit 不必再打一次网络。
+		if sub.got[0].PreProbe == nil {
+			t.Error("PreProbe 令牌必须随提交传回（否则用户等待路径上会探测两次）")
+		}
+		// 注：本 harness 未接 deps.Sess，contributeOwner 走的是「无会话 →
+		// 建 contributor」分支，所以这里不断言建账户次数；「闸门早于建账户」
+		// 由下一个子测试（拿不到目录 → created==0）钉住。
+		_ = st
+		var env struct {
+			Data struct {
+				Accepted         bool     `json:"accepted"`
+				DiscoveredModels []string `json:"discovered_models"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatalf("解析失败: %v", err)
+		}
+		if len(env.Data.DiscoveredModels) != 2 || env.Data.DiscoveredModels[0] != "deepseek-chat" {
+			t.Errorf("discovered_models 应回显探测到的目录，得 %v", env.Data.DiscoveredModels)
+		}
+	})
+
+	t.Run("未填 + 拿不到目录 → 400 且不落任何库", func(t *testing.T) {
+		deps, sub, st := newDeps()
+		sub.discoverNeed = true
+		sub.discoverReason = "端点可达且鉴权通过，但没有列出任何模型"
+		w := httptest.NewRecorder()
+		// 匿名请求（无会话）：这条路径原本会先建 contributor 账户。
+		r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(customBody))
+		r.Header.Set("Content-Type", "application/json")
+		(&Server{}).HandleContributeSubmit(deps)(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("应 400，得 %d：%s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "claimed_models") {
+			t.Errorf("param 应指到 claimed_models 让前端落到那个输入框，得 %s", w.Body.String())
+		}
+		if len(sub.got) != 0 {
+			t.Errorf("拿不到目录时不得进入提交链路，得 %d 次", len(sub.got))
+		}
+		// 这是本用例的核心：闸门必须在建账户之前。
+		if st.contributorCreated != 0 {
+			t.Errorf("退回不得留下孤儿 contributor 账户，实际建了 %d 个", st.contributorCreated)
+		}
+	})
+
+	t.Run("已填 → 完全不探测（不增加延迟，判定口径不变）", func(t *testing.T) {
+		deps, sub, _ := newDeps()
+		w := httptest.NewRecorder()
+		body := `{"kind":"custom","endpoint":"https://gw.example/v1","api_key":"sk-0123456789abcdef","claimed_models":["m1"]}`
+		(&Server{}).HandleContributeSubmit(deps)(w, postJSON(pauseOwner, body))
+		if w.Code != http.StatusOK {
+			t.Fatalf("应 200，得 %d：%s", w.Code, w.Body.String())
+		}
+		if sub.discoverCalls != 0 {
+			t.Errorf("用户已声明时不该再探测，实际探了 %d 次", sub.discoverCalls)
+		}
+		if len(sub.got) != 1 || len(sub.got[0].ClaimedModels) != 1 {
+			t.Fatalf("声明应原样提交，得 %+v", sub.got)
+		}
+	})
+
+	t.Run("kind=api 未填 → 不探测（既有语义：L0 放行 + 复检队列）", func(t *testing.T) {
+		deps, sub, _ := newDeps()
+		w := httptest.NewRecorder()
+		body := `{"kind":"api","provider":"deepseek-com","api_key":"sk-0123456789abcdef"}`
+		(&Server{}).HandleContributeSubmit(deps)(w, postJSON(pauseOwner, body))
+		if w.Code != http.StatusOK {
+			t.Fatalf("应 200，得 %d：%s", w.Code, w.Body.String())
+		}
+		if sub.discoverCalls != 0 {
+			t.Errorf("API 供应商栏的空声明是既有有意语义，不该触发闸门，实际探了 %d 次", sub.discoverCalls)
+		}
+		if len(sub.got) != 1 || sub.got[0].PreProbe != nil {
+			t.Errorf("api 路径不应带 PreProbe 令牌，得 %+v", sub.got)
+		}
+	})
+
+	t.Run("探测自身故障 → 500 且不落库（不能替用户猜）", func(t *testing.T) {
+		deps, sub, st := newDeps()
+		sub.discoverErr = errors.New("sidecar 未就绪")
+		w := httptest.NewRecorder()
+		(&Server{}).HandleContributeSubmit(deps)(w, postJSON(pauseOwner, customBody))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("应 500，得 %d：%s", w.Code, w.Body.String())
+		}
+		if len(sub.got) != 0 || st.contributorCreated != 0 {
+			t.Errorf("探测故障不得留下任何写入，得 got=%d created=%d", len(sub.got), st.contributorCreated)
+		}
+	})
 }

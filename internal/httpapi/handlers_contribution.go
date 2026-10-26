@@ -62,10 +62,19 @@ type ContributionDeps struct {
 // ContributionSubmitter 是贡献提交链路的窄接口（装配桥包装 ContributionService）。
 type ContributionSubmitter interface {
 	Submit(ctx context.Context, sub ContributionSubmission) (ContributionOutcome, error)
+	// Discover 是自定义供应商未声明模型时的提交前闸门（理由见
+	// upstream.ContributionService.Discover 的注释：为什么在建账户之前、
+	// 为什么只有"目录拿不到"才要求补声明）。
+	// needClaimed=true 表示必须让贡献者自己填，调用方此时**不得**继续建账户。
+	// 返回的 pre 是不透明令牌，随下一次 Submit 传回可复用这次探测（省一次网络）。
+	Discover(ctx context.Context, provider, baseURL, apiKey string) (models []string, needClaimed bool, reason string, pre any, err error)
 }
 
 // ContributionSubmission 是一次提交的入参（形状与 upstream.Submission 对齐）。
 type ContributionSubmission struct {
+	// PreProbe 是 Discover 返回的探测结果（不透明令牌，由桥还原）。
+	// nil = 没有预探测，Submit 自己探一次。
+	PreProbe       any
 	OwnerAccountID string
 	Provider       string
 	BaseURL        string
@@ -82,6 +91,8 @@ type ContributionOutcome struct {
 	VerifyStatus string
 	InPool       bool
 	Reused       bool
+	// DiscoveredModels 是未声明模型时服务端探测到的目录（自动获取的产物）。
+	DiscoveredModels []string
 }
 
 // ContributionStore 是贡献面的存储窄接口（装配桥实现）。
@@ -245,6 +256,31 @@ func (s *Server) HandleContributeSubmit(deps *ContributionDeps) http.HandlerFunc
 				claimed = append(claimed, m)
 			}
 		}
+		// discovered 是闸门那次探测拿到的目录；preProbe 是同一次探测的复用令牌。
+		var discovered []string
+		var preProbe any
+
+		// 自动获取闸门（2026-10-26 用户决定：自定义供应商的「声称的模型」改为
+		// 非必填，没填就由服务端探测得出）。只在 custom + 未声明时探一次；
+		// 拿不到目录就在**建账户之前**退回——晚一步都会留下无凭据的孤儿
+		// contributor 账户，而用户重试会再留一个。
+		if isCustomContribution(body.Kind) && len(claimed) == 0 {
+			models, needClaimed, reason, pre, derr := deps.Submitter.Discover(
+				r.Context(), providerID, endpoint, apiKey)
+			if derr != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", "探测端点失败，请稍后重试", nil)
+				return
+			}
+			if needClaimed {
+				writeErrorParam(w, http.StatusBadRequest, "invalid_request", "claimed_models",
+					"未能从该端点自动获取模型（"+reason+"），请填写「声称的模型」后再提交")
+				return
+			}
+			// 探到了目录：本次仍按"未声明"提交（判定口径不变），目录回显给
+			// 贡献者确认；pre 令牌让 Submit 复用这次探测而不是再打一次网络。
+			discovered = models
+			preProbe = pre
+		}
 
 		// 可选会话：带 Cookie 且有效 → 用当前账户；否则自动建 contributor 账户。
 		owner, accountCreated, err := s.contributeOwner(r, deps, body.Label)
@@ -263,6 +299,7 @@ func (s *Server) HandleContributeSubmit(deps *ContributionDeps) http.HandlerFunc
 		}
 
 		outcome, err := deps.Submitter.Submit(r.Context(), ContributionSubmission{
+			PreProbe:       preProbe,
 			OwnerAccountID: owner,
 			Provider:       providerID,
 			BaseURL:        endpoint,
@@ -295,6 +332,16 @@ func (s *Server) HandleContributeSubmit(deps *ContributionDeps) http.HandlerFunc
 		if recoveryCode != "" {
 			resp["recovery_code"] = recoveryCode
 		}
+		// discovered_models：服务端自动获取到的模型目录（未声明时探测所得）。
+		// 前端据此把模型显示出来，让贡献者确认"我们看到的对不对"。
+		// 闸门探到的优先（它就是这次提交用的那份）；没走闸门时（如 kind=api
+		// 未声明）用 Submit 探测到的那份兜底。
+		if len(discovered) == 0 {
+			discovered = outcome.DiscoveredModels
+		}
+		if len(discovered) > 0 {
+			resp["discovered_models"] = discovered
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": resp})
 	}
 }
@@ -312,6 +359,13 @@ func (s *Server) HandleContributeSubmit(deps *ContributionDeps) http.HandlerFunc
 // provider 列的两种取值就是契约 §4 的存储口径（不新增表）：api:<catalogID> / custom。
 // 注意这里的 kind 是**贡献类型**，与 upstream.Submission.Kind（vendor/selfhosted 上游
 // 类型，由 BaseURL 自动判定）是两回事，不要互相传递。
+// isCustomContribution 报告这次提交是不是「自定义供应商」（端点由用户给）。
+// 判据与 resolveSubmissionTarget 的 case 同源：空 kind 按 custom 处理。
+func isCustomContribution(kind string) bool {
+	k := strings.TrimSpace(kind)
+	return k == "" || k == "custom"
+}
+
 func resolveSubmissionTarget(w http.ResponseWriter, kind, providerID, endpoint string) (string, string, bool) {
 	switch strings.TrimSpace(kind) {
 	case "", "custom":
