@@ -395,6 +395,42 @@ func scanRealModel(sc interface{ Scan(...any) error }) (*RealModel, error) {
 // 落实方式是 DO UPDATE 里带 `WHERE real_models.source = 'auto'`——
 // 被管理员接管过的行在冲突时什么都不做，从而同时保住 status/hidden/sort_order
 // 等全部人工字段，而不是逐列判断。
+// SeedCatalog 把「自动获取」探到的模型 id 清单落成 real_models 的最小行
+// （source=auto、status=active、display_name=id）。
+//
+// 为什么存在这个方法而不是让贡献链路自己循环 UpsertRealModel：把"一行怎么
+// 建"的知识留在仓储，调用方只给 id 清单——贡献侧探测响应（OpenAI /models）
+// 只有 id，没有 ModelInfo 的渠道/模态/上下文；那些编造不出来，留 NULL 才是
+// "目录没说"。缺的事实由下一轮目录刷新补齐：它对该上游发完整目录请求，
+// 会把这些最小行逐字段刷到与刷新产物同等的完整度（UpsertRealModel 的
+// ON CONFLICT 分支按字段更新）。
+//
+// 逐行 upsert 而不是一条大 INSERT：行为与刷新器完全一致（走同一个幂等方法），
+// 行数是目录条数（几十），不值得为它写第二条写路径。部分失败返回已成功条数，
+// 调用方据此决定是否记"等下轮刷新补齐"。
+func (r *ModelRepo) SeedCatalog(ctx context.Context, upstreamID string, models []string) (int, error) {
+	if upstreamID == "" {
+		return 0, errors.New("store: 目录种子必须归属某个上游")
+	}
+	n := 0
+	for _, id := range models {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		if _, err := r.UpsertRealModel(ctx, RealModel{
+			UpstreamID:      upstreamID,
+			UpstreamModelID: id,
+			DisplayName:     id,
+			Status:          RealModelActive,
+			Source:          "auto",
+		}); err != nil {
+			return n, fmt.Errorf("store: 落目录种子 %s 失败: %w", id, err)
+		}
+		n++
+	}
+	return n, nil
+}
+
 func (r *ModelRepo) UpsertRealModel(ctx context.Context, m RealModel) (string, error) {
 	if m.UpstreamID == "" {
 		return "", errors.New("store: 真实模型必须归属某个上游")

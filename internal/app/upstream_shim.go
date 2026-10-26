@@ -337,6 +337,12 @@ func (c contributionStore) ListUpstreams(ctx context.Context) ([]store.Upstream,
 	return c.repos.Models.ListUpstreams(ctx)
 }
 
+// SeedCatalog 实现 upstream.ContributionStore 的目录种子写入
+// （自动获取探到的清单就地落 real_models，理由见该接口方法的注释）。
+func (c contributionStore) SeedCatalog(ctx context.Context, upstreamID string, models []string) (int, error) {
+	return c.repos.Models.SeedCatalog(ctx, upstreamID, models)
+}
+
 func (c contributionStore) UpdateUpstream(ctx context.Context, id string, name, baseURL string, enabled bool) error {
 	return c.repos.Models.UpdateUpstream(ctx, id, name, baseURL, enabled)
 }

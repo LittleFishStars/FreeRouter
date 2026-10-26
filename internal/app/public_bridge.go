@@ -217,6 +217,12 @@ func (b *contributionBridge) Submit(ctx context.Context, sub httpapi.Contributio
 	}, nil
 }
 
+// SeedCatalog 实现 upstream.ContributionStore 的目录种子写入
+// （自动获取探到的清单就地落 real_models，理由见该接口方法的注释）。
+func (b *contributionBridge) SeedCatalog(ctx context.Context, upstreamID string, models []string) (int, error) {
+	return b.st.Repos().Models.SeedCatalog(ctx, upstreamID, models)
+}
+
 // Discover 实现 httpapi.ContributionSubmitter 的提交前闸门（理由见
 // upstream.ContributionService.Discover 的注释）。返回的 pre 原样随下一次
 // Submit 传回即可复用这次探测，省掉用户等待路径上的第二次网络往返。

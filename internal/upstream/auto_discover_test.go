@@ -149,6 +149,64 @@ func TestContractSubmitReusesPreProbe(t *testing.T) {
 	}
 }
 
+// TestContractDiscoverSeedsCatalogOnPool 钉住本功能闭环的最后一环：
+// 自动获取探到的目录必须在**凭据入池那一刻**就地落成 real_models 行，
+// 不能只回显给前端然后指望 10 分钟一轮的定时刷新——那段时间里凭据的
+// 模型卡是空的（管理面看到"有凭据、模型 0"），抽象模型也没有候选可展开。
+func TestContractDiscoverSeedsCatalogOnPool(t *testing.T) {
+	ctx := context.Background()
+	fs := newFakeContributionStore()
+	p := &countingProbe{out: ProbeOutput{Reachable: true, AuthOK: true, Models: []string{"m-a", "m-b", "m-c"}}}
+	svc := NewContributionService(fs, p, ContributionOptions{})
+
+	_, _, _, pre, err := svc.Discover(ctx, "custom", "https://gw.example.com/v1", "sk-123456789")
+	if err != nil {
+		t.Fatalf("Discover 失败: %v", err)
+	}
+	res, err := svc.Submit(ctx, Submission{
+		OwnerAccountID: "acct-seed", Provider: "custom", BaseURL: "https://gw.example.com/v1",
+		APIKey: "sk-123456789", Label: "目录就地落库", PreProbe: pre,
+	})
+	if err != nil {
+		t.Fatalf("Submit 失败: %v", err)
+	}
+	if !res.InPool {
+		t.Fatalf("应入池，得 status=%s", res.Status)
+	}
+	// 三个模型都要落进目录，且挂在同一条上游行上。
+	if len(res.DiscoveredModels) != 3 || res.SeededModels != 3 {
+		t.Fatalf("Discovered=%v Seeded=%d，期望各 3", res.DiscoveredModels, res.SeededModels)
+	}
+	var seeded []string
+	for _, u := range fs.upstreams {
+		seeded = append(seeded, fs.seeded[u.ID]...)
+	}
+	if len(seeded) != 3 {
+		t.Errorf("fake 里应记录 3 条目录种子，得 %v", seeded)
+	}
+	// 拒绝路径（不入池）不落目录：那是"凭据都没进池"的世界，目录先行没有意义。
+	fs2 := newFakeContributionStore()
+	p2 := &countingProbe{out: ProbeOutput{Reachable: true, AuthOK: false}}
+	svc2 := NewContributionService(fs2, p2, ContributionOptions{})
+	res2, err := svc2.Submit(ctx, Submission{
+		OwnerAccountID: "acct-reject", Provider: "custom", BaseURL: "https://gw.example.com/v1",
+		APIKey: "sk-999999999", Label: "拒绝路径",
+	})
+	if err != nil {
+		t.Fatalf("拒绝路径 Submit 失败: %v", err)
+	}
+	if res2.InPool {
+		t.Fatal("鉴权失败应被拒")
+	}
+	total := 0
+	for _, v := range fs2.seeded {
+		total += len(v)
+	}
+	if total != 0 {
+		t.Errorf("拒绝路径不得落目录种子，实际 %d 条", total)
+	}
+}
+
 // TestContractSubmitWithoutPreProbeStillProbes 钉住未传令牌时的原行为：
 // 自己探一次，且**不**因为走了这条路径就凭空多出 DiscoveredModels 之外的行为变化。
 func TestContractSubmitWithoutPreProbeStillProbes(t *testing.T) {

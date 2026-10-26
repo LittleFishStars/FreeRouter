@@ -67,6 +67,10 @@ type ContributionStore interface {
 	CreateCredential(ctx context.Context, ownerAccountID string, provider, externalID, label, secretRef string) (string, error)
 	SetCredentialStatus(ctx context.Context, id string, status store.CredentialStatus) error
 	MarkVerified(ctx context.Context, credentialID string, status store.VerifyStatus, evidence string) error
+	// SeedCatalog 把「自动获取」探到的模型 id 清单落成 real_models 行
+	// （source=auto、status=active 的最小行）。与刷新器共用 UpsertRealModel
+	// 的幂等 upsert；实现见 ModelRepo.SeedCatalog。
+	SeedCatalog(ctx context.Context, upstreamID string, models []string) (int, error)
 	LookupCredential(ctx context.Context, id string) (*store.Credential, error)
 	ListCredentials(ctx context.Context, f store.CredentialFilter) ([]store.Credential, error)
 	// ListUpstreams / UpdateUpstream 是撤销的必要读面：
@@ -201,9 +205,14 @@ type Outcome struct {
 	InPool bool
 	// Reused 表示命中「同一账户重复提交同一身份」的幂等路径（没有新建行）。
 	Reused bool
-	// DiscoveredModels 是本次探测拿到的上游模型目录（仅未声明模型时填充）。
-	// 它是「自动获取」的产物：前端据此把模型回显给贡献者确认。
+	// DiscoveredModels 是本次提交落进 real_models 的模型 id 清单（仅
+	// 未声明模型 + 探到目录 + 凭据入池时填充）。「自动获取」把探测到的目录
+	// 直接落库，前端据此回显给贡献者确认；同时凭据的模型卡立即有数据，
+	// 不必等下一轮定时刷新（默认 10 分钟）。
 	DiscoveredModels []string
+	// SeededModels 是实际落库的条数（与 DiscoveredModels 的差 = 落库失败被
+	// 记进 Evidence 等下轮刷新补齐的部分；0 且非空清单 = 全部落库成功）。
+	SeededModels int
 }
 
 // Discover 是「自定义供应商未声明模型」的提交前闸门：探一次端点，
@@ -354,6 +363,23 @@ func (s *ContributionService) Submit(ctx context.Context, sub Submission) (Outco
 	// 的假状态，而调用方已经收到了成功应答。
 	if err := s.store.UpdateUpstream(ctx, upstreamID, upstreamName, baseURL, true); err != nil {
 		return Outcome{}, fmt.Errorf("upstream: 入池（启用上游行）失败：%w", err)
+	}
+
+	// 自动获取的目录就地落库（仅未声明模型 + 探到目录 + 入池）。为什么在
+	// 这里而不是只在 Discover：目录就是这次探测拿到的，扔掉它、让凭据的
+	// 模型卡等 10 分钟一轮的定时刷新，是白白让「提交成功」与「模型可见」
+	// 之间出现一段空窗。落库走 UpsertRealModel——与刷新器同一条幂等仓储
+	// 方法（real_models 的写域仍是它，贡献链路只是提前触发一次同形写入），
+	// 之后的定时刷新会把它当作普通 auto 行继续维护。
+	//
+	// 失败只记证据字段不回滚：模型行的缺失是**可自愈的**（下轮刷新补上），
+	// 而凭据已经入池成功——为一件可自愈的事回滚整笔贡献是自伤。
+	if len(discovered) > 0 {
+		if n, derr := s.store.SeedCatalog(ctx, upstreamID, discovered); derr != nil {
+			res.Evidence += "\n" + evidenceJSON("L0", "模型目录落库失败（等待下一轮刷新补齐）："+redactText(derr.Error()))
+		} else {
+			res.SeededModels = n
+		}
 	}
 	return res, nil
 }

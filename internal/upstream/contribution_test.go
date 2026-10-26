@@ -356,6 +356,7 @@ type fakeContributionStore struct {
 	upstreams       map[string]store.Upstream
 	credentials     map[string]*store.Credential
 	secretPlaintext []string
+	seeded          map[string][]string
 	lastSecretRef   string
 	nextSeq         int // 自增序号；id() 用它造可区分的 id（不再依赖整型主键）
 	trace           string
@@ -366,6 +367,7 @@ func newFakeContributionStore() *fakeContributionStore {
 		upstreamEnabled: map[string]bool{},
 		upstreams:       map[string]store.Upstream{},
 		credentials:     map[string]*store.Credential{},
+		seeded:          map[string][]string{},
 	}
 }
 
@@ -480,6 +482,15 @@ func (f *fakeContributionStore) ListUpstreams(context.Context) ([]store.Upstream
 		out = append(out, u)
 	}
 	return out, nil
+}
+
+// SeedCatalog 实现 upstream.ContributionStore 的目录种子写入（内存版）：
+// fake 里没有 real_models 表，只计数与存 id 清单，供断言"目录就地落了"。
+func (f *fakeContributionStore) SeedCatalog(_ context.Context, upstreamID string, models []string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seeded[upstreamID] = append(f.seeded[upstreamID], models...)
+	return len(models), nil
 }
 
 func (f *fakeContributionStore) UpdateUpstream(_ context.Context, id string, name, baseURL string, enabled bool) error {
