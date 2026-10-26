@@ -774,11 +774,6 @@ func (mb *modelsBridge) ListModelSources(ctx context.Context) ([]httpapi.AdminMo
 	if err != nil {
 		return nil, nil, mapStoreErr(err)
 	}
-	creds, err := mb.b.repos.Models.ListUpstreamCredentials(ctx)
-	if err != nil {
-		return nil, nil, mapStoreErr(err)
-	}
-
 	// 先读齐再装配：channels 是**全池**事实（跨所有上游），必须看完全部行才能去重。
 	byUpstream := make(map[string][]store.RealModel, len(ups))
 	channelSet := make(map[string]struct{})
@@ -809,13 +804,164 @@ func (mb *modelsBridge) ListModelSources(ctx context.Context) ([]httpapi.AdminMo
 		return nil, nil, mapStoreErr(err)
 	}
 
-	out := make([]httpapi.AdminModelSource, 0, len(ups))
+	// 来源合并（2026-10-27 用户决定）：同一 provider 的多把 key 会贡献出多条
+	// upstream 行（贡献一次 = 一条行），凭据池左栏此前按行列出，同一供应商就
+	// 出现多行。左栏要的粒度是「来源」——provider 列值（api:<目录id> / custom /
+	// relay:<池名>）正是契约 §4 的来源存储口径，所以按它聚合；没有凭据的上游
+	//（平台渠道）拿不到 provider 列，单独成条。
+	//
+	// 聚合键为什么从凭据行取而不是从上游名正则反捞：上游名是展示形态
+	// （contributeUpstreamName 拼的），名里带的指纹后缀会随换 key 变化；
+	// 凭据行的 provider 列是结构化的来源事实，两边各推一套必然分叉。
+	type sourceGroup struct {
+		members []store.Upstream
+		creds   map[string][]store.UpstreamCredentialRow // 按上游分组（与全局同形）
+		models  map[string]store.RealModel               // 全成员模型并集，按 upstream_model_id 去重
+	}
+	groups := make(map[string]*sourceGroup)
+	solo := make([]*sourceGroup, 0) // 无凭据上游（平台渠道）：按行单独成条
 	for _, u := range ups {
-		src := modelSourceOf(u, creds[u.ID], byUpstream[u.ID])
-		src.Credentials = sourceCredentialsOf(u.ID, credRows[u.ID])
+		rows := credRows[u.ID]
+		if len(rows) == 0 {
+			solo = append(solo, &sourceGroup{members: []store.Upstream{u}})
+			continue
+		}
+		key := rows[0].Provider
+		g := groups[key]
+		if g == nil {
+			g = &sourceGroup{models: map[string]store.RealModel{}, creds: map[string][]store.UpstreamCredentialRow{}}
+			groups[key] = g
+		}
+		g.members = append(g.members, u)
+		g.creds[u.ID] = rows
+		for _, m := range byUpstream[u.ID] {
+			// 同 provider 不同 key 的目录高度重叠，按 upstream_model_id 去重：
+			// 并集才是"这个供应商提供哪些模型"的完整答案，逐行复制会翻倍计数。
+			if _, dup := g.models[m.UpstreamModelID]; !dup {
+				g.models[m.UpstreamModelID] = m
+			}
+		}
+	}
+
+	// 装配顺序稳定：先按来源键排序，平台渠道条目排在最后（与旧版
+	// 「贡献凭据在前、平台渠道在后」的左栏顺序一致）。
+	keys := make([]string, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	out := make([]httpapi.AdminModelSource, 0, len(groups)+len(solo))
+	for _, k := range keys {
+		g := groups[k]
+		out = append(out, mergedSourceOf(k, g.members, g.creds, g.models))
+	}
+	for _, g := range solo {
+		src := modelSourceOf(g.members[0], store.UpstreamCredentialSummary{}, byUpstream[g.members[0].ID])
+		// solo（平台渠道，无凭据）也要带成员清单：形状统一为非空切片，
+		// 前端的批量操作不必为"这条来源有没有成员"写第二个分支。
+		src.UpstreamIDs = []string{g.members[0].ID}
 		out = append(out, src)
 	}
 	return out, channels, nil
+}
+
+// mergedSourceOf 把「同一 provider 的多条上游行 + 全部凭据 + 模型并集」聚合成
+// 一条来源。聚合后的字段口径：
+//
+//   - ID 用主行（成员里凭据最早的那条）：添加模型这类"单目标"操作要一个真实
+//     上游行；批量操作（停用/启用整条来源）用 UpstreamIDs 逐个成员调用。
+//   - Name 走目录名（apidir 命中时），不带贡献指纹后缀——同一来源的多行只在
+//     名字后缀上不同，合并后再展示指纹反而是噪音。
+//   - Enabled = 任一成员启用：一个来源停了一半凭据仍能干活，界面上说"停用"
+//     会误导；想精确到行的状态看右栏凭据列表。
+//   - AvailableInstances = 各成员之和（relay 成员 → nil，口径同单行版）。
+//   - Models 用并集（去重后），ModelCount 是去重条数。
+func mergedSourceOf(key string, members []store.Upstream, credRows map[string][]store.UpstreamCredentialRow, models map[string]store.RealModel) httpapi.AdminModelSource {
+	// 主行 = 来源里**凭据最早创建**的成员所在的上游行（贡献时间最早 = 来源的
+	// 起点）。credRows 的每条清单已按 created_at 升序排，所以各组首行里
+	// created_at 最小的就是主行凭据。
+	primary := members[0]
+	var activeSum int64
+	var lastSeen int64
+	anyEnabled := false
+	anyContributed := false
+	protos := map[string]struct{}{}
+	totalCreds := 0
+	// 主行 = 拥有**最早创建的那条凭据**的上游行。凭据清单按 created_at 升序，
+	// 所以每个成员的"最早凭据"就是它的首行；取这些首行里 created_at 最小者。
+	// 为什么按凭据时间而不是上游行顺序：upstreams 没有 created_at 列，
+	// 而"这个来源从哪一把 key 开始"的事实就在凭据的创建时间上。
+	primaryCreated := int64(1 << 62)
+	for _, u := range members {
+		if u.Enabled {
+			anyEnabled = true
+		}
+		if u.LastSeenAt != nil && *u.LastSeenAt > lastSeen {
+			lastSeen = *u.LastSeenAt
+		}
+		for _, r := range credRows[u.ID] {
+			totalCreds++
+			if r.Status == string(store.CredActive) {
+				activeSum++
+			}
+			if r.CreatedAt > 0 && r.CreatedAt < primaryCreated {
+				primaryCreated = r.CreatedAt
+				primary = u
+			}
+		}
+		for _, pr := range httpapi.AdminModelSourceProtocols(u.Kind, providerIDOf(key)) {
+			protos[pr] = struct{}{}
+		}
+	}
+	anyContributed = totalCreds > 0
+
+	// 模型并集按 upstream_model_id 排序输出（稳定、可断言）。
+	ids := make([]string, 0, len(models))
+	for id := range models {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	modelList := make([]store.RealModel, 0, len(models))
+	for _, id := range ids {
+		modelList = append(modelList, models[id])
+	}
+
+	src := modelSourceOf(primary, store.UpstreamCredentialSummary{
+		Provider: key, // providerIDOf 从它取目录 id；漏了它 ProviderID 会落成空串
+		Total:    totalCreds,
+		Active:   int(activeSum),
+	}, modelList)
+	idsList := make([]string, 0, len(members))
+	credList := make([]httpapi.AdminSourceCredential, 0, totalCreds)
+	for _, u := range members {
+		idsList = append(idsList, u.ID)
+		credList = append(credList, sourceCredentialsOf(u.ID, credRows[u.ID])...)
+	}
+	src.UpstreamIDs = idsList
+	src.Credentials = credList
+	src.Enabled = anyEnabled
+	src.Contributed = anyContributed
+	src.CredentialCount = int(activeSum)
+	if lastSeen > 0 {
+		src.LastSeenAt = &lastSeen
+	}
+	src.Protocols = make([]string, 0, len(protos))
+	for pr := range protos {
+		src.Protocols = append(src.Protocols, pr)
+	}
+	sort.Strings(src.Protocols)
+	return src
+}
+
+// earliestCreatedAt 是主行判定的辅助：该上游凭据清单的首行创建时间
+// （清单已按 created_at 升序排，空清单返回极大值表示"没有凭据不参与主行竞争"）。
+func earliestCreatedAt(u store.Upstream, credRows map[string][]store.UpstreamCredentialRow) int64 {
+	rows := credRows[u.ID]
+	if len(rows) == 0 || rows[0].CreatedAt == 0 {
+		return int64(1 << 62)
+	}
+	return rows[0].CreatedAt
 }
 
 // sourceCredentialsOf 把凭据全行翻成来源内嵌的 DTO 切片。

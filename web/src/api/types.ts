@@ -258,6 +258,8 @@ export interface AdminModelSource {
   last_seen_at: number | null
   /** 该上游下全部凭据行（upstream_credentials，不筛状态；契约 §1.2） */
   credentials: AdminSourceCredential[]
+  /** 来源合并（2026-10-27）：聚合的成员上游行 id（每把 key 一条）；停用/启用按成员批量调用 */
+  upstream_ids: string[]
   models: AdminModelSourceModel[]
 }
 

@@ -220,8 +220,12 @@ export function CredentialsPage({ def }: PageProps) {
   const [emExcluded, setEmExcluded] = useState(false)
 
   const sources = useMemo(() => sourcesQ.data?.sources ?? [], [sourcesQ.data])
-  const contributed = sources.filter((s) => s.contributed)
-  const platform = sources.filter((s) => !s.contributed)
+  // 分组（2026-10-27 用户决定）：反代供应商（relay，账号池在 sidecar 侧）与
+  // API 供应商（vendor/selfhosted/custom 端点直连）是两个不同的接入形态。
+  // 旧分组「贡献凭据/平台渠道」按贡献与否切，与接入形态无关，且平台渠道
+  // 在来源合并后已归入 API 供应商。
+  const relaySources = sources.filter((s) => s.kind === 'relay')
+  const apiSources = sources.filter((s) => s.kind !== 'relay')
   const active = sources.find((s) => s.id === activeId) ?? sources[0] ?? null
 
   function visibleSources(list: AdminModelSource[]): AdminModelSource[] {
@@ -296,7 +300,12 @@ export function CredentialsPage({ def }: PageProps) {
     setBusy(true)
     setError(null)
     try {
-      await patchUpstream(s.id, { enabled })
+      // 来源合并后一条来源聚合多条上游行（每把 key 一条）：停用/启用是
+      // 来源级操作，逐个成员调用；漏一个成员就会出现"来源显示启用但
+      // 有一半凭据实际不可调用"的割裂。
+      for (const id of s.upstream_ids ?? [s.id]) {
+        await patchUpstream(id, { enabled })
+      }
       sourcesQ.reload()
     } catch (e) {
       setError(e)
@@ -387,18 +396,18 @@ export function CredentialsPage({ def }: PageProps) {
                   aria-label="搜索供应商或模型"
                 />
               </div>
-              {railGroup('贡献凭据', visibleSources(contributed), active?.id ?? null, setActiveId)}
-              {railGroup('平台渠道', visibleSources(platform), active?.id ?? null, setActiveId)}
+              {railGroup('反代供应商', visibleSources(relaySources), active?.id ?? null, setActiveId)}
+              {railGroup('API 供应商', visibleSources(apiSources), active?.id ?? null, setActiveId)}
               {keyword &&
-                visibleSources(contributed).length === 0 &&
-                visibleSources(platform).length === 0 && <p className="muted">没有匹配的来源或模型。</p>}
+                visibleSources(relaySources).length === 0 &&
+                visibleSources(apiSources).length === 0 && <p className="muted">没有匹配的来源或模型。</p>}
             </div>
 
             <div className="source-detail">
               {active === null ? (
                 <EmptyState
                   title="先从左侧选一个供应商"
-                  hint="左栏按「贡献凭据 / 平台渠道」分组列出；选中后这里显示它的凭据与真实模型。"
+                  hint="左栏按「反代供应商 / API 供应商」分组列出，同一供应商的多把凭据已合并为一行；选中后这里显示它的凭据与真实模型。"
                 />
               ) : (
                 <div className="pool-detail">

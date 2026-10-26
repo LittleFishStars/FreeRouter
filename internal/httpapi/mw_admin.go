@@ -658,11 +658,16 @@ type AdminModelSource struct {
 	// RFC3339，而本契约明写 epoch 秒——多一层渲染只会让前端拿到两种时间单位。
 	LastSeenAt *int64                  `json:"last_seen_at"`
 	Models     []AdminModelSourceModel `json:"models"`
-	// Credentials 是该上游下的全部凭据行（凭据池改版 2026-10-26）：右栏凭据列
+	// Credentials 是该来源下的全部凭据行（凭据池改版 2026-10-26）：右栏凭据列
 	// 直接用，前端不再拿 provider 自己去 /credentials 里筛——筛选键（api:<id>
 	// 还是剥前缀后的 id）曾经是两套口径，收在服务端一处后界面不再有第二次
 	// 解释机会。不筛状态：管理页要看全貌（暂停/失效的凭据也是事实）。
 	Credentials []AdminSourceCredential `json:"credentials"`
+	// UpstreamIDs 是本来源聚合的成员上游行 id（2026-10-27 来源合并：同一
+	// provider 的多把 key 贡献出多条上游行，左栏按来源合并为一行）。批量操作
+	//（停用/启用整条来源）由前端对每个成员逐个调用；ID 字段是**主行**——
+	// 添加模型这类"单目标"操作用它。
+	UpstreamIDs []string `json:"upstream_ids"`
 }
 
 // AdminSourceCredential 是来源行内嵌的凭据摘要。

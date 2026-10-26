@@ -23,10 +23,14 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/config"
+	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
 
@@ -244,4 +248,109 @@ func TestContractDisabledUpstreamHasNoInstances(t *testing.T) {
 	if len(items) != 1 || items[0].AvailableInstances != 0 {
 		t.Fatalf("停用上游的候选可用实例应为 0，实得 %+v", items)
 	}
+}
+
+// TestContractSourceMergeByProvider 钉住「来源合并」在真库上的聚合形状
+// （2026-10-27 用户决定：相同来源的不同凭据合并，左栏不再一行一把 key）。
+//
+// 聚合键是凭据行的 provider 列（契约 §4 的来源口径）；模型并集按
+// upstream_model_id 去重——同 provider 不同 key 的目录高度重叠，逐行复制
+// 会让模型计数翻倍。
+func TestContractSourceMergeByProvider(t *testing.T) {
+	a := newCandidateInstanceTestApp(t)
+	ctx := context.Background()
+
+	// 同一 provider（api:deepseek-com）贡献两把不同的 key → 两条上游行 + 两条凭据。
+	// key 不同（指纹不同）是关键：同 key 会命中幂等不建行。
+	up1, err := a.store.Repos().Models.UpsertUpstream(ctx, "vendor", "api:deepseek-com-contrib-key_aaaa1111",
+		"https://api.deepseek.com/v1", nil, true)
+	if err != nil {
+		t.Fatalf("建上游 1 失败: %v", err)
+	}
+	up2, err := a.store.Repos().Models.UpsertUpstream(ctx, "vendor", "api:deepseek-com-contrib-key_bbbb2222",
+		"https://api.deepseek.com/v1", nil, true)
+	if err != nil {
+		t.Fatalf("建上游 2 失败: %v", err)
+	}
+	// 各挂一条 active 凭据（provider 列同值 → 聚合成一个来源）。
+	for i, up := range []string{up1, up2} {
+		sec, err := a.store.Repos().Secrets.PutSecret(ctx, up, []byte("sk-merge-test-0123456789"))
+		if err != nil {
+			t.Fatalf("写密文 %d 失败: %v", i, err)
+		}
+		cid, err := a.store.Repos().Models.CreateCredential(ctx, mustAccount2(t, a), "api:deepseek-com",
+			fmt.Sprintf("fp-merge-%d", i), "凭据", sec)
+		if err != nil {
+			t.Fatalf("建凭据 %d 失败: %v", i, err)
+		}
+		if err := a.store.Repos().Models.SetCredentialStatus(ctx, cid, store.CredActive); err != nil {
+			t.Fatalf("置 active %d 失败: %v", i, err)
+		}
+	}
+	// 各挂一条同名模型（目录重叠）+ 一条独有模型：并集去重后应为 2 条。
+	for _, up := range []string{up1, up2} {
+		if _, err := a.store.Repos().Models.UpsertRealModel(ctx, store.RealModel{
+			UpstreamID: up, UpstreamModelID: "deepseek-chat", DisplayName: "DeepSeek Chat",
+		}); err != nil {
+			t.Fatalf("落模型失败: %v", err)
+		}
+	}
+	if _, err := a.store.Repos().Models.UpsertRealModel(ctx, store.RealModel{
+		UpstreamID: up2, UpstreamModelID: "deepseek-reasoner", DisplayName: "DeepSeek Reasoner",
+	}); err != nil {
+		t.Fatalf("落独有模型失败: %v", err)
+	}
+
+	mb := &modelsBridge{b: newAdminBridge(a.store)}
+	srcs, _, err := mb.ListModelSources(ctx)
+	if err != nil {
+		t.Fatalf("列来源失败: %v", err)
+	}
+	var merged *httpapi.AdminModelSource
+	for i := range srcs {
+		if srcs[i].ProviderID == "deepseek-com" {
+			merged = &srcs[i]
+			break
+		}
+	}
+	if merged == nil {
+		t.Fatalf("应有一条 provider=api:deepseek-com 的合并来源，实际：%+v", srcs)
+	}
+	// 两把 key 的两条上游行合并成一条来源。
+	if len(merged.UpstreamIDs) != 2 {
+		t.Errorf("合并来源应含 2 个成员上游，得 %v", merged.UpstreamIDs)
+	}
+	// 凭据数合并（2 条 active）。
+	if merged.CredentialCount != 2 {
+		t.Errorf("凭据数应合并为 2，得 %d", merged.CredentialCount)
+	}
+	// 模型并集去重：deepseek-chat 两行重叠 + reasoner 独有 = 2 条，不是 3。
+	if merged.ModelCount != 2 {
+		t.Errorf("模型并集去重后应 2 条（重叠的 chat 不翻倍），得 %d", merged.ModelCount)
+	}
+	if len(merged.Models) != 2 {
+		t.Errorf("模型清单应 2 条，得 %d", len(merged.Models))
+	}
+	// 右栏凭据列 = 该来源下全部凭据（两把 key 的都在）。
+	if len(merged.Credentials) != 2 {
+		t.Errorf("合并来源的凭据列应含两把 key 的凭据，得 %d", len(merged.Credentials))
+	}
+	// Name 走目录名（apidir 命中 api:deepseek-com），不带贡献指纹后缀。
+	if strings.Contains(merged.Name, "contrib") {
+		t.Errorf("合并来源的名称不应带贡献指纹（目录名是权威），得 %q", merged.Name)
+	}
+}
+
+// mustAccount2 是来源合并测试用的账户（与 seedActiveCredential 的建账户同形，
+// 独立出来是因为那个 helper 把账户+凭据+密文捆在一起，这里只要账户）。
+func mustAccount2(t *testing.T, a *App) string {
+	t.Helper()
+	id, err := a.store.Repos().Accounts.CreateAccount(context.Background(), store.AccountAuth{
+		Account:      store.Account{DisplayName: "贡献者", Username: fmt.Sprintf("contrib-merge-%d", time.Now().UnixNano())},
+		PasswordHash: "!contributor-no-password",
+	}, []store.Class{store.ClassContributor})
+	if err != nil {
+		t.Fatalf("建贡献者账户失败: %v", err)
+	}
+	return id
 }

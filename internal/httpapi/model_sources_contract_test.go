@@ -121,6 +121,8 @@ func sourceKeys() []string {
 		"model_count", "protocols", "available_instances", "last_seen_at", "models",
 		// credentials（凭据池改版 2026-10-26）：每个来源内嵌凭据行，右栏凭据列直接用。
 		"credentials",
+		// upstream_ids（来源合并 2026-10-27）：聚合成员上游行 id，批量操作用。
+		"upstream_ids",
 	}
 }
 
@@ -458,5 +460,66 @@ func TestAdminModelSourceInstancesRules(t *testing.T) {
 			t.Errorf("status=%s excluded=%v 的行选不进候选集，实例数应恒 0，得 %v",
 				c.status, c.excluded, got)
 		}
+	}
+}
+
+// TestContractSourcesMergedByProvider 钉住「来源合并」（2026-10-27 用户决定）：
+// 同一 provider 的多把 key 贡献出多条上游行，来源列表必须按 **provider** 合并为
+// 一条，而不是一行一把 key。左栏的粒度是「来源」，不是「凭据」。
+//
+// 这条测试在 handler 层做（假体直接给多条同 provider 的来源），钉的是**前端
+// 拿到的形状**；聚合本身在后端桥（app 层真库测试另有一条），两层各钉一半。
+func TestContractSourcesMergedByProvider(t *testing.T) {
+	one := 1
+	// 同一 provider（api:deepseek-com）贡献了三把 key → 三条上游行 → 三条来源；
+	// 另一条 relay 来源。聚合责任在桥，这里验证的是：当桥给出的就是合并后的
+	// 形状时（upstream_ids 带成员、凭据已并入），handler 原样出站、不二次拆分。
+	rows := []AdminModelSource{
+		{
+			ID: "00000050-0000-4000-8000-000000000001", Kind: "vendor", Name: "Deepseek",
+			UpstreamName: "api:deepseek-com-contrib-aaaa", ProviderID: "api:deepseek-com",
+			BaseURL: "https://api.deepseek.com/v1", Enabled: true, Contributed: true,
+			CredentialCount: 2, Protocols: []string{"openai"}, AvailableInstances: &one,
+			UpstreamIDs: []string{"00000050-0000-4000-8000-000000000001", "00000050-0000-4000-8000-000000000002"},
+			Credentials: []AdminSourceCredential{
+				{ID: "00000040-0000-4000-8000-000000000001", Provider: "api:deepseek-com", Status: "active"},
+				{ID: "00000040-0000-4000-8000-000000000002", Provider: "api:deepseek-com", Status: "active"},
+			},
+			Models: []AdminModelSourceModel{},
+		},
+	}
+	h, tok := newSourcesHarness(t, &sourcesFake{rows: rows})
+	env := fetchSources(t, h, tok)
+	srcs := asObjects(t, "响应体.sources", env["sources"])
+	if len(srcs) != 1 {
+		t.Fatalf("同 provider 的多把 key 应该在桥里已合并为一条来源，得 %d 条", len(srcs))
+	}
+	if _, ok := srcs[0]["upstream_ids"]; !ok {
+		t.Fatal("合并来源必须带 upstream_ids（成员上游行清单，批量操作要用）")
+	}
+	ids := asStrings(t, "sources[0].upstream_ids", srcs[0]["upstream_ids"])
+	if len(ids) != 2 {
+		t.Fatalf("upstream_ids 应含全部成员，得 %v", ids)
+	}
+}
+
+// TestContractSourcesGroupingSemantics 钉住分组口径：relay（反代）与
+// vendor/selfhosted+custom（API 供应商）是左栏的两个分组。前端按 kind 分组，
+// 这条钉的是「合并后的来源条目 kind 是主行的 kind」——relay 来源的 kind 必须
+// 仍是 relay，否则分组会把反代供应商混进 API 供应商组。
+func TestContractSourcesGroupingSemantics(t *testing.T) {
+	rows := []AdminModelSource{
+		{
+			ID: "00000050-0000-4000-8000-000000000009", Kind: "relay", Name: "demo-pool",
+			UpstreamName: "relay:demo-pool", ProviderID: "relay:demo-pool",
+			Enabled: true, Contributed: true, CredentialCount: 1,
+			UpstreamIDs: []string{"00000050-0000-4000-8000-000000000009"},
+			Models:      []AdminModelSourceModel{},
+		},
+	}
+	h, tok := newSourcesHarness(t, &sourcesFake{rows: rows})
+	srcs := asObjects(t, "响应体.sources", fetchSources(t, h, tok)["sources"])
+	if srcs[0]["kind"] != "relay" {
+		t.Fatalf("relay 来源的 kind 必须保留（前端据此分进反代供应商组），得 %v", srcs[0]["kind"])
 	}
 }
