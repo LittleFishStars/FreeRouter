@@ -100,7 +100,7 @@ type QuotaKey struct {
 // ModelQuotaKey 是「每人按模型额度上限」的键（2026-10-20 新增 3.3.1）：
 // 作用域比 QuotaKey 多一维抽象模型。
 type ModelQuotaKey struct {
-	AbstractModelID int64
+	AbstractModelID string
 	Unit            QuotaUnit
 	Period          QuotaPeriod
 }
@@ -108,8 +108,8 @@ type ModelQuotaKey struct {
 // PoolRef 指向一个组级共享池（不合并、不取 min——03-groups §4：池是逐组
 // 独立资源，合并成单个数字会丢掉「哪个组的池先耗尽」的归因信息）。
 type PoolRef struct {
-	GroupID         int64
-	AbstractModelID int64 // 0 = 合计池；>0 = 只限该抽象模型
+	GroupID         string
+	AbstractModelID string // "" = 合计池（TotalScope）；否则是抽象模型 UUID
 	Unit            QuotaUnit
 	Period          QuotaPeriod
 	Limit           int64
@@ -119,7 +119,7 @@ type PoolRef struct {
 // group_policies 的 raw JSON 解出；解析失败的行会让装载报错而不是静默
 // 跳过——静默跳过 = 该组在合成时凭空消失 = fail-open）。
 type GroupPolicySet struct {
-	GroupID           int64
+	GroupID           string              // UUID
 	CanCreateKey      *bool               // nil = 该组未设
 	MaxKeys           *int64              // nil = 未设；-1 = 显式不限
 	KeyAllowlistWiden *bool               // nil = 未设
@@ -131,14 +131,14 @@ type GroupPolicySet struct {
 // 字段刻意做成「已解码」而不是 raw JSON：合成的纯函数性要求输入本身
 // 确定，把 JSON 解码留在装载侧，坏值在装载时报错。
 type PolicySnapshot struct {
-	AccountID int64
+	AccountID string
 	Classes   []Class // 账户权限类（透传；类不参与组合并——类是账户属性）
-	GroupIDs  []int64
+	GroupIDs  []string
 
 	// VisibleModels 是 ∪ 各组 group_models 的抽象模型 id。为什么不在
 	// GroupPolicySet 里：模型授权存关联表（group_models）而不是键值表
 	// ——它要 FK、要按模型反查（ix_gmqc_model 同理），JSON 塞不下这些。
-	VisibleModels []int64
+	VisibleModels []string
 
 	Groups []GroupPolicySet // 每组一行
 
@@ -160,11 +160,11 @@ type PolicySnapshot struct {
 // 任务约定：AllowedCaps 的五个放开字段平铺在顶层（不嵌套结构），
 // 装配侧（httpapi/console/meter）按字段直取。
 type EffectivePolicy struct {
-	AccountID int64
+	AccountID string
 	Classes   []Class
 
 	// ---- 放开类（并集）----
-	VisibleModels     []int64  // ∪ 各组 group_models
+	VisibleModels     []string // ∪ 各组 group_models
 	CanCreateKey      bool     // ALL(允许)：任一组 false 或全部未设 → false（fail-closed）
 	MaxKeys           int64    // 取 max；任一组 -1 → -1；全部未设 → -1
 	KeyAllowlistWiden bool     // ALL(允许)，同 CanCreateKey
@@ -200,7 +200,7 @@ func ComposeEffectivePolicy(snap PolicySnapshot) EffectivePolicy {
 	}
 
 	// ---- 放开类 ----
-	ep.VisibleModels = dedupSortInt64(snap.VisibleModels)
+	ep.VisibleModels = dedupSortID(snap.VisibleModels)
 	ep.ModelClasses = dedupSortString(snap.ModelClassesAggregate())
 
 	// 布尔 deny 优先：未设 = false（fail-closed——「没有明确允许就是不
@@ -346,11 +346,16 @@ func policyKeyToQuotaKey(key PolicyKey) *QuotaKey {
 	return nil
 }
 
-func dedupSortInt64(in []int64) []int64 {
+// dedupSortID 对 id 切片去重并按字典序排序（id 已是 UUID 文本）。
+//
+// 为什么还排序：这段输出的确定性是合成结果可复现的前提（同一输入两次装载
+// 必须给同一顺序，否则权限判定的日志对不上）。UUID 的字典序没有时间语义，
+// 但"稳定"只需要它是全序，字典序满足。
+func dedupSortID(in []string) []string {
 	if len(in) == 0 {
-		return []int64{}
+		return []string{}
 	}
-	out := append([]int64(nil), in...)
+	out := append([]string(nil), in...)
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	w := 0
 	for i := 1; i < len(out); i++ {

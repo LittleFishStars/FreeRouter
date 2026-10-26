@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"strings"
 )
 
@@ -36,7 +37,9 @@ type GroupRepo struct {
 //     账户至少有一组」是**服务层约定**——注册批准时入组；数据库层不设约束，
 //     这里如实返回空，由调用方决定是否视为异常。meter 的池遍历对空列表
 //     天然跳过，不 fail-open 也不误拒）。
-func (r *GroupRepo) GroupIDsOfAccount(ctx context.Context, accountID int64) ([]int64, error) {
+func (r *GroupRepo) GroupIDsOfAccount(ctx context.Context, accountID string) ([]string, error) {
+	// 排序用 group_id 字典序：UUID 无时间序，但字典序是确定的全序，满足
+	// 「同一输入两次装载给同一顺序」的合成确定性要求（03-groups §9）。
 	return collectIDs(ctx, r.db, "账户所属组",
 		`SELECT m.group_id
 		   FROM group_members m
@@ -51,7 +54,7 @@ func (r *GroupRepo) GroupIDsOfAccount(ctx context.Context, accountID int64) ([]i
 // ID/Name/Description/IsDefault/CreatedAt；组「停用」不存在——组的
 // 危险操作就是删除（03-groups §6），没有 is_disabled 列。
 type Group struct {
-	ID          int64
+	ID          string
 	Name        string
 	Description string
 	IsDefault   bool
@@ -69,31 +72,31 @@ var ErrGroupNotFound = errors.New("store: 组不存在")
 // CreateGroup 建组。name 必须非空且唯一（ux_groups_name）；isDefault=true
 // 时若已有默认组则报错（ux_groups_default 部分唯一索引也会兜底，先查后写
 // 只为给出更友好的错误）。
-func (r *GroupRepo) CreateGroup(ctx context.Context, name, description string, isDefault bool) (int64, error) {
+func (r *GroupRepo) CreateGroup(ctx context.Context, name, description string, isDefault bool) (string, error) {
 	if strings.TrimSpace(name) == "" {
-		return 0, errors.New("store: 组名不得为空")
+		return "", errors.New("store: 组名不得为空")
 	}
 	if isDefault {
 		var n int
 		if err := r.db.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM groups WHERE is_default = 1`).Scan(&n); err != nil {
-			return 0, fmt.Errorf("store: 查默认组占用失败: %w", err)
+			return "", fmt.Errorf("store: 查默认组占用失败: %w", err)
 		}
 		if n > 0 {
-			return 0, fmt.Errorf("%w（已存在默认组）", ErrDefaultGroupProtected)
+			return "", fmt.Errorf("%w（已存在默认组）", ErrDefaultGroupProtected)
 		}
 	}
-	res, err := r.db.ExecContext(ctx,
-		`INSERT INTO groups(name, description, is_default, created_at) VALUES(?,?,?,?)`,
-		name, description, boolInt(isDefault), now())
-	if err != nil {
-		return 0, fmt.Errorf("store: 建组失败: %w", err)
+	id := idgen.New()
+	if _, err := r.db.ExecContext(ctx,
+		`INSERT INTO groups(id, name, description, is_default, created_at) VALUES(?,?,?,?,?)`,
+		id, name, description, boolInt(isDefault), now()); err != nil {
+		return "", fmt.Errorf("store: 建组失败: %w", err)
 	}
-	return res.LastInsertId()
+	return id, nil
 }
 
 // GetGroup 按 id 查组；未命中返回 ErrGroupNotFound（调用方用 errors.Is）。
-func (r *GroupRepo) GetGroup(ctx context.Context, id int64) (*Group, error) {
+func (r *GroupRepo) GetGroup(ctx context.Context, id string) (*Group, error) {
 	g, err := r.getGroupWhere(ctx, `id = ?`, id)
 	if err != nil {
 		return nil, err
@@ -125,7 +128,7 @@ func (r *GroupRepo) getGroupWhere(ctx context.Context, where string, arg any) (*
 // ListGroups 列全部组（id 升序）。console 管理页用。
 func (r *GroupRepo) ListGroups(ctx context.Context) ([]Group, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, description, is_default, created_at FROM groups ORDER BY id ASC`)
+		`SELECT id, name, description, is_default, created_at FROM groups ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("store: 列组失败: %w", err)
 	}
@@ -145,7 +148,7 @@ func (r *GroupRepo) ListGroups(ctx context.Context) ([]Group, error) {
 
 // UpdateGroup 改名/描述。isDefault 不在此改——默认组转移是独立的管理动作
 // （SetDefault），混在改名里会让「改个描述」顺带迁移整个默认组语义。
-func (r *GroupRepo) UpdateGroup(ctx context.Context, id int64, name, description string) error {
+func (r *GroupRepo) UpdateGroup(ctx context.Context, id string, name, description string) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("store: 组名不得为空")
 	}
@@ -171,7 +174,7 @@ func (r *GroupRepo) UpdateGroup(ctx context.Context, id int64, name, description
 //   - 默认组拒绝删除（ErrDefaultGroupProtected）。
 //
 // 审计由调用方（服务层）写——仓储不越权发审计事件。
-func (r *GroupRepo) DeleteGroup(ctx context.Context, id int64) error {
+func (r *GroupRepo) DeleteGroup(ctx context.Context, id string) error {
 	var isDef int
 	if err := r.db.QueryRowContext(ctx,
 		`SELECT is_default FROM groups WHERE id = ?`, id).Scan(&isDef); err != nil {
@@ -199,7 +202,7 @@ func (r *GroupRepo) DeleteGroup(ctx context.Context, id int64) error {
 //
 // 为什么迁移用 INSERT OR IGNORE 而不是先 DELETE 再 INSERT：成员可能
 // 已在其它组，回默认组是「保证至少一组」而不是「只能一组」。
-func (r *GroupRepo) SetDefault(ctx context.Context, newDefaultID int64) error {
+func (r *GroupRepo) SetDefault(ctx context.Context, newDefaultID string) error {
 	var isDef int
 	if err := r.db.QueryRowContext(ctx,
 		`SELECT is_default FROM groups WHERE id = ?`, newDefaultID).Scan(&isDef); err != nil {
@@ -221,19 +224,19 @@ func (r *GroupRepo) SetDefault(ctx context.Context, newDefaultID int64) error {
 	return r.setDefaultInner(ctx, newDefaultID)
 }
 
-func (r *GroupRepo) setDefaultInner(ctx context.Context, newDefaultID int64) error {
+func (r *GroupRepo) setDefaultInner(ctx context.Context, newDefaultID string) error {
 	// 先取旧默认组 id：一旦清了标记就再也找不到「谁曾是默认组」了，
 	// 成员迁移必须在丢掉这个信息之前完成。曾把迁移条件写成
 	// is_default=0 AND id=新组——但此时新组已被打上标记，子查询永假，
 	// 迁移静默落空（TestContractSetDefaultMigration 抓的）。
-	var oldDefaultID int64
+	var oldDefaultID string
 	err := r.db.QueryRowContext(ctx,
 		`SELECT id FROM groups WHERE is_default = 1`).Scan(&oldDefaultID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("store: 查旧默认组失败: %w", err)
 	}
 	if err != nil {
-		oldDefaultID = 0 // 无默认组的库：迁移无从谈起，仅做标记转移
+		oldDefaultID = "" // 无默认组的库：迁移无从谈起，仅做标记转移
 	}
 	if oldDefaultID == newDefaultID {
 		return nil // 幂等
@@ -252,7 +255,7 @@ func (r *GroupRepo) setDefaultInner(ctx context.Context, newDefaultID int64) err
 	}
 	// 旧默认组成员整体迁入新默认组（INSERT OR IGNORE：成员可能已在
 	// 其它组，「保证至少一组」而不是「只能一组」）。
-	if oldDefaultID != 0 {
+	if oldDefaultID != "" {
 		if _, err := r.db.ExecContext(ctx,
 			`INSERT OR IGNORE INTO group_members(group_id, account_id)
 			  SELECT ?, account_id FROM group_members WHERE group_id = ?`,
@@ -267,7 +270,7 @@ func (r *GroupRepo) setDefaultInner(ctx context.Context, newDefaultID int64) err
 // 「保证至少一组」的语义下重复成员行无意义，静默收敛。
 // 成员必须是带 tenant 类的账户（03-groups §9）——校验放这里（存储层
 // 能一次查清）而不是留给每个调用方自查。
-func (r *GroupRepo) AddMember(ctx context.Context, groupID, accountID int64) error {
+func (r *GroupRepo) AddMember(ctx context.Context, groupID, accountID string) error {
 	var n int
 	if err := r.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM account_classes WHERE account_id = ? AND class = 'tenant'`,
@@ -275,7 +278,7 @@ func (r *GroupRepo) AddMember(ctx context.Context, groupID, accountID int64) err
 		return fmt.Errorf("store: 查账户权限类失败: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("store: 账户 %d 无 tenant 类，不能入组", accountID)
+		return fmt.Errorf("store: 账户 %s 无 tenant 类，不能入组", accountID)
 	}
 	if _, err := r.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO group_members(group_id, account_id) VALUES(?, ?)`,
@@ -288,7 +291,7 @@ func (r *GroupRepo) AddMember(ctx context.Context, groupID, accountID int64) err
 // RemoveMember 移出成员。未在组中 = 无操作（幂等）。**注意**：调用方
 // 负责保证账户仍至少属于一组（默认组兜底）——存储层不自动回默认组，
 // 理由同 DeleteGroup：回迁是服务层的显式动作。
-func (r *GroupRepo) RemoveMember(ctx context.Context, groupID, accountID int64) error {
+func (r *GroupRepo) RemoveMember(ctx context.Context, groupID, accountID string) error {
 	if _, err := r.db.ExecContext(ctx,
 		`DELETE FROM group_members WHERE group_id = ? AND account_id = ?`,
 		groupID, accountID); err != nil {
@@ -299,7 +302,7 @@ func (r *GroupRepo) RemoveMember(ctx context.Context, groupID, accountID int64) 
 
 // ListMembers 列组成员的账户 id（升序）。管理面用（03-groups §7：
 // 成员列表只有管理员可见——可见性是 httpapi 的事，这里只给数据）。
-func (r *GroupRepo) ListMembers(ctx context.Context, groupID int64) ([]int64, error) {
+func (r *GroupRepo) ListMembers(ctx context.Context, groupID string) ([]string, error) {
 	return collectIDs(ctx, r.db, "组成员",
 		`SELECT account_id FROM group_members WHERE group_id = ? ORDER BY account_id ASC`,
 		groupID)
@@ -309,7 +312,7 @@ func (r *GroupRepo) ListMembers(ctx context.Context, groupID int64) ([]int64, er
 
 // GetPolicy 读一个组的单条策略的原始 JSON 值。未设置返回 ("", nil)——
 // 「未设」与「设了空串」不同语义，调用方区分。
-func (r *GroupRepo) GetPolicy(ctx context.Context, groupID int64, key PolicyKey) (string, error) {
+func (r *GroupRepo) GetPolicy(ctx context.Context, groupID string, key PolicyKey) (string, error) {
 	var v string
 	err := r.db.QueryRowContext(ctx,
 		`SELECT policy_value FROM group_policies WHERE group_id = ? AND policy_key = ?`,
@@ -327,7 +330,7 @@ func (r *GroupRepo) GetPolicy(ctx context.Context, groupID int64, key PolicyKey)
 // 形状校验在应用层做（DDL 注释：值无法由 DB 约束校验）——这里按
 // PolicyKey 闭集合分三路：布尔键收 JSON true/false；数字键收 JSON 整数
 // （-1 = 显式不限，合法）；类别列表收 JSON 字符串数组。其余键名拒绝。
-func (r *GroupRepo) SetPolicy(ctx context.Context, groupID int64, key PolicyKey, rawValue string) error {
+func (r *GroupRepo) SetPolicy(ctx context.Context, groupID string, key PolicyKey, rawValue string) error {
 	if _, known := policyKindOf(key); !known {
 		return fmt.Errorf("store: 未知策略键 %q（新增键必须先归入放开/限制类）", key)
 	}
@@ -345,7 +348,7 @@ func (r *GroupRepo) SetPolicy(ctx context.Context, groupID int64, key PolicyKey,
 
 // DeletePolicy 删一条策略 = 该组该键回到「未设」（限制类不参与 min、
 // 布尔回 fail-closed 的默认）。幂等。
-func (r *GroupRepo) DeletePolicy(ctx context.Context, groupID int64, key PolicyKey) error {
+func (r *GroupRepo) DeletePolicy(ctx context.Context, groupID string, key PolicyKey) error {
 	if _, err := r.db.ExecContext(ctx,
 		`DELETE FROM group_policies WHERE group_id = ? AND policy_key = ?`,
 		groupID, string(key)); err != nil {
@@ -355,7 +358,7 @@ func (r *GroupRepo) DeletePolicy(ctx context.Context, groupID int64, key PolicyK
 }
 
 // ListPolicies 列一个组的全部策略键值（升序）。
-func (r *GroupRepo) ListPolicies(ctx context.Context, groupID int64) (map[PolicyKey]string, error) {
+func (r *GroupRepo) ListPolicies(ctx context.Context, groupID string) (map[PolicyKey]string, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT policy_key, policy_value FROM group_policies WHERE group_id = ? ORDER BY policy_key ASC`,
 		groupID)
@@ -404,7 +407,7 @@ func validatePolicyValue(key PolicyKey, raw string) error {
 // SetGroupModels 整体覆盖组的抽象模型授权集合（放开类，合成取并集）。
 // group_models 行随组删除 CASCADE；空列表 = 清空授权（合法——该组成员
 // 什么模型都看不到，比删行更强的显式拒绝）。
-func (r *GroupRepo) SetGroupModels(ctx context.Context, groupID int64, abstractModelIDs []int64) error {
+func (r *GroupRepo) SetGroupModels(ctx context.Context, groupID string, abstractModelIDs []string) error {
 	// 先验全部模型存在（FK 会兜底，但错误信息更友好且不写一半）。
 	for _, id := range abstractModelIDs {
 		var n int
@@ -413,7 +416,7 @@ func (r *GroupRepo) SetGroupModels(ctx context.Context, groupID int64, abstractM
 			return fmt.Errorf("store: 查抽象模型失败: %w", err)
 		}
 		if n == 0 {
-			return fmt.Errorf("store: 抽象模型 %d 不存在", id)
+			return fmt.Errorf("store: 抽象模型 %s 不存在", id)
 		}
 	}
 	if r.s != nil && r.s.tx != nil {
@@ -424,7 +427,7 @@ func (r *GroupRepo) SetGroupModels(ctx context.Context, groupID int64, abstractM
 	})
 }
 
-func (r *GroupRepo) setGroupModelsInner(ctx context.Context, groupID int64, ids []int64) error {
+func (r *GroupRepo) setGroupModelsInner(ctx context.Context, groupID string, ids []string) error {
 	if _, err := r.db.ExecContext(ctx,
 		`DELETE FROM group_models WHERE group_id = ?`, groupID); err != nil {
 		return fmt.Errorf("store: 清组模型授权失败: %w", err)
@@ -441,7 +444,7 @@ func (r *GroupRepo) setGroupModelsInner(ctx context.Context, groupID int64, ids 
 
 // ListGroupModels 列组的抽象模型授权（升序）。合成侧（LoadPolicySnapshot）
 // 与 console 都用。
-func (r *GroupRepo) ListGroupModels(ctx context.Context, groupID int64) ([]int64, error) {
+func (r *GroupRepo) ListGroupModels(ctx context.Context, groupID string) ([]string, error) {
 	return collectIDs(ctx, r.db, "组模型授权",
 		`SELECT abstract_model_id FROM group_models WHERE group_id = ? ORDER BY abstract_model_id ASC`,
 		groupID)
@@ -460,14 +463,14 @@ func (r *GroupRepo) ListGroupModels(ctx context.Context, groupID int64) ([]int64
 //
 // 解码放在装载侧而不是合成侧：合成的纯函数性要求输入确定，坏 JSON 在
 // 这里显式失败（静默跳过 = 该组凭空消失 = fail-open）。
-func (r *GroupRepo) LoadPolicySnapshot(ctx context.Context, accountID int64) (*PolicySnapshot, error) {
+func (r *GroupRepo) LoadPolicySnapshot(ctx context.Context, accountID string) (*PolicySnapshot, error) {
 	// 账户类与速率三列。
 	var rpm, tpm, maxc int64
 	if err := r.db.QueryRowContext(ctx,
 		`SELECT rpm_limit, tpm_limit, max_concurrency FROM accounts WHERE id = ?`,
 		accountID).Scan(&rpm, &tpm, &maxc); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("store: 账户 %d 不存在", accountID)
+			return nil, fmt.Errorf("store: 账户 %s 不存在", accountID)
 		}
 		return nil, fmt.Errorf("store: 读账户速率列失败: %w", err)
 	}
@@ -508,7 +511,7 @@ func (r *GroupRepo) LoadPolicySnapshot(ctx context.Context, accountID int64) (*P
 			return nil, fmt.Errorf("store: 查组模型并集失败: %w", err)
 		}
 		for rows.Next() {
-			var id int64
+			var id string
 			if err := rows.Scan(&id); err != nil {
 				rows.Close()
 				return nil, fmt.Errorf("store: 扫描可见模型失败: %w", err)
@@ -577,7 +580,7 @@ func (r *GroupRepo) LoadPolicySnapshot(ctx context.Context, accountID int64) (*P
 // loadGroupPolicySet 解码一组的 group_policies 行到 GroupPolicySet。
 // 未知键：跳过（向前兼容——旧库里的键可能是未来版本写入的；不因未知
 // 键拒绝整个装载）。坏形状的已知键：报错。
-func (r *GroupRepo) loadGroupPolicySet(ctx context.Context, groupID int64) (*GroupPolicySet, error) {
+func (r *GroupRepo) loadGroupPolicySet(ctx context.Context, groupID string) (*GroupPolicySet, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT policy_key, policy_value FROM group_policies WHERE group_id = ?`,
 		groupID)
@@ -599,31 +602,31 @@ func (r *GroupRepo) loadGroupPolicySet(ctx context.Context, groupID int64) (*Gro
 		case key == PolicyCanCreateKey:
 			var b bool
 			if err := json.Unmarshal([]byte(v), &b); err != nil {
-				return nil, fmt.Errorf("store: 组 %d 策略 %s 坏布尔: %w", groupID, k, err)
+				return nil, fmt.Errorf("store: 组 %s 策略 %s 坏布尔: %w", groupID, k, err)
 			}
 			gps.CanCreateKey = &b
 		case key == PolicyKeyAllowlistWiden:
 			var b bool
 			if err := json.Unmarshal([]byte(v), &b); err != nil {
-				return nil, fmt.Errorf("store: 组 %d 策略 %s 坏布尔: %w", groupID, k, err)
+				return nil, fmt.Errorf("store: 组 %s 策略 %s 坏布尔: %w", groupID, k, err)
 			}
 			gps.KeyAllowlistWiden = &b
 		case key == PolicyMaxKeys:
 			var n int64
 			if err := json.Unmarshal([]byte(v), &n); err != nil {
-				return nil, fmt.Errorf("store: 组 %d 策略 %s 坏整数: %w", groupID, k, err)
+				return nil, fmt.Errorf("store: 组 %s 策略 %s 坏整数: %w", groupID, k, err)
 			}
 			gps.MaxKeys = &n
 		case key == PolicyModelClass:
 			var arr []string
 			if err := json.Unmarshal([]byte(v), &arr); err != nil {
-				return nil, fmt.Errorf("store: 组 %d 策略 %s 坏数组: %w", groupID, k, err)
+				return nil, fmt.Errorf("store: 组 %s 策略 %s 坏数组: %w", groupID, k, err)
 			}
 			gps.ModelClasses = dedupSortString(arr)
 		default: // 限制类数字键
 			var n int64
 			if err := json.Unmarshal([]byte(v), &n); err != nil {
-				return nil, fmt.Errorf("store: 组 %d 策略 %s 坏整数: %w", groupID, k, err)
+				return nil, fmt.Errorf("store: 组 %s 策略 %s 坏整数: %w", groupID, k, err)
 			}
 			if n < 0 {
 				continue // -1 = 未设语义，不进 Numbers
@@ -643,7 +646,7 @@ func placeholders(n int) string {
 }
 
 // int64sToAny 给 QueryContext 的变长参数切片。
-func int64sToAny(in []int64) []any {
+func int64sToAny(in []string) []any {
 	out := make([]any, len(in))
 	for i, v := range in {
 		out[i] = v
@@ -662,15 +665,15 @@ func int64sToAny(in []int64) []any {
 // 只写两条最小放行（can_create_key / max_keys），其余限制类键保持未设（= -1）。
 //
 // 已存在则**不覆盖**任何策略：管理员改过的配置不能被启动流程重置。
-func (s *Store) EnsureDefaultGroup(ctx context.Context, maxKeys int) (int64, error) {
-	var id int64
+func (s *Store) EnsureDefaultGroup(ctx context.Context, maxKeys int) (string, error) {
+	var id string
 	err := s.writeDB.QueryRowContext(ctx,
 		`SELECT id FROM groups WHERE is_default = 1 LIMIT 1`).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("store: 查默认组: %w", err)
+		return "", fmt.Errorf("store: 查默认组: %w", err)
 	}
 
 	return id, s.WithTx(ctx, func(tx *Repos) error {
@@ -701,7 +704,7 @@ func (s *Store) EnsureDefaultGroup(ctx context.Context, maxKeys int) (int64, err
 // 成员要求 tenant 类（03-groups §9，AddMember 的既有判据）：contributor
 // 容器账户没有调用能力，给它落组没有语义。这里沿用同一判据并在首个
 // 非 tenant 账户上报错，而不是静默跳过。
-func (r *GroupRepo) SetAccountGroups(ctx context.Context, accountID int64, groupIDs []int64) error {
+func (r *GroupRepo) SetAccountGroups(ctx context.Context, accountID string, groupIDs []string) error {
 	if len(groupIDs) == 0 {
 		return errors.New("store: 账户至少要属于一个组（03-groups §5：删组不删人的落点必须存在）")
 	}
@@ -714,7 +717,7 @@ func (r *GroupRepo) SetAccountGroups(ctx context.Context, accountID int64, group
 	// 先验目标组都存在（拿不存在的组当归属是配置错误，不是「以后会补上」）。
 	for _, gid := range groupIDs {
 		if _, err := r.GetGroup(ctx, gid); err != nil {
-			return fmt.Errorf("store: 目标组 %d 不可用: %w", gid, err)
+			return fmt.Errorf("store: 目标组 %s 不可用: %w", gid, err)
 		}
 	}
 	// 与既有成员比差异：只删多余的、只加缺失的（幂等，且不碰没变的行）。
@@ -722,7 +725,7 @@ func (r *GroupRepo) SetAccountGroups(ctx context.Context, accountID int64, group
 	if err != nil {
 		return err
 	}
-	inSet := func(id int64, list []int64) bool {
+	inSet := func(id string, list []string) bool {
 		for _, v := range list {
 			if v == id {
 				return true
@@ -748,12 +751,12 @@ func (r *GroupRepo) SetAccountGroups(ctx context.Context, accountID int64, group
 }
 
 // ListAccountGroups 读账户所属组 id 列表（按组 id 升序，稳定输出）。
-func (r *GroupRepo) ListAccountGroups(ctx context.Context, accountID int64) ([]int64, error) {
+func (r *GroupRepo) ListAccountGroups(ctx context.Context, accountID string) ([]string, error) {
 	return r.groupsOfAccountLocked(ctx, accountID)
 }
 
 // groupsOfAccountLocked 是两处共用的查询（名字沿用调用方语境，无锁语义）。
-func (r *GroupRepo) groupsOfAccountLocked(ctx context.Context, accountID int64) ([]int64, error) {
+func (r *GroupRepo) groupsOfAccountLocked(ctx context.Context, accountID string) ([]string, error) {
 	return collectIDs(ctx, r.db, "账户所属组",
 		`SELECT group_id FROM group_members WHERE account_id = ? ORDER BY group_id`, accountID)
 }
@@ -768,7 +771,7 @@ func (r *GroupRepo) groupsOfAccountLocked(ctx context.Context, accountID int64) 
 // 实现：DELETE 全部行 + 逐键 SetPolicy，同一事务。逐键写复用 SetPolicy，
 // 键合法性与值形状校验因此只有一份口径（policyKindOf + validatePolicyValue）。
 // 空 map = 清空该组全部策略（回到「未设」，限制类不参与 min、布尔 fail-closed）。
-func (r *GroupRepo) SetGroupPolicyKeys(ctx context.Context, groupID int64, policies map[PolicyKey]string) error {
+func (r *GroupRepo) SetGroupPolicyKeys(ctx context.Context, groupID string, policies map[PolicyKey]string) error {
 	if r.s != nil && r.s.tx == nil {
 		return r.s.WithTx(ctx, func(tx *Repos) error {
 			return tx.Groups.SetGroupPolicyKeys(ctx, groupID, policies)

@@ -35,7 +35,8 @@
 |---|---|---|
 | 时间列 | `INTEGER`，UTC unix 秒 | SQLite 没有原生时间类型；整数比较与索引比字符串高效；避免时区歧义。**所有时间列都是 UTC**，展示层负责转换 |
 | 日期列 | `TEXT "YYYY-MM-DD"`（仅 `usage_daily.day`） | 按天聚合的键，文本排序即时间序；见第 9 节的待定项 |
-| 主键 | `INTEGER PRIMARY KEY`（rowid 别名） | 写入快、索引小；UUID 主键会造成索引膨胀与随机写。对外**不**直接暴露自增 id（见 `../security/04-authz.md` 的越权枚举风险） |
+| 主键 | `TEXT NOT NULL PRIMARY KEY`（UUID v4） | 2026-10-26 改造（迁移 0009）。**为什么不再用 `INTEGER PRIMARY KEY`**：旧方案是「库内自增整型 + 对外 `<前缀>_<十进制>` 字符串」两层，接缝由 `internal/idcode` 维护；换 UUID 后对外 id 与库内主键是同一串，那层编解码（桥层 35 处 encode / 54 处 decode、`secret_ref` 的 `CAST(... AS INTEGER)` join）整体消失。代价如实记下：主键索引从顺序写入变随机写入（B-tree 页分裂）+ 索引体积变大，在本地 SQLite 的万级行规模下测不出差异。**为什么必须写 `NOT NULL`**：SQLite 的 `TEXT PRIMARY KEY` 不强制非空，且多行 NULL 在唯一约束里互不冲突——漏设 id 的插入会静默造出永远查不到的幽灵行（`INTEGER PRIMARY KEY` 时代由自增兜住，换 TEXT 后没有这层保护）。id 由 store 在插入前生成（`internal/idgen`），不让调用方生成 |
+| 合计哨兵 | `''`（空串） | `account_quotas` / `group_quota_pools` 的 `abstract_model_id` 用空串表示「全模型合计」（旧方案是整型 0）。为什么不用 NULL：这两列是 WITHOUT ROWID 复合主键的成员，`NULL = NULL` 在 SQL 里是 UNKNOWN，会让合计行的 upsert 冲突判定失效、池子被拆成多行；空串是值域内的「合法非值」。Go 侧对位常量 `store.TotalScope` |
 | 对外不透明标识 | `TEXT`（`sessions.id` / `api_keys.prefix`） | 需要被外部持有且不可猜测 |
 | 纯联结表 | `WITHOUT ROWID` | 复合主键即数据本身，省一层索引 |
 | 外键 | 全部显式声明 + 连接级 `PRAGMA foreign_keys=ON` | SQLite 默认**关闭**外键；忘记打开会静默允许悬空引用 |

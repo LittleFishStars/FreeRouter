@@ -24,6 +24,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"strings"
 )
 
@@ -111,15 +112,15 @@ func severityRank(s InboxSeverity) int {
 
 // InboxItem 是一条待办事项。
 type InboxItem struct {
-	ID         int64
+	ID         string // UUID
 	Kind       InboxKind
 	Severity   InboxSeverity
 	Title      string
-	DetailJSON string // 原文；无内容时为空串
-	RelatedID  *int64
+	DetailJSON string  // 原文；无内容时为空串
+	RelatedID  *string // 关联对象的 UUID（kind 决定指向哪张表）
 	CreatedAt  int64
 	ReadAt     *int64
-	ReadBy     *int64
+	ReadBy     *string
 }
 
 // Read 报告该条是否已读。
@@ -144,26 +145,36 @@ type InboxRepo struct{ base }
 // 为什么不做"必须是合法 JSON"的校验：02-admin 的入站示例里 detail_json 是个
 // 对象，但表结构注释只说"JSON"；把校验做在存储层会让"先建条目后补细节"的
 // 工作流无法落地，而这类补写是运维的常见动作。
-func (r *InboxRepo) Append(ctx context.Context, kind InboxKind, severity InboxSeverity, title, detailJSON string, relatedID *int64) (int64, error) {
+func (r *InboxRepo) Append(ctx context.Context, kind InboxKind, severity InboxSeverity, title, detailJSON string, relatedID *string) (string, error) {
 	// 值域硬校验（lead 裁决 1/2）：kind/severity 都没有 DB CHECK，而拼错的
 	// severity 会静默排到末尾（CASE ... ELSE 1）——"看起来能用、实际不可用"
 	// 的那类 bug 只能在这里拦。错误可判定：ErrInvalidInboxKind / ErrInvalidInboxSeverity。
 	if !kind.valid() {
-		return 0, fmt.Errorf("%w: %q", ErrInvalidInboxKind, kind)
+		return "", fmt.Errorf("%w: %q", ErrInvalidInboxKind, kind)
 	}
 	if !severity.valid() {
-		return 0, fmt.Errorf("%w: %q", ErrInvalidInboxSeverity, severity)
+		return "", fmt.Errorf("%w: %q", ErrInvalidInboxSeverity, severity)
 	}
 	if strings.TrimSpace(title) == "" {
-		return 0, errors.New("store: inbox title 不得为空（列表里没有标题的待办无从处理）")
+		return "", errors.New("store: inbox title 不得为空（列表里没有标题的待办无从处理）")
 	}
 	var detail sql.NullString
 	if detailJSON != "" {
 		detail = sql.NullString{String: detailJSON, Valid: true}
 	}
-	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO admin_inbox(kind, severity, title, detail_json, related_id, created_at)
-		 VALUES(?,?,?,?,?,?)
+	// 用 RETURNING 拿 id，而不是回读：命中部分唯一索引走 DO UPDATE 时，
+	// 真正生效的是**既有那行**的 id，本次生成的 id 根本没落库；SQLite 的
+	// RETURNING 在 DO UPDATE 下返回被更新行的 id、真插入下返回新行 id——
+	// 一次查询两种情形都拿到正确值。
+	//
+	// 为什么不再用旧实现的「回读 ORDER BY id DESC」：那依赖 INTEGER 自增
+	// 主键的"id 序 = 插入序"；UUID 的字典序与插入时间无关，同一毫秒内
+	// 连投两条会被回读成同一条（测试 TestContractInboxUnreadIdempotent
+	// 实测踩中）。RETURNING 让这条语义不再依赖任何 id 形状假设。
+	var id string
+	err := r.db.QueryRowContext(ctx,
+		`INSERT INTO admin_inbox(id, kind, severity, title, detail_json, related_id, created_at)
+		 VALUES(?,?,?,?,?,?,?)
 		 ON CONFLICT(kind, related_id) WHERE read_at IS NULL AND related_id IS NOT NULL
 		 DO UPDATE SET
 		     detail_json = excluded.detail_json,
@@ -171,28 +182,11 @@ func (r *InboxRepo) Append(ctx context.Context, kind InboxKind, severity InboxSe
 		     severity = CASE WHEN `+fmt.Sprintf(severityRankCase, "excluded.severity")+` >=
 		                           `+fmt.Sprintf(severityRankCase, "admin_inbox.severity")+`
 		                      THEN excluded.severity
-		                      ELSE admin_inbox.severity END`,
-		string(kind), string(severity), title, detail, relatedID, now()); err != nil {
-		return 0, fmt.Errorf("store: 投递待办事项失败: %w", err)
-	}
-	// 回读 id 而不是用 LastInsertId：命中部分唯一索引走 DO UPDATE 时，
-	// LastInsertId 不会指向被更新的那一行（它只在真插入时有意义），
-	// 拿它返回会让调用方拿着一个错 id 去标已读。回读与 ON CONFLICT 同一
-	// 目标条件，拿到的就是当前未读的那一条。
-	var id int64
-	q := `SELECT id FROM admin_inbox WHERE kind = ? AND read_at IS NULL`
-	args := []any{string(kind)}
-	if relatedID != nil {
-		q += ` AND related_id = ?`
-		args = append(args, *relatedID)
-	} else {
-		q += ` AND related_id IS NULL`
-	}
-	if err := r.db.QueryRowContext(ctx, q+` ORDER BY id DESC LIMIT 1`, args...).Scan(&id); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, ErrNotFound
-		}
-		return 0, fmt.Errorf("store: 回读待办事项 id 失败: %w", err)
+		                      ELSE admin_inbox.severity END
+		 RETURNING id`,
+		idgen.New(), string(kind), string(severity), title, detail, relatedID, now()).Scan(&id)
+	if err != nil {
+		return "", fmt.Errorf("store: 投递待办事项失败: %w", err)
 	}
 	return id, nil
 }
@@ -295,7 +289,7 @@ func (r *InboxRepo) List(ctx context.Context, f InboxFilter) ([]InboxItem, error
 }
 
 // Get 按 id 读一条待办事项（含 detail_json 原文）。未命中返回 ErrNotFound。
-func (r *InboxRepo) Get(ctx context.Context, id int64) (*InboxItem, error) {
+func (r *InboxRepo) Get(ctx context.Context, id string) (*InboxItem, error) {
 	row := r.db.QueryRowContext(ctx,
 		`SELECT id, kind, severity, title, detail_json, related_id, created_at, read_at, read_by
 		   FROM admin_inbox WHERE id = ?`, id)
@@ -314,7 +308,7 @@ func (r *InboxRepo) Get(ctx context.Context, id int64) (*InboxItem, error) {
 //
 // 为什么幂等而不是报"已经是已读"：控制台的双击、轮询与 PATCH 重试都会造成
 // 重复提交，把正常操作变成错误只会催生更多绕过代码。
-func (r *InboxRepo) MarkRead(ctx context.Context, id, readBy int64) error {
+func (r *InboxRepo) MarkRead(ctx context.Context, id, readBy string) error {
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE admin_inbox SET read_at = ?, read_by = ? WHERE id = ?`,
 		now(), readBy, id)
@@ -331,7 +325,7 @@ func (r *InboxRepo) MarkRead(ctx context.Context, id, readBy int64) error {
 //
 // 为什么要能撤回：管理员误点、或"这条还没处理完"是常态——已读不是终态，
 // 没有撤回就等于把"我看过了"与"我处理完了"混成一个不可逆的位。
-func (r *InboxRepo) MarkUnread(ctx context.Context, id int64) error {
+func (r *InboxRepo) MarkUnread(ctx context.Context, id string) error {
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE admin_inbox SET read_at = NULL, read_by = NULL WHERE id = ?`, id)
 	if err != nil {
@@ -350,7 +344,7 @@ func (r *InboxRepo) MarkUnread(ctx context.Context, id int64) error {
 // 单事务单语句是这批量操作的最短路径。
 //
 // 空 id 列表直接返回 0：调用方"没有要标记的"是正常输入，不是错误。
-func (r *InboxRepo) MarkReadBatch(ctx context.Context, ids []int64, readBy int64) (int64, error) {
+func (r *InboxRepo) MarkReadBatch(ctx context.Context, ids []string, readBy string) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}

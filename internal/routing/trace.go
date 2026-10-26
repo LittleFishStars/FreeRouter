@@ -31,7 +31,7 @@ type TraceStage struct {
 // 「险些可用」诊断——管理员一眼看出是池子空了、健康全红了还是额度全干了）。
 type TraceFilteredOut struct {
 	// RealModelID 内部 id（可反查管理端，不可反查贡献者账户）。
-	RealModelID int64 `json:"real_model_id"`
+	RealModelID string `json:"real_model_id"`
 	// Channel 渠道名。为什么渠道名可以出：管理端目录本来就按渠道分组，
 	// x-fr-trace 的可见范围仅管理端与白名单组（§6.3）——租户侧拿不到这个头。
 	Channel string `json:"channel"`
@@ -41,7 +41,7 @@ type TraceFilteredOut struct {
 
 // TraceOrder 记录排序后的最终序列（只有渠道与 id，无凭据无 URL）。
 type TraceOrder struct {
-	RealModelID int64  `json:"real_model_id"`
+	RealModelID string `json:"real_model_id"`
 	Channel     string `json:"channel"`
 	// UpstreamModelID 真实模型 id：trace 面向管理员（§6.3 可见范围），
 	// 管理端目录本来就显示它——不含它反而让 trace 无法回答「落到了谁」。
@@ -67,7 +67,7 @@ type Trace struct {
 	Order []TraceOrder `json:"order"`
 	// SelectedID 最终选中的 RealModel.ID（Order 非空时等于 Order[0].RealModelID；
 	// 单列字段让消费方不必做空切片判断）。
-	SelectedID int64 `json:"selected_id,omitempty"`
+	SelectedID string `json:"selected_id,omitempty"`
 	// Strategy 实际生效的策略链（含默认链展开）。
 	Strategy []string `json:"strategy"`
 }

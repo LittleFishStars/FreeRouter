@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 )
 
 // KeyStatus 是 api_keys.status 的取值。
@@ -28,8 +30,8 @@ const (
 // 按账户计，与本次请求用的是哪把 Key 无关；若每把 Key 自带额度，
 // 建 10 把 Key 就得到 10 份额度，账户级上限形同虚设（05-storage.md 3.6）。
 type APIKey struct {
-	ID        int64
-	AccountID int64
+	ID        string // UUID
+	AccountID string
 	Prefix    string
 	Name      *string
 	Status    KeyStatus
@@ -43,34 +45,34 @@ type KeyRepo struct{ base }
 //
 // keyHash 必须是 SHA-256 明文的 32 字节；这里不校验长度之外的形状，
 // 因为哈希的生成属于认证层（不属于持久层的职责）。
-func (r *KeyRepo) CreateKey(ctx context.Context, k APIKey, keyHash []byte) (int64, error) {
-	if k.AccountID == 0 {
-		return 0, errors.New("store: Key 必须归属某个账户")
+func (r *KeyRepo) CreateKey(ctx context.Context, k APIKey, keyHash []byte) (string, error) {
+	if k.AccountID == "" {
+		return "", errors.New("store: Key 必须归属某个账户")
 	}
 	if len(keyHash) != 32 {
-		return 0, fmt.Errorf("store: key_hash 必须是 32 字节（SHA-256），实际 %d", len(keyHash))
+		return "", fmt.Errorf("store: key_hash 必须是 32 字节（SHA-256），实际 %d", len(keyHash))
 	}
 	if k.Prefix == "" {
-		return 0, errors.New("store: Key 的 prefix 不得为空（展示与排障需要）")
+		return "", errors.New("store: Key 的 prefix 不得为空（展示与排障需要）")
 	}
 	status := k.Status
 	if status == "" {
 		status = KeyActive
 	}
 	if !status.valid() {
-		return 0, fmt.Errorf("store: 非法 Key 状态 %q", status)
+		return "", fmt.Errorf("store: 非法 Key 状态 %q", status)
 	}
 
-	res, err := r.db.ExecContext(ctx,
-		`INSERT INTO api_keys(account_id, key_hash, prefix, name, status, expires_at)
-		 VALUES(?,?,?,?,?,?)`,
-		k.AccountID, keyHash, k.Prefix, k.Name, string(status), k.ExpiresAt)
-	if err != nil {
-		return 0, fmt.Errorf("store: 创建 Key 失败: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("store: 读取新 Key id 失败: %w", err)
+	// id 在插入前生成（TEXT 主键没有自增兜底，见 0009 与 05-storage §2）。
+	// 为什么由 store 生成而不是调用方传：id 是行的身份，每个调用方各生成一次
+	// 必然漏一处，而漏了在 TEXT 主键上就是 NOT NULL 报错或（不写 NOT NULL 时）
+	// 静默幽灵行。
+	id := idgen.New()
+	if _, err := r.db.ExecContext(ctx,
+		`INSERT INTO api_keys(id, account_id, key_hash, prefix, name, status, expires_at)
+		 VALUES(?,?,?,?,?,?,?)`,
+		id, k.AccountID, keyHash, k.Prefix, k.Name, string(status), k.ExpiresAt); err != nil {
+		return "", fmt.Errorf("store: 创建 Key 失败: %w", err)
 	}
 	return id, nil
 }
@@ -107,7 +109,7 @@ func (r *KeyRepo) GetKeyByHash(ctx context.Context, keyHash []byte) (*APIKey, er
 }
 
 // GetKey 按 id 查 Key（管理面使用）。
-func (r *KeyRepo) GetKey(ctx context.Context, id int64) (*APIKey, error) {
+func (r *KeyRepo) GetKey(ctx context.Context, id string) (*APIKey, error) {
 	row := r.db.QueryRowContext(ctx,
 		`SELECT `+keyColumns+` FROM api_keys WHERE id = ?`, id)
 	k, err := scanKey(row)
@@ -115,18 +117,20 @@ func (r *KeyRepo) GetKey(ctx context.Context, id int64) (*APIKey, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
-		return nil, fmt.Errorf("store: 读取 Key %d 失败: %w", id, err)
+		return nil, fmt.Errorf("store: 读取 Key %s 失败: %w", id, err)
 	}
 	return k, nil
 }
 
 // ListKeysByAccount 列出账户名下的 Key（最新在前）。
 //
-// 为什么按 id 倒序而不是 created_at：api_keys 表里没有 created_at 列
-// （以 PLAN 第 10 章为准），id 是唯一可排序的单调量。
-func (r *KeyRepo) ListKeysByAccount(ctx context.Context, accountID int64) ([]APIKey, error) {
+// 为什么按 rowid 倒序而不是 created_at：api_keys 表里没有 created_at 列
+// （以 PLAN 第 10 章为准），而 id 是 UUID 无时间序。rowid 仍是单调自增的
+// 插入序（api_keys 不是 WITHOUT ROWID 表），用它当「创建先后」的代理是
+// 唯一不靠时间戳的稳定选择。
+func (r *KeyRepo) ListKeysByAccount(ctx context.Context, accountID string) ([]APIKey, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT `+keyColumns+` FROM api_keys WHERE account_id = ? ORDER BY id DESC`, accountID)
+		`SELECT `+keyColumns+` FROM api_keys WHERE account_id = ? ORDER BY rowid DESC`, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("store: 列出 Key 失败: %w", err)
 	}
@@ -147,7 +151,7 @@ func (r *KeyRepo) ListKeysByAccount(ctx context.Context, accountID int64) ([]API
 }
 
 // SetKeyStatus 改 Key 状态。
-func (r *KeyRepo) SetKeyStatus(ctx context.Context, id int64, status KeyStatus) error {
+func (r *KeyRepo) SetKeyStatus(ctx context.Context, id string, status KeyStatus) error {
 	if !status.valid() {
 		return fmt.Errorf("store: 非法 Key 状态 %q", status)
 	}
@@ -167,7 +171,7 @@ func (r *KeyRepo) SetKeyStatus(ctx context.Context, id int64, status KeyStatus) 
 // 为什么整体覆盖而不是增量 add/remove：白名单是一个集合，增量 API 会让调用方
 // 在"我先读了、再改了、中间别人也改了"时静默丢失对方的修改。整体覆盖把语义
 // 变成"设置成这个集合"，配合调用方在表单里提交完整集合用起来是确定的。
-func (r *KeyRepo) SetKeyModelAllow(ctx context.Context, keyID int64, abstractModelIDs []int64) error {
+func (r *KeyRepo) SetKeyModelAllow(ctx context.Context, keyID string, abstractModelIDs []string) error {
 	// 在事务里做"删干净 + 重插"，否则中途失败会留下半个白名单。
 	if r.s != nil && r.s.tx == nil {
 		return r.s.WithTx(ctx, func(tx *Repos) error {
@@ -190,7 +194,7 @@ func (r *KeyRepo) SetKeyModelAllow(ctx context.Context, keyID int64, abstractMod
 }
 
 // KeyModelAllow 读 Key 的模型白名单。空切片 = Key 没有额外收窄（不代表"没有可用模型"）。
-func (r *KeyRepo) KeyModelAllow(ctx context.Context, keyID int64) ([]int64, error) {
+func (r *KeyRepo) KeyModelAllow(ctx context.Context, keyID string) ([]string, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT abstract_model_id FROM key_model_allow WHERE key_id = ? ORDER BY abstract_model_id`,
 		keyID)
@@ -199,9 +203,9 @@ func (r *KeyRepo) KeyModelAllow(ctx context.Context, keyID int64) ([]int64, erro
 	}
 	defer func() { _ = rows.Close() }()
 
-	out := make([]int64, 0, 8)
+	out := make([]string, 0, 8)
 	for rows.Next() {
-		var id int64
+		var id string
 		if err := rows.Scan(&id); err != nil {
 			return nil, fmt.Errorf("store: 扫描 Key 白名单失败: %w", err)
 		}
@@ -224,12 +228,12 @@ func (s KeyStatus) valid() bool {
 // SetKeyAllowlist 是 storeiface 里 authn 使用的名字：写 Key 的模型白名单。
 // 与 SetKeyModelAllow 同一实现——接口名对齐仓储名，避免 Lead 合并时写适配器；
 // 语义仍是「整体覆盖」：authn 在管理面收到的就是完整集合。
-func (r *KeyRepo) SetKeyAllowlist(ctx context.Context, keyID int64, abstractModelIDs []int64) error {
+func (r *KeyRepo) SetKeyAllowlist(ctx context.Context, keyID string, abstractModelIDs []string) error {
 	return r.SetKeyModelAllow(ctx, keyID, abstractModelIDs)
 }
 
 // KeyAllowlist 读 Key 的模型白名单（storeiface 对齐别名）。语义见 KeyModelAllow。
-func (r *KeyRepo) KeyAllowlist(ctx context.Context, keyID int64) ([]int64, error) {
+func (r *KeyRepo) KeyAllowlist(ctx context.Context, keyID string) ([]string, error) {
 	return r.KeyModelAllow(ctx, keyID)
 }
 
@@ -237,7 +241,7 @@ func (r *KeyRepo) KeyAllowlist(ctx context.Context, keyID int64) ([]int64, error
 //
 // 为什么单独一个方法而不是复用 Update：Key 的其余字段没有可改的语义
 // （哈希/前缀不可变），只暴露"改名"这一条写路径比一个通用 Update 更难误用。
-func (r *KeyRepo) SetKeyName(ctx context.Context, id int64, name *string) error {
+func (r *KeyRepo) SetKeyName(ctx context.Context, id string, name *string) error {
 	res, err := r.db.ExecContext(ctx, `UPDATE api_keys SET name = ? WHERE id = ?`, name, id)
 	if err != nil {
 		return fmt.Errorf("store: 改名失败: %w", err)
@@ -254,7 +258,7 @@ func (r *KeyRepo) SetKeyName(ctx context.Context, id int64, name *string) error 
 //
 // 列语义与 CreateKey 写入的 expires_at 一致（NULL = 永不过期），读侧
 // APIKey.ExpiresAt 为 nil 时也按同一语义解释。
-func (r *KeyRepo) SetKeyExpiry(ctx context.Context, id int64, t *int64) error {
+func (r *KeyRepo) SetKeyExpiry(ctx context.Context, id string, t *int64) error {
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE api_keys SET expires_at = ? WHERE id = ?`, t, id)
 	if err != nil {

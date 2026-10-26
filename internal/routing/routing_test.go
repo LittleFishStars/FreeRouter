@@ -15,18 +15,18 @@ import (
 // —— fake AbstractModelStore（内存表） ——
 
 type fakeStore struct {
-	models map[string]*AbstractModel // by name
-	byID   map[int64]*AbstractModel  // by id
-	cands  map[int64][]CandidateDecl // by abstract model id
-	real   map[int64]*RealModelInfo  // by real model id
+	models map[string]*AbstractModel  // by name
+	byID   map[string]*AbstractModel  // by id
+	cands  map[string][]CandidateDecl // by abstract model id
+	real   map[string]*RealModelInfo  // by real model id
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		models: map[string]*AbstractModel{},
-		byID:   map[int64]*AbstractModel{},
-		cands:  map[int64][]CandidateDecl{},
-		real:   map[int64]*RealModelInfo{},
+		byID:   map[string]*AbstractModel{},
+		cands:  map[string][]CandidateDecl{},
+		real:   map[string]*RealModelInfo{},
 	}
 }
 
@@ -40,29 +40,32 @@ func (f *fakeStore) GetAbstractModelByName(ctx context.Context, name string) (*A
 	return f.models[name], nil
 }
 
-func (f *fakeStore) GetAbstractModel(ctx context.Context, id int64) (*AbstractModel, error) {
+func (f *fakeStore) GetAbstractModel(ctx context.Context, id string) (*AbstractModel, error) {
 	return f.byID[id], nil
 }
 
-func (f *fakeStore) ListCandidates(ctx context.Context, abstractModelID int64) ([]CandidateDecl, error) {
+func (f *fakeStore) ListCandidates(ctx context.Context, abstractModelID string) ([]CandidateDecl, error) {
 	return f.cands[abstractModelID], nil
 }
 
-func (f *fakeStore) GetRealModel(ctx context.Context, id int64) (*RealModelInfo, error) {
+func (f *fakeStore) GetRealModel(ctx context.Context, id string) (*RealModelInfo, error) {
 	return f.real[id], nil
 }
 
 // mkReal 构造一个正常可用的真实模型行。
-func mkReal(id int64, channel, modelID string) *RealModelInfo {
+func mkReal(id string, channel, modelID string) *RealModelInfo {
 	return &RealModelInfo{
-		ID: id, UpstreamID: 100 + id, UpstreamModelID: modelID, UpstreamKind: "relay",
+		ID: id, UpstreamID: "up-" + id, UpstreamModelID: modelID, UpstreamKind: "relay",
 		Channel: channel, Status: "active", UpstreamEnabled: true,
 		Modalities: []string{"text"}, Efforts: []string{"off", "low", "high"},
 	}
 }
 
-// ptrI64 帮手。
+// ptrI64 给上下文窗口等数值列用；id 已是 string，不再需要指针。
 func ptrI64(v int64) *int64 { return &v }
+
+// ptrStr 造 *string（ReplacementModelID 是可空 id）。
+func ptrStr(v string) *string { return &v }
 
 func ctx() context.Context { return context.Background() }
 
@@ -72,9 +75,9 @@ func ctx() context.Context { return context.Background() }
 // 请求抽象模型名 → 正常路由）。
 func TestContractResolveActive(t *testing.T) {
 	st := newFakeStore()
-	st.addModel(&AbstractModel{ID: 1, Name: "smart", Status: StatusActive})
-	st.cands[1] = []CandidateDecl{{RealModelID: 10}}
-	st.real[10] = mkReal(10, "deepseek-official", "deepseek-flash")
+	st.addModel(&AbstractModel{ID: "am1", Name: "smart", Status: StatusActive})
+	st.cands["am1"] = []CandidateDecl{{RealModelID: "rm10"}}
+	st.real["rm10"] = mkReal("rm10", "deepseek-official", "deepseek-flash")
 
 	r, rerr, err := NewResolver(st).Resolve(ctx(), "smart")
 	if err != nil || rerr != nil {
@@ -83,7 +86,7 @@ func TestContractResolveActive(t *testing.T) {
 	if r.Model.Name != "smart" || r.Terminal.Name != "smart" {
 		t.Fatalf("Model/Terminal 应同名: %v %v", r.Model.Name, r.Terminal.Name)
 	}
-	if len(r.Candidates) != 1 || r.Candidates[0].ID != 10 {
+	if len(r.Candidates) != 1 || r.Candidates[0].ID != "rm10" {
 		t.Fatalf("候选展开错误: %+v", r.Candidates)
 	}
 	if r.CycleBroken {
@@ -108,9 +111,9 @@ func TestContractResolveUnknownName(t *testing.T) {
 // 限定名 dsh:… 含 ':' 在字符串层面直接判，裸 id 落「未知名」）。
 func TestContractResolveRealModel404(t *testing.T) {
 	st := newFakeStore()
-	st.addModel(&AbstractModel{ID: 1, Name: "smart", Status: StatusActive})
-	st.cands[1] = []CandidateDecl{{RealModelID: 10}}
-	st.real[10] = mkReal(10, "deepseek-official", "deepseek-flash")
+	st.addModel(&AbstractModel{ID: "am1", Name: "smart", Status: StatusActive})
+	st.cands["am1"] = []CandidateDecl{{RealModelID: "rm10"}}
+	st.real["rm10"] = mkReal("rm10", "deepseek-official", "deepseek-flash")
 	res := NewResolver(st)
 
 	// 限定名（含 ':'）。
@@ -129,7 +132,7 @@ func TestContractResolveRealModel404(t *testing.T) {
 // 不出现在 /v1/models，请求 404/410；待定项取 404 与不存在同码防探测）。
 func TestContractResolveDisabled(t *testing.T) {
 	st := newFakeStore()
-	st.addModel(&AbstractModel{ID: 1, Name: "old", Status: StatusDisabled})
+	st.addModel(&AbstractModel{ID: "am1", Name: "old", Status: StatusDisabled})
 	_, rerr, err := NewResolver(st).Resolve(ctx(), "old")
 	if err != nil || rerr == nil || rerr.Code != "model_not_found" {
 		t.Fatalf("disabled 应 model_not_found: err=%v rerr=%+v", err, rerr)
@@ -140,11 +143,11 @@ func TestContractResolveDisabled(t *testing.T) {
 // Alice 旧配置 → A(old) → B(old) → C(active)；头里用 A、路由用 C）。
 func TestContractDeprecationChain(t *testing.T) {
 	st := newFakeStore()
-	st.addModel(&AbstractModel{ID: 1, Name: "a", Status: StatusDeprecated, ReplacementModelID: ptrI64(2)})
-	st.addModel(&AbstractModel{ID: 2, Name: "b", Status: StatusDeprecated, ReplacementModelID: ptrI64(3)})
-	st.addModel(&AbstractModel{ID: 3, Name: "c", Status: StatusActive})
-	st.cands[3] = []CandidateDecl{{RealModelID: 30}}
-	st.real[30] = mkReal(30, "cline", "big-model")
+	st.addModel(&AbstractModel{ID: "am1", Name: "a", Status: StatusDeprecated, ReplacementModelID: ptrStr("am2")})
+	st.addModel(&AbstractModel{ID: "am2", Name: "b", Status: StatusDeprecated, ReplacementModelID: ptrStr("am3")})
+	st.addModel(&AbstractModel{ID: "am3", Name: "c", Status: StatusActive})
+	st.cands["am3"] = []CandidateDecl{{RealModelID: "rm30"}}
+	st.real["rm30"] = mkReal("rm30", "cline", "big-model")
 
 	r, rerr, err := NewResolver(st).Resolve(ctx(), "a")
 	if err != nil || rerr != nil {
@@ -159,7 +162,7 @@ func TestContractDeprecationChain(t *testing.T) {
 	if len(r.Chain) != 3 || r.Chain[0] != "a" || r.Chain[2] != "c" {
 		t.Fatalf("链记录错误: %v", r.Chain)
 	}
-	if len(r.Candidates) != 1 || r.Candidates[0].ID != 30 {
+	if len(r.Candidates) != 1 || r.Candidates[0].ID != "rm30" {
 		t.Fatalf("候选应来自终点 c: %+v", r.Candidates)
 	}
 }
@@ -170,10 +173,10 @@ func TestContractDeprecationChain(t *testing.T) {
 func TestContractDeprecationCycleRejected(t *testing.T) {
 	st := newFakeStore()
 	// 直接改库口径：a→b、b→a 互相指向（状态机正常路径写不出来）。
-	st.addModel(&AbstractModel{ID: 1, Name: "a", Status: StatusDeprecated, ReplacementModelID: ptrI64(2)})
-	st.addModel(&AbstractModel{ID: 2, Name: "b", Status: StatusDeprecated, ReplacementModelID: ptrI64(1)})
-	st.cands[1] = []CandidateDecl{{RealModelID: 10}}
-	st.real[10] = mkReal(10, "deepseek-official", "deepseek-flash")
+	st.addModel(&AbstractModel{ID: "am1", Name: "a", Status: StatusDeprecated, ReplacementModelID: ptrStr("am2")})
+	st.addModel(&AbstractModel{ID: "am2", Name: "b", Status: StatusDeprecated, ReplacementModelID: ptrStr("am1")})
+	st.cands["am1"] = []CandidateDecl{{RealModelID: "rm10"}}
+	st.real["rm10"] = mkReal("rm10", "deepseek-official", "deepseek-flash")
 
 	r, rerr, err := NewResolver(st).Resolve(ctx(), "a")
 	if err != nil || rerr != nil {
@@ -195,8 +198,8 @@ func TestContractDeprecationCycleRejected(t *testing.T) {
 // 模型存在但无候选可用 → 503 + 专用错误码，不是 500 也不是 404）。
 func TestContractNoCandidate(t *testing.T) {
 	st := newFakeStore()
-	st.addModel(&AbstractModel{ID: 1, Name: "empty", Status: StatusActive})
-	st.cands[1] = []CandidateDecl{{RealModelID: 99}} // real 行不存在
+	st.addModel(&AbstractModel{ID: "am1", Name: "empty", Status: StatusActive})
+	st.cands["am1"] = []CandidateDecl{{RealModelID: "rm99"}} // real 行不存在
 
 	_, rerr, err := NewResolver(st).Resolve(ctx(), "empty")
 	if err != nil {
@@ -216,22 +219,22 @@ func TestContractNoCandidate(t *testing.T) {
 // aggregate，那道是恒假的死代码）。
 func TestContractAggregateExcluded(t *testing.T) {
 	st := newFakeStore()
-	st.addModel(&AbstractModel{ID: 1, Name: "smart", Status: StatusActive})
-	st.cands[1] = []CandidateDecl{{RealModelID: 10}, {RealModelID: 11}, {RealModelID: 12}, {RealModelID: 13}}
-	st.real[10] = mkReal(10, "aggregate", "agg-model") // 闸①：标志命中
-	st.real[10].ExcludedFromCandidates = true
-	st.real[11] = mkReal(11, "deepseek-official", "flash") // 正常
-	st.real[12] = mkReal(12, "cline", "aggregate/x")       // 闸②：id 前缀命中、标志被清掉（改库）
-	st.real[12].ExcludedFromCandidates = false
+	st.addModel(&AbstractModel{ID: "am1", Name: "smart", Status: StatusActive})
+	st.cands["am1"] = []CandidateDecl{{RealModelID: "rm10"}, {RealModelID: "rm11"}, {RealModelID: "rm12"}, {RealModelID: "rm13"}}
+	st.real["rm10"] = mkReal("rm10", "aggregate", "agg-model") // 闸①：标志命中
+	st.real["rm10"].ExcludedFromCandidates = true
+	st.real["rm11"] = mkReal("rm11", "deepseek-official", "flash") // 正常
+	st.real["rm12"] = mkReal("rm12", "cline", "aggregate/x")       // 闸②：id 前缀命中、标志被清掉（改库）
+	st.real["rm12"].ExcludedFromCandidates = false
 	// 近似名不误伤：渠道段必须精确等于 aggregate（与 store 的 SQL 前缀
 	// 判定同款口径——aggregate-v2/、my_aggregate/ 都不是聚合渠道）。
-	st.real[13] = mkReal(13, "aggregate-v2", "aggregate-v2/x")
+	st.real["rm13"] = mkReal("rm13", "aggregate-v2", "aggregate-v2/x")
 
 	r, rerr, err := NewResolver(st).Resolve(ctx(), "smart")
 	if err != nil || rerr != nil {
 		t.Fatalf("解析失败: %v %v", err, rerr)
 	}
-	if len(r.Candidates) != 2 || r.Candidates[0].ID != 11 || r.Candidates[1].ID != 13 {
+	if len(r.Candidates) != 2 || r.Candidates[0].ID != "rm11" || r.Candidates[1].ID != "rm13" {
 		t.Fatalf("aggregate 应全排除、近似名不误伤（标志+id 前缀两道）: %+v", r.Candidates)
 	}
 }
@@ -243,15 +246,15 @@ func TestContractAggregateExcluded(t *testing.T) {
 func TestContractFilterCapability(t *testing.T) {
 	cw := int64(131072)
 	paths := []Path{
-		{RealModel: *mkReal(10, "a", "m1"), Caps: Capabilities{ContextWindow: &cw, Modalities: []string{"text"}, SupportsTools: true, Efforts: []string{"off", "low"}}},
-		{RealModel: *mkReal(11, "b", "m2"), Caps: Capabilities{ContextWindow: &cw, Modalities: []string{"text", "image"}, SupportsTools: true, Efforts: []string{"off", "low", "high"}}},
-		{RealModel: *mkReal(12, "c", "m3"), Caps: Capabilities{ContextWindow: &cw, Modalities: nil}}, // 模态未知
+		{RealModel: *mkReal("rm10", "a", "m1"), Caps: Capabilities{ContextWindow: &cw, Modalities: []string{"text"}, SupportsTools: true, Efforts: []string{"off", "low"}}},
+		{RealModel: *mkReal("rm11", "b", "m2"), Caps: Capabilities{ContextWindow: &cw, Modalities: []string{"text", "image"}, SupportsTools: true, Efforts: []string{"off", "low", "high"}}},
+		{RealModel: *mkReal("rm12", "c", "m3"), Caps: Capabilities{ContextWindow: &cw, Modalities: nil}}, // 模态未知
 	}
 	// 请求：文本+图片 + 工具 + high 档。
 	profile := RequestProfile{NeedModalities: []string{"text", "image"}, EstInputTokens: 1000, MaxOutputTokens: 500, NeedTools: true, NeedEffort: "high"}
 
 	kept, outs := FilterPaths(profile, paths)
-	if len(kept) != 1 || kept[0].RealModel.ID != 11 {
+	if len(kept) != 1 || kept[0].RealModel.ID != "rm11" {
 		t.Fatalf("只有 11 满足全部要求: %+v", kept)
 	}
 	// 10 缺 image（在 modality 被剔）；12 模态未知按不支持剔。
@@ -265,14 +268,14 @@ func TestContractFilterCapability(t *testing.T) {
 func TestContractFilterContext(t *testing.T) {
 	small, big := int64(4096), int64(131072)
 	paths := []Path{
-		{RealModel: *mkReal(10, "a", "m1"), Caps: Capabilities{ContextWindow: &small}},
-		{RealModel: *mkReal(11, "b", "m2"), Caps: Capabilities{ContextWindow: &big}},
-		{RealModel: *mkReal(12, "c", "m3"), Caps: Capabilities{ContextWindow: nil}}, // 未知
+		{RealModel: *mkReal("rm10", "a", "m1"), Caps: Capabilities{ContextWindow: &small}},
+		{RealModel: *mkReal("rm11", "b", "m2"), Caps: Capabilities{ContextWindow: &big}},
+		{RealModel: *mkReal("rm12", "c", "m3"), Caps: Capabilities{ContextWindow: nil}}, // 未知
 	}
 	profile := RequestProfile{EstInputTokens: 3000, MaxOutputTokens: 2000} // 需 5000
 
 	kept, outs := FilterPaths(profile, paths)
-	if len(kept) != 1 || kept[0].RealModel.ID != 11 {
+	if len(kept) != 1 || kept[0].RealModel.ID != "rm11" {
 		t.Fatalf("只有 11 窗口够: %+v", kept)
 	}
 	// 10 窗口不够（context）；12 未知（context 保守）。
@@ -287,7 +290,7 @@ func TestContractFilterContext(t *testing.T) {
 // （03-strategy.md §2.3；FilterOut 带原因——「险些可用」诊断的原料）。
 func TestContractFilterEmptyNoCandidate(t *testing.T) {
 	cw := int64(4096)
-	paths := []Path{{RealModel: *mkReal(10, "a", "m1"), Caps: Capabilities{ContextWindow: &cw, Modalities: []string{"text"}}}}
+	paths := []Path{{RealModel: *mkReal("rm10", "a", "m1"), Caps: Capabilities{ContextWindow: &cw, Modalities: []string{"text"}}}}
 	profile := RequestProfile{NeedModalities: []string{"image"}, EstInputTokens: 100, MaxOutputTokens: 100}
 
 	kept, outs := FilterPaths(profile, paths)
@@ -301,9 +304,9 @@ func TestContractFilterEmptyNoCandidate(t *testing.T) {
 func TestContractFilterConstraint(t *testing.T) {
 	cw := int64(65536)
 	paths := []Path{
-		{RealModel: *mkReal(10, "deepseek-official", "m1"), Constraint: Constraint{ChannelMode: "include", Channels: []string{"cline"}}},
-		{RealModel: *mkReal(11, "cline", "m2"), Constraint: Constraint{ChannelMode: "include", Channels: []string{"cline"}}},
-		{RealModel: *mkReal(12, "cline", "m3"), Constraint: Constraint{ChannelMode: "exclude", Channels: []string{"deepseek-official"}}},
+		{RealModel: *mkReal("rm10", "deepseek-official", "m1"), Constraint: Constraint{ChannelMode: "include", Channels: []string{"cline"}}},
+		{RealModel: *mkReal("rm11", "cline", "m2"), Constraint: Constraint{ChannelMode: "include", Channels: []string{"cline"}}},
+		{RealModel: *mkReal("rm12", "cline", "m3"), Constraint: Constraint{ChannelMode: "exclude", Channels: []string{"deepseek-official"}}},
 	}
 	for i := range paths {
 		paths[i].Caps = Capabilities{ContextWindow: &cw, Modalities: []string{"text"}}
@@ -312,7 +315,7 @@ func TestContractFilterConstraint(t *testing.T) {
 
 	kept, outs := FilterPaths(profile, paths)
 	// 10 被渠道 include 剔（它是 deepseek-official）；11/12 留。
-	if len(kept) != 2 || kept[0].RealModel.ID != 11 || kept[1].RealModel.ID != 12 {
+	if len(kept) != 2 || kept[0].RealModel.ID != "rm11" || kept[1].RealModel.ID != "rm12" {
 		t.Fatalf("渠道约束过滤错误: kept=%+v outs=%+v", kept, outs)
 	}
 }
@@ -324,15 +327,15 @@ func TestContractFilterConstraint(t *testing.T) {
 // 「每次都打同一个账号」的并列）。
 func TestContractRankDefaultChain(t *testing.T) {
 	paths := []Path{
-		{RealModel: *mkReal(10, "a", "m1"), ExpiresAt: 2000, BalanceKnown: true, Balance: 5},
-		{RealModel: *mkReal(11, "b", "m2"), ExpiresAt: 1000, BalanceKnown: true, Balance: 50},
-		{RealModel: *mkReal(12, "c", "m3"), ExpiresAt: 1000, BalanceKnown: true, Balance: 3},
-		{RealModel: *mkReal(13, "d", "m4"), ExpiresAt: 0, BalanceKnown: false}, // 双无键
+		{RealModel: *mkReal("rm10", "a", "m1"), ExpiresAt: 2000, BalanceKnown: true, Balance: 5},
+		{RealModel: *mkReal("rm11", "b", "m2"), ExpiresAt: 1000, BalanceKnown: true, Balance: 50},
+		{RealModel: *mkReal("rm12", "c", "m3"), ExpiresAt: 1000, BalanceKnown: true, Balance: 3},
+		{RealModel: *mkReal("rm13", "d", "m4"), ExpiresAt: 0, BalanceKnown: false}, // 双无键
 	}
 	out := Rank(paths, nil, nil) // 空链 → 默认链
-	got := []int64{out[0].RealModel.ID, out[1].RealModel.ID, out[2].RealModel.ID, out[3].RealModel.ID}
+	got := []string{out[0].RealModel.ID, out[1].RealModel.ID, out[2].RealModel.ID, out[3].RealModel.ID}
 	// 12（最早到期+余额最少）→ 11（同到期、余额大）→ 10（更晚到期）→ 13（无键垫底）。
-	want := []int64{12, 11, 10, 13}
+	want := []string{"rm12", "rm11", "rm10", "rm13"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("默认链顺序错误: got=%v want=%v", got, want)
@@ -345,17 +348,17 @@ func TestContractRankDefaultChain(t *testing.T) {
 func TestContractRankRoundRobinTieBreak(t *testing.T) {
 	// 三个完全同键的路径（同到期同余额）——默认链下是平局组。
 	paths := []Path{
-		{RealModel: *mkReal(10, "a", "m1"), ExpiresAt: 1000, BalanceKnown: true, Balance: 5},
-		{RealModel: *mkReal(11, "b", "m2"), ExpiresAt: 1000, BalanceKnown: true, Balance: 5},
+		{RealModel: *mkReal("rm10", "a", "m1"), ExpiresAt: 1000, BalanceKnown: true, Balance: 5},
+		{RealModel: *mkReal("rm11", "b", "m2"), ExpiresAt: 1000, BalanceKnown: true, Balance: 5},
 	}
 	rr := &RoundRobinCursor{}
 	// 无 round-robin：稳定序（声明序）。
 	out1 := Rank(paths, []string{StrategyExpiryFirst, StrategyBalance}, nil)
-	if out1[0].RealModel.ID != 10 {
+	if out1[0].RealModel.ID != "rm10" {
 		t.Fatalf("无决胜应稳定序: %v", out1[0].RealModel.ID)
 	}
 	// 显式配置 round-robin：游标推进应翻转同键对的次序。
-	gotFirst := []int64{}
+	gotFirst := []string{}
 	for i := 0; i < 4; i++ {
 		out := Rank(paths, []string{StrategyExpiryFirst, StrategyRoundRobin}, rr)
 		gotFirst = append(gotFirst, out[0].RealModel.ID)
@@ -373,11 +376,11 @@ func TestContractRankRoundRobinTieBreak(t *testing.T) {
 // 同样输出——干跑可回放、故障可复现的前提）。
 func TestContractRankDeterminism(t *testing.T) {
 	paths := []Path{
-		{RealModel: *mkReal(10, "a", "m1"), ExpiresAt: 3000, BalanceKnown: true, Balance: 1},
-		{RealModel: *mkReal(11, "b", "m2"), ExpiresAt: 1000, BalanceKnown: true, Balance: 9},
-		{RealModel: *mkReal(12, "c", "m3"), ExpiresAt: 2000, BalanceKnown: true, Balance: 5},
+		{RealModel: *mkReal("rm10", "a", "m1"), ExpiresAt: 3000, BalanceKnown: true, Balance: 1},
+		{RealModel: *mkReal("rm11", "b", "m2"), ExpiresAt: 1000, BalanceKnown: true, Balance: 9},
+		{RealModel: *mkReal("rm12", "c", "m3"), ExpiresAt: 2000, BalanceKnown: true, Balance: 5},
 	}
-	var first []int64
+	var first []string
 	for i := 0; i < 5; i++ {
 		out := Rank(paths, nil, nil)
 		if i == 0 {
@@ -418,22 +421,22 @@ func TestContractValidateChain(t *testing.T) {
 // 没有更好选择时它还是要顶上）。
 func TestContractCooldownTailNotRemoved(t *testing.T) {
 	cd := NewCooldowns().SetClock(func() int64 { return 1000 })
-	cd.MarkFailure(11, 5000) // 候选 11 冷却中
+	cd.MarkFailure("rm11", 5000) // 候选 11 冷却中
 
 	paths := []Path{
-		{RealModel: *mkReal(10, "a", "m1")},
-		{RealModel: *mkReal(11, "b", "m2")},
-		{RealModel: *mkReal(12, "c", "m3")},
+		{RealModel: *mkReal("rm10", "a", "m1")},
+		{RealModel: *mkReal("rm11", "b", "m2")},
+		{RealModel: *mkReal("rm12", "c", "m3")},
 	}
 	out := cd.Apply(paths)
 	if len(out) != 3 {
 		t.Fatalf("冷却不应剔除: %d", len(out))
 	}
-	if out[2].RealModel.ID != 11 || !out[2].CooledDown {
+	if out[2].RealModel.ID != "rm11" || !out[2].CooledDown {
 		t.Fatalf("冷却候选应排末尾且带标记: %+v", out)
 	}
 	// 唯一候选冷却 → 仍在场（不 no_candidate）。
-	solo := cd.Apply([]Path{{RealModel: *mkReal(11, "b", "m2")}})
+	solo := cd.Apply([]Path{{RealModel: *mkReal("rm11", "b", "m2")}})
 	if len(solo) != 1 || !solo[0].CooledDown {
 		t.Fatalf("唯一冷却候选应保留: %+v", solo)
 	}
@@ -444,15 +447,15 @@ func TestContractCooldownExpiry(t *testing.T) {
 	now := int64(1000)
 	cd := NewCooldowns().SetClock(func() int64 { return now }).
 		SetJitter(func() int64 { return 0 }) // 钉死抖动：真实抖动 0..10s 会让窗口断言随机失败
-	cd.MarkFailure(10, 1000) // 窗口 1s
-	if !cd.Cooling(10) {
+	cd.MarkFailure("rm10", 1000) // 窗口 1s
+	if !cd.Cooling("rm10") {
 		t.Fatalf("窗口内应冷却")
 	}
 	now = 5000 // 推进时钟越过窗口
-	if cd.Cooling(10) {
+	if cd.Cooling("rm10") {
 		t.Fatalf("窗口过后应恢复")
 	}
-	out := cd.Apply([]Path{{RealModel: *mkReal(10, "a", "m1")}})
+	out := cd.Apply([]Path{{RealModel: *mkReal("rm10", "a", "m1")}})
 	if len(out) != 1 || out[0].CooledDown {
 		t.Fatalf("到期后不应再标记冷却: %+v", out)
 	}
@@ -461,23 +464,23 @@ func TestContractCooldownExpiry(t *testing.T) {
 // TestContractCooldownHealthSync 只读镜像 upstream Health（任务要点：
 // 只读其状态不自造——cooling/degraded 排末尾，healthy 清失败记录）。
 func TestContractCooldownHealthSync(t *testing.T) {
-	view := &fakeHealth{states: map[int64]string{10: "cooling", 11: "degraded", 12: "healthy"}}
+	view := &fakeHealth{states: map[string]string{"rm10": "cooling", "rm11": "degraded", "rm12": "healthy"}}
 	cd := NewCooldowns().SetClock(func() int64 { return 1000 })
-	cd.MarkFailure(12, 5000) // healthy 前先打失败标记
+	cd.MarkFailure("rm12", 5000) // healthy 前先打失败标记
 
-	cd.SyncFromHealth(view, []int64{10, 11, 12}, 5000)
+	cd.SyncFromHealth(view, []string{"rm10", "rm11", "rm12"}, 5000)
 
-	if !cd.Cooling(10) || !cd.Cooling(11) {
+	if !cd.Cooling("rm10") || !cd.Cooling("rm11") {
 		t.Fatalf("cooling/degraded 都应排末尾")
 	}
-	if cd.Cooling(12) {
+	if cd.Cooling("rm12") {
 		t.Fatalf("healthy 应清失败记录")
 	}
 }
 
-type fakeHealth struct{ states map[int64]string }
+type fakeHealth struct{ states map[string]string }
 
-func (f *fakeHealth) StateOf(id int64) string { return f.states[id] }
+func (f *fakeHealth) StateOf(id string) string { return f.states[id] }
 
 // ============ 5. 切换预算 ============
 
@@ -507,16 +510,16 @@ func TestContractSwitchBudget(t *testing.T) {
 // 回候选选择过程——过滤掉几个/为什么/排序后顺序/最终选谁）。
 func TestContractTraceStructure(t *testing.T) {
 	st := newFakeStore()
-	st.addModel(&AbstractModel{ID: 1, Name: "smart", Status: StatusActive})
-	st.cands[1] = []CandidateDecl{{RealModelID: 10}, {RealModelID: 11}}
-	st.real[10] = mkReal(10, "a", "m1")
-	st.real[11] = mkReal(11, "b", "m2")
+	st.addModel(&AbstractModel{ID: "am1", Name: "smart", Status: StatusActive})
+	st.cands["am1"] = []CandidateDecl{{RealModelID: "rm10"}, {RealModelID: "rm11"}}
+	st.real["rm10"] = mkReal("rm10", "a", "m1")
+	st.real["rm11"] = mkReal("rm11", "b", "m2")
 
 	res, _, _ := NewResolver(st).Resolve(ctx(), "smart")
 	cw := int64(65536)
 	paths := []Path{
-		{RealModel: *st.real[10], Caps: Capabilities{ContextWindow: &cw, Modalities: []string{"text"}}, ExpiresAt: 2000, BalanceKnown: true, Balance: 5},
-		{RealModel: *st.real[11], Caps: Capabilities{ContextWindow: &cw, Modalities: []string{"text"}}, ExpiresAt: 1000, BalanceKnown: true, Balance: 3},
+		{RealModel: *st.real["rm10"], Caps: Capabilities{ContextWindow: &cw, Modalities: []string{"text"}}, ExpiresAt: 2000, BalanceKnown: true, Balance: 5},
+		{RealModel: *st.real["rm11"], Caps: Capabilities{ContextWindow: &cw, Modalities: []string{"text"}}, ExpiresAt: 1000, BalanceKnown: true, Balance: 3},
 	}
 	profile := RequestProfile{EstInputTokens: 10, MaxOutputTokens: 10}
 	filtered, outs := FilterPaths(profile, paths)
@@ -529,8 +532,8 @@ func TestContractTraceStructure(t *testing.T) {
 	if len(tr.Stages) != 3 {
 		t.Fatalf("应有 resolve/filter/order 三阶段: %+v", tr.Stages)
 	}
-	if len(tr.Order) != 2 || tr.Order[0].RealModelID != 11 || tr.SelectedID != 11 {
-		t.Fatalf("排序后最终选择应为 11: %+v sel=%d", tr.Order, tr.SelectedID)
+	if len(tr.Order) != 2 || tr.Order[0].RealModelID != "rm11" || tr.SelectedID != "rm11" {
+		t.Fatalf("排序后最终选择应为 rm11: %+v sel=%s", tr.Order, tr.SelectedID)
 	}
 	if len(tr.Strategy) != 2 || tr.Strategy[0] != StrategyExpiryFirst {
 		t.Fatalf("空链应展开默认链: %v", tr.Strategy)
@@ -541,7 +544,7 @@ func TestContractTraceStructure(t *testing.T) {
 		t.Fatalf("编码失败: %v", err)
 	}
 	back, err := ParseTraceHeader(hv)
-	if err != nil || back.SelectedID != 11 {
+	if err != nil || back.SelectedID != "rm11" {
 		t.Fatalf("头值应可解析回: %v %v", err, back)
 	}
 }
@@ -552,8 +555,8 @@ func TestContractTraceNoLeak(t *testing.T) {
 	tr := &Trace{
 		RequestedModel: "smart",
 		Stages:         []TraceStage{{Stage: "order", In: 1, Out: 1}},
-		Order:          []TraceOrder{{RealModelID: 10, Channel: "deepseek-official", UpstreamModelID: "deepseek-flash"}},
-		SelectedID:     10,
+		Order:          []TraceOrder{{RealModelID: "rm10", Channel: "deepseek-official", UpstreamModelID: "deepseek-flash"}},
+		SelectedID:     "rm10",
 		Strategy:       DefaultChain,
 	}
 	hv, err := tr.HeaderValue()
@@ -574,11 +577,11 @@ func TestContractTraceNoLeak(t *testing.T) {
 func TestContractPathShape(t *testing.T) {
 	// speed 无样本（TTFTMs<0）排最后；price 恒有键（默认乘数 1）。
 	paths := []Path{
-		{RealModel: *mkReal(10, "a", "m1"), TTFTMs: -1, PriceMultiplier: 1},
-		{RealModel: *mkReal(11, "b", "m2"), TTFTMs: 300, PriceMultiplier: 1},
+		{RealModel: *mkReal("rm10", "a", "m1"), TTFTMs: -1, PriceMultiplier: 1},
+		{RealModel: *mkReal("rm11", "b", "m2"), TTFTMs: 300, PriceMultiplier: 1},
 	}
 	out := Rank(paths, []string{StrategySpeed}, nil)
-	if out[0].RealModel.ID != 11 {
+	if out[0].RealModel.ID != "rm11" {
 		t.Fatalf("有样本在前: %v", out[0].RealModel.ID)
 	}
 	out = Rank(paths, []string{StrategyPrice}, nil)

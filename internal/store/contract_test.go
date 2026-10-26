@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,10 +179,10 @@ func TestContractWALAndCheckpoint(t *testing.T) {
 	}
 
 	// 外键真的在生效：插一条指向不存在账户的 Key 必须失败。
-	bad := int64(999999)
+	// 账户 id 是 UUID 且该账户不存在 → FOREIGN KEY constraint failed。
 	_, err := s.writeDB.ExecContext(ctx,
-		`INSERT INTO api_keys(account_id, key_hash, prefix) VALUES(?,?,?)`,
-		bad, []byte("01234567890123456789012345678901"), "fr-x")
+		`INSERT INTO api_keys(id, account_id, key_hash, prefix) VALUES(?,?,?,?)`,
+		idgen.New(), tid3, []byte("01234567890123456789012345678901"), "fr-x")
 	if err == nil {
 		t.Error("foreign_keys 未生效：指向不存在账户的 Key 插入成功")
 	}
@@ -215,7 +216,7 @@ func TestContractWALAndCheckpoint(t *testing.T) {
 	}
 }
 
-func mustAccount(t *testing.T, s *Store) int64 {
+func mustAccount(t *testing.T, s *Store) string {
 	t.Helper()
 	id, err := s.Repos().Accounts.CreateAccount(context.Background(),
 		AccountAuth{Account: Account{DisplayName: "t", Username: "acct-" + t.Name()},
@@ -388,8 +389,8 @@ func TestContractPruneOnlyDeletesExpired(t *testing.T) {
 	// 三条请求：两条超出 90 天窗口、一条在窗口内。
 	insert := func(ts int64) {
 		if _, err := s.writeDB.ExecContext(ctx,
-			`INSERT INTO requests(ts, endpoint, status) VALUES(?,?,?)`,
-			ts, "openai-chat", "ok"); err != nil {
+			`INSERT INTO requests(id, ts, endpoint, status) VALUES(?,?,?,?)`,
+			idgen.New(), ts, "openai-chat", "ok"); err != nil {
 			t.Fatalf("插入请求失败: %v", err)
 		}
 	}
@@ -547,9 +548,11 @@ func TestContractQuotaConditionalDebit(t *testing.T) {
 	s, _ := openTestStore(t)
 	ctx := context.Background()
 	r := s.Repos()
+	// 组 id 是 UUID（0009 之后主键是 TEXT）：这里是裸 SQL 建行，id 必须自己给，
+	// 因为没有自增兜底。用固定常量而不是 idgen.New()——下面要用它做断言。
 	if _, err := s.writeDB.ExecContext(ctx,
-		`INSERT INTO groups(id, name, is_default, created_at) VALUES(1,'g',0,?)`,
-		time.Now().UTC().Unix()); err != nil {
+		`INSERT INTO groups(id, name, is_default, created_at) VALUES(?, 'g', 0, ?)`,
+		tid2, time.Now().UTC().Unix()); err != nil {
 		t.Fatalf("建组失败: %v", err)
 	}
 	acctID := mustAccount(t, s)
@@ -586,7 +589,7 @@ func TestContractQuotaConditionalDebit(t *testing.T) {
 		t.Errorf("错误行标识 = %+v，期望 account/request/day", e)
 	}
 	if e.AbstractModelID != TotalScope {
-		t.Errorf("合计行 AbstractModelID = %d，期望 0（合计错误体不带 model）", e.AbstractModelID)
+		t.Errorf("合计行 AbstractModelID = %s，期望空串（合计错误体不带 model）", e.AbstractModelID)
 	}
 	if e.Used != 3 || e.Limit != 3 {
 		t.Errorf("错误携带 Used/Limit = %d/%d，期望 3/3（message 组装原料）", e.Used, e.Limit)
@@ -608,18 +611,18 @@ func TestContractQuotaConditionalDebit(t *testing.T) {
 
 	// ①b 按模型限额行打满：AbstractModelID 必须带出模型行 id（错误体 quota.model
 	// 由此解析），且与合计行互不取代（交集语义，03-groups 4.5）。
-	if err := r.Quotas.SetAccountQuota(ctx, acctID, 42, UnitRequest, PeriodDay, 1); err != nil {
+	if err := r.Quotas.SetAccountQuota(ctx, acctID, tid1, UnitRequest, PeriodDay, 1); err != nil {
 		t.Fatalf("设按模型额度失败: %v", err)
 	}
-	if err := r.Quotas.TryDebitAccountQuota(ctx, acctID, 42, UnitRequest, PeriodDay, 1); err != nil {
+	if err := r.Quotas.TryDebitAccountQuota(ctx, acctID, tid1, UnitRequest, PeriodDay, 1); err != nil {
 		t.Fatalf("按模型行首次扣减应成功: %v", err)
 	}
-	e2, ok2 := isQuotaExhausted(r.Quotas.TryDebitAccountQuota(ctx, acctID, 42, UnitRequest, PeriodDay, 1))
+	e2, ok2 := isQuotaExhausted(r.Quotas.TryDebitAccountQuota(ctx, acctID, tid1, UnitRequest, PeriodDay, 1))
 	if !ok2 {
 		t.Fatal("按模型行第二次扣减应当 ErrQuotaExhausted")
 	}
-	if e2.AbstractModelID != 42 {
-		t.Errorf("按模型行错误 AbstractModelID = %d，期望 42（quota.model 的原料）", e2.AbstractModelID)
+	if e2.AbstractModelID != tid1 {
+		t.Errorf("按模型行错误 AbstractModelID = %s，期望 tid1（quota.model 的原料）", e2.AbstractModelID)
 	}
 	// 合计行此时已打满：两闸独立判定由行键不同天然保证（各行的条件 UPDATE 只看自己），
 	// 这里再确认合计闸不受按模型行新增的影响——仍然拒绝。
@@ -633,26 +636,26 @@ func TestContractQuotaConditionalDebit(t *testing.T) {
 	}
 
 	// ③ 池：limit=2、已用 5（管理员把上限调小做应急关闸）也必须能设，之后全拒。
-	if err := r.Quotas.SetPool(ctx, 1, TotalScope, UnitToken, PeriodDay, 10); err != nil {
+	if err := r.Quotas.SetPool(ctx, tid2, TotalScope, UnitToken, PeriodDay, 10); err != nil {
 		t.Fatalf("设池失败: %v", err)
 	}
-	if err := r.Quotas.SetPool(ctx, 1, TotalScope, UnitToken, PeriodDay, 2); err != nil {
+	if err := r.Quotas.SetPool(ctx, tid2, TotalScope, UnitToken, PeriodDay, 2); err != nil {
 		t.Fatalf("调小池上限失败: %v", err)
 	}
 	// 已用 0、上限 2：扣 1 成功、再扣 1 成功（0+1<=2, 1+1<=2），第三次不足。
-	if err := r.Quotas.TryDebitPool(ctx, 1, TotalScope, UnitToken, PeriodDay, 1); err != nil {
+	if err := r.Quotas.TryDebitPool(ctx, tid2, TotalScope, UnitToken, PeriodDay, 1); err != nil {
 		t.Fatalf("池首次扣减应当成功: %v", err)
 	}
-	if err := r.Quotas.TryDebitPool(ctx, 1, TotalScope, UnitToken, PeriodDay, 1); err != nil {
+	if err := r.Quotas.TryDebitPool(ctx, tid2, TotalScope, UnitToken, PeriodDay, 1); err != nil {
 		t.Fatalf("池第二次扣减应当成功: %v", err)
 	}
-	if err := r.Quotas.TryDebitPool(ctx, 1, TotalScope, UnitToken, PeriodDay, 1); err == nil {
+	if err := r.Quotas.TryDebitPool(ctx, tid2, TotalScope, UnitToken, PeriodDay, 1); err == nil {
 		t.Error("已用量已达上限后仍扣减成功（条件 UPDATE 没生效）")
 	}
 
 	// ④ 关闸语义：pool_limit 调到低于已用量必须被允许（应急手段），
 	// 而 0 必须被拒（"没配"与"配了 0"在写入期就要互斥）。
-	if err := r.Quotas.SetPool(ctx, 1, TotalScope, UnitToken, PeriodMonth, 0); err == nil {
+	if err := r.Quotas.SetPool(ctx, tid2, TotalScope, UnitToken, PeriodMonth, 0); err == nil {
 		t.Error("pool_limit=0 被接受，期望拒绝（停用池应删行）")
 	}
 	// 账户额度侧 0 是合法的（全拒），与池不同形。
@@ -685,17 +688,31 @@ func TestContractRecordRequestAtomicity(t *testing.T) {
 		`INSERT INTO upstreams(id, kind, name, base_url, enabled) VALUES(1,'vendor','v','http://x',1)`); err != nil {
 		t.Fatalf("建上游失败: %v", err)
 	}
+	// real_models 的 id 与 upstream_id 都是 UUID（且 upstream_id 有外键）：
+	// 裸 SQL 建行必须先造上游行，再引用它的 id——这里用两个固定常量。
 	if _, err := s.writeDB.ExecContext(ctx,
-		`INSERT INTO real_models(id, upstream_id, upstream_model_id, display_name) VALUES(7,1,'m7','M7')`); err != nil {
+		`INSERT INTO upstreams(id, kind, name, base_url) VALUES(?, 'selfhosted', 'u-settle', 'https://x/v1')`,
+		tid3); err != nil {
+		t.Fatalf("建上游失败: %v", err)
+	}
+	// abstract_models 也要有对应行（requests.virtual_model_id 有外键）。
+	if _, err := s.writeDB.ExecContext(ctx,
+		`INSERT INTO abstract_models(id, name, display_name) VALUES(?, 'am-settle', 'AM')`,
+		tid5); err != nil {
+		t.Fatalf("建抽象模型失败: %v", err)
+	}
+	if _, err := s.writeDB.ExecContext(ctx,
+		`INSERT INTO real_models(id, upstream_id, upstream_model_id, display_name) VALUES(?, ?, 'm7', 'M7')`,
+		tid4, tid3); err != nil {
 		t.Fatalf("建真实模型失败: %v", err)
 	}
 	if err := r.Quotas.SetAccountQuota(ctx, acctID, TotalScope, UnitRequest, PeriodDay, 100); err != nil {
 		t.Fatalf("设额度失败: %v", err)
 	}
 
-	a := int64(1)
-	in := int64(10)
-	ret := int64(7)
+	a := tid5       // 抽象模型行 id（上面真的建了这一行）
+	in := int64(10) // 令牌数是数值，不是 id
+	ret := tid4     // 真实模型行 id（与上面 INSERT 的那一行一致）
 	rec := RequestRecord{
 		AccountID: &acctID, VirtualModelID: &a, ResolvedRealModelID: &ret,
 		Endpoint: "openai-chat", Status: "ok", InTokens: &in,

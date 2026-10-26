@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"testing"
 )
 
@@ -19,8 +20,8 @@ func TestContractRequestLogsErrorCodeFilter(t *testing.T) {
 	insert := func(ts int64, status string, code *string) {
 		t.Helper()
 		if _, err := s.writeDB.ExecContext(ctx,
-			`INSERT INTO requests(ts, account_id, endpoint, status, error_code)
-			 VALUES(?,?,'openai-chat',?,?)`, ts, acctID, status, code); err != nil {
+			`INSERT INTO requests(id, ts, account_id, endpoint, status, error_code)
+			 VALUES(?,?,?,'openai-chat',?,?)`, idgen.New(), ts, acctID, status, code); err != nil {
 			t.Fatalf("插入请求日志失败: %v", err)
 		}
 	}

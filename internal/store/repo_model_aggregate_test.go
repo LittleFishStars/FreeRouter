@@ -18,7 +18,7 @@ import (
 
 // aggregateTestUpstream 建一个 relay 上游并返回 id。upstreams 的写路径只有
 // UpsertUpstream，这里直接用它（kind=relay 是唯一有目录的来源，M5 才扩）。
-func aggregateTestUpstream(t *testing.T, s *Store) int64 {
+func aggregateTestUpstream(t *testing.T, s *Store) string {
 	t.Helper()
 	id, err := s.Repos().Models.UpsertUpstream(context.Background(),
 		"relay", "hub", "sidecar://hub", nil, true)
@@ -29,7 +29,7 @@ func aggregateTestUpstream(t *testing.T, s *Store) int64 {
 }
 
 // excludedOf 直接读库里的排除位（不走仓储），避免被仓储的读路径洗掉。
-func excludedOf(t *testing.T, s *Store, id int64) bool {
+func excludedOf(t *testing.T, s *Store, id string) bool {
 	t.Helper()
 	var v int
 	if err := s.writeDB.QueryRow(
@@ -191,7 +191,7 @@ func TestContractAggregateExcludedIndependentOfStatus(t *testing.T) {
 	}
 
 	// 刷新把 aggregate 行标 missing 后，排除位仍为 true（两列互不推导）。
-	if _, err := models.MarkMissingRealModels(ctx, up, []int64{}); err == nil {
+	if _, err := models.MarkMissingRealModels(ctx, up, []string{}); err == nil {
 		t.Error("空 keepIDs 应被拒绝（防全标 missing 自伤）")
 	}
 }

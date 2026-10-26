@@ -171,6 +171,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		return nil
 	}
 
+	// UUID schema 重建迁移的旧库守卫：必须在备份与写入之前。
+	if err := s.rejectLegacyIntegerDB(ctx, pending); err != nil {
+		return err
+	}
+
 	// 备份必须在写入之前。只在"有库且确实要改结构"时才备份：
 	// 全新库（还没建任何业务表）备份出来的是一个 0 字节的壳，没有价值。
 	if s.opts.BackupDir != "" && len(applied) > 0 {
@@ -204,6 +209,72 @@ func (s *Store) migrate(ctx context.Context) error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: 提交迁移事务失败: %w", err)
+	}
+	return nil
+}
+
+// legacyGuardVersion 是「拆表重建为 UUID schema」那条迁移的编号。
+// 写成常量而不是扫名字：名字会被改写，编号不会（改了就是新迁移）。
+const legacyGuardVersion = 9
+
+// legacyProbeTables 是守卫要查的表。为什么选这几张而不是全部：它们分别是
+// 身份侧（accounts/api_keys）、供给侧（upstreams/upstream_credentials/real_models）
+// 与事实侧（requests/audit_log）的代表，旧库里只要真用过，这几张不可能全空；
+// 而它们都在 0001 里建，不存在「这张表还没建所以查不了」的分支。
+var legacyProbeTables = []string{
+	"accounts", "api_keys", "upstreams", "upstream_credentials",
+	"real_models", "requests", "audit_log",
+}
+
+// rejectLegacyIntegerDB 拦住「已有数据的整型主键旧库」。
+//
+// 为什么必须拦：0009 是按依赖逆序 DROP 全部业务表再按 UUID 重建，它不搬数据。
+// 旧库跑上去就是静默清空——而「静默清空一个用过的库」是任何存储层都不该做的
+// 事，哪怕它会在启动日志里留下一行「已应用迁移 0009」。
+//
+// 为什么判据是「有没有行」而不是「id 列是不是 INTEGER」（这一点值得写下来，
+// 因为后者是更直觉的写法、也是错的）：全新库也会先跑 0001~0008，那些表建出来
+// 就是 INTEGER 主键——按列类型检测会把**全新库一起拦死**，程序永远起不来。
+// 按「有没有数据」检测才同时满足两个要求：新库放行（表都是空的）、旧库报错
+// （有数据不能悄悄丢）。
+//
+// 只在 0009 属于 pending 时才探测：否则每次启动都要对七张表跑一次 COUNT，
+// 而 requests 在长期部署下是百万行量级——COUNT(*) 无 WHERE 在 InnoDB 上有
+// 优化器捷径，SQLite 没有，那是真扫。空表上它很便宜，但只在必要时刻花。
+func (s *Store) rejectLegacyIntegerDB(ctx context.Context, pending []migration) error {
+	needGuard := false
+	for _, m := range pending {
+		if m.version == legacyGuardVersion {
+			needGuard = true
+			break
+		}
+	}
+	if !needGuard {
+		return nil
+	}
+
+	for _, table := range legacyProbeTables {
+		// 表可能还不存在（全新库跑到一半、或用户手工删过表）：不存在就是没有数据，
+		// 跳过而不是报错——这里的职责是「有没有旧数据」，不是「schema 对不对」。
+		var has bool
+		if err := s.writeDB.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)`, table,
+		).Scan(&has); err != nil {
+			return fmt.Errorf("store: 迁移前检查旧库失败（表 %s 存在性）: %w", table, err)
+		}
+		if !has {
+			continue
+		}
+		var n int64
+		if err := s.writeDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&n); err != nil {
+			return fmt.Errorf("store: 迁移前检查旧库失败（表 %s 行数）: %w", table, err)
+		}
+		if n > 0 {
+			return fmt.Errorf(
+				"store: 检测到已有数据（%s 表 %d 行）的整型主键旧库，而本次改造只支持 UUID schema、不做数据迁移；"+
+					"已中止迁移。请备份数据目录后删除 freerouter.db / .db-wal / .db-shm 让程序重建空库",
+				table, n)
+		}
 	}
 	return nil
 }

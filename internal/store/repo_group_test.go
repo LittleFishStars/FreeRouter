@@ -8,6 +8,8 @@ package store
 import (
 	"context"
 	"fmt"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
+	"sort"
 	"testing"
 )
 
@@ -15,23 +17,20 @@ var seedGroupSeq int
 
 // seedGroup 插一个组并返回 id（组写路径在 M7，测试直插）。
 // 名字带递增序号：同一测试里多次调用，groups.name 有 UNIQUE。
-func seedGroup(t *testing.T, s *Store) int64 {
+func seedGroup(t *testing.T, s *Store) string {
 	t.Helper()
 	seedGroupSeq++
-	res, err := s.writeDB.Exec(`INSERT INTO groups(name, created_at) VALUES(?, ?)`,
-		fmt.Sprintf("g-%s-%d", t.Name(), seedGroupSeq), now())
-	if err != nil {
+	// id 由测试自己生成（TEXT 主键没有自增兜底）。
+	id := idgen.New()
+	if _, err := s.writeDB.Exec(`INSERT INTO groups(id, name, created_at) VALUES(?, ?, ?)`,
+		id, fmt.Sprintf("g-%s-%d", t.Name(), seedGroupSeq), now()); err != nil {
 		t.Fatalf("建测试组失败: %v", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("读组 id 失败: %v", err)
 	}
 	return id
 }
 
 // addMember 直插成员关系（同上，M7 前测试直插）。
-func addMember(t *testing.T, s *Store, groupID, accountID int64) {
+func addMember(t *testing.T, s *Store, groupID, accountID string) {
 	t.Helper()
 	if _, err := s.writeDB.Exec(
 		`INSERT INTO group_members(group_id, account_id) VALUES(?, ?)`,
@@ -66,8 +65,12 @@ func TestContractGroupIDsOfAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("多组查询报错: %v", err)
 	}
-	if len(got) != 3 || got[0] != g1 || got[1] != g2 || got[2] != g3 {
-		t.Errorf("组 id = %v，期望 [%d %d %d] 升序", got, g1, g2, g3)
+	// 期望集合 = {g1,g2,g3} 且按 group_id 字典序升序（UUID 无时间序，
+	// 「升序」指字典序；插入序与字典序无关）。
+	want := []string{g1, g2, g3}
+	sort.Strings(want)
+	if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Errorf("组 id = %v，期望按字典序升序 %v", got, want)
 	}
 
 	// 删组 → 成员行 CASCADE 消失 → 查询结果同步收窄（「组的停用=删除」语义，
@@ -80,12 +83,14 @@ func TestContractGroupIDsOfAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("删组后查询报错: %v", err)
 	}
-	if len(got) != 2 || got[0] != g1 || got[1] != g3 {
-		t.Errorf("删组后组 id = %v，期望 [%d %d]", got, g1, g3)
+	want2 := []string{g1, g3}
+	sort.Strings(want2)
+	if len(got) != 2 || got[0] != want2[0] || got[1] != want2[1] {
+		t.Errorf("删组后组 id = %v，期望按字典序升序 %v", got, want2)
 	}
 
 	// 不存在的账户：空切片非错误（同「账户不在任何组」语义，调用方决定口径）。
-	got, err = s.Repos().Groups.GroupIDsOfAccount(ctx, 99999)
+	got, err = s.Repos().Groups.GroupIDsOfAccount(ctx, tid3)
 	if err != nil || len(got) != 0 {
 		t.Errorf("不存在账户 = %v, %v，期望空切片 nil", got, err)
 	}
@@ -134,12 +139,12 @@ func TestContractListVisibleRealModels(t *testing.T) {
 		Status: RealModelActive}); err != nil {
 		t.Fatalf("建 ok-chat 失败: %v", err)
 	}
-	var okID int64
+	var okID string
 	if err := s.writeDB.QueryRow(
 		`SELECT id FROM real_models WHERE upstream_model_id='ok-chat'`).Scan(&okID); err != nil {
 		t.Fatalf("读 ok-chat id 失败: %v", err)
 	}
-	if _, err := s.Repos().Models.MarkMissingRealModels(ctx, up1, []int64{visible, okID}); err != nil {
+	if _, err := s.Repos().Models.MarkMissingRealModels(ctx, up1, []string{visible, okID}); err != nil {
 		t.Fatalf("标记 missing 失败: %v", err)
 	}
 	// disabled 状态行：人工停用。
@@ -183,7 +188,7 @@ func TestContractRelayBaseURLSemantics(t *testing.T) {
 		t.Fatalf("重复 upsert 应幂等: %v", err)
 	}
 	if id1 != id2 {
-		t.Errorf("同 kind+name 的 upsert 应返回同一 id：%d vs %d", id1, id2)
+		t.Errorf("同 kind+name 的 upsert 应返回同一 id：%s vs %s", id1, id2)
 	}
 
 	ups, err := s.Repos().Models.ListUpstreams(ctx)

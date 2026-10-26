@@ -7,11 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"testing"
 )
 
 // mustGroup 建组（失败即 fatal）。
-func mustGroup(t *testing.T, s *Store, name string) int64 {
+func mustGroup(t *testing.T, s *Store, name string) string {
 	t.Helper()
 	id, err := s.Repos().Groups.CreateGroup(context.Background(), name, "", false)
 	if err != nil {
@@ -24,7 +25,7 @@ var testAcctSeq int
 
 // addTenantAccount 建 tenant 账户（AddMember 的类校验要求）。
 // 用户名带原子序号：同一测试同秒建多个账户时 now() 粒度不够会撞 UNIQUE。
-func addTenantAccount(t *testing.T, s *Store) int64 {
+func addTenantAccount(t *testing.T, s *Store) string {
 	t.Helper()
 	testAcctSeq++
 	id, err := s.Repos().Accounts.CreateAccount(context.Background(),
@@ -37,7 +38,7 @@ func addTenantAccount(t *testing.T, s *Store) int64 {
 }
 
 // gSetPolicy 写数字策略（测试便捷封装，值走 JSON 整数）。
-func gSetPolicy(t *testing.T, s *Store, gid int64, key PolicyKey, v int64) {
+func gSetPolicy(t *testing.T, s *Store, gid string, key PolicyKey, v int64) {
 	t.Helper()
 	raw, _ := json.Marshal(v)
 	if err := s.Repos().Groups.SetPolicy(context.Background(), gid, key, string(raw)); err != nil {
@@ -46,7 +47,7 @@ func gSetPolicy(t *testing.T, s *Store, gid int64, key PolicyKey, v int64) {
 }
 
 // gSetBoolPolicy 写布尔策略。
-func gSetBoolPolicy(t *testing.T, s *Store, gid int64, key PolicyKey, v bool) {
+func gSetBoolPolicy(t *testing.T, s *Store, gid string, key PolicyKey, v bool) {
 	t.Helper()
 	raw, _ := json.Marshal(v)
 	if err := s.Repos().Groups.SetPolicy(context.Background(), gid, key, string(raw)); err != nil {
@@ -55,7 +56,7 @@ func gSetBoolPolicy(t *testing.T, s *Store, gid int64, key PolicyKey, v bool) {
 }
 
 // gSetClassList 写类别列表策略。
-func gSetClassList(t *testing.T, s *Store, gid int64, classes []string) {
+func gSetClassList(t *testing.T, s *Store, gid string, classes []string) {
 	t.Helper()
 	raw, _ := json.Marshal(classes)
 	if err := s.Repos().Groups.SetPolicy(context.Background(), gid, PolicyModelClass, string(raw)); err != nil {
@@ -158,8 +159,12 @@ func TestContractGroupMembership(t *testing.T) {
 		t.Errorf("重复加成员后应仍 2 行（幂等），实际 %d", n)
 	}
 	members, err := s.Repos().Groups.ListMembers(ctx, g)
-	if err != nil || len(members) != 2 || members[0] != a1 || members[1] != a2 {
-		t.Fatalf("成员列表 = %v, %v，期望升序 [%d %d]", members, err, a1, a2)
+	// 「升序」= account_id 字典序（UUID 主键后不再有 id 序=插入序）。
+	if err != nil || len(members) != 2 {
+		t.Fatalf("成员列表 = %v, %v，期望 2 个", members, err)
+	}
+	if (members[0] != a1 || members[1] != a2) && (members[0] != a2 || members[1] != a1) {
+		t.Fatalf("成员集合 = %v，期望 {%s, %s}", members, a1, a2)
 	}
 
 	// 非 tenant 账户拒绝入组。
@@ -182,7 +187,7 @@ func TestContractGroupMembership(t *testing.T) {
 	}
 	members, _ = s.Repos().Groups.ListMembers(ctx, g)
 	if len(members) != 1 || members[0] != a2 {
-		t.Errorf("移出后成员 = %v，期望 [%d]", members, a2)
+		t.Errorf("移出后成员 = %v，期望 [%s]", members, a2)
 	}
 }
 
@@ -244,7 +249,7 @@ func TestContractPolicyValueValidation(t *testing.T) {
 // mkSnapshot 构造两组合成的最小快照。
 func mkSnapshot(groups []GroupPolicySet, accountRPM int64) PolicySnapshot {
 	return PolicySnapshot{
-		AccountID:             7,
+		AccountID:             tid5,
 		Classes:               []Class{ClassTenant},
 		Groups:                groups,
 		AccountRPMLimit:       accountRPM,
@@ -259,9 +264,9 @@ func intPtr(i int64) *int64 { return &i }
 // TestContractComposeUnion：放开类并集——布尔任一 false 即 false、
 // 全 true 才 true；MaxKeys 取 max；类别并集排序去重。
 func TestContractComposeUnion(t *testing.T) {
-	g1 := GroupPolicySet{GroupID: 1, CanCreateKey: boolPtr(true), KeyAllowlistWiden: boolPtr(true),
+	g1 := GroupPolicySet{GroupID: "g1", CanCreateKey: boolPtr(true), KeyAllowlistWiden: boolPtr(true),
 		MaxKeys: intPtr(5), ModelClasses: []string{"fast", "smart"}}
-	g2 := GroupPolicySet{GroupID: 2, CanCreateKey: boolPtr(true), KeyAllowlistWiden: boolPtr(false),
+	g2 := GroupPolicySet{GroupID: "g2", CanCreateKey: boolPtr(true), KeyAllowlistWiden: boolPtr(false),
 		MaxKeys: intPtr(10), ModelClasses: []string{"smart", "vision"}}
 
 	ep := ComposeEffectivePolicy(mkSnapshot([]GroupPolicySet{g1, g2}, -1))
@@ -292,7 +297,7 @@ func TestContractComposeUnion(t *testing.T) {
 	}
 
 	// 未设组（nil 字段）与无组：布尔 fail-closed。
-	g3 := GroupPolicySet{GroupID: 3} // 全未设
+	g3 := GroupPolicySet{GroupID: "g3"} // 全未设
 	ep = ComposeEffectivePolicy(mkSnapshot([]GroupPolicySet{g1, g3}, -1))
 	if ep.CanCreateKey {
 		t.Error("存在未设组 → CanCreateKey 应 false（fail-closed）")
@@ -341,8 +346,8 @@ func TestContractBooleanFailClosedMatrix(t *testing.T) {
 			// 双组 3×3 全组合：仅 (true,true) 放行，其余全部 false。
 			for _, a := range states {
 				for _, b := range states {
-					g1 := GroupPolicySet{GroupID: 1}
-					g2 := GroupPolicySet{GroupID: 2}
+					g1 := GroupPolicySet{GroupID: "g1"}
+					g2 := GroupPolicySet{GroupID: "g2"}
 					sel.set(&g1, a.v)
 					sel.set(&g2, b.v)
 					got := sel.read(compose([]GroupPolicySet{g1, g2}))
@@ -355,14 +360,14 @@ func TestContractBooleanFailClosedMatrix(t *testing.T) {
 			}
 			// 顺序无关：(true,未设) 与 (未设,true) 结论一致——矩阵已双向
 			// 覆盖，这里再显式断言一次防实现引入顺序依赖。
-			g1, g2 := GroupPolicySet{GroupID: 1}, GroupPolicySet{GroupID: 2}
+			g1, g2 := GroupPolicySet{GroupID: "g1"}, GroupPolicySet{GroupID: "g2"}
 			sel.set(&g1, boolPtr(true))
 			if sel.read(compose([]GroupPolicySet{g1, g2})) {
 				t.Error("(true, 未设) 应 false")
 			}
 			// 单组：true→true；false→false；未设→false。
 			for _, s := range states {
-				g := GroupPolicySet{GroupID: 1}
+				g := GroupPolicySet{GroupID: "g1"}
 				sel.set(&g, s.v)
 				got := sel.read(compose([]GroupPolicySet{g}))
 				want := s.v != nil && *s.v
@@ -372,7 +377,7 @@ func TestContractBooleanFailClosedMatrix(t *testing.T) {
 			}
 			// 三组混入未设：T+T+未设 → false（矩阵核心边界：多数派允许
 			// 不能掩盖单个未设组）。
-			g1, g2, g3 := GroupPolicySet{GroupID: 1}, GroupPolicySet{GroupID: 2}, GroupPolicySet{GroupID: 3}
+			g1, g2, g3 := GroupPolicySet{GroupID: "g1"}, GroupPolicySet{GroupID: "g2"}, GroupPolicySet{GroupID: "g3"}
 			sel.set(&g1, boolPtr(true))
 			sel.set(&g2, boolPtr(true))
 			if sel.read(compose([]GroupPolicySet{g1, g2, g3})) {
@@ -385,13 +390,13 @@ func TestContractBooleanFailClosedMatrix(t *testing.T) {
 // TestContractComposeMin：限制类逐键 min、-1 不参与、未设键不出现、
 // 0 是合法最严值。
 func TestContractComposeMin(t *testing.T) {
-	g1 := GroupPolicySet{GroupID: 1, Numbers: map[PolicyKey]int64{
+	g1 := GroupPolicySet{GroupID: "g1", Numbers: map[PolicyKey]int64{
 		PolicyQuotaTokenDay:   100,
 		PolicyQuotaTokenMonth: 5000,
 		PolicyRPMLimit:        60,
 		PolicyQuotaRequestDay: 0, // 零额度全拒
 	}}
-	g2 := GroupPolicySet{GroupID: 2, Numbers: map[PolicyKey]int64{
+	g2 := GroupPolicySet{GroupID: "g2", Numbers: map[PolicyKey]int64{
 		PolicyQuotaTokenDay:  200, // 更宽，不生效
 		PolicyRPMLimit:       -1,  // 不限，不参与
 		PolicyTPMLimit:       90000,
@@ -429,7 +434,7 @@ func TestContractComposeMin(t *testing.T) {
 	}
 
 	// 全部组未设 RPM → 落回账户列 30。
-	ep = ComposeEffectivePolicy(mkSnapshot([]GroupPolicySet{{GroupID: 9}}, 30))
+	ep = ComposeEffectivePolicy(mkSnapshot([]GroupPolicySet{{GroupID: "g9"}}, 30))
 	if ep.RPMLimit != 30 {
 		t.Errorf("全部未设应落回账户列 30，得到 %d", ep.RPMLimit)
 	}
@@ -437,14 +442,14 @@ func TestContractComposeMin(t *testing.T) {
 
 // TestContractComposeDeterminism：同一快照两次合成结果一致（纯函数红线）。
 func TestContractComposeDeterminism(t *testing.T) {
-	g1 := GroupPolicySet{GroupID: 1, CanCreateKey: boolPtr(true), MaxKeys: intPtr(3),
+	g1 := GroupPolicySet{GroupID: "g1", CanCreateKey: boolPtr(true), MaxKeys: intPtr(3),
 		Numbers: map[PolicyKey]int64{PolicyQuotaTokenDay: 100, PolicyRPMLimit: 60}}
 	snap := PolicySnapshot{
-		AccountID: 7, Classes: []Class{ClassTenant},
-		VisibleModels:   []int64{5, 3, 3, 9},
+		AccountID: tid5, Classes: []Class{ClassTenant},
+		VisibleModels:   []string{"5", "3", "3", "9"},
 		Groups:          []GroupPolicySet{g1},
-		ModelCaps:       []ModelCap{{GroupID: 1, AbstractModelID: 3, Unit: UnitRequest, Period: PeriodDay, Cap: 50}},
-		Pools:           []PoolRef{{GroupID: 2, AbstractModelID: 0, Unit: UnitToken, Period: PeriodDay, Limit: 1000}},
+		ModelCaps:       []ModelCap{{GroupID: "g1", AbstractModelID: "3", Unit: UnitRequest, Period: PeriodDay, Cap: 50}},
+		Pools:           []PoolRef{{GroupID: "g2", AbstractModelID: TotalScope, Unit: UnitToken, Period: PeriodDay, Limit: 1000}},
 		AccountRPMLimit: -1, AccountTPMLimit: -1, AccountMaxConcurrency: -1,
 	}
 	a := ComposeEffectivePolicy(snap)
@@ -454,7 +459,7 @@ func TestContractComposeDeterminism(t *testing.T) {
 	}
 	// 输入乱序不影响集合结果（切片显式排序兜底）。
 	snap2 := snap
-	snap2.VisibleModels = []int64{9, 3, 5, 3}
+	snap2.VisibleModels = []string{"9", "3", "5", "3"}
 	if got := ComposeEffectivePolicy(snap2).VisibleModels; fmt.Sprint(got) != "[3 5 9]" {
 		t.Errorf("可见模型应排序去重 [3 5 9]，得到 %v", got)
 	}
@@ -463,38 +468,38 @@ func TestContractComposeDeterminism(t *testing.T) {
 // TestContractComposeModelCapsAndPools：按模型上限逐 (model,unit,period)
 // 取 min；无行不限；池原样收集不合并。
 func TestContractComposeModelCapsAndPools(t *testing.T) {
-	snap := mkSnapshot([]GroupPolicySet{{GroupID: 1}}, -1)
+	snap := mkSnapshot([]GroupPolicySet{{GroupID: "g1"}}, -1)
 	snap.ModelCaps = []ModelCap{
-		{GroupID: 1, AbstractModelID: 3, Unit: UnitRequest, Period: PeriodDay, Cap: 50},
-		{GroupID: 2, AbstractModelID: 3, Unit: UnitRequest, Period: PeriodDay, Cap: 30}, // 同键更小
-		{GroupID: 1, AbstractModelID: 3, Unit: UnitToken, Period: PeriodDay, Cap: 8000},
-		{GroupID: 1, AbstractModelID: 9, Unit: UnitRequest, Period: PeriodDay, Cap: 7},
+		{GroupID: "g1", AbstractModelID: "3", Unit: UnitRequest, Period: PeriodDay, Cap: 50},
+		{GroupID: "g2", AbstractModelID: "3", Unit: UnitRequest, Period: PeriodDay, Cap: 30}, // 同键更小
+		{GroupID: "g1", AbstractModelID: "3", Unit: UnitToken, Period: PeriodDay, Cap: 8000},
+		{GroupID: "g1", AbstractModelID: "9", Unit: UnitRequest, Period: PeriodDay, Cap: 7},
 	}
 	snap.Pools = []PoolRef{
-		{GroupID: 1, AbstractModelID: 0, Unit: UnitToken, Period: PeriodDay, Limit: 100000}, // 合计池
-		{GroupID: 1, AbstractModelID: 3, Unit: UnitToken, Period: PeriodDay, Limit: 5000},   // 模型级池
-		{GroupID: 2, AbstractModelID: 0, Unit: UnitCredit, Period: PeriodMonth, Limit: 200},
+		{GroupID: "g1", AbstractModelID: TotalScope, Unit: UnitToken, Period: PeriodDay, Limit: 100000}, // 合计池
+		{GroupID: "g1", AbstractModelID: "3", Unit: UnitToken, Period: PeriodDay, Limit: 5000},          // 模型级池
+		{GroupID: "g2", AbstractModelID: TotalScope, Unit: UnitCredit, Period: PeriodMonth, Limit: 200},
 	}
 	ep := ComposeEffectivePolicy(snap)
 
-	if v := ep.ModelQuotaCaps[ModelQuotaKey{3, UnitRequest, PeriodDay}]; v != 30 {
+	if v := ep.ModelQuotaCaps[ModelQuotaKey{"3", UnitRequest, PeriodDay}]; v != 30 {
 		t.Errorf("smart(request/day) 应 min(50,30)=30，得到 %d", v)
 	}
-	if v := ep.ModelQuotaCaps[ModelQuotaKey{3, UnitToken, PeriodDay}]; v != 8000 {
+	if v := ep.ModelQuotaCaps[ModelQuotaKey{"3", UnitToken, PeriodDay}]; v != 8000 {
 		t.Errorf("smart(token/day) 单组设应 8000，得到 %d", v)
 	}
-	if v := ep.ModelQuotaCaps[ModelQuotaKey{9, UnitRequest, PeriodDay}]; v != 7 {
+	if v := ep.ModelQuotaCaps[ModelQuotaKey{"9", UnitRequest, PeriodDay}]; v != 7 {
 		t.Errorf("其它模型 cap 应 7，得到 %d", v)
 	}
 	// (3, credit, day) 无行：不出现（= 不限）。
-	if _, ok := ep.ModelQuotaCaps[ModelQuotaKey{3, UnitCredit, PeriodDay}]; ok {
+	if _, ok := ep.ModelQuotaCaps[ModelQuotaKey{"3", UnitCredit, PeriodDay}]; ok {
 		t.Error("无行的 (model,unit,period) 不应出现")
 	}
 	// 池：三个全在，不合并。
 	if len(ep.Pools) != 3 {
 		t.Fatalf("池应原样收集 3 个，得到 %d", len(ep.Pools))
 	}
-	if ep.Pools[0].GroupID != 1 || ep.Pools[0].AbstractModelID != 0 {
+	if ep.Pools[0].GroupID != "g1" || ep.Pools[0].AbstractModelID != TotalScope {
 		t.Errorf("池排序[0] 应 (g1, 合计)，得到 %+v", ep.Pools[0])
 	}
 }
@@ -516,7 +521,7 @@ func TestContractLoadPolicySnapshot(t *testing.T) {
 	}
 	gSetBoolPolicy(t, s, g1, PolicyCanCreateKey, true)
 	gSetPolicy(t, s, g1, PolicyQuotaTokenDay, 100)
-	if err := s.Repos().Groups.SetGroupModels(ctx, g1, []int64{m1}); err != nil {
+	if err := s.Repos().Groups.SetGroupModels(ctx, g1, []string{m1}); err != nil {
 		t.Fatalf("设组模型失败: %v", err)
 	}
 	if err := s.Repos().Quotas.SetGroupModelCap(ctx, ModelCap{GroupID: g1, AbstractModelID: m1,
@@ -634,10 +639,10 @@ func TestContractVerificationStates(t *testing.T) {
 		t.Error("非法状态应拒绝")
 	}
 	// 不存在的凭据。
-	if err := s.Repos().Models.MarkVerified(ctx, 99999, VerifyVerified, "{}"); !errors.Is(err, ErrCredentialNotFound) {
+	if err := s.Repos().Models.MarkVerified(ctx, tid3, VerifyVerified, "{}"); !errors.Is(err, ErrCredentialNotFound) {
 		t.Errorf("不存在的凭据应 ErrCredentialNotFound，得到 %v", err)
 	}
-	if _, err := s.Repos().Models.LookupCredential(ctx, 99999); !errors.Is(err, ErrCredentialNotFound) {
+	if _, err := s.Repos().Models.LookupCredential(ctx, tid3); !errors.Is(err, ErrCredentialNotFound) {
 		t.Errorf("查不存在的凭据应 ErrCredentialNotFound，得到 %v", err)
 	}
 
@@ -647,12 +652,17 @@ func TestContractVerificationStates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("列未鉴定失败: %v", err)
 	}
-	var ids []int64
+	var ids []string
 	for _, c := range list {
 		ids = append(ids, c.ID)
 	}
-	if len(ids) != 3 || ids[0] != c1 || ids[1] != c2 || ids[2] != c3 {
-		t.Errorf("未鉴定列表 = %v，期望 [c1 c2 c3]（全部 unverified）", ids)
+	// 期望集合 {c1,c2,c3}（全部 unverified）。不再断言顺序：UUID 主键的
+	// 排序是字典序，与"创建先后"无关，而这三条在同一秒内创建。
+	sort.Strings(ids)
+	want := []string{c1, c2, c3}
+	sort.Strings(want)
+	if len(ids) != 3 || ids[0] != want[0] || ids[1] != want[1] || ids[2] != want[2] {
+		t.Errorf("未鉴定列表 = %v，期望集合 %v（全部 unverified）", ids, want)
 	}
 	// LIKE 前缀圈定。
 	list, err = s.Repos().Models.ListUnverified(ctx, "", "platform-%")
@@ -695,20 +705,20 @@ func TestContractPlatformCredentialOwnerNull(t *testing.T) {
 		t.Fatalf("重复 upsert 应幂等: %v", err)
 	}
 	if id1 != id2 {
-		t.Errorf("同 (provider, external_id) 应同 id：%d vs %d", id1, id2)
+		t.Errorf("同 (provider, external_id) 应同 id：%s vs %s", id1, id2)
 	}
 	got, err := s.Repos().Models.LookupCredential(ctx, id1)
 	if err != nil || got.OwnerAccountID != adm || got.ExternalLabel != "改标签" || got.Status != "pending" {
-		t.Fatalf("平台凭据 = %+v, %v（owner 应挂 admin=%d，标签/状态应更新）", got, err, adm)
+		t.Fatalf("平台凭据 = %+v, %v（owner 应挂 admin=%s，标签/状态应更新）", got, err, adm)
 	}
 
-	// 贡献者凭据挂账户强制（0 拒绝）。
-	if _, err := s.Repos().Models.CreateCredential(ctx, 0, "p", "e", "", "s"); err == nil {
+	// 贡献者凭据挂账户强制（空串拒绝；owner 列是 UUID NOT NULL）。
+	if _, err := s.Repos().Models.CreateCredential(ctx, "", "p", "e", "", "s"); err == nil {
 		t.Error("CreateCredential 无 owner 应拒绝")
 	}
-	// 平台凭据入口同样拒绝 0（NOT NULL 列的保护）。
-	if _, err := s.Repos().Models.UpsertPlatformCredential(ctx, 0, "p2", "e2", "", "s", "active"); err == nil {
-		t.Error("UpsertPlatformCredential owner=0 应拒绝")
+	// 平台凭据入口同样拒绝空 owner（NOT NULL 列的保护）。
+	if _, err := s.Repos().Models.UpsertPlatformCredential(ctx, "", "p2", "e2", "", "s", "active"); err == nil {
+		t.Error("UpsertPlatformCredential owner 为空应拒绝")
 	}
 }
 
@@ -767,7 +777,7 @@ func TestContractSetDefaultMigration(t *testing.T) {
 	}
 
 	// 不存在的组：ErrGroupNotFound。
-	if err := s.Repos().Groups.SetDefault(ctx, 99999); !errors.Is(err, ErrGroupNotFound) {
+	if err := s.Repos().Groups.SetDefault(ctx, tid3); !errors.Is(err, ErrGroupNotFound) {
 		t.Errorf("转移到不存在的组应 ErrGroupNotFound，得到 %v", err)
 	}
 }

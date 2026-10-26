@@ -27,11 +27,11 @@ import (
 
 // seedCandidateModels 建 n 个真实模型行（同一上游），返回它们的行 id。
 // 用真实模型当候选是因为 abstract_candidates.real_model_id 有外键约束。
-func seedCandidateModels(t *testing.T, s *Store, n int) []int64 {
+func seedCandidateModels(t *testing.T, s *Store, n int) []string {
 	t.Helper()
 	ctx := context.Background()
 	up := aggregateTestUpstream(t, s)
-	out := make([]int64, 0, n)
+	out := make([]string, 0, n)
 	for i := 0; i < n; i++ {
 		id, err := s.Repos().Models.UpsertRealModel(ctx, RealModel{
 			UpstreamID:      up,
@@ -66,7 +66,7 @@ func TestContractCandidateDeclarationOrderRoundTrip(t *testing.T) {
 	}
 
 	// 故意按「b, a, c」保存（即 id 序是 a<b<c，与保存顺序相反）。
-	saveOrder := []int64{ids[1], ids[0], ids[2]}
+	saveOrder := []string{ids[1], ids[0], ids[2]}
 	cands := make([]Candidate, 0, len(saveOrder))
 	for _, id := range saveOrder {
 		cands = append(cands, Candidate{AbstractModelID: amID, RealModelID: id})
@@ -84,7 +84,7 @@ func TestContractCandidateDeclarationOrderRoundTrip(t *testing.T) {
 	}
 	for i, want := range saveOrder {
 		if got[i].RealModelID != want {
-			t.Fatalf("第 %d 条候选应是保存顺序里的 %d，实得 %d（读序变成了 id 序，说明声明序没落库）",
+			t.Fatalf("第 %d 条候选应是保存顺序里的 %s，实得 %s（读序变成了 id 序，说明声明序没落库）",
 				i, want, got[i].RealModelID)
 		}
 	}
@@ -135,7 +135,7 @@ func TestContractCandidateOrderSurvivesRewrite(t *testing.T) {
 		t.Fatalf("整表替换后应剩 2 条，得 %d", len(got))
 	}
 	if got[0].RealModelID != ids[2] || got[1].RealModelID != ids[0] {
-		t.Fatalf("替换后顺序应按新入参（c, a），实得 %d, %d", got[0].RealModelID, got[1].RealModelID)
+		t.Fatalf("替换后顺序应按新入参（c, a），实得 %s, %s", got[0].RealModelID, got[1].RealModelID)
 	}
 	// 编号必须重排（0,1）而不是沿用旧的（1,2）——否则首条会缺一个 0，
 	// 排序时 0 与 1 的相对关系仍对，但缺口说明编号没被重写。

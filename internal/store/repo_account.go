@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"strings"
 )
 
@@ -41,7 +42,7 @@ const (
 // 认证路径需要 hash，但控制台列表不需要。分成 Account 与 AccountAuth 两个形状，
 // 可以让"把 hash 传到不该传的地方"变成编译期不可能。
 type Account struct {
-	ID          int64
+	ID          string
 	DisplayName string
 	Username    string
 	Status      AccountStatus
@@ -77,16 +78,16 @@ type AccountRepo struct{ base }
 // 为什么账户与权限类必须在同一个事务里：一个"没有任何权限类的账户"既不能登录也不能
 // 被授权，是纯粹的垃圾数据；而它又占着 username 的唯一约束，让用户无法重新注册。
 // 所以要么两者都成立，要么都不成立。
-func (r *AccountRepo) CreateAccount(ctx context.Context, a AccountAuth, classes []Class) (int64, error) {
+func (r *AccountRepo) CreateAccount(ctx context.Context, a AccountAuth, classes []Class) (string, error) {
 	if a.Username == "" {
-		return 0, errors.New("store: username 不得为空")
+		return "", errors.New("store: username 不得为空")
 	}
 	if len(classes) == 0 {
-		return 0, errors.New("store: 账户至少要有一个权限类")
+		return "", errors.New("store: 账户至少要有一个权限类")
 	}
 	for _, c := range classes {
 		if !c.valid() {
-			return 0, fmt.Errorf("store: 非法权限类 %q", c)
+			return "", fmt.Errorf("store: 非法权限类 %q", c)
 		}
 	}
 
@@ -94,7 +95,7 @@ func (r *AccountRepo) CreateAccount(ctx context.Context, a AccountAuth, classes 
 	// 在事务里就直接用现有连接，否则用单条语句 + 后续插入。为了让"两条语句原子"成立，
 	// 非事务路径用显式事务包住。
 	if r.s != nil && r.s.tx == nil {
-		var id int64
+		var id string
 		err := r.s.WithTx(ctx, func(tx *Repos) error {
 			var err error
 			id, err = tx.Accounts.CreateAccount(ctx, a, classes)
@@ -112,34 +113,31 @@ func (r *AccountRepo) CreateAccount(ctx context.Context, a AccountAuth, classes 
 		status = AccountPending
 	}
 
-	res, err := r.db.ExecContext(ctx,
-		`INSERT INTO accounts(display_name, username, password_hash, status,
+	id := idgen.New()
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO accounts(id, display_name, username, password_hash, status,
 		                      recovery_code_hash, created_at, last_login_at, note,
 		                      must_change_password)
-		 VALUES(?,?,?,?,?,?,?,?,?)`,
-		a.DisplayName, a.Username, a.PasswordHash, string(status),
+		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		id, a.DisplayName, a.Username, a.PasswordHash, string(status),
 		a.RecoveryCodeHash, createdAt, a.LastLoginAt, a.Note,
 		boolToInt(a.MustChangePassword))
 	if err != nil {
-		return 0, fmt.Errorf("store: 创建账户失败: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("store: 读取新账户 id 失败: %w", err)
+		return "", fmt.Errorf("store: 创建账户失败: %w", err)
 	}
 
 	for _, c := range classes {
 		if _, err := r.db.ExecContext(ctx,
 			`INSERT INTO account_classes(account_id, class) VALUES(?,?)`, id, string(c),
 		); err != nil {
-			return 0, fmt.Errorf("store: 写权限类 %q 失败: %w", c, err)
+			return "", fmt.Errorf("store: 写权限类 %q 失败: %w", c, err)
 		}
 	}
 	return id, nil
 }
 
 // GetAccount 按 id 读账户（含权限类）。
-func (r *AccountRepo) GetAccount(ctx context.Context, id int64) (*Account, error) {
+func (r *AccountRepo) GetAccount(ctx context.Context, id string) (*Account, error) {
 	row := r.db.QueryRowContext(ctx,
 		`SELECT id, display_name, username, status, created_at, last_login_at, note,
 		        rpm_limit, tpm_limit, max_concurrency, must_change_password
@@ -154,7 +152,7 @@ func (r *AccountRepo) GetAccount(ctx context.Context, id int64) (*Account, error
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
-		return nil, fmt.Errorf("store: 读取账户 %d 失败: %w", id, err)
+		return nil, fmt.Errorf("store: 读取账户 %s 失败: %w", id, err)
 	}
 	a.Status = AccountStatus(status)
 	a.MustChangePassword = mustChange != 0
@@ -168,7 +166,7 @@ func (r *AccountRepo) GetAccount(ctx context.Context, id int64) (*Account, error
 
 // GetAccountByUsername 按用户名读账户（含权限类）。登录路径使用。
 func (r *AccountRepo) GetAccountByUsername(ctx context.Context, username string) (*Account, error) {
-	var id int64
+	var id string
 	if err := r.db.QueryRowContext(ctx,
 		`SELECT id FROM accounts WHERE username = ?`, username).Scan(&id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -210,7 +208,7 @@ func (r *AccountRepo) GetAccountAuth(ctx context.Context, username string) (*Acc
 }
 
 // classesOf 读账户的全部权限类。权限类数量极少（≤3），不需要额外缓存。
-func (r *AccountRepo) classesOf(ctx context.Context, accountID int64) ([]Class, error) {
+func (r *AccountRepo) classesOf(ctx context.Context, accountID string) ([]Class, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT class FROM account_classes WHERE account_id = ? ORDER BY class`, accountID)
 	if err != nil {
@@ -238,7 +236,7 @@ func (r *AccountRepo) classesOf(ctx context.Context, accountID int64) ([]Class, 
 // 若每把 Key 自带限位，建 10 把 Key 就得到 10 份并发预算，账号级闸门形同虚设。
 // 三个参数各校验下界而不是整体判 >= -1：一次更新三个独立语义的值，
 // 报错时指明是哪一个维度超界，运维不用猜。
-func (r *AccountRepo) SetAccountRateLimits(ctx context.Context, id, rpm, tpm, maxConcurrency int64) error {
+func (r *AccountRepo) SetAccountRateLimits(ctx context.Context, id string, rpm, tpm, maxConcurrency int64) error {
 	for name, v := range map[string]int64{"rpm_limit": rpm, "tpm_limit": tpm, "max_concurrency": maxConcurrency} {
 		if v < -1 {
 			return fmt.Errorf("store: %s = %d 非法，必须 >= -1（-1=不限，0=全拒，禁止 NULL）", name, v)
@@ -255,7 +253,7 @@ func (r *AccountRepo) SetAccountRateLimits(ctx context.Context, id, rpm, tpm, ma
 
 // SetAccountStatus 改状态。禁用后名下 Key 立即 401 靠的是每次请求实时查账户状态
 // （05-storage.md 7.2），所以这里不需要额外的失效通知机制。
-func (r *AccountRepo) SetAccountStatus(ctx context.Context, id int64, status AccountStatus) error {
+func (r *AccountRepo) SetAccountStatus(ctx context.Context, id string, status AccountStatus) error {
 	if !status.valid() {
 		return fmt.Errorf("store: 非法账户状态 %q", status)
 	}
@@ -274,7 +272,7 @@ func (r *AccountRepo) SetAccountStatus(ctx context.Context, id int64, status Acc
 // 才是原子，而把两件事拆成两个方法再由调用方拼，能保证拼的方式永远可见于调用代码，
 // 而不是藏在这个方法里发生。
 // hash 是 argon2id 自描述串，持久层不校验其形状（那是认证层的职责）。
-func (r *AccountRepo) UpdatePasswordHash(ctx context.Context, id int64, hash string) error {
+func (r *AccountRepo) UpdatePasswordHash(ctx context.Context, id string, hash string) error {
 	if hash == "" {
 		return errors.New("store: password_hash 不得为空（改密码写回空值等于锁死账户）")
 	}
@@ -291,7 +289,7 @@ func (r *AccountRepo) UpdatePasswordHash(ctx context.Context, id int64, hash str
 // 为什么单独一个方法：该标志的置位与密码写入是两件事——系统自举/管理员重置
 // 生成一次性口令时置位，本人改密成功时清除；把两个动作塞进 UpdatePasswordHash
 // 会让「谁改的口令」与「谁被要求改」在调用点无法区分。
-func (r *AccountRepo) SetMustChangePassword(ctx context.Context, id int64, must bool) error {
+func (r *AccountRepo) SetMustChangePassword(ctx context.Context, id string, must bool) error {
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE accounts SET must_change_password = ? WHERE id = ?`, boolToInt(must), id)
 	if err != nil {
@@ -304,7 +302,7 @@ func (r *AccountRepo) SetMustChangePassword(ctx context.Context, id int64, must 
 //
 // 显示名不承担唯一性（01-accounts.md），所以不做冲突检查；空串在此拒绝——
 // 「没有称呼」不是合法状态，调用方应给默认值（例如用户名）。
-func (r *AccountRepo) UpdateDisplayName(ctx context.Context, id int64, displayName string) error {
+func (r *AccountRepo) UpdateDisplayName(ctx context.Context, id string, displayName string) error {
 	if displayName == "" {
 		return errors.New("store: display_name 不得为空")
 	}
@@ -325,7 +323,7 @@ func boolToInt(b bool) int {
 }
 
 // TouchLastLogin 记录最近登录时间。
-func (r *AccountRepo) TouchLastLogin(ctx context.Context, id int64, ts int64) error {
+func (r *AccountRepo) TouchLastLogin(ctx context.Context, id string, ts int64) error {
 	if ts == 0 {
 		ts = now()
 	}
@@ -338,7 +336,7 @@ func (r *AccountRepo) TouchLastLogin(ctx context.Context, id int64, ts int64) er
 }
 
 // AddClass 追加权限类（幂等：已存在则不报错）。
-func (r *AccountRepo) AddClass(ctx context.Context, accountID int64, c Class) error {
+func (r *AccountRepo) AddClass(ctx context.Context, accountID string, c Class) error {
 	if !c.valid() {
 		return fmt.Errorf("store: 非法权限类 %q", c)
 	}
@@ -352,7 +350,7 @@ func (r *AccountRepo) AddClass(ctx context.Context, accountID int64, c Class) er
 }
 
 // HasClass 判断账户是否拥有某个权限类。鉴权路径使用。
-func (r *AccountRepo) HasClass(ctx context.Context, accountID int64, c Class) (bool, error) {
+func (r *AccountRepo) HasClass(ctx context.Context, accountID string, c Class) (bool, error) {
 	var n int
 	err := r.db.QueryRowContext(ctx,
 		`SELECT COUNT(1) FROM account_classes WHERE account_id = ? AND class = ?`,
@@ -393,20 +391,20 @@ func (s AccountStatus) valid() bool {
 //
 // 为什么需要它：SQLite 的 UPDATE 命中 0 行不是错误。若不检查，上层会以为"操作成功"
 // 而实际上目标行不存在——禁用账户这类操作静默失败是最危险的。
-func requireAffected(res sql.Result, what string, id int64) error {
+func requireAffected(res sql.Result, what string, id string) error {
 	n, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("store: 读取 %s 影响行数失败: %w", what, err)
 	}
 	if n == 0 {
-		return fmt.Errorf("%w：%s %d", ErrNotFound, what, id)
+		return fmt.Errorf("%w：%s %s", ErrNotFound, what, id)
 	}
 	return nil
 }
 
 // SetRecoveryCodeHash 写/清恢复码哈希（贡献者找回通道）。
 // hash 为 nil = 清除；与 CreateAccount 写入的列一致。
-func (r *AccountRepo) SetRecoveryCodeHash(ctx context.Context, id int64, hash string) error {
+func (r *AccountRepo) SetRecoveryCodeHash(ctx context.Context, id string, hash string) error {
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE accounts SET recovery_code_hash = ? WHERE id = ?`, hash, id)
 	if err != nil {
@@ -417,7 +415,7 @@ func (r *AccountRepo) SetRecoveryCodeHash(ctx context.Context, id int64, hash st
 
 // RecoveryCodeHashOf 读恢复码哈希（无码返回空串，不当作错误——
 // 「没设过恢复码」是正常状态，不是异常）。
-func (r *AccountRepo) RecoveryCodeHashOf(ctx context.Context, id int64) (string, error) {
+func (r *AccountRepo) RecoveryCodeHashOf(ctx context.Context, id string) (string, error) {
 	var hash *string
 	err := r.db.QueryRowContext(ctx,
 		`SELECT recovery_code_hash FROM accounts WHERE id = ?`, id).Scan(&hash)
@@ -444,7 +442,7 @@ func (r *AccountRepo) RecoveryCodeHashOf(ctx context.Context, id int64) (string,
 //
 // 事务：DELETE + 多次 INSERT 必须原子——半途失败会留下「少了类」的账户，
 // 而管理员以为改完了。在事务里执行时复用现有 tx。
-func (r *AccountRepo) SetAccountClasses(ctx context.Context, accountID int64, classes []Class) error {
+func (r *AccountRepo) SetAccountClasses(ctx context.Context, accountID string, classes []Class) error {
 	if len(classes) == 0 {
 		return errors.New("store: 权限类集合不能为空（01-accounts.md §1 不变式 1）")
 	}
@@ -497,7 +495,7 @@ func (r *AccountRepo) SetAccountClasses(ctx context.Context, accountID int64, cl
 //
 // nil = 不改该列（PATCH 语义）；display_name 空串拒绝——「没有称呼」
 // 不是合法状态（调用方应给默认值，例如用户名）。
-func (r *AccountRepo) SetAccountProfile(ctx context.Context, id int64, displayName *string, note *string) error {
+func (r *AccountRepo) SetAccountProfile(ctx context.Context, id string, displayName *string, note *string) error {
 	if displayName != nil && strings.TrimSpace(*displayName) == "" {
 		return errors.New("store: display_name 不得为空串")
 	}

@@ -13,7 +13,7 @@ import (
 // 上层要的是账户与到期时间。把 hash 带出来只会扩大它的传播面。
 type Session struct {
 	ID        string
-	AccountID int64
+	AccountID string
 	CreatedAt int64
 	ExpiresAt int64
 	IP        *string
@@ -24,11 +24,11 @@ type Session struct {
 type SessionRepo struct{ base }
 
 // CreateSession 写入一条会话。tokenHash 是 SHA-256(token) 的 32 字节。
-func (r *SessionRepo) CreateSession(ctx context.Context, id string, accountID int64, tokenHash []byte, expiresAt int64, ip, ua *string) error {
+func (r *SessionRepo) CreateSession(ctx context.Context, id string, accountID string, tokenHash []byte, expiresAt int64, ip, ua *string) error {
 	if id == "" {
 		return errors.New("store: session id 不得为空")
 	}
-	if accountID == 0 {
+	if accountID == "" {
 		return errors.New("store: 会话必须归属某个账户")
 	}
 	if len(tokenHash) != 32 {
@@ -82,7 +82,7 @@ func (r *SessionRepo) DeleteSession(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("store: 删除会话失败: %w", err)
 	}
-	return requireAffected(res, "会话", 0)
+	return requireAffected(res, "会话", id)
 }
 
 // DeleteSessionByTokenHash 按 token hash 删除（登出时手上只有 token，没有 id）。
@@ -98,7 +98,7 @@ func (r *SessionRepo) DeleteSessionByTokenHash(ctx context.Context, tokenHash []
 //
 // 改密/禁用即吊销（PLAN 10）：这是"改密码后其它设备立刻掉线"的实现。
 // 判定影响 0 行会失败没有意义——"删掉一个本来就没有会话的账户"是正常情况。
-func (r *SessionRepo) DeleteSessionsByAccount(ctx context.Context, accountID int64) error {
+func (r *SessionRepo) DeleteSessionsByAccount(ctx context.Context, accountID string) error {
 	if _, err := r.db.ExecContext(ctx,
 		`DELETE FROM sessions WHERE account_id = ?`, accountID); err != nil {
 		return fmt.Errorf("store: 吊销账户会话失败: %w", err)

@@ -33,7 +33,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -56,8 +55,8 @@ type MergeConflict struct {
 
 // MergePlan 是预检结果（管理员在确认页看到的就是它）。
 type MergePlan struct {
-	SourceID int64
-	TargetID int64
+	SourceID string // UUID
+	TargetID string // UUID
 	// Blocking 非空时**不得**执行合并（01-accounts §4：只有阻塞项为空才能点确认）。
 	Blocking []MergeConflict
 	// RenamedKeys 是将被自动改名的 Key（🟡 自动处理项，明示将做什么）。
@@ -68,9 +67,9 @@ type MergePlan struct {
 	GroupRels int
 	// MovedKeys / MovedCreds / MovedGroups 是**将被改挂的资源 id**（0007 迁移
 	// 的三列）。回滚靠它们精确还原，而不是靠猜（见 RollbackMerge 注释）。
-	MovedKeys   []int64
-	MovedCreds  []int64
-	MovedGroups []int64
+	MovedKeys   []string // UUID
+	MovedCreds  []string // UUID
+	MovedGroups []string // UUID
 	// SourceClasses / TargetClasses 用于展示并集结果。
 	SourceClasses []string
 	TargetClasses []string
@@ -90,7 +89,7 @@ var ErrMergeNotReversible = errors.New("store: 没有可回滚的合并（或已
 // 为什么预检与执行分开而不是「边写边发现冲突就回滚」：管理员需要在点确认
 // **之前**看到「这次会改挂 3 把 Key、12 个凭据，并且有 1 条凭据撞身份」。
 // 合并是 🔒 危险写，确认页没有信息就等于没有确认。
-func (r *AccountRepo) PrecheckMerge(ctx context.Context, sourceID, targetID int64) (MergePlan, error) {
+func (r *AccountRepo) PrecheckMerge(ctx context.Context, sourceID, targetID string) (MergePlan, error) {
 	if sourceID == targetID {
 		return MergePlan{}, errors.New("store: 不能把账户合并到自己")
 	}
@@ -186,7 +185,7 @@ func classNames(cs []Class) []string {
 // 顺序：预检 → 类并集 → Key 改名 → 资源改挂 → 源转 merged → 写留痕行。
 // 预检在事务**内**重跑一次：从确认页到点确认之间可能有别的写入（并发合并、
 // 新凭据），只在事务外检过等于拿一张过期地图做决定。
-func (r *AccountRepo) MergeAccount(ctx context.Context, sourceID, targetID int64, at time.Time) (MergePlan, error) {
+func (r *AccountRepo) MergeAccount(ctx context.Context, sourceID, targetID string, at time.Time) (MergePlan, error) {
 	var plan MergePlan
 	if at.IsZero() {
 		at = time.Now()
@@ -280,31 +279,35 @@ func (r *AccountRepo) MergeAccount(ctx context.Context, sourceID, targetID int64
 	return plan, err
 }
 
-// shortCode 是 Key 改名用的源账户短码（8 位以内，够人读出「从哪个账户来」）。
-func shortCode(id int64) string {
-	s := strconv.FormatInt(id, 10)
-	if len(s) > 8 {
-		s = s[len(s)-8:]
+// shortCode 是 Key 改名用的源账户短码（取 id 末 8 位）。
+//
+// id 已是 UUID 文本（2026-10-26 改造）：原来对整型 id 做 FormatInt 再截末 8 位，
+// 现在直接截字符串末 8 位。为什么仍取末 8 位：改名后的 Key 名要能让人一眼看出
+// 「从哪个账户来」，而 UUID 的前段（版本位、变体位）在所有 UUID 里都一样，
+// 区分度全部落在随机段上——末段正是随机段。
+func shortCode(id string) string {
+	if len(id) > 8 {
+		return id[len(id)-8:]
 	}
-	return s
+	return id
 }
 
 // MergeRecord 是一条合并留痕。
 type MergeRecord struct {
-	ID              int64
-	SourceID        int64
-	TargetID        int64
+	ID              string // UUID
+	SourceID        string // UUID
+	TargetID        string // UUID
 	MergedAt        int64
 	ReversibleUntil int64
 	UndoneAt        *int64
 	// 被改挂的资源清单（回滚的精确依据）。
-	MovedKeys     []int64
-	MovedCreds    []int64
-	MovedGroupIDs []int64
+	MovedKeys     []string // UUID
+	MovedCreds    []string // UUID
+	MovedGroupIDs []string // UUID
 }
 
 // LatestActiveMerge 取某源账户最近一次**未撤销**的合并（回滚的输入）。
-func (r *AccountRepo) LatestActiveMerge(ctx context.Context, sourceID int64) (MergeRecord, error) {
+func (r *AccountRepo) LatestActiveMerge(ctx context.Context, sourceID string) (MergeRecord, error) {
 	var m MergeRecord
 	var keyJSON, credJSON, groupJSON string
 	err := r.db.QueryRowContext(ctx,
@@ -340,7 +343,7 @@ func (r *AccountRepo) LatestActiveMerge(ctx context.Context, sourceID int64) (Me
 //   - usage_daily 已聚合的旧行：同上，新用量从撤销时刻起回到 source；
 //   - target 的权限类并集：并集只会让 target 更宽，留着不会锁死任何人，
 //     而事后无法区分哪个类是谁带来的——猜着删反而可能把 target 自己的类删掉。
-func (r *AccountRepo) RollbackMerge(ctx context.Context, sourceID int64, at time.Time) (MergeRecord, error) {
+func (r *AccountRepo) RollbackMerge(ctx context.Context, sourceID string, at time.Time) (MergeRecord, error) {
 	var rec MergeRecord
 	if at.IsZero() {
 		at = time.Now()
@@ -438,7 +441,7 @@ func inPlaceholders(n int) []string {
 }
 
 // toAny 把 int64 切片翻成查询参数切片。
-func toAny(ids []int64) []any {
+func toAny(ids []string) []any {
 	out := make([]any, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, id)

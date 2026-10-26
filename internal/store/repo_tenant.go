@@ -31,7 +31,7 @@ type SessionRow struct {
 }
 
 // ListSessionsByAccount 列出该账户全部会话（按创建时间倒序）。
-func (r *SessionRepo) ListSessionsByAccount(ctx context.Context, accountID int64) ([]SessionRow, error) {
+func (r *SessionRepo) ListSessionsByAccount(ctx context.Context, accountID string) ([]SessionRow, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, created_at, expires_at, ip, ua
 		   FROM sessions WHERE account_id = ? ORDER BY created_at DESC, id DESC`, accountID)
@@ -80,7 +80,7 @@ type RequestLogFilter struct {
 // AbstractModel/KeyName/KeyPrefix 来自 LEFT JOIN：历史行引用的对象可能已被删，
 // 缺失时是空串而不是错误（日志必须能显示，哪怕对象没了）。
 type RequestLogRow struct {
-	ID            int64
+	ID            string
 	TS            int64
 	Endpoint      string
 	AbstractModel string
@@ -106,7 +106,7 @@ const requestLogColumns = `SELECT r.id, r.ts, r.endpoint, COALESCE(m.name, ''),
   LEFT JOIN api_keys k ON k.id = r.key_id`
 
 // ListRequestLogsByAccount 按账户列请求日志（筛选 + 分页 + 总数）。
-func (r *UsageRepo) ListRequestLogsByAccount(ctx context.Context, accountID int64, f RequestLogFilter) ([]RequestLogRow, int64, error) {
+func (r *UsageRepo) ListRequestLogsByAccount(ctx context.Context, accountID string, f RequestLogFilter) ([]RequestLogRow, int64, error) {
 	where := " r.account_id = ?"
 	var args []any
 	args = append(args, accountID)
@@ -193,7 +193,7 @@ func (r *UsageRepo) CountKeysUsedSince(ctx context.Context, accountID, since int
 
 // ListCredentialsByOwner 列出某账户贡献的凭据（按创建时间倒序）。
 // 与管理面 ListCredentials 不同：这里按属主过滤，只看自己的。
-func (r *ModelRepo) ListCredentialsByOwner(ctx context.Context, ownerAccountID int64) ([]Credential, error) {
+func (r *ModelRepo) ListCredentialsByOwner(ctx context.Context, ownerAccountID string) ([]Credential, error) {
 	rows, err := r.db.QueryContext(ctx, credentialColumns+
 		` WHERE owner_account_id = ? ORDER BY created_at DESC, id DESC`, ownerAccountID)
 	if err != nil {
@@ -249,7 +249,7 @@ type AccountStatusInfo struct {
 	Classes []string
 }
 
-func (r *AccountRepo) AccountStatusOf(ctx context.Context, id int64) (AccountStatusInfo, error) {
+func (r *AccountRepo) AccountStatusOf(ctx context.Context, id string) (AccountStatusInfo, error) {
 	a, err := r.GetAccount(ctx, id)
 	if err != nil {
 		return AccountStatusInfo{}, err

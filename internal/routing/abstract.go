@@ -44,12 +44,12 @@ const (
 // 路由需要的字段；strategy/capabilities 等管理字段由策略链参数直接传入，
 // 不藏在模型行里，避免「读半截配置」的歧义）。
 type AbstractModel struct {
-	ID                 int64
+	ID                 string // UUID（对外 id 与库内主键同值，2026-10-26 改造）
 	Name               string // 对外名称，唯一，禁止含 ':'（02-abstract.md §2.3）
 	Status             AbstractModelStatus
 	Strategy           []string // 排序策略链，空 = 默认链 [expiry-first, balance]
 	CapabilityMode     CapabilityMode
-	ReplacementModelID *int64 // deprecated 时指向替代目标（只能指向 active）
+	ReplacementModelID *string // deprecated 时指向替代目标（只能指向 active）
 	DeprecatedAt       *time.Time
 	SunsetAt           *time.Time
 }
@@ -70,7 +70,7 @@ type Constraint struct {
 
 // CandidateDecl 是 abstract_candidates 一行的读面（声明，非运行态）。
 type CandidateDecl struct {
-	RealModelID int64
+	RealModelID string // UUID
 	Constraint  Constraint
 	// Weight 历史字段：内置四种策略已不读它（03-strategy.md §3.3.2）。
 	// 保留字段位只为让装配层搬运行时不丢信息，注释必须写明否则下一个
@@ -85,8 +85,8 @@ const aggregateChannel = "aggregate"
 
 // RealModelInfo 是 real_models 行的路由读面（01-catalog.md §2.2 子集）。
 type RealModelInfo struct {
-	ID              int64
-	UpstreamID      int64
+	ID              string // UUID
+	UpstreamID      string // UUID
 	UpstreamModelID string
 	// UpstreamKind 上游 kind（relay/vendor/selfhosted）——决定候选方言。
 	UpstreamKind string
@@ -108,11 +108,11 @@ type AbstractModelStore interface {
 	// 「不存在」与「查询失败」——前者是 404 语义，后者是 500）。
 	GetAbstractModelByName(ctx context.Context, name string) (*AbstractModel, error)
 	// GetAbstractModel 按 id 查（弃用链解析逐跳用）。
-	GetAbstractModel(ctx context.Context, id int64) (*AbstractModel, error)
+	GetAbstractModel(ctx context.Context, id string) (*AbstractModel, error)
 	// ListCandidates 列出抽象模型的候选声明（行序即配置序）。
-	ListCandidates(ctx context.Context, abstractModelID int64) ([]CandidateDecl, error)
+	ListCandidates(ctx context.Context, abstractModelID string) ([]CandidateDecl, error)
 	// GetRealModel 按 id 查真实模型；不存在返回 nil, nil。
-	GetRealModel(ctx context.Context, id int64) (*RealModelInfo, error)
+	GetRealModel(ctx context.Context, id string) (*RealModelInfo, error)
 }
 
 // ============ 错误（对齐 03-errors.md 码表） ============
@@ -233,7 +233,7 @@ func (res *Resolver) Resolve(ctx context.Context, name string) (*Resolved, *Reso
 // 迁移这类「绕过状态机的写入」，触发时按缺陷信号告警，见 §2.4–2.5）。
 func (res *Resolver) resolveChain(ctx context.Context, m *AbstractModel) (*AbstractModel, []string, bool, error) {
 	chain := []string{m.Name}
-	visited := map[int64]bool{m.ID: true}
+	visited := map[string]bool{m.ID: true}
 	cur := m
 	for cur.Status == StatusDeprecated {
 		if cur.ReplacementModelID == nil {
@@ -243,7 +243,7 @@ func (res *Resolver) resolveChain(ctx context.Context, m *AbstractModel) (*Abstr
 		}
 		next, err := res.store.GetAbstractModel(ctx, *cur.ReplacementModelID)
 		if err != nil {
-			return nil, nil, false, fmt.Errorf("routing: 解析弃用链查询 %d: %w", *cur.ReplacementModelID, err)
+			return nil, nil, false, fmt.Errorf("routing: 解析弃用链查询 %s: %w", *cur.ReplacementModelID, err)
 		}
 		if next == nil {
 			// 替代目标行不存在（外键悬空——直接改库类损伤）：降级为无替代。
@@ -283,13 +283,13 @@ func (res *Resolver) resolveChain(ctx context.Context, m *AbstractModel) (*Abstr
 func (res *Resolver) expandCandidates(ctx context.Context, m *AbstractModel) ([]RealModelInfo, *ResolveError, error) {
 	decls, err := res.store.ListCandidates(ctx, m.ID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("routing: 查询候选声明 %d: %w", m.ID, err)
+		return nil, nil, fmt.Errorf("routing: 查询候选声明 %s: %w", m.ID, err)
 	}
 	var out []RealModelInfo
 	for _, d := range decls {
 		rm, err := res.store.GetRealModel(ctx, d.RealModelID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("routing: 查询真实模型 %d: %w", d.RealModelID, err)
+			return nil, nil, fmt.Errorf("routing: 查询真实模型 %s: %w", d.RealModelID, err)
 		}
 		// status 值域以存储 DDL 为准（05-storage.md §4：
 		// CHECK (status IN ('active','missing','disabled'))）；01-catalog.md

@@ -23,7 +23,7 @@ func strp(s string) *string { return &s }
 
 // channelOf 直接读列，绕开仓储读路径（仓储把 NULL 转成 nil 指针，
 // 断言时用 != nil 就够，但显式读库更接近"迁移到底写没写"）。
-func channelCol(t *testing.T, s *Store, id int64) *string {
+func channelCol(t *testing.T, s *Store, id string) *string {
 	t.Helper()
 	var v *string
 	if err := s.writeDB.QueryRow(

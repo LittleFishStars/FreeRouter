@@ -50,10 +50,15 @@ func (p QuotaPeriod) valid() bool {
 // 与 API 形状的对应（api/02-admin.md 2026-10-21 三数组定案）：组策略 JSON 的
 // pool[] 项里 "model": null 就是这一维——管理 API 收到 model:null 时以
 // abstractModelID = TotalScope(0) 调 SetPool，收到 "model":"smart" 时先按名解析出
-// 模型 id 再调 SetPool(ctx, groupID, modelID, …)。**"null → 0" 的翻译只发生在
-// API 边界一次**，仓储以下全部用 int64 行键，不再有第三种"未设"表示。
+// 模型 id 再调 SetPool(ctx, groupID, modelID, …)。**"无范围 → 空串" 的翻译只发生在
+// API 边界一次**，仓储以下全部用 string 行键，不再有第三种"未设"表示。
 // account_quotas[] / model_quota_caps[] 两个数组同理（合计行 vs 按模型行）。
-const TotalScope int64 = 0
+//
+// 为什么哨兵是空串而不是原来的 0（2026-10-26 UUID 改造）：abstract_model_id
+// 已是 UUID 文本，"0" 不再是合法 id；而这两列是 WITHOUT ROWID 复合主键的成员，
+// NULL 不能当哨兵（NULL=NULL 得 UNKNOWN，会让合计行的 upsert 冲突判定失效、
+// 池子被拆成多行）。空串是值域内的合法非值，比较行为正常。详见迁移 0009 文件头。
+const TotalScope string = ""
 
 // ErrQuotaExhausted 表示额度不足（条件 UPDATE 影响 0 行且该行存在）。
 // 独立类型而不是 ErrNotFound 的包装：上层据此返回 429 而不是 404。
@@ -70,7 +75,7 @@ type ErrQuotaExhausted struct {
 	Scope           string // account | pool
 	Unit            QuotaUnit
 	Period          QuotaPeriod
-	AbstractModelID int64  // 0 = 合计行；> 0 = 按模型限额行
+	AbstractModelID string // 0 = 合计行；> 0 = 按模型限额行
 	PeriodAnchor    string // 'YYYY-MM-DD'，该行 pool/quota_used 所属周期起点
 	Used            int64
 	Limit           int64
@@ -99,7 +104,7 @@ func (e ErrQuotaExhausted) ResetAt() (time.Time, bool) {
 
 func (e ErrQuotaExhausted) Error() string {
 	if e.AbstractModelID != TotalScope {
-		return fmt.Sprintf("store: %s 额度不足（%s/%s，模型行 %d）",
+		return fmt.Sprintf("store: %s 额度不足（%s/%s，模型行 %s）",
 			e.Scope, e.Unit, e.Period, e.AbstractModelID)
 	}
 	return fmt.Sprintf("store: %s 额度不足（%s/%s，合计）", e.Scope, e.Unit, e.Period)
@@ -116,8 +121,8 @@ type QuotaRepo struct{ base }
 
 // QuotaState 是一行账户额度或一行池的当前状态。
 type QuotaState struct {
-	OwnerID         int64 // account_id 或 group_id（按调用方法解释）
-	AbstractModelID int64 // 0 = 合计
+	OwnerID         string // account_id 或 group_id 的 UUID（按调用方法解释）
+	AbstractModelID string // 0 = 合计
 	Unit            QuotaUnit
 	Period          QuotaPeriod
 	Limit           int64
@@ -131,8 +136,8 @@ type QuotaState struct {
 // limit = 0 是合法的（"全拒"）；"不限"由 DeleteAccountQuota 删行表达，不用 -1：
 // NULL/-1 参与比较会得到 UNKNOWN 或意外为真，而条件 UPDATE 只接受"真"。
 // abstractModelID 传 TotalScope(0) 表示全模型合计。
-func (r *QuotaRepo) SetAccountQuota(ctx context.Context, accountID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod, limit int64) error {
-	if accountID == 0 {
+func (r *QuotaRepo) SetAccountQuota(ctx context.Context, accountID, abstractModelID string, unit QuotaUnit, period QuotaPeriod, limit int64) error {
+	if accountID == "" {
 		return errors.New("store: 额度必须归属某个账户")
 	}
 	if limit < 0 {
@@ -148,8 +153,8 @@ func (r *QuotaRepo) SetAccountQuota(ctx context.Context, accountID, abstractMode
 // 而拒绝管理员关闸不是（05-storage.md 3.3）。所以这里没有 used<=limit 的校验，
 // 表上也没有那条 CHECK。
 // pool_limit 必须严格为正：0 无法写入（"停用池 = 删池行"，见 3.3）。
-func (r *QuotaRepo) SetPool(ctx context.Context, groupID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod, limit int64) error {
-	if groupID == 0 {
+func (r *QuotaRepo) SetPool(ctx context.Context, groupID, abstractModelID string, unit QuotaUnit, period QuotaPeriod, limit int64) error {
+	if groupID == "" {
 		return errors.New("store: 池必须归属某个组")
 	}
 	if limit <= 0 {
@@ -165,7 +170,7 @@ func (r *QuotaRepo) SetPool(ctx context.Context, groupID, abstractModelID int64,
 // 一旦在两份代码里漂移，就会出现"改了池忘了改账户额度"的不对称 bug。
 // 表名/列名来自本包内联常量（不是用户输入），拼接安全。
 func (r *QuotaRepo) setQuota(ctx context.Context, table, ownerCol, limitCol, usedCol string,
-	ownerID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod, limit int64) error {
+	ownerID, abstractModelID string, unit QuotaUnit, period QuotaPeriod, limit int64) error {
 	if !unit.valid() {
 		return fmt.Errorf("store: 非法 unit %q", unit)
 	}
@@ -189,16 +194,16 @@ func (r *QuotaRepo) setQuota(ctx context.Context, table, ownerCol, limitCol, use
 }
 
 // DeleteAccountQuota 删行 = 该维度不限。
-func (r *QuotaRepo) DeleteAccountQuota(ctx context.Context, accountID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod) error {
+func (r *QuotaRepo) DeleteAccountQuota(ctx context.Context, accountID, abstractModelID string, unit QuotaUnit, period QuotaPeriod) error {
 	return r.deleteQuota(ctx, "account_quotas", "account_id", accountID, abstractModelID, unit, period)
 }
 
 // DeletePool 删池行 = 停用池（"保留配置但停用"这个需求主动不做，见 3.3）。
-func (r *QuotaRepo) DeletePool(ctx context.Context, groupID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod) error {
+func (r *QuotaRepo) DeletePool(ctx context.Context, groupID, abstractModelID string, unit QuotaUnit, period QuotaPeriod) error {
 	return r.deleteQuota(ctx, "group_quota_pools", "group_id", groupID, abstractModelID, unit, period)
 }
 
-func (r *QuotaRepo) deleteQuota(ctx context.Context, table, ownerCol string, ownerID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod) error {
+func (r *QuotaRepo) deleteQuota(ctx context.Context, table, ownerCol string, ownerID, abstractModelID string, unit QuotaUnit, period QuotaPeriod) error {
 	_, err := r.db.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM %s WHERE %s = ? AND abstract_model_id = ? AND unit = ? AND period = ?`,
 			table, ownerCol),
@@ -210,19 +215,19 @@ func (r *QuotaRepo) deleteQuota(ctx context.Context, table, ownerCol string, own
 }
 
 // AccountQuota 读账户的某一行额度。ErrNotFound = 没有这一行 = 该维度不限。
-func (r *QuotaRepo) AccountQuota(ctx context.Context, accountID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod) (*QuotaState, error) {
+func (r *QuotaRepo) AccountQuota(ctx context.Context, accountID, abstractModelID string, unit QuotaUnit, period QuotaPeriod) (*QuotaState, error) {
 	return r.getQuota(ctx, "account_quotas", "account_id", "quota_limit", "quota_used",
 		accountID, abstractModelID, unit, period)
 }
 
 // Pool 读某组某维度的池状态。ErrNotFound = 未设池 = 不限制。
-func (r *QuotaRepo) Pool(ctx context.Context, groupID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod) (*QuotaState, error) {
+func (r *QuotaRepo) Pool(ctx context.Context, groupID, abstractModelID string, unit QuotaUnit, period QuotaPeriod) (*QuotaState, error) {
 	return r.getQuota(ctx, "group_quota_pools", "group_id", "pool_limit", "pool_used",
 		groupID, abstractModelID, unit, period)
 }
 
 func (r *QuotaRepo) getQuota(ctx context.Context, table, ownerCol, limitCol, usedCol string,
-	ownerID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod) (*QuotaState, error) {
+	ownerID, abstractModelID string, unit QuotaUnit, period QuotaPeriod) (*QuotaState, error) {
 	var q QuotaState
 	var u, p string
 	err := r.db.QueryRowContext(ctx,
@@ -242,16 +247,16 @@ func (r *QuotaRepo) getQuota(ctx context.Context, table, ownerCol, limitCol, use
 }
 
 // ListAccountQuotas 列出账户的全部额度行（含按模型行）。合计行以 AbstractModelID=0 出现。
-func (r *QuotaRepo) ListAccountQuotas(ctx context.Context, accountID int64) ([]QuotaState, error) {
+func (r *QuotaRepo) ListAccountQuotas(ctx context.Context, accountID string) ([]QuotaState, error) {
 	return r.listQuota(ctx, "account_quotas", "account_id", "quota_limit", "quota_used", accountID)
 }
 
 // ListPoolsByGroup 列出某组的全部池（组详情页的"哪些快满了"）。
-func (r *QuotaRepo) ListPoolsByGroup(ctx context.Context, groupID int64) ([]QuotaState, error) {
+func (r *QuotaRepo) ListPoolsByGroup(ctx context.Context, groupID string) ([]QuotaState, error) {
 	return r.listQuota(ctx, "group_quota_pools", "group_id", "pool_limit", "pool_used", groupID)
 }
 
-func (r *QuotaRepo) listQuota(ctx context.Context, table, ownerCol, limitCol, usedCol string, ownerID int64) ([]QuotaState, error) {
+func (r *QuotaRepo) listQuota(ctx context.Context, table, ownerCol, limitCol, usedCol string, ownerID string) ([]QuotaState, error) {
 	rows, err := r.db.QueryContext(ctx,
 		fmt.Sprintf(`SELECT %s, abstract_model_id, unit, period, %s, %s, period_anchor, updated_at
 		           FROM %s WHERE %s = ?
@@ -296,19 +301,19 @@ func (r *QuotaRepo) listQuota(ctx context.Context, table, ownerCol, limitCol, us
 // 为什么必须先惰性重置再扣减：分开到不同事务会出现"已跨周期但尚未归零"的窗口，
 // 窗口内的请求会拿上期的 used 去比本期的 limit。本方法把两步放在同一个调用里，
 // 由调用方的事务包住（05-storage.md 7.2：与请求落库同一事务）。
-func (r *QuotaRepo) TryDebitAccountQuota(ctx context.Context, accountID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod, cost int64) error {
+func (r *QuotaRepo) TryDebitAccountQuota(ctx context.Context, accountID, abstractModelID string, unit QuotaUnit, period QuotaPeriod, cost int64) error {
 	return r.tryDebit(ctx, "account_quotas", "account_id", "quota_limit", "quota_used",
 		"account", accountID, abstractModelID, unit, period, cost)
 }
 
 // TryDebitPool 是组级共享池的同形扣减。语义与 TryDebitAccountQuota 完全一致。
-func (r *QuotaRepo) TryDebitPool(ctx context.Context, groupID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod, cost int64) error {
+func (r *QuotaRepo) TryDebitPool(ctx context.Context, groupID, abstractModelID string, unit QuotaUnit, period QuotaPeriod, cost int64) error {
 	return r.tryDebit(ctx, "group_quota_pools", "group_id", "pool_limit", "pool_used",
 		"pool", groupID, abstractModelID, unit, period, cost)
 }
 
 func (r *QuotaRepo) tryDebit(ctx context.Context, table, ownerCol, limitCol, usedCol, scope string,
-	ownerID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod, cost int64) error {
+	ownerID, abstractModelID string, unit QuotaUnit, period QuotaPeriod, cost int64) error {
 	if !unit.valid() {
 		return fmt.Errorf("store: 非法 unit %q", unit)
 	}
@@ -392,15 +397,15 @@ func (r *QuotaRepo) CreditQuota(ctx context.Context, accountQuotas, poolCredits 
 
 // QuotaCredit 是一条记账量。
 type QuotaCredit struct {
-	OwnerID         int64 // account_id 或 group_id
-	AbstractModelID int64 // 0 = 合计
+	OwnerID         string // account_id 或 group_id 的 UUID
+	AbstractModelID string // "" = 合计（TotalScope）
 	Unit            QuotaUnit
 	Period          QuotaPeriod
 	Cost            int64
 }
 
 func (r *QuotaRepo) credit(ctx context.Context, table, ownerCol, usedCol string,
-	ownerID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod, cost int64) error {
+	ownerID, abstractModelID string, unit QuotaUnit, period QuotaPeriod, cost int64) error {
 	if cost == 0 {
 		return nil
 	}
@@ -439,8 +444,8 @@ func (r *QuotaRepo) credit(ctx context.Context, table, ownerCol, usedCol string,
 // 消耗必须按人记账（记在 account_quotas 的 mid>0 行）。把计数器挂组行上会把
 // 「每人限额」错实现成「共享池再加一维」，两者是完全不同的闸。
 type ModelCap struct {
-	GroupID         int64
-	AbstractModelID int64
+	GroupID         string
+	AbstractModelID string
 	Unit            QuotaUnit
 	Period          QuotaPeriod
 	Cap             int64
@@ -448,7 +453,7 @@ type ModelCap struct {
 
 // SetGroupModelCap 设置/更新一条按模型每人上限。cap 必须为正：「每人不限」= 没有这一行。
 func (r *QuotaRepo) SetGroupModelCap(ctx context.Context, c ModelCap) error {
-	if c.GroupID == 0 || c.AbstractModelID == 0 {
+	if c.GroupID == "" || c.AbstractModelID == "" {
 		return errors.New("store: 按模型上限必须同时归属组与抽象模型（合计走 SetPool/SetAccountQuota）")
 	}
 	if c.Cap <= 0 {
@@ -470,7 +475,7 @@ func (r *QuotaRepo) SetGroupModelCap(ctx context.Context, c ModelCap) error {
 }
 
 // DeleteGroupModelCap 删行 = 该维度每人不限。
-func (r *QuotaRepo) DeleteGroupModelCap(ctx context.Context, groupID, abstractModelID int64, unit QuotaUnit, period QuotaPeriod) error {
+func (r *QuotaRepo) DeleteGroupModelCap(ctx context.Context, groupID, abstractModelID string, unit QuotaUnit, period QuotaPeriod) error {
 	_, err := r.db.ExecContext(ctx,
 		`DELETE FROM group_model_quota_caps
 		  WHERE group_id = ? AND abstract_model_id = ? AND unit = ? AND period = ?`,
@@ -482,7 +487,7 @@ func (r *QuotaRepo) DeleteGroupModelCap(ctx context.Context, groupID, abstractMo
 }
 
 // ListGroupModelCaps 列出某组的按模型上限；modelID 为 nil 时列出该组全部。
-func (r *QuotaRepo) ListGroupModelCaps(ctx context.Context, groupID int64, modelID *int64) ([]ModelCap, error) {
+func (r *QuotaRepo) ListGroupModelCaps(ctx context.Context, groupID string, modelID *int64) ([]ModelCap, error) {
 	q := strings.Builder{}
 	q.WriteString(`SELECT group_id, abstract_model_id, unit, period, cap
 		           FROM group_model_quota_caps WHERE group_id = ?`)
@@ -521,7 +526,7 @@ func (r *QuotaRepo) ListGroupModelCaps(ctx context.Context, groupID int64, model
 // 为什么把 min 计算放进存储层而不是上层循环查表：这是"成员关系/策略变更时重算"的
 // 一次性写前读，SQL 一条聚合就够；放进上层会变成 N 次查询 + 一次手写 min，
 // 而手写 min 最容易漏的是"某个组没设这一维"。
-func (r *QuotaRepo) MinCapForAccount(ctx context.Context, accountID int64, abstractModelID int64) (map[string]int64, error) {
+func (r *QuotaRepo) MinCapForAccount(ctx context.Context, accountID string, abstractModelID string) (map[string]int64, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT c.unit, c.period, MIN(c.cap)
 		   FROM group_model_quota_caps c

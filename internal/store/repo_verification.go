@@ -16,6 +16,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"strings"
 )
 
@@ -47,7 +48,7 @@ var ErrCredentialNotFound = errors.New("store: 凭据不存在")
 //
 // 不带 verified_at 时间列的表结构下，何时鉴定由 verify_detail JSON 或
 // 审计日志承载——存储层不发明时间戳。
-func (r *ModelRepo) MarkVerified(ctx context.Context, credentialID int64, status VerifyStatus, evidence string) error {
+func (r *ModelRepo) MarkVerified(ctx context.Context, credentialID string, status VerifyStatus, evidence string) error {
 	if !status.valid() {
 		return fmt.Errorf("store: 非法鉴定状态 %q（四态：verified/suspect/unverified/trusted）", status)
 	}
@@ -75,8 +76,8 @@ func (r *ModelRepo) MarkVerified(ctx context.Context, credentialID int64, status
 // 「版本标识」而不是数字，存储层不发明格式，也不把 int 版本的翻译散落到调用方。
 // evidence 为空时写 NULL 而不是空串：verify_detail 的 NULL 表示「没有说明」，
 // 空串会被读方当成「有一条空证据」。
-func (r *ModelRepo) SetRealModelVerification(ctx context.Context, realModelID int64, status VerifyStatus, evidence, source string) error {
-	if realModelID == 0 {
+func (r *ModelRepo) SetRealModelVerification(ctx context.Context, realModelID string, status VerifyStatus, evidence, source string) error {
+	if realModelID == "" {
 		return errors.New("store: real_model id 不得为 0")
 	}
 	if !status.valid() {
@@ -104,8 +105,8 @@ func (r *ModelRepo) SetRealModelVerification(ctx context.Context, realModelID in
 // Credential 是 upstream_credentials 的读取形态（鉴定相关列 + 定位列）。
 // secret_ref 只是引用不含明文（主密钥管的事，这里原样转交）。
 type Credential struct {
-	ID             int64
-	OwnerAccountID int64
+	ID             string
+	OwnerAccountID string
 	Provider       string
 	ExternalID     string
 	ExternalLabel  string
@@ -118,7 +119,7 @@ type Credential struct {
 }
 
 // LookupCredential 按 id 读一条凭据（鉴定流水线的输入定位）。
-func (r *ModelRepo) LookupCredential(ctx context.Context, id int64) (*Credential, error) {
+func (r *ModelRepo) LookupCredential(ctx context.Context, id string) (*Credential, error) {
 	c, err := r.scanCredential(r.db.QueryRowContext(ctx, credentialColumns+` WHERE id = ?`, id))
 	if err != nil {
 		return nil, err
@@ -149,7 +150,7 @@ func (r *ModelRepo) ListUnverified(ctx context.Context, provider, externalIDPatt
 		q += ` AND external_id LIKE ?`
 		args = append(args, externalIDPattern)
 	}
-	q += ` ORDER BY id ASC`
+	q += ` ORDER BY id ASC` // 字典序（UUID 无时间序，仅要求确定性）
 
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -211,7 +212,7 @@ func (r *ModelRepo) ListCredentialsByStatus(ctx context.Context, status VerifySt
 		return nil, fmt.Errorf("store: 非法鉴定状态 %q", status)
 	}
 	rows, err := r.db.QueryContext(ctx,
-		credentialColumns+` WHERE verify_status = ? ORDER BY id ASC`, string(status))
+		credentialColumns+` WHERE verify_status = ? ORDER BY created_at ASC, id ASC`, string(status))
 	if err != nil {
 		return nil, fmt.Errorf("store: 按状态列凭据失败: %w", err)
 	}
@@ -241,34 +242,33 @@ func (r *ModelRepo) ListCredentialsByStatus(ctx context.Context, status VerifySt
 //
 // ownerAccountID 必须是正整数（NOT NULL 列）：传管理员账户。幂等 upsert
 // 以 (provider, external_id) 为键。
-func (r *ModelRepo) UpsertPlatformCredential(ctx context.Context, ownerAccountID int64, provider, externalID, label, secretRef, status string) (int64, error) {
-	if ownerAccountID <= 0 {
-		return 0, errors.New("store: 平台凭据行必须挂账户（NOT NULL 列；平台自有语义在 upstreams.owner=NULL，见 03-upstream §1）")
+func (r *ModelRepo) UpsertPlatformCredential(ctx context.Context, ownerAccountID string, provider, externalID, label, secretRef, status string) (string, error) {
+	if ownerAccountID == "" {
+		return "", errors.New("store: 平台凭据行必须挂账户（NOT NULL 列；平台自有语义在 upstreams.owner=NULL，见 03-upstream §1）")
 	}
 	if strings.TrimSpace(provider) == "" || strings.TrimSpace(externalID) == "" {
-		return 0, errors.New("store: provider 与 external_id 不得为空")
+		return "", errors.New("store: provider 与 external_id 不得为空")
 	}
 	if strings.TrimSpace(secretRef) == "" {
-		return 0, errors.New("store: secret_ref 不得为空（引用也要有指向）")
+		return "", errors.New("store: secret_ref 不得为空（引用也要有指向）")
 	}
-	_, err := r.db.ExecContext(ctx,
+	if _, err := r.db.ExecContext(ctx,
 		`INSERT INTO upstream_credentials
-		   (owner_account_id, provider, external_id, external_label, secret_ref, status, created_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?)
+		   (id, owner_account_id, provider, external_id, external_label, secret_ref, status, created_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(provider, external_id) DO UPDATE SET
 		   external_label = excluded.external_label,
 		   secret_ref     = excluded.secret_ref,
 		   status         = excluded.status`,
-		ownerAccountID, provider, externalID, label, secretRef, status, now())
-	if err != nil {
-		return 0, fmt.Errorf("store: 写平台凭据失败: %w", err)
+		idgen.New(), ownerAccountID, provider, externalID, label, secretRef, status, now()); err != nil {
+		return "", fmt.Errorf("store: 写平台凭据失败: %w", err)
 	}
-	// ON CONFLICT 更新时 LastInsertId 无意义——回查真 id。
-	var id int64
+	// ON CONFLICT 更新时回查真 id（LastInsertId 在 TEXT 主键 + upsert 下都无意义）。
+	var id string
 	if err := r.db.QueryRowContext(ctx,
 		`SELECT id FROM upstream_credentials WHERE provider = ? AND external_id = ?`,
 		provider, externalID).Scan(&id); err != nil {
-		return 0, fmt.Errorf("store: 回查平台凭据 id 失败: %w", err)
+		return "", fmt.Errorf("store: 回查平台凭据 id 失败: %w", err)
 	}
 	return id, nil
 }
@@ -276,25 +276,25 @@ func (r *ModelRepo) UpsertPlatformCredential(ctx context.Context, ownerAccountID
 // CreateCredential 建贡献者提交的凭据行（owner 是账户）。初始态
 // status='pending'、verify_status='unverified'（DEFAULT 兜底，显式传参
 // 防止调用方猜默认）。
-func (r *ModelRepo) CreateCredential(ctx context.Context, ownerAccountID int64, provider, externalID, label, secretRef string) (int64, error) {
-	if ownerAccountID <= 0 {
-		return 0, errors.New("store: 贡献者凭据必须挂账户（平台凭据走 UpsertPlatformCredential）")
+func (r *ModelRepo) CreateCredential(ctx context.Context, ownerAccountID string, provider, externalID, label, secretRef string) (string, error) {
+	if ownerAccountID == "" {
+		return "", errors.New("store: 贡献者凭据必须挂账户（平台凭据走 UpsertPlatformCredential）")
 	}
 	if strings.TrimSpace(provider) == "" || strings.TrimSpace(externalID) == "" {
-		return 0, errors.New("store: provider 与 external_id 不得为空")
+		return "", errors.New("store: provider 与 external_id 不得为空")
 	}
 	if strings.TrimSpace(secretRef) == "" {
-		return 0, errors.New("store: secret_ref 不得为空")
+		return "", errors.New("store: secret_ref 不得为空")
 	}
-	res, err := r.db.ExecContext(ctx,
+	id := idgen.New()
+	if _, err := r.db.ExecContext(ctx,
 		`INSERT INTO upstream_credentials
-		   (owner_account_id, provider, external_id, external_label, secret_ref, status, created_at)
-		 VALUES(?, ?, ?, ?, ?, 'pending', ?)`,
-		ownerAccountID, provider, externalID, label, secretRef, now())
-	if err != nil {
-		return 0, fmt.Errorf("store: 建凭据失败: %w", err)
+		   (id, owner_account_id, provider, external_id, external_label, secret_ref, status, created_at)
+		 VALUES(?, ?, ?, ?, ?, ?, 'pending', ?)`,
+		id, ownerAccountID, provider, externalID, label, secretRef, now()); err != nil {
+		return "", fmt.Errorf("store: 建凭据失败: %w", err)
 	}
-	return res.LastInsertId()
+	return id, nil
 }
 
 // ================================================================ 凭据读筛选与状态写入（管理面）
@@ -336,7 +336,7 @@ func (s CredentialStatus) valid() bool {
 // 管理动作必留痕的唯一实现手段是同事务——本方法若在内部自行写审计，
 // 就把"写没写审计"变成仓储的隐式行为，调用方无法感知也无法补字段。
 // 事务传播已经就绪：WithTx 内取到的仓储绑定同一个 tx，直接调即可。
-func (r *ModelRepo) SetCredentialStatus(ctx context.Context, id int64, status CredentialStatus) error {
+func (r *ModelRepo) SetCredentialStatus(ctx context.Context, id string, status CredentialStatus) error {
 	if !status.valid() {
 		return fmt.Errorf("store: 非法凭据状态 %q（值域 pending/active/invalid/expired/disabled）", status)
 	}
@@ -354,7 +354,7 @@ func (r *ModelRepo) SetCredentialStatus(ctx context.Context, id int64, status Cr
 // CredentialFilter 是管理面凭据列表的筛选条件（02-admin §9 的 owner/provider/
 // verify_status/status 四个筛选位）。零值 = 不筛。
 type CredentialFilter struct {
-	OwnerAccountID *int64
+	OwnerAccountID *string
 	Provider       string
 	Status         CredentialStatus
 	VerifyStatus   VerifyStatus
@@ -404,7 +404,8 @@ func (r *ModelRepo) ListCredentials(ctx context.Context, f CredentialFilter) ([]
 		q.WriteString(" AND verify_status = ?")
 		args = append(args, string(f.VerifyStatus))
 	}
-	q.WriteString(" ORDER BY id DESC LIMIT ? OFFSET ?")
+	// 最新在前：created_at 倒序；id 只作并列时的确定 tiebreak（UUID 无时间序）。
+	q.WriteString(" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?")
 	args = append(args, limit, f.Offset)
 
 	rows, err := r.db.QueryContext(ctx, q.String(), args...)

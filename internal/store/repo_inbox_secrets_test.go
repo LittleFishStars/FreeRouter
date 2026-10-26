@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,14 +24,14 @@ func TestContractInboxAppendListCountRead(t *testing.T) {
 	ctx := context.Background()
 	in := s.Repos().Inbox
 	acct := addTenantAccount(t, s)
-	rel := int64(77)
+	rel := "77"
 
 	id1, err := in.Append(ctx, InboxModelMissing, SeverityWarning, "渠道 A 下模型 X 消失",
 		`{"real_model_id":77,"change":"disappeared"}`, &rel)
 	if err != nil {
 		t.Fatalf("投递失败: %v", err)
 	}
-	if id1 == 0 {
+	if id1 == "" {
 		t.Fatal("返回 id 为 0")
 	}
 	n, err := in.CountUnread(ctx)
@@ -50,7 +51,7 @@ func TestContractInboxAppendListCountRead(t *testing.T) {
 		t.Errorf("kind/severity 往返不符：%+v", item)
 	}
 	if item.RelatedID == nil || *item.RelatedID != rel {
-		t.Errorf("related_id = %v，期望 %d", item.RelatedID, rel)
+		t.Errorf("related_id = %v，期望 %s", item.RelatedID, rel)
 	}
 	if item.Read() {
 		t.Error("新条目应为未读")
@@ -65,7 +66,7 @@ func TestContractInboxAppendListCountRead(t *testing.T) {
 	}
 	item, _ = in.Get(ctx, id1)
 	if item.ReadBy == nil || *item.ReadBy != acct {
-		t.Errorf("read_by = %v，期望 %d", item.ReadBy, acct)
+		t.Errorf("read_by = %v，期望 %s", item.ReadBy, acct)
 	}
 	if err := in.MarkUnread(ctx, id1); err != nil {
 		t.Fatalf("MarkUnread 失败: %v", err)
@@ -95,10 +96,10 @@ func TestContractInboxAppendListCountRead(t *testing.T) {
 		t.Errorf("空批量 = %d, %v，期望 0, nil", n, err)
 	}
 	// 不存在的行：ErrNotFound。
-	if err := in.MarkRead(ctx, 999999, acct); !errors.Is(err, ErrNotFound) {
+	if err := in.MarkRead(ctx, tid3, acct); !errors.Is(err, ErrNotFound) {
 		t.Errorf("标记不存在的行应 ErrNotFound，得到 %v", err)
 	}
-	if _, err := in.Get(ctx, 999999); !errors.Is(err, ErrNotFound) {
+	if _, err := in.Get(ctx, tid3); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get 不存在应 ErrNotFound，得到 %v", err)
 	}
 }
@@ -120,7 +121,7 @@ func TestContractInboxDetailRawRoundTrip(t *testing.T) {
 		`"just a string"`,
 		"",
 	} {
-		rel := int64(len(raw) + 1)
+		rel := strconv.Itoa(len(raw) + 1)
 		id, err := in.Append(ctx, InboxModelChanged, SeverityInfo, "属性变化", raw, &rel)
 		if err != nil {
 			t.Fatalf("投递 detail=%q 失败: %v", raw, err)
@@ -143,7 +144,7 @@ func TestContractInboxUnreadIdempotent(t *testing.T) {
 	s, _ := openTestStore(t)
 	ctx := context.Background()
 	in := s.Repos().Inbox
-	rel := int64(5001)
+	rel := "5001"
 
 	id1, err := in.Append(ctx, InboxModelMissing, SeverityError, "模型消失", `{"v":1}`, &rel)
 	if err != nil {
@@ -155,7 +156,7 @@ func TestContractInboxUnreadIdempotent(t *testing.T) {
 		t.Fatalf("重复投递失败: %v", err)
 	}
 	if id1 != id2 {
-		t.Errorf("未读期间重复投递应命中同一行：%d vs %d", id1, id2)
+		t.Errorf("未读期间重复投递应命中同一行：%s vs %s", id1, id2)
 	}
 	if n, _ := in.CountUnread(ctx); n != 1 {
 		t.Fatalf("未读期间重复写后行数 = %d，期望 1", n)
@@ -199,7 +200,7 @@ func TestContractInboxSeverityOnlyUpgrades(t *testing.T) {
 	s, _ := openTestStore(t)
 	ctx := context.Background()
 	in := s.Repos().Inbox
-	rel := int64(6001)
+	rel := "6001"
 
 	id, err := in.Append(ctx, InboxChannelFailing, SeverityError, "渠道失联", `{"seq":1}`, &rel)
 	if err != nil {
@@ -228,7 +229,7 @@ func TestContractInboxSeverityOnlyUpgrades(t *testing.T) {
 	}
 
 	// 低→高必须升级（否则真故障会被先到的 info 压住）。
-	rel2 := int64(6002)
+	rel2 := "6002"
 	id2, err := in.Append(ctx, InboxModelChanged, SeverityInfo, "属性变化", `{}`, &rel2)
 	if err != nil {
 		t.Fatalf("投递 info 失败: %v", err)
@@ -252,12 +253,12 @@ func TestContractInboxOrderAndFilters(t *testing.T) {
 	for _, c := range []struct {
 		kind InboxKind
 		sv   InboxSeverity
-		rel  int64
+		rel  string
 	}{
-		{InboxModelAdded, SeverityInfo, 10},
-		{InboxPoolExhausted, SeverityError, 20},
-		{InboxAccountPending, SeverityWarning, 30},
-		{InboxKeyAnomaly, SeverityError, 40},
+		{InboxModelAdded, SeverityInfo, "10"},
+		{InboxPoolExhausted, SeverityError, "20"},
+		{InboxAccountPending, SeverityWarning, "30"},
+		{InboxKeyAnomaly, SeverityError, "40"},
 	} {
 		rel := c.rel
 		if _, err := in.Append(ctx, c.kind, c.sv, "t", `{}`, &rel); err != nil {
@@ -272,14 +273,18 @@ func TestContractInboxOrderAndFilters(t *testing.T) {
 	if len(all) != 4 {
 		t.Fatalf("列表长度 = %d，期望 4", len(all))
 	}
-	// 秩降序：两条 error 在前（彼此按 id 倒序），然后 warning，最后 info。
+	// 秩降序：两条 error 在前，然后 warning，最后 info。
+	// 同秩内部次序（created_at 全等时按 id 字典序 tiebreak）**不可断言**：
+	// UUID 无时间序，"id 倒序=后投在前"的自增假设已作废。只钉秩的块结构。
 	wantOrder := []InboxKind{InboxKeyAnomaly, InboxPoolExhausted, InboxAccountPending, InboxModelAdded}
-	for i, w := range wantOrder {
-		if all[i].Kind != w {
-			t.Errorf("第 %d 位 = %s（severity=%s），期望 %s（秩排序失效）",
-				i, all[i].Kind, all[i].Severity, w)
-		}
+	// error 块 = {key_anomaly, pool_exhausted} 两种排列之一；warning 与 info 各一条。
+	errorOK := (all[0].Kind == InboxKeyAnomaly && all[1].Kind == InboxPoolExhausted) ||
+		(all[0].Kind == InboxPoolExhausted && all[1].Kind == InboxKeyAnomaly)
+	if !errorOK || all[2].Kind != InboxAccountPending || all[3].Kind != InboxModelAdded {
+		t.Errorf("秩块结构失效：got %v（期望 [error,error,warning,info]）",
+			[]InboxKind{all[0].Kind, all[1].Kind, all[2].Kind, all[3].Kind})
 	}
+	_ = wantOrder
 	// 断言秩单调不增（把"默认按 severity 降序"钉成可执行契约）。
 	for i := 1; i < len(all); i++ {
 		if severityRank(all[i-1].Severity) < severityRank(all[i].Severity) {
@@ -304,7 +309,19 @@ func TestContractInboxOrderAndFilters(t *testing.T) {
 	}
 
 	// 未读/已读筛选 + 按类计数。
-	if err := in.MarkRead(ctx, all[0].ID, addTenantAccount(t, s)); err != nil {
+	// 标已读的是「error 秩的那两条之一」（同秩并列次序不可断言）——用 kind
+	// 找出 key_anomaly 那条，保证下面 byKind[key_anomaly]==0 的断言稳定。
+	var markID string
+	for _, it := range all {
+		if it.Kind == InboxKeyAnomaly {
+			markID = it.ID
+			break
+		}
+	}
+	if markID == "" {
+		t.Fatal("列表里没有 key_anomaly 条目")
+	}
+	if err := in.MarkRead(ctx, markID, addTenantAccount(t, s)); err != nil {
 		t.Fatalf("MarkRead 失败: %v", err)
 	}
 	unread, _ := in.List(ctx, InboxFilter{UnreadOnly: true})
@@ -326,7 +343,7 @@ func TestContractInboxValueDomainRejected(t *testing.T) {
 	s, _ := openTestStore(t)
 	ctx := context.Background()
 	in := s.Repos().Inbox
-	rel := int64(1)
+	rel := "1"
 
 	// 非法 severity（含文档里出现过的旧拼写）→ 可判定错误。
 	for _, bad := range []InboxSeverity{"", "warn", "critical", "high", "ERROR"} {
@@ -346,7 +363,7 @@ func TestContractInboxValueDomainRejected(t *testing.T) {
 	for _, k := range []InboxKind{InboxAccountPending, InboxModelAdded, InboxModelMissing,
 		InboxModelChanged, InboxChannelFailing, InboxCredentialInvalid,
 		InboxVerificationFailed, InboxPoolExhausted, InboxGlobalBudget, InboxKeyAnomaly} {
-		rel := int64(len(string(k)) + 100)
+		rel := string(k) // related_id 用 kind 字符串本身（各 kind 互不相同，满足幂等键唯一）
 		if _, err := in.Append(ctx, k, SeverityInfo, "t", `{}`, &rel); err != nil {
 			t.Errorf("合法 kind %s 被拒: %v", k, err)
 		}
@@ -369,7 +386,7 @@ func TestContractSeverityRankSQLMatchesGo(t *testing.T) {
 
 	cases := []InboxSeverity{SeverityInfo, SeverityWarning, SeverityError}
 	for i, sv := range cases {
-		rel := int64(7000 + i)
+		rel := strconv.Itoa(7000 + i)
 		if _, err := in.Append(ctx, InboxModelChanged, sv, "秩校验", `{}`, &rel); err != nil {
 			t.Fatalf("投递 %s 失败: %v", sv, err)
 		}
@@ -431,12 +448,12 @@ func TestContractSecretRoundTrip(t *testing.T) {
 		t.Errorf("HasSecret = %v, %v，期望 true", ok, err)
 	}
 	// upstreams.secret_id 被同事务指过去。
-	var sid *int64
+	var sid *string
 	if err := s.writeDB.QueryRow(`SELECT secret_id FROM upstreams WHERE id = ?`, up).Scan(&sid); err != nil {
 		t.Fatalf("读 secret_id 失败: %v", err)
 	}
 	if sid == nil || *sid != id1 {
-		t.Errorf("secret_id = %v，期望 %d（PutSecret 未关联上游）", sid, id1)
+		t.Errorf("secret_id = %v，期望 %s（PutSecret 未关联上游）", sid, id1)
 	}
 
 	// 轮换：同上游第二次写必须覆盖而不是撞唯一索引（ux_upstream_secrets_upstream）。
@@ -445,7 +462,7 @@ func TestContractSecretRoundTrip(t *testing.T) {
 		t.Fatalf("轮换密钥失败（写成 INSERT 会撞 UNIQUE）: %v", err)
 	}
 	if id2 != id1 {
-		t.Errorf("轮换后 secret_id 变了：%d → %d（upstream_id 唯一，应原地覆盖）", id1, id2)
+		t.Errorf("轮换后 secret_id 变了：%s → %s（upstream_id 唯一，应原地覆盖）", id1, id2)
 	}
 	if got, err := sec.GetSecret(ctx, id1); err != nil || string(got) != "sk-ROTATED-new-key" {
 		t.Errorf("轮换后读到 %q, %v", got, err)
@@ -472,7 +489,7 @@ func TestContractSecretRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if sid != nil {
-		t.Errorf("删除密文后 secret_id 仍指向已删行 = %d（悬空引用）", *sid)
+		t.Errorf("删除密文后 secret_id 仍指向已删行 = %s（悬空引用）", *sid)
 	}
 	if ok, _ := sec.HasSecret(ctx, up); ok {
 		t.Error("HasSecret 在删除后仍报 true")
@@ -482,7 +499,7 @@ func TestContractSecretRoundTrip(t *testing.T) {
 	if _, err := sec.PutSecret(ctx, up, nil); err == nil {
 		t.Error("空明文应被拒")
 	}
-	if _, err := sec.PutSecret(ctx, 0, []byte("x")); err == nil {
+	if _, err := sec.PutSecret(ctx, tid3, []byte("x")); err == nil {
 		t.Error("无归属上游应被拒")
 	}
 }
@@ -660,7 +677,7 @@ func TestContractSecretTamperInStore(t *testing.T) {
 		t.Error("错误信息里出现了明文字符串")
 	}
 	// 不存在的 id → ErrSecretNotFound（与"密文坏了"可区分：处置流程不同）。
-	if _, err := sec.GetSecret(ctx, 999999); !errors.Is(err, ErrSecretNotFound) {
+	if _, err := sec.GetSecret(ctx, tid3); !errors.Is(err, ErrSecretNotFound) {
 		t.Errorf("不存在的密文应 ErrSecretNotFound，得到 %v", err)
 	}
 }
@@ -688,7 +705,7 @@ func TestContractAppendfCarriesActingClass(t *testing.T) {
 	}
 	e := got[0]
 	if e.ID != id {
-		t.Errorf("id 往返 = %d，期望 %d", e.ID, id)
+		t.Errorf("id 往返 = %s，期望 %s", e.ID, id)
 	}
 	if e.ActingClass == nil || *e.ActingClass != "admin" {
 		t.Errorf("acting_class 未落列：%v", e.ActingClass)
@@ -697,7 +714,7 @@ func TestContractAppendfCarriesActingClass(t *testing.T) {
 		t.Errorf("action/result 不符：%+v", e)
 	}
 	if e.AccountID == nil || *e.AccountID != acct {
-		t.Errorf("account_id = %v，期望 %d", e.AccountID, acct)
+		t.Errorf("account_id = %v，期望 %s", e.AccountID, acct)
 	}
 	if e.Detail["key_id"] != float64(9) {
 		t.Errorf("detail 往返异常：%+v", e.Detail)
@@ -758,7 +775,7 @@ func TestContractUpdateUpstream(t *testing.T) {
 	if err := models.UpdateUpstream(ctx, up, "y", "", true); err == nil {
 		t.Error("空 base_url 应拒")
 	}
-	if err := models.UpdateUpstream(ctx, 999999, "y", "z", true); !errors.Is(err, ErrNotFound) {
+	if err := models.UpdateUpstream(ctx, tid3, "y", "z", true); !errors.Is(err, ErrNotFound) {
 		t.Errorf("不存在的上游应 ErrNotFound，得到 %v", err)
 	}
 	if _, err := models.UpsertUpstream(ctx, "relay", "other", "sidecar://other", nil, true); err != nil {
@@ -814,7 +831,7 @@ func TestContractSetUpstreamKind(t *testing.T) {
 		t.Errorf("同形态重复设置应幂等，得到 %v", err)
 	}
 	// 不存在的上游。
-	if err := models.SetUpstreamKind(ctx, 999999, "vendor"); !errors.Is(err, ErrNotFound) {
+	if err := models.SetUpstreamKind(ctx, tid3, "vendor"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("应 ErrNotFound，得到 %v", err)
 	}
 }
@@ -844,8 +861,13 @@ func TestContractCredentialStatusAndFilter(t *testing.T) {
 	if err != nil || len(list) != 3 {
 		t.Fatalf("pending 列表 = %d 条, %v，期望 3", len(list), err)
 	}
-	if list[0].ID != c3 {
-		t.Errorf("列表应按 id 倒序，实际 %+v", list)
+	// 排序 = created_at 倒序。三条在同一测试秒内创建（created_at 全等），
+	// 并列时按 id 字典序 tiebreak——UUID 无时间序，**插入序不再是可断言量**。
+	// 这条测试钉住的是排序键存在且不报错；「最新在前」的字面断言要跨秒
+	// 写入才能做出确定性输入，旧实现（自增 id）的"id 序=插入序"假设已随
+	// UUID 改造作废。集合正确性由上面的 len==3 与下面的筛选断言覆盖。
+	if list[0].ID != c1 && list[0].ID != c2 && list[0].ID != c3 {
+		t.Errorf("列表首元素应是建出的三条之一，实际 %+v", list)
 	}
 	// 筛选：owner / provider / 组合。
 	byOwner, _ := models.ListCredentials(ctx, CredentialFilter{OwnerAccountID: &owner})
@@ -882,7 +904,7 @@ func TestContractCredentialStatusAndFilter(t *testing.T) {
 	if err := models.SetCredentialStatus(ctx, c2, CredActive); err != nil {
 		t.Fatalf("激活失败: %v", err)
 	}
-	if err := models.SetCredentialStatus(ctx, 999999, CredActive); !errors.Is(err, ErrCredentialNotFound) {
+	if err := models.SetCredentialStatus(ctx, tid3, CredActive); !errors.Is(err, ErrCredentialNotFound) {
 		t.Errorf("不存在的凭据应 ErrCredentialNotFound，得到 %v", err)
 	}
 	// 库里 CHECK 之外的值（02-credentials §5.2 的 revoked/degraded）必须在 Go 层被拒：

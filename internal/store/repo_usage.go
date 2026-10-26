@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"time"
 )
 
@@ -26,12 +27,12 @@ type UsageRepo struct {
 // 对账上语义完全不同（05-storage.md 3.7）。
 type RequestRecord struct {
 	TS                   int64
-	KeyID                *int64
-	AccountID            *int64
+	KeyID                *string
+	AccountID            *string
 	Endpoint             string
-	VirtualModelID       *int64
-	ResolvedRealModelID  *int64
-	ResolvedCredentialID *int64
+	VirtualModelID       *string
+	ResolvedRealModelID  *string
+	ResolvedCredentialID *string
 	Status               string
 	HTTPStatus           *int64
 	ErrorCode            *string
@@ -55,9 +56,9 @@ type Settlement struct {
 // usageDelta 是 usage_daily 的累加量。
 type usageDelta struct {
 	day             string
-	accountID       int64
-	abstractModelID int64
-	realModelID     int64
+	accountID       string
+	abstractModelID string
+	realModelID     string
 	requests        int64
 	inTokens        int64
 	outTokens       int64
@@ -87,12 +88,12 @@ func (r *UsageRepo) RecordRequest(ctx context.Context, rec RequestRecord, st Set
 	}
 
 	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO requests(ts, key_id, account_id, endpoint, virtual_model_id,
+		`INSERT INTO requests(id, ts, key_id, account_id, endpoint, virtual_model_id,
 		                      resolved_real_model_id, resolved_credential_id, status,
 		                      http_status, error_code, retry_count, ttft_ms, total_ms,
 		                      in_tokens, out_tokens)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		ts, rec.KeyID, rec.AccountID, rec.Endpoint, rec.VirtualModelID,
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		idgen.New(), ts, rec.KeyID, rec.AccountID, rec.Endpoint, rec.VirtualModelID,
 		rec.ResolvedRealModelID, rec.ResolvedCredentialID, rec.Status,
 		rec.HTTPStatus, rec.ErrorCode, rec.RetryCount, rec.TTFTMs, rec.TotalMs,
 		rec.InTokens, rec.OutTokens); err != nil {
@@ -148,9 +149,9 @@ func (r *UsageRepo) addUsageDaily(ctx context.Context, d usageDelta) error {
 // security/06-audit 第 1 节）。按 Key 的明细在 requests 表，不在此表。
 type UsageRow struct {
 	Day             string
-	AccountID       int64
-	AbstractModelID int64
-	RealModelID     int64
+	AccountID       string
+	AbstractModelID string
+	RealModelID     string
 	Requests        int64
 	InTokens        int64
 	OutTokens       int64
@@ -160,7 +161,7 @@ type UsageRow struct {
 //
 // 走 ix_usage_daily_account(account_id, day)：索引前导列是 account_id，与查询条件同序
 // （05-storage.md 第 4 节：时间序列索引的末列是 ts/day，不是首列）。
-func (r *UsageRepo) UsageByAccountRange(ctx context.Context, accountID int64, fromDay, toDay string) ([]UsageRow, error) {
+func (r *UsageRepo) UsageByAccountRange(ctx context.Context, accountID string, fromDay, toDay string) ([]UsageRow, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT day, account_id, abstract_model_id, real_model_id, requests, in_tokens, out_tokens
 		   FROM usage_daily
@@ -231,7 +232,7 @@ type ContributorStat struct {
 }
 
 // ContributorStats 读贡献统计视图。
-func (r *UsageRepo) ContributorStats(ctx context.Context, accountID int64) ([]ContributorStat, error) {
+func (r *UsageRepo) ContributorStats(ctx context.Context, accountID string) ([]ContributorStat, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT account_id, credential_id, provider, status, verify_status,
 		        request_count, in_tokens, out_tokens, last_request_at

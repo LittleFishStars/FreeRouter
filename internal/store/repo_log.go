@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,9 +19,9 @@ import (
 // AccountID 用指针：登录失败、Key 试探等事件发生在身份确定之前，
 // NULL 才是事实，硬塞一个 id 是伪造归因。
 type AuditEntry struct {
-	ID          int64 // 只读出用；写入时忽略
-	TS          int64 // 0 = 由仓储统一取 UTC now
-	AccountID   *int64
+	ID          string // UUID，只读出用；写入时由 store 生成
+	TS          int64  // 0 = 由仓储统一取 UTC now
+	AccountID   *string
 	ActingClass *string // 以哪个权限类身份操作（admin/tenant/contributor）
 	Elevated    bool
 	Action      string // 必填，如 key.create / account.disable / system.audit_pruned
@@ -53,12 +54,12 @@ type LogRepo struct{ base }
 //
 // 为什么要求 action/result 非空：审计的价值在"谁做了什么、成没成"，
 // 缺了这两项的行在追溯时等于噪音，宁可让调用方立刻报错也不入库。
-func (r *LogRepo) Append(ctx context.Context, e AuditEntry) (int64, error) {
+func (r *LogRepo) Append(ctx context.Context, e AuditEntry) (string, error) {
 	if strings.TrimSpace(e.Action) == "" {
-		return 0, errors.New("store: 审计必须有 action")
+		return "", errors.New("store: 审计必须有 action")
 	}
 	if strings.TrimSpace(e.Result) == "" {
-		return 0, errors.New("store: 审计必须有 result")
+		return "", errors.New("store: 审计必须有 result")
 	}
 	ts := e.TS
 	if ts == 0 {
@@ -66,20 +67,16 @@ func (r *LogRepo) Append(ctx context.Context, e AuditEntry) (int64, error) {
 	}
 	detail, err := e.detailJSON()
 	if err != nil {
-		return 0, err
+		return "", err
 	}
-	res, err := r.db.ExecContext(ctx,
-		`INSERT INTO audit_log(ts, account_id, acting_class, elevated, action,
+	id := idgen.New()
+	if _, err := r.db.ExecContext(ctx,
+		`INSERT INTO audit_log(id, ts, account_id, acting_class, elevated, action,
 		                      target, ip, ua, result, detail)
-		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		ts, e.AccountID, e.ActingClass, boolInt(e.Elevated), e.Action,
-		e.Target, e.IP, e.UA, e.Result, detail)
-	if err != nil {
-		return 0, fmt.Errorf("store: 写审计失败: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("store: 读取审计 id 失败: %w", err)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		id, ts, e.AccountID, e.ActingClass, boolInt(e.Elevated), e.Action,
+		e.Target, e.IP, e.UA, e.Result, detail); err != nil {
+		return "", fmt.Errorf("store: 写审计失败: %w", err)
 	}
 	return id, nil
 }
@@ -100,7 +97,7 @@ func (r *LogRepo) Append(ctx context.Context, e AuditEntry) (int64, error) {
 // 本层**不校验** action 字符串：校验等于在存储层维护一份全量枚举表，而事件表还
 // 会增长，漂移时反而把合法新事件拒掉——归类约束靠 review 不靠代码。这与
 // kind/severity 不同：那两个是**排序/筛选键**，错一个值就静默失效，必须硬校验。
-func (r *LogRepo) Appendf(ctx context.Context, accountID *int64, actingClass, action, result string, detail map[string]any) (int64, error) {
+func (r *LogRepo) Appendf(ctx context.Context, accountID *string, actingClass, action, result string, detail map[string]any) (string, error) {
 	var cls *string
 	if c := strings.TrimSpace(actingClass); c != "" {
 		cls = &c
@@ -127,7 +124,7 @@ const (
 
 // AuditFilter 是控制台审计列表的查询条件。零值 = 全量倒序。
 type AuditFilter struct {
-	AccountID *int64
+	AccountID *string
 	Action    string // 前缀匹配，如 "key." 列出全部 Key 相关操作
 	FromTS    int64
 	ToTS      int64
@@ -166,7 +163,7 @@ func (r *LogRepo) List(ctx context.Context, f AuditFilter) ([]AuditEntry, error)
 		q.WriteString(" AND ts <= ?")
 		args = append(args, f.ToTS)
 	}
-	q.WriteString(" ORDER BY id DESC LIMIT ? OFFSET ?")
+	q.WriteString(" ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?")
 	args = append(args, limit, f.Offset)
 
 	db := r.readDBOrSelf()
@@ -324,24 +321,25 @@ func (r *LogRepo) PruneAudit(ctx context.Context, retainDays int, archiveDir str
 
 // exportAuditRange 把 ts < cutoff 的审计按 id 升序写入 NDJSON 文件。
 // 返回行数与首尾 id（空区间返回 0,0,0）。
-func (r *LogRepo) exportAuditRange(ctx context.Context, cutoff int64, path string) (int64, int64, int64, error) {
+func (r *LogRepo) exportAuditRange(ctx context.Context, cutoff int64, path string) (int64, string, string, error) {
 	db := r.readDBOrSelf()
 	rows, err := db.QueryContext(ctx,
 		`SELECT id, ts, account_id, acting_class, elevated, action,
 		        target, ip, ua, result, detail
-		 FROM audit_log WHERE ts < ? ORDER BY id`, cutoff)
+		 FROM audit_log WHERE ts < ? ORDER BY ts, id`, cutoff)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("store: 导出审计查询失败: %w", err)
+		return 0, "", "", fmt.Errorf("store: 导出审计查询失败: %w", err)
 	}
 	defer rows.Close()
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("store: 创建归档文件失败: %w", err)
+		return 0, "", "", fmt.Errorf("store: 创建归档文件失败: %w", err)
 	}
 	w := bufio.NewWriter(f)
 
-	var count, firstID, lastID int64
+	var count int64
+	var firstID, lastID string
 	for rows.Next() {
 		var e AuditEntry
 		var elevated int
@@ -349,7 +347,7 @@ func (r *LogRepo) exportAuditRange(ctx context.Context, cutoff int64, path strin
 		if err := rows.Scan(&e.ID, &e.TS, &e.AccountID, &e.ActingClass, &elevated,
 			&e.Action, &e.Target, &e.IP, &e.UA, &e.Result, &detail); err != nil {
 			f.Close()
-			return 0, 0, 0, fmt.Errorf("store: 导出审计扫描失败: %w", err)
+			return 0, "", "", fmt.Errorf("store: 导出审计扫描失败: %w", err)
 		}
 		e.Elevated = elevated != 0
 		if detail.Valid {
@@ -366,11 +364,11 @@ func (r *LogRepo) exportAuditRange(ctx context.Context, cutoff int64, path strin
 		})
 		if err != nil {
 			f.Close()
-			return 0, 0, 0, fmt.Errorf("store: 归档行序列化失败: %w", err)
+			return 0, "", "", fmt.Errorf("store: 归档行序列化失败: %w", err)
 		}
 		if _, err := w.Write(append(line, '\n')); err != nil {
 			f.Close()
-			return 0, 0, 0, fmt.Errorf("store: 归档写入失败: %w", err)
+			return 0, "", "", fmt.Errorf("store: 归档写入失败: %w", err)
 		}
 		count++
 		if count == 1 {
@@ -380,18 +378,18 @@ func (r *LogRepo) exportAuditRange(ctx context.Context, cutoff int64, path strin
 	}
 	if err := rows.Err(); err != nil {
 		f.Close()
-		return 0, 0, 0, fmt.Errorf("store: 导出审计遍历失败: %w", err)
+		return 0, "", "", fmt.Errorf("store: 导出审计遍历失败: %w", err)
 	}
 	if err := w.Flush(); err != nil {
 		f.Close()
-		return 0, 0, 0, fmt.Errorf("store: 归档刷盘失败: %w", err)
+		return 0, "", "", fmt.Errorf("store: 归档刷盘失败: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
-		return 0, 0, 0, fmt.Errorf("store: 归档 fsync 失败: %w", err)
+		return 0, "", "", fmt.Errorf("store: 归档 fsync 失败: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return 0, 0, 0, fmt.Errorf("store: 关闭归档文件失败: %w", err)
+		return 0, "", "", fmt.Errorf("store: 关闭归档文件失败: %w", err)
 	}
 	return count, firstID, lastID, nil
 }
@@ -399,7 +397,7 @@ func (r *LogRepo) exportAuditRange(ctx context.Context, cutoff int64, path strin
 // verifyAuditArchive 回读归档文件：逐行数行数，校验首尾 id 与导出时一致。
 // 为什么必须回读而不是信任写入计数：崩溃/磁盘满/加密文件系统写入截断都发生在
 // Write 返回成功之后——归档是删除的前置证据，证据本身没落稳就等于没证据。
-func verifyAuditArchive(path string, wantCount, wantFirst, wantLast int64) error {
+func verifyAuditArchive(path string, wantCount int64, wantFirst, wantLast string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("store: 回读归档失败: %w", err)
@@ -408,14 +406,15 @@ func verifyAuditArchive(path string, wantCount, wantFirst, wantLast int64) error
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024) // 单条审计 detail 可能较大
-	var n, first, last int64
+	var n int64
+	var first, last string
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
 			continue
 		}
 		var probe struct {
-			ID int64 `json:"id"`
+			ID string `json:"id"`
 		}
 		if err := json.Unmarshal(line, &probe); err != nil {
 			return fmt.Errorf("store: 归档第 %d 行不是合法 JSON: %w", n+1, err)
@@ -433,7 +432,7 @@ func verifyAuditArchive(path string, wantCount, wantFirst, wantLast int64) error
 		return fmt.Errorf("store: 归档行数校验失败：导出 %d，回读 %d", wantCount, n)
 	}
 	if wantCount > 0 && (first != wantFirst || last != wantLast) {
-		return fmt.Errorf("store: 归档首尾 id 校验失败：期望 [%d,%d]，实际 [%d,%d]",
+		return fmt.Errorf("store: 归档首尾 id 校验失败：期望 [%s,%s]，实际 [%s,%s]",
 			wantFirst, wantLast, first, last)
 	}
 	return nil

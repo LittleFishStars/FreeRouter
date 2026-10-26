@@ -24,6 +24,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"io"
 )
 
@@ -43,8 +44,8 @@ var ErrSecretDecrypt = errors.New("store: 密文解密失败（密钥不符或�
 // 而"谁能取到密钥"由一处决定（02-credentials §6.1：密钥材料统一落
 // upstream_secrets，本表只存引用）。散落多处就等于散了多处权限判断。
 type SecretRef struct {
-	SecretID   int64
-	UpstreamID int64
+	SecretID   string
+	UpstreamID string
 }
 
 // SealSecret 用给定密钥加密明文，返回 ciphertext 与 nonce。
@@ -123,25 +124,25 @@ type SecretRepo struct{ base }
 //
 // 整个操作在单事务里：写密文与把 upstreams.secret_id 指过去必须同生同死，
 // 否则中途失败会留下"上游指向不存在的密文"。
-func (r *SecretRepo) PutSecret(ctx context.Context, upstreamID int64, plaintext []byte) (int64, error) {
-	if upstreamID == 0 {
-		return 0, errors.New("store: 密文必须归属某个上游")
+func (r *SecretRepo) PutSecret(ctx context.Context, upstreamID string, plaintext []byte) (string, error) {
+	if upstreamID == "" {
+		return "", errors.New("store: 密文必须归属某个上游")
 	}
 	if len(plaintext) == 0 {
-		return 0, errors.New("store: 拒绝写入空明文（空密钥会让上游返回难以归因的 401）")
+		return "", errors.New("store: 拒绝写入空明文（空密钥会让上游返回难以归因的 401）")
 	}
 	key := r.s.MasterKey()
 	if len(key) == 0 {
-		return 0, errors.New("store: 主密钥不可用（Store 未初始化或已关闭）")
+		return "", errors.New("store: 主密钥不可用（Store 未初始化或已关闭）")
 	}
 	ciphertext, nonce, err := SealSecret(key, plaintext)
 	if err != nil {
-		return 0, fmt.Errorf("store: 加密密钥材料失败: %w", err)
+		return "", fmt.Errorf("store: 加密密钥材料失败: %w", err)
 	}
 
 	// 在事务里做 upsert + 指引用。
 	if r.s != nil && r.s.tx == nil {
-		var id int64
+		var id string
 		err := r.s.WithTx(ctx, func(tx *Repos) error {
 			var e error
 			id, e = tx.Secrets.putSecretInner(ctx, upstreamID, ciphertext, nonce)
@@ -152,25 +153,25 @@ func (r *SecretRepo) PutSecret(ctx context.Context, upstreamID int64, plaintext 
 	return r.putSecretInner(ctx, upstreamID, ciphertext, nonce)
 }
 
-func (r *SecretRepo) putSecretInner(ctx context.Context, upstreamID int64, ciphertext, nonce []byte) (int64, error) {
+func (r *SecretRepo) putSecretInner(ctx context.Context, upstreamID string, ciphertext, nonce []byte) (string, error) {
+	id := idgen.New()
 	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO upstream_secrets(upstream_id, ciphertext, nonce)
-		 VALUES(?,?,?)
+		`INSERT INTO upstream_secrets(id, upstream_id, ciphertext, nonce)
+		 VALUES(?,?,?,?)
 		 ON CONFLICT(upstream_id) DO UPDATE SET
 		     ciphertext = excluded.ciphertext,
 		     nonce      = excluded.nonce`,
-		upstreamID, ciphertext, nonce); err != nil {
-		return 0, fmt.Errorf("store: 写密文失败: %w", err)
+		id, upstreamID, ciphertext, nonce); err != nil {
+		return "", fmt.Errorf("store: 写密文失败: %w", err)
 	}
-	var id int64
 	if err := r.db.QueryRowContext(ctx,
 		`SELECT id FROM upstream_secrets WHERE upstream_id = ?`, upstreamID).Scan(&id); err != nil {
-		return 0, fmt.Errorf("store: 回查密文 id 失败: %w", err)
+		return "", fmt.Errorf("store: 回查密文 id 失败: %w", err)
 	}
 	// 把上游指到这份密文（同一事务内）。
 	if _, err := r.db.ExecContext(ctx,
 		`UPDATE upstreams SET secret_id = ? WHERE id = ?`, id, upstreamID); err != nil {
-		return 0, fmt.Errorf("store: 关联上游密文失败: %w", err)
+		return "", fmt.Errorf("store: 关联上游密文失败: %w", err)
 	}
 	return id, nil
 }
@@ -180,7 +181,7 @@ func (r *SecretRepo) putSecretInner(ctx context.Context, upstreamID int64, ciphe
 //
 // 明文的生命周期由调用方负责：拿到之后**不要**打进日志、不要存进长期对象
 // （02-credentials §6.4「明文只在调用期内存活」）。
-func (r *SecretRepo) GetSecret(ctx context.Context, secretID int64) ([]byte, error) {
+func (r *SecretRepo) GetSecret(ctx context.Context, secretID string) ([]byte, error) {
 	var ciphertext, nonce []byte
 	err := r.db.QueryRowContext(ctx,
 		`SELECT ciphertext, nonce FROM upstream_secrets WHERE id = ?`, secretID).
@@ -203,8 +204,8 @@ func (r *SecretRepo) GetSecret(ctx context.Context, secretID int64) ([]byte, err
 }
 
 // GetSecretByUpstream 按上游取明文（便捷形态：调用方通常手上是 upstream id）。
-func (r *SecretRepo) GetSecretByUpstream(ctx context.Context, upstreamID int64) ([]byte, error) {
-	var id int64
+func (r *SecretRepo) GetSecretByUpstream(ctx context.Context, upstreamID string) ([]byte, error) {
+	var id string
 	err := r.db.QueryRowContext(ctx,
 		`SELECT id FROM upstream_secrets WHERE upstream_id = ?`, upstreamID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -223,7 +224,7 @@ func (r *SecretRepo) GetSecretByUpstream(ctx context.Context, upstreamID int64) 
 // 这个问题无法从库里回答）。
 //
 // 删除不等于"这条上游从此没有密钥"——重新写入会生成新行与新 id。
-func (r *SecretRepo) DeleteSecret(ctx context.Context, secretID int64) error {
+func (r *SecretRepo) DeleteSecret(ctx context.Context, secretID string) error {
 	if r.s != nil && r.s.tx == nil {
 		return r.s.WithTx(ctx, func(tx *Repos) error {
 			return tx.Secrets.deleteSecretInner(ctx, secretID)
@@ -232,7 +233,7 @@ func (r *SecretRepo) DeleteSecret(ctx context.Context, secretID int64) error {
 	return r.deleteSecretInner(ctx, secretID)
 }
 
-func (r *SecretRepo) deleteSecretInner(ctx context.Context, secretID int64) error {
+func (r *SecretRepo) deleteSecretInner(ctx context.Context, secretID string) error {
 	if _, err := r.db.ExecContext(ctx,
 		`UPDATE upstreams SET secret_id = NULL WHERE secret_id = ?`, secretID); err != nil {
 		return fmt.Errorf("store: 解除上游密文引用失败: %w", err)
@@ -252,7 +253,7 @@ func (r *SecretRepo) deleteSecretInner(ctx context.Context, secretID int64) erro
 // 为什么需要不解密的探测：健康检查要回答"这个上游配没配密钥"，而解密会
 // 引入"密钥对不上"这种与"没配"不同的失败——两者混起来会让巡检把配置问题
 // 报成密钥损坏。
-func (r *SecretRepo) HasSecret(ctx context.Context, upstreamID int64) (bool, error) {
+func (r *SecretRepo) HasSecret(ctx context.Context, upstreamID string) (bool, error) {
 	var n int
 	if err := r.db.QueryRowContext(ctx,
 		`SELECT COUNT(1) FROM upstream_secrets WHERE upstream_id = ?`, upstreamID).Scan(&n); err != nil {

@@ -71,7 +71,7 @@ func TestContractSetKeyExpiryClearSemantics(t *testing.T) {
 	}
 
 	// 6) 对不存在的 Key：必须报错（映射到 HTTP 404），不能静默成功。
-	if err := s.Repos().Keys.SetKeyExpiry(ctx, id+9999, &third); err == nil {
+	if err := s.Repos().Keys.SetKeyExpiry(ctx, tid3, &third); err == nil {
 		t.Fatal("对不存在的 Key 设过期时间应当报错")
 	}
 }

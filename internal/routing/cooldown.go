@@ -21,7 +21,7 @@ import (
 // 一个方法后装配层只需要一行适配。
 type HealthView interface {
 	// StateOf 返回实体当前健康状态快照："healthy" | "degraded" | "cooling"。
-	StateOf(entityID int64) string
+	StateOf(entityID string) string
 }
 
 // 冷却默认参数。
@@ -40,7 +40,7 @@ const (
 type CooldownEntry struct {
 	// EntityID 冷却实体 id（候选的 RealModel.ID 或上游 id——口径由装配层
 	// 定，本包只按 id 记账）。
-	EntityID int64
+	EntityID string // UUID（冷却的作用域是「这条上游路径」= real_models 行）
 	// Until 冷却截止时刻（Unix 毫秒）。
 	Until int64
 	// Reason 稳定原因码："failure" | "health_cooling" | "health_degraded"。
@@ -56,7 +56,7 @@ type CooldownEntry struct {
 // 给上游一次重新开始的机会）。
 type Cooldowns struct {
 	mu      sync.Mutex
-	entries map[int64]CooldownEntry
+	entries map[string]CooldownEntry
 	nowMs   func() int64 // 时钟注入点（测试确定性）
 	jitter  func() int64 // [0, DefaultCooldownJitterMs) 抖动源
 }
@@ -64,7 +64,7 @@ type Cooldowns struct {
 // NewCooldowns 构造冷却账本（nil 时钟 = 真实时钟）。
 func NewCooldowns() *Cooldowns {
 	return &Cooldowns{
-		entries: map[int64]CooldownEntry{},
+		entries: map[string]CooldownEntry{},
 		nowMs: func() int64 {
 			return time.Now().UnixMilli()
 		},
@@ -98,7 +98,7 @@ func (c *Cooldowns) SetJitter(fn func() int64) *Cooldowns {
 // MarkFailure 把实体置入冷却（失败驱动的主动冷却）。
 //
 // durationMs <= 0 时用 DefaultCooldownMs。抖动在窗口上追加。
-func (c *Cooldowns) MarkFailure(entityID int64, durationMs int64) {
+func (c *Cooldowns) MarkFailure(entityID string, durationMs int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if durationMs <= 0 {
@@ -124,7 +124,7 @@ func (c *Cooldowns) MarkFailure(entityID int64, durationMs int64) {
 // durationMs 是镜像冷却的窗口长度：upstream 的 Health 没有携带截止时刻
 // （状态机是计数驱动的），镜像窗口用本包默认——窗口到期后若 Health 仍
 // 是 cooling，下一次 Sync 会重新置上，语义上无空洞。
-func (c *Cooldowns) SyncFromHealth(view HealthView, entityIDs []int64, durationMs int64) {
+func (c *Cooldowns) SyncFromHealth(view HealthView, entityIDs []string, durationMs int64) {
 	if view == nil {
 		return
 	}
@@ -152,7 +152,7 @@ func (c *Cooldowns) SyncFromHealth(view HealthView, entityIDs []int64, durationM
 }
 
 // Cooling 报告实体当前是否在冷却窗口内（过期记录惰性清除）。
-func (c *Cooldowns) Cooling(entityID int64) bool {
+func (c *Cooldowns) Cooling(entityID string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[entityID]
@@ -181,7 +181,7 @@ func (c *Cooldowns) Apply(paths []Path) []Path {
 			delete(c.entries, id)
 		}
 	}
-	cooling := make(map[int64]bool, len(c.entries))
+	cooling := make(map[string]bool, len(c.entries))
 	for id := range c.entries {
 		cooling[id] = true
 	}

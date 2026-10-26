@@ -80,7 +80,7 @@ type Path struct {
 // 的路径及原因」——2.3 节的「险些可用」诊断与第 7 节切换率统计都从它派生）。
 type FilterOut struct {
 	// PathID 被剔除路径的 RealModel.ID。
-	PathID int64
+	PathID string // UUID（指向真实模型行）
 	// Reason 稳定原因码：modality | context | tools | effort | constraint。
 	Reason string
 	// Detail 人读诊断（进 trace，不外发）。

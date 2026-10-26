@@ -26,7 +26,7 @@ func TestContractUpsertUpstreamWithCreatedAndGetByID(t *testing.T) {
 	if !created {
 		t.Fatal("首次写入必须报告 created=true")
 	}
-	if id == 0 {
+	if id == "" {
 		t.Fatal("首次写入必须返回非零 id")
 	}
 
@@ -36,7 +36,7 @@ func TestContractUpsertUpstreamWithCreatedAndGetByID(t *testing.T) {
 		t.Fatalf("旧签名 UpsertUpstream 失败: %v", err)
 	}
 	if idOld != id {
-		t.Fatalf("同 kind+name 的 upsert 必须命中同一行：id=%d，旧签名返回 %d", id, idOld)
+		t.Fatalf("同 kind+name 的 upsert 必须命中同一行：id=%s，旧签名返回 %s", id, idOld)
 	}
 
 	// ③ 二次写入：created=false，且更新了 base_url/enabled。
@@ -48,7 +48,7 @@ func TestContractUpsertUpstreamWithCreatedAndGetByID(t *testing.T) {
 		t.Fatal("冲突更新必须报告 created=false")
 	}
 	if id2 != id {
-		t.Fatalf("冲突更新 id 漂移：%d != %d", id2, id)
+		t.Fatalf("冲突更新 id 漂移：%s != %s", id2, id)
 	}
 
 	// ④ GetUpstreamByID 读回完整行（base_url 已被第二次写入改动）。
@@ -72,11 +72,11 @@ func TestContractUpsertUpstreamWithCreatedAndGetByID(t *testing.T) {
 		t.Fatalf("vendor 同名写入失败: %v", err)
 	}
 	if !createdVendor || idVendor == id {
-		t.Fatalf("不同 kind 必须新建行：created=%v id=%d（relay id=%d）", createdVendor, idVendor, id)
+		t.Fatalf("不同 kind 必须新建行：created=%v id=%s（relay id=%s）", createdVendor, idVendor, id)
 	}
 
 	// ⑥ 不存在 → ErrNotFound（不是空行，也不是 nil error）。
-	if _, err := models.GetUpstreamByID(ctx, 999_999); !errors.Is(err, ErrNotFound) {
+	if _, err := models.GetUpstreamByID(ctx, tid3); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("不存在应返回 ErrNotFound，got %v", err)
 	}
 
@@ -94,8 +94,8 @@ func TestContractUpsertUpstreamWithCreatedAndGetByID(t *testing.T) {
 		if err == nil {
 			t.Errorf("%s：应报错", tc.name)
 		}
-		if gotID != 0 || gotCreated {
-			t.Errorf("%s：失败路径必须返回 (0,false)，got (%d,%v)", tc.name, gotID, gotCreated)
+		if gotID != "" || gotCreated {
+			t.Errorf("%s：失败路径必须返回 (0,false)，got (%s,%v)", tc.name, gotID, gotCreated)
 		}
 	}
 }
@@ -107,14 +107,14 @@ func TestContractUpsertUpstreamWithCreatedInTx(t *testing.T) {
 	s, _ := openTestStore(t)
 	ctx := context.Background()
 
-	var txID int64
+	var txID string
 	err := s.WithTx(ctx, func(tx *Repos) error {
 		id, created, err := tx.Models.UpsertUpstreamWithCreated(ctx, "selfhosted", "tx-up", "https://llm.example.invalid", nil, true)
 		if err != nil {
 			return err
 		}
-		if !created || id == 0 {
-			t.Fatalf("事务内首次写入 created/id 不对：created=%v id=%d", created, id)
+		if !created || id == "" {
+			t.Fatalf("事务内首次写入 created/id 不对：created=%v id=%q", created, id)
 		}
 		// 事务内立即可读（同一 *sql.Tx）。
 		row, err := tx.Models.GetUpstreamByID(ctx, id)

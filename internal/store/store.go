@@ -315,7 +315,7 @@ type dbtx interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// collectIDs 执行一条只返回单个 int64 列的查询，把结果收成 int64 切片。
+// collectIDs 执行一条只返回单个 TEXT（id）列的查询，把结果收成 string 切片。
 //
 // 为什么有这个函数：多个仓储里都出现过同一段「QueryContext → defer
 // rows.Close → for rows.Next → Scan(&id) → append → rows.Err」样板。收在这里
@@ -326,15 +326,15 @@ type dbtx interface {
 //
 // op 是业务名，只用于错误文案「查询/扫描/遍历<op>失败」——日志里带上业务名，
 // 才能从一条 sqlite 报错认出是哪张关联表出的问题。
-func collectIDs(ctx context.Context, db dbtx, op, q string, args ...any) ([]int64, error) {
+func collectIDs(ctx context.Context, db dbtx, op, q string, args ...any) ([]string, error) {
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: 查询%s失败: %w", op, err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := []int64{}
+	out := []string{}
 	for rows.Next() {
-		var id int64
+		var id string
 		if err := rows.Scan(&id); err != nil {
 			return nil, fmt.Errorf("store: 扫描%s失败: %w", op, err)
 		}
