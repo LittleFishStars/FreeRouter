@@ -6,9 +6,10 @@
 // 能力模式、排序链与能力声明都属于「改抽象模型」危险写：保存前必须走
 // 统一二次确认框。排序策略只有四种 + 链末 round-robin 平局决胜。
 
-import { useEffect, useRef, useState } from 'react'
-import { IconBack } from '../../icons'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useApi } from '../../hooks/useApi'
+import { ACTION_ICON, TableAction, TableActions, ToolButton } from '../../components/IconButtons'
 import {
   createAbstractModel,
   dryRunAbstractModel,
@@ -17,18 +18,31 @@ import {
   getModelSources,
   getReferences,
   listAbstractModels,
-  patchAbstractModel
+  patchAbstractModel,
+  putCandidates,
+  refreshRealModels
 } from '../../api/endpoints'
 import type {
   AdminAbstractModel,
+  AdminModelSource,
   AdminModelSourceModel,
   Candidate,
   DryRunResult,
   ModelCapabilities
 } from '../../api/types'
-import { useApi } from '../../hooks/useApi'
-import { ACTION_ICON, TableAction, TableActions, ToolButton } from '../../components/IconButtons'
-import { IconCheck, IconChevronDown, IconDelete, IconDown, IconPlus, IconRefresh, IconUp } from '../../icons'
+import {
+  IconBack,
+  IconCheck,
+  IconChevronDown,
+  IconDelete,
+  IconDown,
+  IconLock,
+  IconPlus,
+  IconRefresh,
+  IconSearch,
+  IconUp,
+  IconWarn
+} from '../../icons'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import {
   AsyncView,
@@ -114,6 +128,16 @@ export function AbstractModelsPage({ def }: PageProps) {
 
   function toggle(id: string) {
     setExpandedId((prev) => (prev === id ? null : id))
+  }
+
+  // 弹窗保存成功后：刷新列表，并删掉该模型的展开缓存（下次展开重新拉候选）。
+  function handleAddSaved(id: string) {
+    q.reload()
+    setDetails((d) => {
+      const next = { ...d }
+      delete next[id]
+      return next
+    })
   }
 
   async function submitCreate() {
@@ -210,6 +234,7 @@ export function AbstractModelsPage({ def }: PageProps) {
                   onToggle={() => toggle(m.id)}
                   detail={expandedId === m.id ? (details[m.id] ?? undefined) : undefined}
                   facts={modelFacts.current}
+                  onAddSaved={handleAddSaved}
                 />
               ))}
             </div>
@@ -227,16 +252,19 @@ function ModelRow({
   expanded,
   onToggle,
   detail,
-  facts
+  facts,
+  onAddSaved
 }: {
   m: AdminAbstractModel
   expanded: boolean
   onToggle: () => void
   detail: ExpDetail | undefined
   facts: Map<string, AdminModelSourceModel>
+  onAddSaved: (id: string) => void
 }) {
   const editTo = `/admin/abstract-models/${encodeURIComponent(m.id)}`
   const candTo = `${editTo}/candidates`
+  const [adding, setAdding] = useState(false)
 
   return (
     <div className="am-row" data-expanded={expanded}>
@@ -285,17 +313,314 @@ function ModelRow({
                   )
                 })
               )}
-              <Link to={candTo} className="am-add-chip">
+              <button type="button" className="am-add-chip" onClick={() => setAdding(true)}>
                 <IconPlus size="xs" /> 添加模型
-              </Link>
+              </button>
             </div>
           )}
         </div>
+      )}
+      {adding && (
+        <AddModelDialog
+          modelId={m.id}
+          modelName={m.name}
+          onClose={() => setAdding(false)}
+          onSaved={onAddSaved}
+        />
       )}
     </div>
   )
 }
 
+// ── Connect AI 式「添加模型」弹窗 ───────────────────────────────────────
+// 左栏供应商（贡献凭据 / 平台渠道分组 + O/A 徽标 + 模型数），右栏该供应商
+// 的模型卡网格。点卡加入/移出本次新选；已在现有候选里的模型锁定不可取消。
+// 保存是追加语义：现有候选原样在前，新勾选原样追加在后。
+
+const AM_PROTOCOL_GLYPH: Record<string, { letter: string; label: string }> = {
+  openai: { letter: 'O', label: 'OpenAI 兼容端点' },
+  anthropic: { letter: 'A', label: 'Anthropic 原生端点' }
+}
+
+function AmProtocolBadges({ protocols }: { protocols: string[] | undefined }) {
+  if (!protocols || protocols.length === 0) return null
+  return (
+    <span className="proto-badges">
+      {protocols.map((p) => (
+        <span key={p} className="proto-badge" title={AM_PROTOCOL_GLYPH[p]?.label ?? p}>
+          {AM_PROTOCOL_GLYPH[p]?.letter ?? p}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+function amInstancesText(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '池内'
+  return v === 0 ? '无凭据' : fmtNum(v)
+}
+
+function amInstancesTone(v: number | null | undefined): string {
+  if (v === null || v === undefined) return 'muted'
+  return v === 0 ? 'warn' : 'ok'
+}
+
+function AddModelDialog({
+  modelId,
+  modelName,
+  onClose,
+  onSaved
+}: {
+  modelId: string
+  modelName: string
+  onClose: () => void
+  onSaved: (id: string) => void
+}) {
+  const sourcesQ = useApi(() => getModelSources(), [])
+  const candsQ = useApi(() => getCandidates(modelId), [modelId])
+  const [vendorQuery, setVendorQuery] = useState('')
+  const [modelQuery, setModelQuery] = useState('')
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [picked, setPicked] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState<unknown>(null)
+
+  const existing = candsQ.data?.candidates ?? []
+  const existingIds = useMemo(() => new Set(existing.map((c) => c.real_model_id)), [existing])
+
+  const sources = sourcesQ.data?.sources ?? []
+  const vq = vendorQuery.trim().toLowerCase()
+  const visibleSources = useMemo(
+    () =>
+      sources.filter(
+        (s) => !vq || `${s.name} ${s.upstream_name} ${s.id}`.toLowerCase().includes(vq)
+      ),
+    [sources, vq]
+  )
+  const contributed = visibleSources.filter((s) => s.contributed)
+  const platformSources = visibleSources.filter((s) => !s.contributed)
+  const active = activeId ? (sources.find((s) => s.id === activeId) ?? null) : null
+
+  const mq = modelQuery.trim().toLowerCase()
+  const visibleModels = useMemo(() => {
+    if (!active) return []
+    if (!mq) return active.models
+    return active.models.filter(
+      (m) => `${m.display_name} ${m.upstream_model_id}`.toLowerCase().includes(mq)
+    )
+  }, [active, mq])
+
+  function toggleModel(m: AdminModelSourceModel) {
+    // 已在现有候选集的模型不可取消（取消 = 移除候选，那是候选集编辑页的整表语义）。
+    if (existingIds.has(m.real_model_id)) return
+    setPicked((prev) =>
+      prev.includes(m.real_model_id)
+        ? prev.filter((id) => id !== m.real_model_id)
+        : [...prev, m.real_model_id]
+    )
+  }
+
+  async function refresh() {
+    setRefreshing(true)
+    try {
+      await refreshRealModels()
+      sourcesQ.reload()
+    } catch {
+      // 刷新失败不阻塞关窗，错误由下一次 sources 拉取暴露。
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  function railGroup(title: string, list: AdminModelSource[]) {
+    return (
+      <div className="amd-group">
+        <p className="amd-group-title">
+          {title}
+          <span className="source-group-count">{list.length}</span>
+        </p>
+        {list.length === 0 ? (
+          <p className="muted amd-group-empty">（无）</p>
+        ) : (
+          <ul className="amd-source-list">
+            {list.map((s) => (
+              <li key={s.id}>
+                <button
+                  type="button"
+                  className={'amd-source-row' + (s.id === activeId ? ' amd-source-row-active' : '')}
+                  data-off={!s.enabled}
+                  onClick={() => setActiveId(s.id)}
+                >
+                  <span className="amd-source-row-name">{s.name}</span>
+                  <AmProtocolBadges protocols={s.protocols} />
+                  <span className="source-count" title={`${s.model_count} 个模型`}>
+                    {s.model_count}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    )
+  }
+
+  function modelCard(m: AdminModelSourceModel) {
+    const already = existingIds.has(m.real_model_id)
+    const blocked = already
+      ? ''
+      : m.excluded_from_candidates
+        ? '该模型已在候选中被排除，不能加入候选集'
+        : m.status !== 'active'
+          ? `状态为「${statusLabel(m.status)}」，不能加入候选集`
+          : ''
+    const title = already ? '已在候选集，去候选集编辑页移除' : blocked || '点击加入候选集'
+    const selected = already || picked.includes(m.real_model_id)
+    return (
+      <div className="source-card" key={m.real_model_id} data-selected={selected} data-blocked={blocked !== ''}>
+        <div
+          className="source-card-hit"
+          role="checkbox"
+          aria-checked={selected}
+          aria-disabled={blocked !== ''}
+          tabIndex={blocked === '' ? 0 : -1}
+          title={title}
+          onClick={blocked === '' ? () => toggleModel(m) : undefined}
+          onKeyDown={
+            blocked === ''
+              ? (e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    toggleModel(m)
+                  }
+                }
+              : undefined
+          }
+        >
+          <span className="source-card-title">
+            <span className="source-card-name">{m.display_name}</span>
+            {already && <IconLock size="sm" aria-label="已在候选集" />}
+            {selected && <IconCheck size="sm" />}
+          </span>
+          <span className="source-card-sub">{m.upstream_model_id}</span>
+          <span className="source-card-meta">
+            <AmProtocolBadges protocols={m.protocols} />
+            <StatusBadge status={m.status} label={statusLabel(m.status)} />
+            <span className="source-inst" data-tone={amInstancesTone(m.available_instances)}>
+              {m.available_instances === 0 && <IconWarn size="xs" />}
+              可用实例 {amInstancesText(m.available_instances)}
+            </span>
+          </span>
+        </div>
+      </div>
+    )
+  }
+
+  async function submit() {
+    setBusy(true)
+    setError(null)
+    try {
+      const newCands: Candidate[] = picked.map((mid) => ({
+        real_model_id: mid,
+        constraint: {},
+        weight: 0
+      }))
+      await putCandidates(modelId, [...existing, ...newCands])
+      onSaved(modelId)
+      onClose()
+    } catch (e) {
+      setError(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const candsLoading = candsQ.loading && !candsQ.data
+  const canSave = picked.length > 0 && !candsLoading && !busy
+
+  return (
+    <div className="dialog-overlay" onClick={onClose}>
+      <div
+        className="dialog amd-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`添加模型到 ${modelName}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2>
+          添加模型到 <code>{modelName}</code>
+        </h2>
+        <div className="amd-toolbar">
+          <div className="source-search">
+            <IconSearch size="sm" />
+            <input
+              value={vendorQuery}
+              onChange={(e) => setVendorQuery(e.target.value)}
+              placeholder="搜索供应商…"
+              aria-label="搜索供应商"
+            />
+          </div>
+          <button type="button" className="btn-ghost" onClick={() => void refresh()} disabled={refreshing}>
+            <IconRefresh size={ACTION_ICON} /> 刷新目录
+          </button>
+          <div className="source-search">
+            <IconSearch size="sm" />
+            <input
+              value={modelQuery}
+              onChange={(e) => setModelQuery(e.target.value)}
+              placeholder="搜索模型…"
+              aria-label="搜索模型"
+            />
+          </div>
+        </div>
+
+        <div className="amd-split">
+          <div className="amd-rail">
+            {railGroup('贡献凭据', contributed)}
+            {railGroup('平台渠道', platformSources)}
+            {vendorQuery && contributed.length === 0 && platformSources.length === 0 && (
+              <p className="muted">没有匹配的供应商。</p>
+            )}
+          </div>
+
+          <div className="amd-detail">
+            {!active ? (
+              <EmptyState
+                title="先从左侧选一个供应商"
+                hint="左栏按「贡献凭据 / 平台渠道」分组；选中后这里显示它的模型卡片，点卡片即加入候选。"
+              />
+            ) : (
+              <>
+                <div className="amd-head">
+                  <span className="amd-head-name">{active.name}</span>
+                  <span className="amd-head-tag">{active.kind}</span>
+                  <code className="amd-head-endpoint">{active.base_url || '未提供端点'}</code>
+                </div>
+                {visibleModels.length === 0 ? (
+                  <EmptyState title="该供应商下没有模型" hint="模型清单来自 real_models；先被采集到，或换一个供应商。" />
+                ) : (
+                  <div className="source-grid amd-grid">{visibleModels.map(modelCard)}</div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="dialog-actions amd-footer">
+          <span className="amd-selected-count">已选 {picked.length} 条</span>
+          <button type="button" className="btn-ghost" onClick={onClose} disabled={busy}>
+            取消
+          </button>
+          <button type="button" className="btn-primary" onClick={() => void submit()} disabled={!canSave}>
+            {busy ? '正在加入…' : '加入候选集'}
+          </button>
+        </div>
+        <FormError error={error} />
+      </div>
+    </div>
+  )
+}
 // ── 编辑 ───────────────────────────────────────────────────────────────
 
 export function AbstractModelDetailPage({ def }: PageProps) {

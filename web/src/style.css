@@ -1805,3 +1805,167 @@ a.metric-link:hover {
   background: var(--fr-warning-container);
   color: var(--fr-on-warning-container);
 }
+
+/* ---------- 添加模型弹窗（Connect 式，task-7）----------
+   层级用填充色阶画（card → block → inset），无边框，大圆角。 */
+
+/* 弹窗撑大：默认 .dialog max-width 40rem 太窄，覆盖为宽栏 */
+.amd-dialog {
+  max-width: min(1100px, 92vw);
+  width: 100%;
+}
+
+/* 顶栏：供应商搜索 + 刷新目录 + 模型搜索 一行 */
+.amd-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.9rem;
+}
+.amd-toolbar .source-search:first-child {
+  flex: 0 0 16rem;
+}
+.amd-toolbar .source-search:last-of-type {
+  flex: 1 1 auto;
+  min-width: 10rem;
+}
+
+/* 两栏主体 */
+.amd-split {
+  display: grid;
+  grid-template-columns: 18rem minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+  min-height: 0;
+}
+
+/* 左栏：供应商分组 */
+.amd-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 0.85rem;
+  border-radius: var(--fr-radius-xl);
+  background: var(--fr-block);
+  max-height: min(60vh, 36rem);
+  overflow-y: auto;
+}
+.amd-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.amd-group-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--fr-on-surface-variant);
+}
+.amd-group-empty {
+  margin: 0.1rem 0 0.3rem 0.5rem;
+  font-size: 0.78rem;
+}
+.amd-source-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.amd-source-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.5rem 0.55rem;
+  border: none;
+  border-radius: var(--fr-radius-lg);
+  background: transparent;
+  color: var(--fr-on-surface);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  text-align: left;
+}
+.amd-source-row:hover {
+  background: var(--fr-inset);
+}
+.amd-source-row[data-off='true'] {
+  opacity: 0.55;
+}
+.amd-source-row-active,
+.amd-source-row-active:hover {
+  background: var(--fr-primary-soft);
+}
+.amd-source-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/* 右栏：供应商头部 + 模型卡网格 */
+.amd-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+  min-height: 0;
+  max-height: min(62vh, 38rem);
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+.amd-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: var(--fr-radius-xl);
+  background: var(--fr-block);
+}
+.amd-head-name {
+  font-weight: 700;
+  font-size: 0.92rem;
+}
+.amd-head-tag {
+  padding: 0.1rem 0.5rem;
+  border-radius: var(--fr-radius-full);
+  background: var(--fr-inset);
+  color: var(--fr-on-surface-variant);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.amd-head-endpoint {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--fr-on-surface-variant);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.amd-grid {
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+}
+
+/* 底部：已选计数 + 动作 */
+.amd-footer {
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.amd-selected-count {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--fr-on-surface-variant);
+}
+
+/* 列表展开条「+ 添加模型」由 Link 改成了 button：复位全局按钮边距/高度 */
+button.am-add-chip {
+  border: none;
+  min-height: 0;
+}
