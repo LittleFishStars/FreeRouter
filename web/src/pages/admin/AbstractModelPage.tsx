@@ -93,6 +93,8 @@ export function AbstractModelsPage({ def }: PageProps) {
   // 同时只允许一行展开；展开某行时按需拉它的候选。
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [details, setDetails] = useState<Record<string, ExpDetail>>({})
+  // 弹窗保存后的重拉信号（见下面 effect 的依赖说明）。
+  const [refreshSeq, setRefreshSeq] = useState(0)
 
   const rows = (q.data?.data ?? []).filter((m) => !status || m.status === status)
 
@@ -107,6 +109,10 @@ export function AbstractModelsPage({ def }: PageProps) {
   }
 
   // 展开某行：若无缓存则拉取详情候选；同时只保留一个展开行。
+  // refreshSeq 是弹窗保存后的重拉信号：保存时删了缓存，但 expandedId 没变，
+  // 只依赖 [expandedId] 的 effect 不会重跑——展开中的行会一直停在「展开候选…」，
+  // 必须收起再展开才刷新（用户报的 bug）。把 seq 加进依赖后，删缓存与重拉在
+  // 同一次提交里发生。
   useEffect(() => {
     if (!expandedId) return
     const cached = details[expandedId]
@@ -119,13 +125,15 @@ export function AbstractModelsPage({ def }: PageProps) {
       .catch(() => {
         setDetails((d) => ({ ...d, [expandedId]: { state: 'error' } }))
       })
-  }, [expandedId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [expandedId, refreshSeq]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function toggle(id: string) {
     setExpandedId((prev) => (prev === id ? null : id))
   }
 
-  // 弹窗保存成功后：刷新列表，并删掉该模型的展开缓存（下次展开重新拉候选）。
+  // 弹窗保存成功后：刷新列表，删该模型的展开缓存并 bump refreshSeq，让
+  // 正在展开的那一行立即重拉芯片条（只删缓存不 bump 的话，effect 依赖的
+  // expandedId 没变，不会重跑）。
   function handleCandidateSaved(id: string) {
     q.reload()
     setDetails((d) => {
@@ -133,6 +141,7 @@ export function AbstractModelsPage({ def }: PageProps) {
       delete next[id]
       return next
     })
+    setRefreshSeq((n) => n + 1)
   }
 
   async function submitCreate() {
