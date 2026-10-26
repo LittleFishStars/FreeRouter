@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strconv"
 
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
@@ -67,7 +66,7 @@ func snapshotToGroupPolicies(ctx context.Context, models *store.ModelRepo, snap 
 		g := &snap.Groups[i]
 		// 组元数据（名称等）：合并算法不消费，但保留 ID 供审计侧追溯。
 		gp := auth.GroupPolicy{
-			Group: auth.Group{ID: strconv.FormatInt(g.GroupID, 10)},
+			Group: auth.Group{ID: g.GroupID},
 		}
 		if g.CanCreateKey != nil {
 			v := *g.CanCreateKey
@@ -102,7 +101,7 @@ func snapshotToGroupPolicies(ctx context.Context, models *store.ModelRepo, snap 
 				gp.ModelQuotas = map[auth.ModelQuotaKey]int64{}
 			}
 			gp.ModelQuotas[auth.ModelQuotaKey{
-				Model:  strconv.FormatInt(c.AbstractModelID, 10),
+				Model:  c.AbstractModelID,
 				Unit:   string(c.Unit),
 				Period: string(c.Period),
 			}] = c.Cap
@@ -112,7 +111,7 @@ func snapshotToGroupPolicies(ctx context.Context, models *store.ModelRepo, snap 
 				continue
 			}
 			gp.Pools = append(gp.Pools, auth.PoolRef{
-				GroupID:         strconv.FormatInt(p.GroupID, 10),
+				GroupID:         p.GroupID,
 				AbstractModelID: p.AbstractModelID,
 				Unit:            string(p.Unit),
 				Period:          string(p.Period),
@@ -144,12 +143,12 @@ func snapshotToGroupPolicies(ctx context.Context, models *store.ModelRepo, snap 
 // 为什么必须翻名：v1 的 model 参数、白名单存储的元素、/v1/models 的
 // 列表项，对外口径全部是**名**（C2：抽象层契约）；id 只在存储内部。
 // 不存在的 id（坏行）跳过——合并侧少一个模型是"宁少算"方向。
-func modelNamesOf(ctx context.Context, models *store.ModelRepo, ids []int64) ([]string, error) {
+func modelNamesOf(ctx context.Context, models *store.ModelRepo, ids []string) ([]string, error) {
 	all, err := models.ListAbstractModels(ctx, true) // includeDisabled：可见性含 deprecated（迁移期必须可见）
 	if err != nil {
 		return nil, fmt.Errorf("app: 读抽象模型目录: %w", err)
 	}
-	want := make(map[int64]bool, len(ids))
+	want := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		want[id] = true
 	}
@@ -221,8 +220,8 @@ func (b authzKeyBridge) KeyAllowlist(ctx context.Context, keyID string) ([]strin
 // keyAuthBridge 同一字段对齐逻辑——判定链只需要 ID/AccountID/哈希/状态）。
 func keyRowToAuth(k *store.APIKey, keyHash []byte) (*auth.APIKey, error) {
 	out := &auth.APIKey{
-		ID:        strconv.FormatInt(k.ID, 10),
-		AccountID: strconv.FormatInt(k.AccountID, 10),
+		ID:        k.ID,
+		AccountID: k.AccountID,
 		KeyHash:   keyHash,
 		Prefix:    k.Prefix,
 		Status:    auth.KeyStatus(k.Status),

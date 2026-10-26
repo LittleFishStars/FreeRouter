@@ -29,7 +29,7 @@ import (
 //   - ResetAt 的锚点脏（解析失败 ok=false）→ **不带 Retry-After**：
 //     编造一个错误的重置时刻比没有更糟（客户端会按时回来再吃一个 429）；
 //   - 已知为负的时间差（重置时刻已过：惰性归零还没跑的窗口）同样不带头。
-func TranslateQuotaExhausted(qe store.ErrQuotaExhausted, modelID int64, now time.Time) error {
+func TranslateQuotaExhausted(qe store.ErrQuotaExhausted, modelID string, now time.Time) error {
 	e := ErrQuotaExceeded.WithQuota(
 		string(qe.Unit), string(qe.Period), modelIDString(modelID))
 	if reset, ok := qe.ResetAt(); ok {
@@ -43,10 +43,10 @@ func TranslateQuotaExhausted(qe store.ErrQuotaExhausted, modelID int64, now time
 // TranslatePoolExhausted 同形翻译组池耗尽（pool_exhausted 码）。
 // groupID 进 detail（排障面），不进 quota 对象（客户端只需要知道
 // 哪个 unit/period/model 打满——池属于哪个组不是客户端的决策变量）。
-func TranslatePoolExhausted(qe store.ErrQuotaExhausted, groupID, modelID int64, now time.Time) error {
+func TranslatePoolExhausted(qe store.ErrQuotaExhausted, groupID, modelID string, now time.Time) error {
 	e := ErrPoolExhausted.
 		WithQuota(string(qe.Unit), string(qe.Period), modelIDString(modelID)).
-		WithDetail(string(qe.Unit), fmt.Sprintf("%d", groupID))
+		WithDetail(string(qe.Unit), fmt.Sprintf("%s", groupID))
 	if reset, ok := qe.ResetAt(); ok {
 		if d := reset.Sub(now); d > 0 {
 			e = e.WithRetryAfter(d)

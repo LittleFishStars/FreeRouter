@@ -148,9 +148,9 @@ func TestContractSettleOnceOnCandidateSwitch(t *testing.T) {
 		{Response: openAIResponseOK}, // 候选 2：成功
 	}}
 	cand1 := chatCandidate("deepseek-chat")
-	cand1.ID = 11
+	cand1.ID = "11"
 	cand2 := chatCandidate("qwen-max")
-	cand2.ID = 22
+	cand2.ID = "22"
 	cs := &fakeCandidates{models: map[string][]Candidate{
 		"smart": {cand1, cand2},
 	}}
@@ -167,8 +167,8 @@ func TestContractSettleOnceOnCandidateSwitch(t *testing.T) {
 	if in.Status != "ok" {
 		t.Fatalf("Status = %q，期望 ok（第二候选成功）", in.Status)
 	}
-	if in.RealModelID != 22 {
-		t.Fatalf("RealModelID = %d，期望 22（成功候选，不是失败候选 11）", in.RealModelID)
+	if in.RealModelID != "22" {
+		t.Fatalf("RealModelID = %s，期望 22（成功候选，不是失败候选 11）", in.RealModelID)
 	}
 	if in.RetryCount != 1 {
 		t.Fatalf("RetryCount = %d，期望 1（换过一次候选）", in.RetryCount)

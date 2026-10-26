@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
-	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
 
@@ -37,7 +36,7 @@ var errAdminNotImplemented = fmt.Errorf("admin 桥占位：%w", httpapi.ErrAdmin
 // accountToAdmin 把 store.Account 翻成管理面 DTO（id 编码 + 类转字符串数组）。
 func accountToAdmin(a *store.Account) *httpapi.AdminAccount {
 	out := &httpapi.AdminAccount{
-		ID:             encodeID(idcode.Account, a.ID),
+		ID:             a.ID,
 		DisplayName:    a.DisplayName,
 		Username:       a.Username,
 		Status:         string(a.Status),
@@ -64,7 +63,7 @@ func accountToAdmin(a *store.Account) *httpapi.AdminAccount {
 // accountGroups 聚合账户所属组（读侧兜底：无 ListAccountGroups 方法）。
 // 单机 SQLite 上组表是小表，全量列组再对成员做包含判断，成本可忽略；
 // 正式的按账户 JOIN 查询等 storage 落方法后替换（TODO 占位口径见文件头）。
-func (ab *accountsBridge) accountGroups(ctx context.Context, accountID int64) ([]string, error) {
+func (ab *accountsBridge) accountGroups(ctx context.Context, accountID string) ([]string, error) {
 	groups, err := ab.b.repos.Groups.ListGroups(ctx)
 	if err != nil {
 		return nil, err
@@ -77,7 +76,7 @@ func (ab *accountsBridge) accountGroups(ctx context.Context, accountID int64) ([
 		}
 		for _, m := range members {
 			if m == accountID {
-				out = append(out, encodeID(idcode.Group, g.ID))
+				out = append(out, g.ID)
 				break
 			}
 		}
@@ -113,7 +112,7 @@ func (ab *accountsBridge) ListAccounts(ctx context.Context, f httpapi.AdminAccou
 func (ab *accountsBridge) allAccounts(ctx context.Context) []httpapi.AdminAccount {
 	groups, _ := ab.b.repos.Groups.ListGroups(ctx)
 	// 组→成员一次读全（ListGroups 是小表；每组一次 ListMembers）。
-	groupOf := map[int64][]int64{} // accountID → groupIDs
+	groupOf := map[string][]string{} // accountID → groupIDs
 	for _, g := range groups {
 		members, err := ab.b.repos.Groups.ListMembers(ctx, g.ID)
 		if err != nil {
@@ -123,25 +122,19 @@ func (ab *accountsBridge) allAccounts(ctx context.Context) []httpapi.AdminAccoun
 			groupOf[m] = append(groupOf[m], g.ID)
 		}
 	}
-	// 账户全量：store 无 ListAccounts——用「逐 id 探测」不可行，改走
-	// sqlite_master 也不行（无 *sql.DB）。唯一可用面：Quotas/Keys 都按
-	// accountID 查。**兜底：经 sessions 表不可枚举**——最终退路是
-	// CountAccounts 拿总数 + GetAccount(1..n) 逐个试（自增 id 从 1 起，
-	// 稀疏时多几次 ErrNotFound，量级可接受）。
 	accounts := []httpapi.AdminAccount{}
-	n, err := ab.b.repos.Accounts.CountAccounts(ctx)
+	// 一次真实查询列出全部账户。旧实现是「CountAccounts + GetAccount(1..n+32)
+	// 逐个试」的稀疏 id 扫描——UUID 主键下没有连续区间可扫，那套写法一条都
+	// 取不到（2026-10-26 改造带出的真实缺口，见 ListAllAccounts 的注释）。
+	all, err := ab.b.repos.Accounts.ListAllAccounts(ctx)
 	if err != nil {
 		return accounts
 	}
-	for i := int64(1); i <= int64(n)+32; i++ { // +32：容忍删除造成的稀疏尾部
-		a, err := ab.b.repos.Accounts.GetAccount(ctx, i)
-		if err != nil || a == nil {
-			continue
-		}
+	for _, a := range all {
 		row := accountToAdmin(a)
 		gs := []string{}
 		for _, gid := range groupOf[a.ID] {
-			gs = append(gs, encodeID(idcode.Group, gid))
+			gs = append(gs, gid)
 		}
 		row.Groups = gs
 		ab.fillQuotaOnly(ctx, row, a.ID)
@@ -151,11 +144,11 @@ func (ab *accountsBridge) allAccounts(ctx context.Context) []httpapi.AdminAccoun
 }
 
 // fillQuotaOnly 只填额度对象（allAccounts 内组已另行聚合）。
-func (ab *accountsBridge) fillQuotaOnly(ctx context.Context, row *httpapi.AdminAccount, id int64) {
+func (ab *accountsBridge) fillQuotaOnly(ctx context.Context, row *httpapi.AdminAccount, id string) {
 	best := (*httpapi.AdminQuota)(nil)
 	for _, u := range []store.QuotaUnit{store.UnitRequest, store.UnitToken, store.UnitCredit} {
 		for _, p := range []store.QuotaPeriod{store.PeriodDay, store.PeriodMonth} {
-			q, err := ab.b.repos.Quotas.AccountQuota(ctx, id, 0, u, p)
+			q, err := ab.b.repos.Quotas.AccountQuota(ctx, id, store.TotalScope, u, p)
 			if err != nil || q == nil {
 				continue
 			}
@@ -188,7 +181,7 @@ func pageBounds(n, limit, offset int) (lo, hi int) {
 }
 
 func (ab *accountsBridge) GetAccount(ctx context.Context, id string) (*httpapi.AdminAccount, error) {
-	nid, err := decodeID(idcode.Account, id)
+	nid, err := decodeID(id)
 	if err != nil {
 		return nil, errAdminNotImplemented
 	}
@@ -227,7 +220,7 @@ func (ab *accountsBridge) CreateAccount(ctx context.Context, in httpapi.AdminAcc
 	inAuth.Account.RPMLimit = in.RPMLimit
 	inAuth.Account.TPMLimit = in.TPMLimit
 	inAuth.Account.MaxConcurrency = in.MaxConcurrency
-	var newID int64
+	var newID string
 	var auditID string
 	err := ab.b.st.WithTx(ctx, func(tx *store.Repos) error {
 		id, err := tx.Accounts.CreateAccount(ctx, inAuth, classes)
@@ -237,7 +230,7 @@ func (ab *accountsBridge) CreateAccount(ctx context.Context, in httpapi.AdminAcc
 		newID = id
 		// 组成员落位（§5：新建可带组；无组则默认组机制由 storage 兜底）。
 		for _, g := range in.Groups {
-			gid, derr := decodeID(idcode.Group, g)
+			gid, derr := decodeID(g)
 			if derr != nil {
 				return derr
 			}
@@ -246,7 +239,7 @@ func (ab *accountsBridge) CreateAccount(ctx context.Context, in httpapi.AdminAcc
 			}
 		}
 		if in.Quota != nil {
-			if err := tx.Quotas.SetAccountQuota(ctx, id, 0,
+			if err := tx.Quotas.SetAccountQuota(ctx, id, store.TotalScope,
 				store.QuotaUnit(in.Quota.Unit), store.QuotaPeriod(in.Quota.Period),
 				in.Quota.Limit); err != nil {
 				return err
@@ -262,11 +255,11 @@ func (ab *accountsBridge) CreateAccount(ctx context.Context, in httpapi.AdminAcc
 	if err != nil {
 		return "", "", mapStoreErr(err)
 	}
-	return encodeID(idcode.Account, newID), auditID, nil
+	return newID, auditID, nil
 }
 
 func (ab *accountsBridge) UpdateAccount(ctx context.Context, id string, in httpapi.AdminAccountUpdate, audit httpapi.AdminAuditEntry) (*httpapi.AdminAccount, string, error) {
-	nid, err := decodeID(idcode.Account, id)
+	nid, err := decodeID(id)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
@@ -290,9 +283,9 @@ func (ab *accountsBridge) UpdateAccount(ctx context.Context, id string, in httpa
 			}
 		}
 		if in.Groups != nil {
-			gids := make([]int64, 0, len(*in.Groups))
+			gids := make([]string, 0, len(*in.Groups))
 			for _, g := range *in.Groups {
-				gid, derr := decodeID(idcode.Group, g)
+				gid, derr := decodeID(g)
 				if derr != nil {
 					return derr
 				}
@@ -332,7 +325,7 @@ func (ab *accountsBridge) UpdateAccount(ctx context.Context, id string, in httpa
 			}
 		}
 		if in.Quota != nil {
-			if err := tx.Quotas.SetAccountQuota(ctx, nid, 0,
+			if err := tx.Quotas.SetAccountQuota(ctx, nid, store.TotalScope,
 				store.QuotaUnit(in.Quota.Unit), store.QuotaPeriod(in.Quota.Period),
 				in.Quota.Limit); err != nil {
 				return err
@@ -356,7 +349,7 @@ func (ab *accountsBridge) UpdateAccount(ctx context.Context, id string, in httpa
 }
 
 func (ab *accountsBridge) ResetPassword(ctx context.Context, id, passwordHash string, revoke bool, audit httpapi.AdminAuditEntry) (int, string, error) {
-	nid, err := decodeID(idcode.Account, id)
+	nid, err := decodeID(id)
 	if err != nil {
 		return 0, "", errAdminNotImplemented
 	}
@@ -391,7 +384,7 @@ func (ab *accountsBridge) ResetPassword(ctx context.Context, id, passwordHash st
 }
 
 func (ab *accountsBridge) RevokeSessions(ctx context.Context, id string, audit httpapi.AdminAuditEntry) (int, string, error) {
-	nid, err := decodeID(idcode.Account, id)
+	nid, err := decodeID(id)
 	if err != nil {
 		return 0, "", errAdminNotImplemented
 	}
@@ -421,7 +414,7 @@ func (ab *accountsBridge) RevokeSessions(ctx context.Context, id string, audit h
 type keysCountBridge struct{ b *adminBridge }
 
 func (kb *keysCountBridge) CountKeys(ctx context.Context, accountID string) (int64, error) {
-	nid, err := decodeID(idcode.Account, accountID)
+	nid, err := decodeID(accountID)
 	if err != nil {
 		return 0, err
 	}
@@ -454,13 +447,13 @@ func (ab *accountsBridge) ImportAccount(ctx context.Context, row httpapi.ImportR
 		return "", err
 	}
 	if strings.TrimSpace(row.Group) != "" {
-		parsed, derr := decodeID(idcode.Group, row.Group)
+		parsed, derr := decodeID(row.Group)
 		if derr != nil {
 			return "", fmt.Errorf("组 id 非法 %q: %w", row.Group, derr)
 		}
 		gid = parsed
 	}
-	var newID int64
+	var newID string
 	err = ab.b.st.WithTx(ctx, func(tx *store.Repos) error {
 		id, cerr := tx.Accounts.CreateAccount(ctx, store.AccountAuth{
 			Account: store.Account{
@@ -478,7 +471,7 @@ func (ab *accountsBridge) ImportAccount(ctx context.Context, row httpapi.ImportR
 			return err
 		}
 		if row.QuotaUnit != "" && row.QuotaLimit != nil {
-			if err := tx.Quotas.SetAccountQuota(ctx, id, 0,
+			if err := tx.Quotas.SetAccountQuota(ctx, id, store.TotalScope,
 				store.QuotaUnit(row.QuotaUnit), store.PeriodDay, *row.QuotaLimit); err != nil {
 				return err
 			}
@@ -489,7 +482,7 @@ func (ab *accountsBridge) ImportAccount(ctx context.Context, row httpapi.ImportR
 	if err != nil {
 		return "", mapStoreErr(err)
 	}
-	return encodeID(idcode.Account, newID), nil
+	return newID, nil
 }
 
 // ImportBatchAudit 记一条批次事件（06-audit：操作者、行数、成功/失败数）。
@@ -530,11 +523,11 @@ func mergePlanToAdmin(p store.MergePlan, sourceID, targetID string) *httpapi.Adm
 }
 
 func (ab *accountsBridge) PrecheckMerge(ctx context.Context, sourceID, targetID string) (*httpapi.AdminMergePlan, error) {
-	sid, err := decodeID(idcode.Account, sourceID)
+	sid, err := decodeID(sourceID)
 	if err != nil {
 		return nil, err
 	}
-	tid, err := decodeID(idcode.Account, targetID)
+	tid, err := decodeID(targetID)
 	if err != nil {
 		return nil, err
 	}
@@ -553,11 +546,11 @@ func (ab *accountsBridge) PrecheckMerge(ctx context.Context, sourceID, targetID 
 // 这里仍写审计，是为了让审计流里能看到这次操作（06-audit：账户合并记
 // source/target）——两条记录各自服务不同的查询。
 func (ab *accountsBridge) MergeAccounts(ctx context.Context, sourceID, targetID string, audit httpapi.AdminAuditEntry) (*httpapi.AdminMergePlan, string, error) {
-	sid, err := decodeID(idcode.Account, sourceID)
+	sid, err := decodeID(sourceID)
 	if err != nil {
 		return nil, "", err
 	}
-	tid, err := decodeID(idcode.Account, targetID)
+	tid, err := decodeID(targetID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -582,7 +575,7 @@ func (ab *accountsBridge) MergeAccounts(ctx context.Context, sourceID, targetID 
 }
 
 func (ab *accountsBridge) RollbackMerge(ctx context.Context, sourceID string, audit httpapi.AdminAuditEntry) (*httpapi.AdminMergePlan, string, error) {
-	sid, err := decodeID(idcode.Account, sourceID)
+	sid, err := decodeID(sourceID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -596,7 +589,7 @@ func (ab *accountsBridge) RollbackMerge(ctx context.Context, sourceID string, au
 	// 回滚结果用同一形状回（target 的类保留并集，见 store 注释）。
 	out := &httpapi.AdminMergePlan{
 		SourceID: sourceID,
-		TargetID: encodeID(idcode.Account, rec.TargetID),
+		TargetID: rec.TargetID,
 		Keys:     len(rec.MovedKeys), Credentials: len(rec.MovedCreds),
 		GroupRels:  len(rec.MovedGroupIDs),
 		RolledBack: true,

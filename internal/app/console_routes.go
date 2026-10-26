@@ -122,7 +122,7 @@ func (s authLoginStores) SessionByTokenHash(ctx context.Context, tokenHash []byt
 	}
 	out := &auth.Session{
 		ID:        sess.ID,
-		AccountID: fmt.Sprintf("%d", sess.AccountID),
+		AccountID: fmt.Sprintf("%s", sess.AccountID),
 		TokenHash: tokenHash,
 		CreatedAt: time.Unix(sess.CreatedAt, 0),
 		ExpiresAt: time.Unix(sess.ExpiresAt, 0),
@@ -422,7 +422,7 @@ type contributionPauseBridge struct {
 	svc *upstream.ContributionService
 }
 
-func (b contributionPauseBridge) SetPaused(ctx context.Context, owner, credentialID int64, paused bool) (string, error) {
+func (b contributionPauseBridge) SetPaused(ctx context.Context, owner, credentialID string, paused bool) (string, error) {
 	if b.svc == nil {
 		return "", fmt.Errorf("贡献服务未装配")
 	}

@@ -186,17 +186,17 @@ func TestContractVerifyMissingFieldsTolerated(t *testing.T) {
 type fakeVerification struct {
 	mu     sync.Mutex
 	writes []verifyWrite
-	err    map[int64]error
+	err    map[string]error
 }
 
 type verifyWrite struct {
-	id      int64
+	id      string
 	state   VerifyState
 	evid    string
 	version int
 }
 
-func (f *fakeVerification) WriteVerification(_ context.Context, id int64, state VerifyState, evidence string, version int) error {
+func (f *fakeVerification) WriteVerification(_ context.Context, id string, state VerifyState, evidence string, version int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil && f.err[id] != nil {
@@ -327,13 +327,13 @@ func TestContractInboxThreeEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("列上游失败: %v", err)
 	}
-	vendorID := int64(-1)
+	var vendorID string
 	for _, u := range ups {
 		if u.Kind == "vendor" {
 			vendorID = u.ID
 		}
 	}
-	rmID := int64(-1)
+	var rmID string
 	for _, m := range items {
 		row := store.RealModel{UpstreamID: vendorID, UpstreamModelID: m.UpstreamModelID, DisplayName: m.UpstreamModelID, Status: store.RealModelActive, Source: "auto"}
 		id, err := st.Repos().Models.UpsertRealModel(ctx, row)
@@ -397,10 +397,10 @@ func TestContractInboxThreeEvents(t *testing.T) {
 func TestContractVerifyFailuresDontPanicOrBlock(t *testing.T) {
 	fx := openVerifyFixture(t)
 	// 写回全失败（库锁模拟）：applyVerification 逐条容错，返回首错但不 panic。
-	fx.verif.err = map[int64]error{1: errors.New("库锁"), 2: errors.New("库锁")}
+	fx.verif.err = map[string]error{"1": errors.New("库锁"), "2": errors.New("库锁")}
 	items := []verifyItem{
-		{info: ModelInfoInput{UpstreamModelID: "a"}, realModelID: 1, kind: "relay"},
-		{info: ModelInfoInput{UpstreamModelID: "b"}, realModelID: 2, kind: "relay"},
+		{info: ModelInfoInput{UpstreamModelID: "a"}, realModelID: "1", kind: "relay"},
+		{info: ModelInfoInput{UpstreamModelID: "b"}, realModelID: "2", kind: "relay"},
 	}
 	n, err := fx.hooks.applyVerification(context.Background(), items)
 	if err == nil {
@@ -410,7 +410,7 @@ func TestContractVerifyFailuresDontPanicOrBlock(t *testing.T) {
 		t.Fatalf("全失败时写回数应为 0，got %d", n)
 	}
 	// 第 1 条失败不影响第 2 条：err map 只标了 1。
-	fx.verif.err = map[int64]error{}
+	fx.verif.err = map[string]error{}
 	n2, err2 := fx.hooks.applyVerification(context.Background(), items)
 	if err2 != nil || n2 != 2 {
 		t.Fatalf("修复后应全成功：%d %v", n2, err2)
@@ -422,7 +422,7 @@ func TestContractVerifyFailuresDontPanicOrBlock(t *testing.T) {
 	verif2 := &fakeVerification{}
 	inbox2 := &fakeInbox{err: errors.New("admin_inbox 写入失败（库满）")}
 	hooks2 := &RefreshHooks{Verification: verif2, Inbox: inbox2}
-	vi := []verifyItem{{info: modelInfoInputOf(dshprovider.ModelInfo{UpstreamModelID: "gpt-5-x", ContextWindow: &lowCW}), realModelID: 1, kind: "vendor"}}
+	vi := []verifyItem{{info: modelInfoInputOf(dshprovider.ModelInfo{UpstreamModelID: "gpt-5-x", ContextWindow: &lowCW}), realModelID: "1", kind: "vendor"}}
 	n3, err3 := hooks2.applyVerification(context.Background(), vi)
 	if err3 != nil || n3 != 1 {
 		t.Fatalf("通知失败不该影响写回：%d %v", n3, err3)
@@ -436,8 +436,8 @@ func TestContractVerifyFailuresDontPanicOrBlock(t *testing.T) {
 	if n, err := nilHooks.applyVerification(context.Background(), items); err != nil || n != 0 {
 		t.Fatal("nil hooks 应安全跳过")
 	}
-	nilHooks.notifyAdded(context.Background(), nil, "u", 1, "m")
-	nilHooks.notifyMissing(context.Background(), nil, "u", 1, "m")
+	nilHooks.notifyAdded(context.Background(), nil, "u", "1", "m")
+	nilHooks.notifyMissing(context.Background(), nil, "u", "1", "m")
 }
 
 // TestContractRefreshHooksWithoutVerification：只接 inbox 不接鉴定（装配自由度：

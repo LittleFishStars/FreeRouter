@@ -47,10 +47,10 @@ func providerFromSidecarURL(baseURL string) string {
 type balanceSource struct {
 	// relayUpstreams 列出所有 relay 上游（id → provider）。每次探测重新读，
 	// 保证上游增删/改 kind 后快照仍跟得上。
-	relayUpstreams func(ctx context.Context) (map[int64]string, error)
+	relayUpstreams func(ctx context.Context) (map[string]string, error)
 	// providerOfUpstream 按上游 id 查 provider（非 relay 或未知返回空）。
 	// balanceOf 用：routing 的 candidate 只带 upstreamID，要靠它反查 provider。
-	providerOfUpstream func(ctx context.Context, upstreamID int64) string
+	providerOfUpstream func(ctx context.Context, upstreamID string) string
 }
 
 // BalanceLoop 是后台余额探测循环 + 面向 routing 的读取门面。
@@ -141,7 +141,7 @@ func (b *BalanceLoop) ProviderBalance(provider string) (BalanceReading, bool) {
 
 // BalanceOfUpstream 按上游 id 查余额读数（routing 用）。
 // 上游不是 relay、未接探测，或余额未知时 ok=false（路由按无样本垫底）。
-func (b *BalanceLoop) BalanceOfUpstream(ctx context.Context, upstreamID int64) (BalanceReading, bool) {
+func (b *BalanceLoop) BalanceOfUpstream(ctx context.Context, upstreamID string) (BalanceReading, bool) {
 	if b == nil || b.probe == nil || b.source.providerOfUpstream == nil {
 		return BalanceReading{}, false
 	}

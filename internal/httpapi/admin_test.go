@@ -47,7 +47,7 @@ type adminAuditFake struct {
 
 func (a *adminAuditFake) Append(_ context.Context, e AdminAuditEntry) (string, error) {
 	a.nextID++
-	e.ID = fmt.Sprintf("aud_%d", a.nextID)
+	e.ID = fmt.Sprintf("00000090-0000-4000-8000-%012d", a.nextID)
 	if e.TS == 0 {
 		e.TS = time.Now().Unix()
 	}
@@ -160,7 +160,7 @@ func (f *accountsFake) CreateAccount(ctx context.Context, in AdminAccount, hash 
 		return "", "", fmt.Errorf("%w: username 已存在", ErrAdminConflict)
 	}
 	f.nextID++
-	in.ID = fmt.Sprintf("acc_%d", f.nextID)
+	in.ID = fmt.Sprintf("00000010-0000-4000-8000-%012d", f.nextID)
 	if hash == "" {
 		return "", "", fmt.Errorf("假体要求已哈希")
 	}
@@ -234,9 +234,9 @@ type groupsFake struct {
 
 func newGroupsFake(a *adminAuditFake) *groupsFake {
 	g := &groupsFake{byID: map[string]*AdminGroupDetail{}, audit: a}
-	g.byID["grp_1"] = &AdminGroupDetail{
-		AdminGroup: AdminGroup{ID: "grp_1", Name: "默认组", IsDefault: true, MemberCount: 4},
-		Members:    []string{"acc_1"}, Models: []string{"smart"},
+	g.byID["00000020-0000-4000-8000-000000000001"] = &AdminGroupDetail{
+		AdminGroup: AdminGroup{ID: "00000020-0000-4000-8000-000000000001", Name: "默认组", IsDefault: true, MemberCount: 4},
+		Members:    []string{"00000010-0000-4000-8000-000000000001"}, Models: []string{"smart"},
 		Policies: json.RawMessage(`{"max_keys":5}`),
 	}
 	return g
@@ -261,7 +261,7 @@ func (f *groupsFake) GetGroup(_ context.Context, id string) (*AdminGroupDetail, 
 
 func (f *groupsFake) CreateGroup(ctx context.Context, g AdminGroup, models []string, policies json.RawMessage, audit AdminAuditEntry) (string, string, error) {
 	f.nextID++
-	g.ID = fmt.Sprintf("grp_%d", f.nextID+1)
+	g.ID = fmt.Sprintf("00000020-0000-4000-8000-%012d", f.nextID+1)
 	for _, x := range f.byID {
 		if x.Name == g.Name {
 			return "", "", fmt.Errorf("%w: 组名已存在", ErrAdminConflict)
@@ -316,7 +316,7 @@ func (f *groupsFake) DuplicateGroup(ctx context.Context, id, newName string, aud
 	}
 	f.nextID++
 	ng := g.AdminGroup
-	ng.ID = fmt.Sprintf("grp_%d", f.nextID+10)
+	ng.ID = fmt.Sprintf("00000020-0000-4000-8000-%012d", f.nextID+10)
 	ng.Name = newName
 	if ng.Name == "" {
 		ng.Name = g.Name + " 副本"
@@ -407,7 +407,7 @@ func newModelsFake(a *adminAuditFake) *modelsFake {
 
 func (m *modelsFake) putAbs(name, status string, replacement *string, caps json.RawMessage) *AdminAbstractModel {
 	m.nextID++
-	id := fmt.Sprintf("am_%d", m.nextID)
+	id := fmt.Sprintf("00000070-0000-4000-8000-%012d", m.nextID)
 	row := &AdminAbstractModel{
 		ID: id, Name: name, DisplayName: name, Status: status,
 		ReplacementName: replacement, CapabilityMode: "strict",
@@ -424,7 +424,7 @@ func (m *modelsFake) putAbs(name, status string, replacement *string, caps json.
 func (m *modelsFake) putReal(id string) *AdminRealModel {
 	row := &AdminRealModel{
 		ID: id, DisplayName: "RM " + id, QualifiedName: "dsh:chan/" + id,
-		UpstreamID: "up_1", UpstreamModelID: id, Status: "active", Source: "auto",
+		UpstreamID: "00000050-0000-4000-8000-000000000001", UpstreamModelID: id, Status: "active", Source: "auto",
 		Modalities: json.RawMessage(`["text"]`), Efforts: json.RawMessage(`["off"]`),
 	}
 	m.realByID[id] = row
@@ -511,7 +511,7 @@ func (m *modelsFake) CreateAbstractModel(ctx context.Context, a AdminAbstractMod
 		return "", "", fmt.Errorf("%w: 对外名已存在", ErrAdminConflict)
 	}
 	m.nextID++
-	a.ID = fmt.Sprintf("am_%d", m.nextID)
+	a.ID = fmt.Sprintf("00000070-0000-4000-8000-%012d", m.nextID)
 	m.absByID[a.ID] = &a
 	m.absByName[a.Name] = a.ID
 	m.cands[a.ID] = cands
@@ -580,7 +580,7 @@ func (m *modelsFake) ReplaceCandidates(ctx context.Context, id string, cands []A
 }
 
 func (m *modelsFake) ReferencingGroups(_ context.Context, name string) ([]AdminGroup, error) {
-	return []AdminGroup{{ID: "grp_1", Name: "默认组", IsDefault: true}}, nil
+	return []AdminGroup{{ID: "00000020-0000-4000-8000-000000000001", Name: "默认组", IsDefault: true}}, nil
 }
 
 func (m *modelsFake) CapabilitySnapshot(_ context.Context) (map[string]json.RawMessage, error) {
@@ -618,7 +618,7 @@ func (f *upstreamsFake) GetUpstream(_ context.Context, id string) (*AdminUpstrea
 
 func (f *upstreamsFake) CreateUpstream(ctx context.Context, u AdminUpstream, audit AdminAuditEntry) (string, string, error) {
 	f.nextID++
-	u.ID = fmt.Sprintf("up_%d", f.nextID)
+	u.ID = fmt.Sprintf("00000050-0000-4000-8000-%012d", f.nextID)
 	// 桥语义：relay 行落定案值（task-12）
 	if u.Kind == "relay" && u.BaseURL == "" {
 		u.BaseURL = relayBaseURLPrefix + u.Name
@@ -686,8 +686,8 @@ type credentialsFake struct {
 
 func newCredentialsFake(a *adminAuditFake) *credentialsFake {
 	c := &credentialsFake{audit: a, byID: map[string]*AdminCredential{}}
-	c.byID["cred_1"] = &AdminCredential{
-		ID: "cred_1", OwnerAccountID: "acc_9", Provider: "example-provider",
+	c.byID["00000040-0000-4000-8000-000000000001"] = &AdminCredential{
+		ID: "00000040-0000-4000-8000-000000000001", OwnerAccountID: "00000010-0000-4000-8000-000000000009", Provider: "example-provider",
 		ExternalID: "ext-1", ExternalLabel: "我的贡献", Status: "active",
 		LoginEnabled: true, VerifyStatus: "verified",
 		VerifyDetail: json.RawMessage(`{"L0":{"ok":true}}`), CreatedAt: 1700000000,
@@ -754,8 +754,8 @@ type verificationsFake struct {
 
 func newVerificationsFake(a *adminAuditFake) *verificationsFake {
 	v := &verificationsFake{audit: a, byID: map[string]*AdminVerification{}, overrode: map[string]string{}}
-	v.byID["ver_1"] = &AdminVerification{
-		ID: "ver_1", CredentialID: "cred_1", Provider: "example-provider",
+	v.byID["00000100-0000-4000-8000-000000000001"] = &AdminVerification{
+		ID: "00000100-0000-4000-8000-000000000001", CredentialID: "00000040-0000-4000-8000-000000000001", Provider: "example-provider",
 		ClaimedModel: "some-model", Verdict: "suspect",
 		Evidence: json.RawMessage(`[{"signal":"kbf","strength":"medium","result":"skipped"}]`),
 	}
@@ -832,12 +832,12 @@ type inboxFake struct {
 
 func newInboxFake(a *adminAuditFake) *inboxFake {
 	i := &inboxFake{audit: a, byID: map[string]*AdminInboxItem{}, readBy: map[string]string{}}
-	i.byID["inb_1"] = &AdminInboxItem{
-		ID: "inb_1", Kind: "model_missing", Severity: "error", Title: "模型消失",
-		Detail: json.RawMessage(`{"real_model_id":"rm_1"}`), CreatedAt: 1700000000,
+	i.byID["00000080-0000-4000-8000-000000000001"] = &AdminInboxItem{
+		ID: "00000080-0000-4000-8000-000000000001", Kind: "model_missing", Severity: "error", Title: "模型消失",
+		Detail: json.RawMessage(`{"real_model_id":"00000060-0000-4000-8000-000000000001"}`), CreatedAt: 1700000000,
 	}
-	i.byID["inb_2"] = &AdminInboxItem{
-		ID: "inb_2", Kind: "account_pending", Severity: "warning", Title: "待审核",
+	i.byID["00000080-0000-4000-8000-000000000002"] = &AdminInboxItem{
+		ID: "00000080-0000-4000-8000-000000000002", Kind: "account_pending", Severity: "warning", Title: "待审核",
 		CreatedAt: 1700000001,
 	}
 	return i
@@ -984,7 +984,7 @@ func newAdminHarness(t *testing.T) *adminHarness {
 	h.creds = newCredentialsFake(h.audit)
 	h.verifs = newVerificationsFake(h.audit)
 	h.inbox = newInboxFake(h.audit)
-	h.keys = &keysFake{counts: map[string]int64{"acc_1": 3}}
+	h.keys = &keysFake{counts: map[string]int64{"00000010-0000-4000-8000-000000000001": 3}}
 	h.settings = &settingsFake{audit: h.audit,
 		doc: json.RawMessage(`{"security":{"registration_enabled":true},"limits":{"global_daily_tokens":0}}`)}
 
@@ -1008,7 +1008,7 @@ func newAdminHarness(t *testing.T) *adminHarness {
 // issueAdminSession 给一个账户签发会话（acting 类由中间件指定，这里只建账户）。
 func (h *adminHarness) issueSession(t *testing.T, username string, classes ...auth.Class) string {
 	t.Helper()
-	id := fmt.Sprintf("acc_%d", len(h.fsess.byID)+1)
+	id := fmt.Sprintf("00000010-0000-4000-8000-%012d", len(h.fsess.byID)+1)
 	set := auth.NewClassSet(classes...)
 	acct := &auth.Account{
 		ID: id, Username: username, DisplayName: username,
@@ -1096,13 +1096,13 @@ func TestContractAdminDangerousWritesAlso404(t *testing.T) {
 	h := newAdminHarness(t)
 	tok := h.issueSession(t, "contrib-only", auth.ClassContributor)
 	cases := []struct{ method, path, body string }{
-		{http.MethodPatch, "/api/admin/accounts/acc_1", `{"status":"disabled"}`},
-		{http.MethodPost, "/api/admin/accounts/acc_1/password", `{"generate":true}`},
-		{http.MethodDelete, "/api/admin/groups/grp_2", ""},
-		{http.MethodPost, "/api/admin/credentials/cred_1/ban", ""},
-		{http.MethodPut, "/api/admin/abstract-models/am_1/deprecation", `{"status":"deprecated","replacement_model_id":"am_2"}`},
+		{http.MethodPatch, "/api/admin/accounts/00000010-0000-4000-8000-000000000001", `{"status":"disabled"}`},
+		{http.MethodPost, "/api/admin/accounts/00000010-0000-4000-8000-000000000001/password", `{"generate":true}`},
+		{http.MethodDelete, "/api/admin/groups/00000020-0000-4000-8000-000000000002", ""},
+		{http.MethodPost, "/api/admin/credentials/00000040-0000-4000-8000-000000000001/ban", ""},
+		{http.MethodPut, "/api/admin/abstract-models/00000070-0000-4000-8000-000000000001/deprecation", `{"status":"deprecated","replacement_model_id":"00000070-0000-4000-8000-000000000002"}`},
 		{http.MethodPatch, "/api/admin/settings", `{"registration_enabled":false}`},
-		{http.MethodPost, "/api/admin/verifications/ver_1/override", `{"verdict":"trusted","reason":"x"}`},
+		{http.MethodPost, "/api/admin/verifications/00000100-0000-4000-8000-000000000001/override", `{"verdict":"trusted","reason":"x"}`},
 	}
 	for _, c := range cases {
 		w := h.req(t, c.method, c.path, tok, c.body)
@@ -1248,7 +1248,7 @@ func TestContractEveryAdminRouteGuarded(t *testing.T) {
 	}
 	tok := h.issueSession(t, "guard-probe", auth.ClassTenant)
 	for _, rt := range routes {
-		path := strings.NewReplacer("{id}", "1", "{accountID}", "acc_1").Replace(rt.pattern)
+		path := strings.NewReplacer("{id}", "1", "{accountID}", "00000010-0000-4000-8000-000000000001").Replace(rt.pattern)
 		w := h.req(t, rt.method, path, tok, `{}`)
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("%s %s 未被 admin 检查挡住：实得 %d（期望 404 not_found）", rt.method, rt.pattern, w.Code)
@@ -1268,13 +1268,13 @@ func TestContractEveryAdminRouteGuarded(t *testing.T) {
 func TestContractAdminReadsAccountListWithCountsOnly(t *testing.T) {
 	h := newAdminHarness(t)
 	tok := h.issueSession(t, "root", auth.ClassAdmin, auth.ClassTenant)
-	h.accounts.byID["acc_1"] = &AdminAccount{
-		ID: "acc_1", Username: "alice", DisplayName: "alice", Status: "active",
-		Classes: []string{"admin", "tenant"}, Groups: []string{"grp_1"}, CreatedAt: 1700000000,
+	h.accounts.byID["00000010-0000-4000-8000-000000000001"] = &AdminAccount{
+		ID: "00000010-0000-4000-8000-000000000001", Username: "alice", DisplayName: "alice", Status: "active",
+		Classes: []string{"admin", "tenant"}, Groups: []string{"00000020-0000-4000-8000-000000000001"}, CreatedAt: 1700000000,
 		RPMLimit: -1, TPMLimit: -1, MaxConcurrency: -1,
 	}
-	h.accounts.byName["alice"] = "acc_1"
-	h.keys.counts["acc_1"] = 7
+	h.accounts.byName["alice"] = "00000010-0000-4000-8000-000000000001"
+	h.keys.counts["00000010-0000-4000-8000-000000000001"] = 7
 
 	w := h.req(t, http.MethodGet, "/api/admin/accounts", tok, "")
 	if w.Code != http.StatusOK {
@@ -1376,28 +1376,28 @@ func TestContractAdminCreateRejectsEmptyClassesAndBadStatus(t *testing.T) {
 func TestContractApprovalRequiresGroupAndQuota(t *testing.T) {
 	h := newAdminHarness(t)
 	tok := h.issueSession(t, "approver", auth.ClassAdmin)
-	h.accounts.byID["acc_50"] = &AdminAccount{ID: "acc_50", Username: "newbie",
+	h.accounts.byID["00000010-0000-4000-8000-000000000050"] = &AdminAccount{ID: "00000010-0000-4000-8000-000000000050", Username: "newbie",
 		Status: "pending", Classes: []string{"tenant"}, CreatedAt: 1700000000}
-	h.accounts.byName["newbie"] = "acc_50"
+	h.accounts.byName["newbie"] = "00000010-0000-4000-8000-000000000050"
 
-	w := h.req(t, http.MethodPost, "/api/admin/accounts/pending/acc_50/approve", tok, `{}`)
+	w := h.req(t, http.MethodPost, "/api/admin/accounts/pending/00000010-0000-4000-8000-000000000050/approve", tok, `{}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("缺组缺配额批准应 400，实得 %d", w.Code)
 	}
 	if body := w.Body.String(); !strings.Contains(body, "groups") {
 		t.Fatalf("消息应指明缺 groups：%s", body)
 	}
-	w2 := h.req(t, http.MethodPost, "/api/admin/accounts/pending/acc_50/approve", tok,
-		`{"groups":["grp_1"]}`)
+	w2 := h.req(t, http.MethodPost, "/api/admin/accounts/pending/00000010-0000-4000-8000-000000000050/approve", tok,
+		`{"groups":["00000020-0000-4000-8000-000000000001"]}`)
 	if w2.Code != http.StatusBadRequest || !strings.Contains(w2.Body.String(), "quota") {
 		t.Fatalf("缺配额应 400 且指明 quota，实得 %d %s", w2.Code, w2.Body.String())
 	}
-	w3 := h.req(t, http.MethodPost, "/api/admin/accounts/pending/acc_50/approve", tok,
-		`{"groups":["grp_1"],"quota":{"unit":"token","limit":200000,"period":"day"}}`)
+	w3 := h.req(t, http.MethodPost, "/api/admin/accounts/pending/00000010-0000-4000-8000-000000000050/approve", tok,
+		`{"groups":["00000020-0000-4000-8000-000000000001"],"quota":{"unit":"token","limit":200000,"period":"day"}}`)
 	if w3.Code != http.StatusOK {
 		t.Fatalf("组+配额齐全应 200，实得 %d %s", w3.Code, w3.Body.String())
 	}
-	if h.accounts.byID["acc_50"].Status != "active" {
+	if h.accounts.byID["00000010-0000-4000-8000-000000000050"].Status != "active" {
 		t.Fatalf("批准后状态应 active")
 	}
 	var found bool
@@ -1416,9 +1416,9 @@ func TestContractApprovalRequiresGroupAndQuota(t *testing.T) {
 func TestContractResetPasswordRevokesSessions(t *testing.T) {
 	h := newAdminHarness(t)
 	tok := h.issueSession(t, "root3", auth.ClassAdmin)
-	h.accounts.byID["acc_70"] = &AdminAccount{ID: "acc_70", Username: "pw", Status: "active",
+	h.accounts.byID["00000010-0000-4000-8000-000000000070"] = &AdminAccount{ID: "00000010-0000-4000-8000-000000000070", Username: "pw", Status: "active",
 		Classes: []string{"tenant"}}
-	w := h.req(t, http.MethodPost, "/api/admin/accounts/acc_70/password", tok, `{"generate":true}`)
+	w := h.req(t, http.MethodPost, "/api/admin/accounts/00000010-0000-4000-8000-000000000070/password", tok, `{"generate":true}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("重置应 200，实得 %d %s", w.Code, w.Body.String())
 	}
@@ -1430,7 +1430,7 @@ func TestContractResetPasswordRevokesSessions(t *testing.T) {
 		t.Fatalf("generate 分支必须回显一次性密码")
 	}
 	// password 与 generate 同给 → 400（歧义不猜）
-	w2 := h.req(t, http.MethodPost, "/api/admin/accounts/acc_70/password", tok,
+	w2 := h.req(t, http.MethodPost, "/api/admin/accounts/00000010-0000-4000-8000-000000000070/password", tok,
 		`{"password":"aaaaaaaaaaaaaaaa","generate":true}`)
 	if w2.Code != http.StatusBadRequest {
 		t.Fatalf("同给应 400，实得 %d", w2.Code)
@@ -1445,7 +1445,7 @@ func TestContractResetPasswordRevokesSessions(t *testing.T) {
 func TestContractDefaultGroupDeleteIs409Conflict(t *testing.T) {
 	h := newAdminHarness(t)
 	tok := h.issueSession(t, "root4", auth.ClassAdmin)
-	w := h.req(t, http.MethodDelete, "/api/admin/groups/grp_1", tok, "")
+	w := h.req(t, http.MethodDelete, "/api/admin/groups/00000020-0000-4000-8000-000000000001", tok, "")
 	if w.Code != http.StatusConflict {
 		t.Fatalf("删默认组应 409，实得 %d %s", w.Code, w.Body.String())
 	}
@@ -1460,18 +1460,18 @@ func TestContractDefaultGroupDeleteIs409Conflict(t *testing.T) {
 func TestContractGroupDeleteNonDefaultOk(t *testing.T) {
 	h := newAdminHarness(t)
 	tok := h.issueSession(t, "root5", auth.ClassAdmin)
-	h.groups.byID["grp_9"] = &AdminGroupDetail{
-		AdminGroup: AdminGroup{ID: "grp_9", Name: "试点组"}, Models: []string{"smart"},
-		Members: []string{"acc_2"}, Policies: json.RawMessage(`{}`),
+	h.groups.byID["00000020-0000-4000-8000-000000000009"] = &AdminGroupDetail{
+		AdminGroup: AdminGroup{ID: "00000020-0000-4000-8000-000000000009", Name: "试点组"}, Models: []string{"smart"},
+		Members: []string{"00000010-0000-4000-8000-000000000002"}, Policies: json.RawMessage(`{}`),
 	}
-	w := h.req(t, http.MethodDelete, "/api/admin/groups/grp_9", tok, "")
+	w := h.req(t, http.MethodDelete, "/api/admin/groups/00000020-0000-4000-8000-000000000009", tok, "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("删普通组应 200，实得 %d %s", w.Code, w.Body.String())
 	}
 	if _, has := decodeData(t, w)["audit_id"]; !has {
 		t.Fatalf("删组写响应缺 audit_id")
 	}
-	if _, still := h.groups.byID["grp_9"]; still {
+	if _, still := h.groups.byID["00000020-0000-4000-8000-000000000009"]; still {
 		t.Fatalf("假体里组应已删除")
 	}
 }
@@ -1481,35 +1481,60 @@ func TestContractGroupDeleteNonDefaultOk(t *testing.T) {
 func TestContractGroupPutsRequireWholeCollection(t *testing.T) {
 	h := newAdminHarness(t)
 	tok := h.issueSession(t, "root6", auth.ClassAdmin)
-	w := h.req(t, http.MethodPut, "/api/admin/groups/grp_1/models", tok, `{}`)
+	w := h.req(t, http.MethodPut, "/api/admin/groups/00000020-0000-4000-8000-000000000001/models", tok, `{}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("PUT models 不给数组应 400，实得 %d", w.Code)
 	}
-	w2 := h.req(t, http.MethodPut, "/api/admin/groups/grp_1/models", tok, `{"models":[]}`)
+	w2 := h.req(t, http.MethodPut, "/api/admin/groups/00000020-0000-4000-8000-000000000001/models", tok, `{"models":[]}`)
 	if w2.Code != http.StatusOK {
 		t.Fatalf("PUT models=[] 应 200（清空是合法整体替换），实得 %d %s", w2.Code, w2.Body.String())
 	}
-	if len(h.groups.byID["grp_1"].Models) != 0 {
+	if len(h.groups.byID["00000020-0000-4000-8000-000000000001"].Models) != 0 {
 		t.Fatalf("清空未生效")
 	}
-	w3 := h.req(t, http.MethodPut, "/api/admin/groups/grp_1/policies", tok, `{"policies":[]}`)
+	w3 := h.req(t, http.MethodPut, "/api/admin/groups/00000020-0000-4000-8000-000000000001/policies", tok, `{"policies":[]}`)
 	if w3.Code != http.StatusBadRequest {
 		t.Fatalf("policies 必须是 JSON 对象，数组应 400，实得 %d", w3.Code)
 	}
 }
 
-// TestContractGroupMemberIDsArePrefixChecked 锁 lead 裁决①：跨资源 id 混用
-// 在解码层失败（拿 acc_ 去填组 id、拿 grp_ 去填账户 id 都拒）。
+// uuidGhost 是一个形状合法（UUID v4）但任何 fake 库里都不存在的 id，
+// 用来断言「查不到 → 404」这条新世界路径。
+const uuidGhost = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+
+// TestContractGroupMemberIDsArePrefixChecked 锁成员写入的 id 校验出口。
+//
+// 语义随 UUID 改造变化（原样保留测试名以便追溯 lead 裁决①）：
+//   - 旧世界：id 带资源前缀（acc_1 / grp_1），跨资源误用在**解码层**就失败 → 400；
+//   - 新世界：id 是无前缀的 UUID，解码层只能判形状。「形状非法」仍走 400
+//     （本用例第一条）；「形状合法但不是组 / 不是账户」变成**查不到 → 404**
+//     （第二条，用一个合法但库里没有的 UUID 冒充账户 id）。
+//     跨资源防护仍在，只是判定从解码层挪到了「在错误的表里按主键查不到」。
 func TestContractGroupMemberIDsArePrefixChecked(t *testing.T) {
 	h := newAdminHarness(t)
 	tok := h.issueSession(t, "root7", auth.ClassAdmin)
-	w := h.req(t, http.MethodPost, "/api/admin/groups/acc_1/members", tok, `{"account_ids":["acc_2"]}`)
+	// 形状非法 → 400 并指明 param。
+	w := h.req(t, http.MethodPost, "/api/admin/groups/grp-1/members", tok, `{"account_ids":["acc-1"]}`)
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("组路径填 acc_ 应 400，实得 %d", w.Code)
+		t.Fatalf("非法 id 形状应 400，实得 %d", w.Code)
 	}
-	w2 := h.req(t, http.MethodPost, "/api/admin/groups/grp_1/members", tok, `{"account_ids":["grp_2"]}`)
-	if w2.Code != http.StatusBadRequest {
-		t.Fatalf("account_ids 填 grp_ 应 400，实得 %d", w2.Code)
+	var env struct {
+		Error struct {
+			Param string `json:"param"`
+			Code  string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("解析错误体失败：%s", w.Body.String())
+	}
+	if env.Error.Param != "id" || env.Error.Code != "invalid_request" {
+		t.Fatalf("应 invalid_request/param=id，实得 %q/%q", env.Error.Code, env.Error.Param)
+	}
+	// 形状合法但组不存在 → 404（旧「拿账户 id 填组路径应 400」的同位置断言）。
+	w2 := h.req(t, http.MethodPost, "/api/admin/groups/"+uuidGhost+"/members", tok,
+		`{"account_ids":["00000010-0000-4000-8000-000000000002"]}`)
+	if w2.Code != http.StatusNotFound {
+		t.Fatalf("不存在的组应 404，实得 %d", w2.Code)
 	}
 }
 
@@ -1522,8 +1547,8 @@ func TestContractGroupMemberIDsArePrefixChecked(t *testing.T) {
 func TestContractRealModelPatchFlipsSourceToOverride(t *testing.T) {
 	h := newAdminHarness(t)
 	tok := h.issueSession(t, "root8", auth.ClassAdmin)
-	h.models.putReal("rm_1")
-	w := h.req(t, http.MethodPatch, "/api/admin/real-models/rm_1", tok, `{"display_name":"新名"}`)
+	h.models.putReal("00000060-0000-4000-8000-000000000001")
+	w := h.req(t, http.MethodPatch, "/api/admin/real-models/00000060-0000-4000-8000-000000000001", tok, `{"display_name":"新名"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("PATCH display_name 应 200，实得 %d %s", w.Code, w.Body.String())
 	}
@@ -1532,7 +1557,7 @@ func TestContractRealModelPatchFlipsSourceToOverride(t *testing.T) {
 		t.Fatalf("人工改写后 source 应 override，实得 %v", data["source"])
 	}
 	for _, bad := range []string{"qualified_name", "status", "source", "upstream_id"} {
-		w2 := h.req(t, http.MethodPatch, "/api/admin/real-models/rm_1", tok,
+		w2 := h.req(t, http.MethodPatch, "/api/admin/real-models/00000060-0000-4000-8000-000000000001", tok,
 			fmt.Sprintf(`{%q:"x"}`, bad))
 		if w2.Code != http.StatusBadRequest {
 			t.Fatalf("不可写字段 %s 应 400，实得 %d", bad, w2.Code)
@@ -1685,11 +1710,11 @@ func TestContractDryRunStaticVerdict(t *testing.T) {
 	tok := h.issueSession(t, "root13", auth.ClassAdmin)
 	capFull := json.RawMessage(`{"context_window":128000,"max_output":8192,"tool_calling":true,"vision":true}`)
 	a := h.models.putAbs("dryme", "active", nil, capFull)
-	h.models.putReal("rm_1")
-	h.models.putReal("rm_2")
+	h.models.putReal("00000060-0000-4000-8000-000000000001")
+	h.models.putReal("00000060-0000-4000-8000-000000000002")
 	h.models.cands[a.ID] = []AdminCandidateItem{
-		{RealModelID: "rm_1", AvailableInstances: 2},
-		{RealModelID: "rm_2", AvailableInstances: 0},
+		{RealModelID: "00000060-0000-4000-8000-000000000001", AvailableInstances: 2},
+		{RealModelID: "00000060-0000-4000-8000-000000000002", AvailableInstances: 0},
 	}
 	w := h.req(t, http.MethodPost, "/api/admin/abstract-models/"+a.ID+"/dry-run", tok,
 		`{"strategy":["expiry-first","balance"],"sample_size":200}`)
@@ -1712,9 +1737,9 @@ func TestContractCandidateReplaceIgnoresRuntimeField(t *testing.T) {
 	tok := h.issueSession(t, "root14", auth.ClassAdmin)
 	capFull := json.RawMessage(`{"context_window":128000}`)
 	a := h.models.putAbs("candme", "active", nil, capFull)
-	h.models.putReal("rm_1")
+	h.models.putReal("00000060-0000-4000-8000-000000000001")
 	w := h.req(t, http.MethodPut, "/api/admin/abstract-models/"+a.ID+"/candidates", tok,
-		`{"candidates":[{"real_model_id":"rm_1","weight":100,"available_instances":999}]}`)
+		`{"candidates":[{"real_model_id":"00000060-0000-4000-8000-000000000001","weight":100,"available_instances":999}]}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("替换候选应 200，实得 %d %s", w.Code, w.Body.String())
 	}
@@ -1835,11 +1860,11 @@ func TestContractCredentialDetailHasNoPlaintext(t *testing.T) {
 	h := newAdminHarness(t)
 	tok := h.issueSession(t, "root19", auth.ClassAdmin)
 	// 假体塞一个带敏感字段的行（桥若误传也应在这里暴露）
-	h.creds.byID["cred_2"] = &AdminCredential{
-		ID: "cred_2", OwnerAccountID: "acc_9", Provider: "p", ExternalID: "e",
+	h.creds.byID["00000040-0000-4000-8000-000000000002"] = &AdminCredential{
+		ID: "00000040-0000-4000-8000-000000000002", OwnerAccountID: "00000010-0000-4000-8000-000000000009", Provider: "p", ExternalID: "e",
 		Status: "active", VerifyStatus: "unverified", CreatedAt: 1700000000,
 	}
-	for _, path := range []string{"/api/admin/credentials", "/api/admin/credentials/cred_1", "/api/admin/credentials/cred_2"} {
+	for _, path := range []string{"/api/admin/credentials", "/api/admin/credentials/00000040-0000-4000-8000-000000000001", "/api/admin/credentials/00000040-0000-4000-8000-000000000002"} {
 		w := h.req(t, http.MethodGet, path, tok, "")
 		if w.Code != http.StatusOK {
 			t.Fatalf("%s 应 200，实得 %d", path, w.Code)
@@ -1852,7 +1877,7 @@ func TestContractCredentialDetailHasNoPlaintext(t *testing.T) {
 		}
 	}
 	// 元数据仍齐全（provider/external_label/verify_detail）
-	w := h.req(t, http.MethodGet, "/api/admin/credentials/cred_1", tok, "")
+	w := h.req(t, http.MethodGet, "/api/admin/credentials/00000040-0000-4000-8000-000000000001", tok, "")
 	data := decodeData(t, w)["data"].(map[string]any)
 	if data["provider"] != "example-provider" || data["external_label"] != "我的贡献" {
 		t.Fatalf("凭据元数据缺失：%v", data)
@@ -1864,10 +1889,10 @@ func TestContractCredentialDetailHasNoPlaintext(t *testing.T) {
 func TestContractCredentialSuspendAndBanDistinctActions(t *testing.T) {
 	h := newAdminHarness(t)
 	tok := h.issueSession(t, "root20", auth.ClassAdmin)
-	if w := h.req(t, http.MethodPost, "/api/admin/credentials/cred_1/suspend", tok, ""); w.Code != 200 {
+	if w := h.req(t, http.MethodPost, "/api/admin/credentials/00000040-0000-4000-8000-000000000001/suspend", tok, ""); w.Code != 200 {
 		t.Fatalf("suspend 应 200，实得 %d %s", w.Code, w.Body.String())
 	}
-	if w := h.req(t, http.MethodPost, "/api/admin/credentials/cred_1/ban", tok, ""); w.Code != 200 {
+	if w := h.req(t, http.MethodPost, "/api/admin/credentials/00000040-0000-4000-8000-000000000001/ban", tok, ""); w.Code != 200 {
 		t.Fatalf("ban 应 200，实得 %d", w.Code)
 	}
 	var acts []string
@@ -1879,7 +1904,7 @@ func TestContractCredentialSuspendAndBanDistinctActions(t *testing.T) {
 	if len(acts) != 2 || acts[0] != "credential.suspend" || acts[1] != "credential.ban" {
 		t.Fatalf("审计 action 应为 suspend/ban 两条，实得 %v", acts)
 	}
-	if h.creds.byID["cred_1"].Status != "disabled" {
+	if h.creds.byID["00000040-0000-4000-8000-000000000001"].Status != "disabled" {
 		t.Fatalf("状态应 disabled（CHECK 枚举无 banned）")
 	}
 }
@@ -1893,7 +1918,7 @@ func TestContractCredentialSuspendAndBanDistinctActions(t *testing.T) {
 func TestContractOverrideRequiresReason(t *testing.T) {
 	h := newAdminHarness(t)
 	tok := h.issueSession(t, "root21", auth.ClassAdmin)
-	w := h.req(t, http.MethodPost, "/api/admin/verifications/ver_1/override", tok,
+	w := h.req(t, http.MethodPost, "/api/admin/verifications/00000100-0000-4000-8000-000000000001/override", tok,
 		`{"verdict":"trusted"}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("缺 reason 应 400，实得 %d", w.Code)
@@ -1904,12 +1929,12 @@ func TestContractOverrideRequiresReason(t *testing.T) {
 	if len(h.verifs.overrode) != 0 {
 		t.Fatalf("缺理由时不得写存储")
 	}
-	w2 := h.req(t, http.MethodPost, "/api/admin/verifications/ver_1/override", tok,
+	w2 := h.req(t, http.MethodPost, "/api/admin/verifications/00000100-0000-4000-8000-000000000001/override", tok,
 		`{"verdict":"trusted","reason":"人工复核证据充分"}`)
 	if w2.Code != http.StatusOK {
 		t.Fatalf("带理由应 200，实得 %d %s", w2.Code, w2.Body.String())
 	}
-	if h.verifs.byID["ver_1"].Verdict != "trusted" {
+	if h.verifs.byID["00000100-0000-4000-8000-000000000001"].Verdict != "trusted" {
 		t.Fatalf("改判未落库")
 	}
 	var found bool
@@ -2030,12 +2055,12 @@ func TestContractInboxCountAndReadFlow(t *testing.T) {
 		t.Fatalf("count 端点不得拉列表（§12 读放大）")
 	}
 	// 读一条：read_by 记录是谁读的
-	h.accounts.byID["acc_1"] = &AdminAccount{ID: "acc_1", Username: "root24", Status: "active", Classes: []string{"admin"}}
-	w2 := h.req(t, http.MethodPatch, "/api/admin/inbox/inb_1", tok, `{"read":true}`)
+	h.accounts.byID["00000010-0000-4000-8000-000000000001"] = &AdminAccount{ID: "00000010-0000-4000-8000-000000000001", Username: "root24", Status: "active", Classes: []string{"admin"}}
+	w2 := h.req(t, http.MethodPatch, "/api/admin/inbox/00000080-0000-4000-8000-000000000001", tok, `{"read":true}`)
 	if w2.Code != http.StatusOK {
 		t.Fatalf("标已读应 200，实得 %d %s", w2.Code, w2.Body.String())
 	}
-	if h.inbox.readBy["inb_1"] == "" {
+	if h.inbox.readBy["00000080-0000-4000-8000-000000000001"] == "" {
 		t.Fatalf("read_by 应记录管理员账户")
 	}
 	var found bool
@@ -2052,7 +2077,7 @@ func TestContractInboxCountAndReadFlow(t *testing.T) {
 		t.Fatalf("标读后未读应减 1")
 	}
 	// 批量
-	w4 := h.req(t, http.MethodPost, "/api/admin/inbox/read", tok, `{"ids":["inb_2"]}`)
+	w4 := h.req(t, http.MethodPost, "/api/admin/inbox/read", tok, `{"ids":["00000080-0000-4000-8000-000000000002"]}`)
 	if w4.Code != http.StatusOK {
 		t.Fatalf("批量已读应 200，实得 %d %s", w4.Code, w4.Body.String())
 	}
@@ -2088,7 +2113,7 @@ func TestContractUnwiredCapabilityIsByteIdentical404(t *testing.T) {
 	baseline := h.req(t, http.MethodGet, "/api/admin/definitely-not-here", tok, "")
 	assertSameBytes(t, unwired, baseline, "未装配能力 vs 不存在路径（§2.2 哲学延伸）")
 
-	w2 := h.req(t, http.MethodPost, "/api/admin/upstreams/up_1/test", tok, "")
+	w2 := h.req(t, http.MethodPost, "/api/admin/upstreams/00000050-0000-4000-8000-000000000001/test", tok, "")
 	if w2.Code != http.StatusNotFound {
 		t.Fatalf("未接测试器应 404，实得 %d", w2.Code)
 	}
@@ -2108,8 +2133,8 @@ func TestContractInvalidIDAndPaginationParams(t *testing.T) {
 		{"/api/admin/accounts?limit=0", "limit"},
 		{"/api/admin/accounts?limit=abc", "limit"},
 		{"/api/admin/accounts?cursor=%21%40%23", "cursor"},
-		{"/api/admin/groups/acc_1", "id"},     // 组路径填账户前缀
-		{"/api/admin/real-models/am_1", "id"}, // 真实模型路径填抽象模型前缀
+		{"/api/admin/groups/acc-1", "id"},      // 形状非法（旧「跨前缀误用」用例）
+		{"/api/admin/real-models/grp-1", "id"}, // 形状非法
 	}
 	for _, c := range cases {
 		w := h.req(t, http.MethodGet, c.path, tok, "")

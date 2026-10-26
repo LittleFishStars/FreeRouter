@@ -65,7 +65,7 @@ func TestContractSettleBridgeWritesRequestAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("建抽象模型: %v", err)
 	}
-	if amID == 0 {
+	if amID == "" {
 		t.Fatal("抽象模型 id 不应为 0")
 	}
 	upID, err := repos.Models.UpsertUpstream(ctx, "selfhosted", "test-up", "http://127.0.0.1:1", nil, true)

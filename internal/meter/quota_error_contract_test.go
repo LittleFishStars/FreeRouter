@@ -17,9 +17,9 @@ var qeNow = time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 func TestContractQuotaErrorDualChannel(t *testing.T) {
 	qe := store.ErrQuotaExhausted{
 		Scope: "account", Unit: "token", Period: "day",
-		PeriodAnchor: "2026-10-20", AbstractModelID: 7,
+		PeriodAnchor: "2026-10-20", AbstractModelID: tidA,
 	}
-	err := TranslateQuotaExhausted(qe, 7, qeNow)
+	err := TranslateQuotaExhausted(qe, tidA, qeNow)
 	var ae *auth.Error
 	if !errors.As(err, &ae) {
 		t.Fatal("应翻成 auth.Error")
@@ -30,7 +30,7 @@ func TestContractQuotaErrorDualChannel(t *testing.T) {
 	if ae.Quota == nil {
 		t.Fatal("必须带 quota 对象（机器通道）")
 	}
-	if ae.Quota.Unit != "token" || ae.Quota.Period != "day" || ae.Quota.Model != "7" {
+	if ae.Quota.Unit != "token" || ae.Quota.Period != "day" || ae.Quota.Model != tidA {
 		t.Fatalf("quota 对象错误: %+v", ae.Quota)
 	}
 	want := time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC).Sub(qeNow)
@@ -80,7 +80,7 @@ func TestContractQuotaErrorExpiredAnchorNoRetryAfter(t *testing.T) {
 // （排障面）不进 quota 对象（客户端决策变量只有 unit/period/model）。
 func TestContractPoolErrorCarriesGroupInDetail(t *testing.T) {
 	qe := store.ErrQuotaExhausted{Scope: "pool", Unit: "token", Period: "month", PeriodAnchor: "2026-10-01"}
-	err := TranslatePoolExhausted(qe, 42, 7, qeNow)
+	err := TranslatePoolExhausted(qe, tidG, tidA, qeNow)
 	var ae *auth.Error
 	if !errors.As(err, &ae) {
 		t.Fatal("应翻成 auth.Error")
@@ -88,10 +88,10 @@ func TestContractPoolErrorCarriesGroupInDetail(t *testing.T) {
 	if ae.Code != auth.CodePoolExhausted {
 		t.Fatalf("code 应 pool_exhausted，得 %s", ae.Code)
 	}
-	if ae.Quota == nil || ae.Quota.Model != "7" {
+	if ae.Quota == nil || ae.Quota.Model != tidA {
 		t.Fatalf("池错误也应带 quota 对象: %+v", ae.Quota)
 	}
-	if ae.GroupID != "42" {
+	if ae.GroupID != tidG {
 		t.Fatalf("groupID 应进排障面（Error.GroupID），得 %q", ae.GroupID)
 	}
 }
@@ -109,7 +109,7 @@ func TestContractHasQuotaDetail(t *testing.T) {
 	if !HasQuotaDetail(TranslateQuotaExhausted(qe, store.TotalScope, qeNow)) {
 		t.Fatal("quota_exceeded 应 true")
 	}
-	if !HasQuotaDetail(TranslatePoolExhausted(qe, 1, 0, qeNow)) {
+	if !HasQuotaDetail(TranslatePoolExhausted(qe, tidG, store.TotalScope, qeNow)) {
 		t.Fatal("pool_exhausted 应 true")
 	}
 }
@@ -204,7 +204,7 @@ func TestContractMultiCandidateNoDoubleDebit(t *testing.T) {
 }
 
 // openQuotaStore 起真库并建账户（条件扣减用例用）。
-func openQuotaStore(t *testing.T) (*store.Store, int64) {
+func openQuotaStore(t *testing.T) (*store.Store, string) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(t.Context(), store.Options{

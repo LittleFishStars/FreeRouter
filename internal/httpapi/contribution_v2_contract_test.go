@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,39 +44,41 @@ func (f fakeProviderOAuth) Poll(context.Context, PollInput) (*PollResult, error)
 
 // fakeContributionStore 是贡献面存储窄接口的内存实现。
 type fakeContributionStore struct {
-	owner int64
+	owner string
 	creds []ContributionCredentialRow
 	// notFoundID 使 CredentialOf 对它报错（模拟非属主/不存在）。
-	notFoundID int64
+	notFoundID string
 	// usageSince 记录上一次 ContributionUsage 收到的 since（断言 range 真的传下去了）。
 	usageSince int64
 }
 
 // AccountIDOf 按会话里的账户 id 原样翻译（认证面字符串 id → 贡献链路 int64）。
 // 不返回固定 f.owner：那会把「别人的会话」也算成本账户，属主校验的用例就失效了。
-func (f *fakeContributionStore) AccountIDOf(_ context.Context, accountID string) (int64, error) {
-	return strconv.ParseInt(accountID, 10, 64)
+func (f *fakeContributionStore) AccountIDOf(_ context.Context, accountID string) (string, error) {
+	return accountID, nil
 }
 
-func (f *fakeContributionStore) CreateContributor(context.Context, string) (int64, error) {
+func (f *fakeContributionStore) CreateContributor(context.Context, string) (string, error) {
 	return f.owner, nil
 }
 
-func (f *fakeContributionStore) SetRecoveryCodeHash(context.Context, int64, string) error { return nil }
+func (f *fakeContributionStore) SetRecoveryCodeHash(context.Context, string, string) error {
+	return nil
+}
 
-func (f *fakeContributionStore) RecoveryHashOf(context.Context, int64) (string, error) {
+func (f *fakeContributionStore) RecoveryHashOf(context.Context, string) (string, error) {
 	return "", nil
 }
 
-func (f *fakeContributionStore) RecoveryStateOf(context.Context, int64) (bool, error) {
+func (f *fakeContributionStore) RecoveryStateOf(context.Context, string) (bool, error) {
 	return false, nil
 }
 
-func (f *fakeContributionStore) CredentialsOf(context.Context, int64) ([]ContributionCredentialRow, error) {
+func (f *fakeContributionStore) CredentialsOf(context.Context, string) ([]ContributionCredentialRow, error) {
 	return f.creds, nil
 }
 
-func (f *fakeContributionStore) CredentialOf(_ context.Context, owner, id int64) (*ContributionCredentialRow, error) {
+func (f *fakeContributionStore) CredentialOf(_ context.Context, owner, id string) (*ContributionCredentialRow, error) {
 	if owner != f.owner || id == f.notFoundID {
 		return nil, errors.New("not found")
 	}
@@ -89,7 +90,7 @@ func (f *fakeContributionStore) CredentialOf(_ context.Context, owner, id int64)
 	return nil, errors.New("not found")
 }
 
-func (f *fakeContributionStore) ContributionUsage(_ context.Context, _ int64, since int64) (int64, int64, int64, error) {
+func (f *fakeContributionStore) ContributionUsage(_ context.Context, _ string, since int64) (int64, int64, int64, error) {
 	f.usageSince = since
 	return 3, 30, 300, nil
 }
@@ -100,7 +101,7 @@ type fakeSubmitter struct{ got []ContributionSubmission }
 func (f *fakeSubmitter) Submit(_ context.Context, sub ContributionSubmission) (ContributionOutcome, error) {
 	f.got = append(f.got, sub)
 	return ContributionOutcome{
-		CredentialID: 1, Status: "active", VerifyStatus: "verified", InPool: true,
+		CredentialID: "id1", Status: "active", VerifyStatus: "verified", InPool: true,
 	}, nil
 }
 
@@ -110,7 +111,7 @@ type fakePauser struct {
 	paused []bool
 }
 
-func (f *fakePauser) SetPaused(_ context.Context, _, _ int64, paused bool) (string, error) {
+func (f *fakePauser) SetPaused(_ context.Context, _, _ string, paused bool) (string, error) {
 	f.paused = append(f.paused, paused)
 	return f.status, nil
 }
@@ -268,7 +269,7 @@ func TestContributionProvidersWithoutOAuth(t *testing.T) {
 func TestContributionSubmitKindAPI(t *testing.T) {
 	newDeps := func() (*ContributionDeps, *fakeSubmitter, *fakeContributionStore) {
 		sub := &fakeSubmitter{}
-		st := &fakeContributionStore{owner: 7}
+		st := &fakeContributionStore{owner: "id7"}
 		return &ContributionDeps{
 			Submitter: sub,
 			Store:     st,
@@ -281,7 +282,7 @@ func TestContributionSubmitKindAPI(t *testing.T) {
 		w := httptest.NewRecorder()
 		// 请求体里的 endpoint 故意写成错值：后端必须以目录为准。
 		body := `{"kind":"api","provider":"deepseek-com","endpoint":"https://evil.example/v1","api_key":"sk-0123456789abcdef","claimed_models":["deepseek-flash","deepseek-reasoner"]}`
-		(&Server{}).HandleContributeSubmit(deps)(w, postJSON("7", body))
+		(&Server{}).HandleContributeSubmit(deps)(w, postJSON(pauseOwner, body))
 		if w.Code != http.StatusOK {
 			t.Fatalf("状态码 = %d，期望 200（body=%s）", w.Code, w.Body.String())
 		}
@@ -304,7 +305,7 @@ func TestContributionSubmitKindAPI(t *testing.T) {
 		deps, sub, _ := newDeps()
 		w := httptest.NewRecorder()
 		body := `{"kind":"api","provider":"no-such-vendor","api_key":"sk-0123456789abcdef"}`
-		(&Server{}).HandleContributeSubmit(deps)(w, postJSON("7", body))
+		(&Server{}).HandleContributeSubmit(deps)(w, postJSON(pauseOwner, body))
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("状态码 = %d，期望 400", w.Code)
 		}
@@ -320,7 +321,7 @@ func TestContributionSubmitKindAPI(t *testing.T) {
 		deps, sub, _ := newDeps()
 		w := httptest.NewRecorder()
 		body := `{"endpoint":"https://my-gw.example/v1","api_key":"sk-0123456789abcdef","label":"我的网关"}`
-		(&Server{}).HandleContributeSubmit(deps)(w, postJSON("7", body))
+		(&Server{}).HandleContributeSubmit(deps)(w, postJSON(pauseOwner, body))
 		if w.Code != http.StatusOK {
 			t.Fatalf("状态码 = %d，期望 200（body=%s）", w.Code, w.Body.String())
 		}
@@ -336,7 +337,7 @@ func TestContributionSubmitKindAPI(t *testing.T) {
 		deps, sub, _ := newDeps()
 		w := httptest.NewRecorder()
 		body := `{"kind":"custom","api_key":"sk-0123456789abcdef"}`
-		(&Server{}).HandleContributeSubmit(deps)(w, postJSON("7", body))
+		(&Server{}).HandleContributeSubmit(deps)(w, postJSON(pauseOwner, body))
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("状态码 = %d，期望 400", w.Code)
 		}
@@ -349,7 +350,7 @@ func TestContributionSubmitKindAPI(t *testing.T) {
 		deps, sub, _ := newDeps()
 		w := httptest.NewRecorder()
 		body := `{"kind":"oauth","endpoint":"https://x.example/v1","api_key":"sk-0123456789abcdef"}`
-		(&Server{}).HandleContributeSubmit(deps)(w, postJSON("7", body))
+		(&Server{}).HandleContributeSubmit(deps)(w, postJSON(pauseOwner, body))
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("状态码 = %d，期望 400", w.Code)
 		}
@@ -363,8 +364,20 @@ func TestContributionSubmitKindAPI(t *testing.T) {
 }
 
 // TestCredentialPauseResumeHTTP 覆盖暂停/恢复的 HTTP 形状与属主校验（契约 §5）。
+//
+// 路径参数 id 会过 idgen.Parse（形状硬校验），所以夹具必须用合法 UUID；
+// owner 不过形状校验（fake 的 AccountIDOf 直接透传），但必须与 postJSON 的
+// principal 一致，否则属主判定失败 → 404。
+const (
+	pauseOwner   = "00000010-0000-4000-8000-000000000007"
+	pauseCred1   = "00000040-0000-4000-8000-000000000011"
+	pauseCred2   = "00000040-0000-4000-8000-000000000012"
+	pauseNotMine = "00000010-0000-4000-8000-000000000099"
+)
+
+// TestCredentialPauseResumeHTTP 覆盖暂停/恢复的 HTTP 形状与属主校验（契约 §5）。
 func TestCredentialPauseResumeHTTP(t *testing.T) {
-	creds := []ContributionCredentialRow{{ID: 11, Status: "active"}, {ID: 12, Status: "disabled"}}
+	creds := []ContributionCredentialRow{{ID: pauseCred1, Status: "active"}, {ID: pauseCred2, Status: "disabled"}}
 
 	cases := []struct {
 		name     string
@@ -389,12 +402,12 @@ func TestCredentialPauseResumeHTTP(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			st := &fakeContributionStore{owner: 7, creds: creds}
+			st := &fakeContributionStore{owner: pauseOwner, creds: creds}
 			pr := &fakePauser{status: tc.status}
 			deps := &ContributionDeps{Store: st, Pauser: pr}
 
-			r := postJSON("7", "")
-			r = withURLParam(r, "11")
+			r := postJSON(pauseOwner, "")
+			r = withURLParam(r, pauseCred1)
 			w := httptest.NewRecorder()
 			tc.handler(&Server{}, deps)(w, r)
 
@@ -418,12 +431,12 @@ func TestCredentialPauseResumeHTTP(t *testing.T) {
 	}
 
 	t.Run("非属主 → 404 not_found（不确认他人凭据存在）", func(t *testing.T) {
-		st := &fakeContributionStore{owner: 7, creds: creds}
+		st := &fakeContributionStore{owner: pauseOwner, creds: creds}
 		pr := &fakePauser{status: "paused"}
 		deps := &ContributionDeps{Store: st, Pauser: pr}
 
 		r := postJSON("999", "") // 会话属于另一个账户
-		r = withURLParam(r, "11")
+		r = withURLParam(r, pauseCred1)
 		w := httptest.NewRecorder()
 		(&Server{}).HandleContributionCredentialPause(deps)(w, r)
 
@@ -439,9 +452,9 @@ func TestCredentialPauseResumeHTTP(t *testing.T) {
 	})
 
 	t.Run("未登录 → 401 session_expired", func(t *testing.T) {
-		deps := &ContributionDeps{Store: &fakeContributionStore{owner: 7}, Pauser: &fakePauser{}}
+		deps := &ContributionDeps{Store: &fakeContributionStore{owner: pauseOwner}, Pauser: &fakePauser{}}
 		r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
-		r = withURLParam(r, "11")
+		r = withURLParam(r, pauseCred1)
 		w := httptest.NewRecorder()
 		(&Server{}).HandleContributionCredentialPause(deps)(w, r)
 		if w.Code != http.StatusUnauthorized {
@@ -465,7 +478,7 @@ func TestContributionStatsRange(t *testing.T) {
 		{"?range=month", wantMonth},
 	}
 	for _, tc := range cases {
-		st := &fakeContributionStore{owner: 7}
+		st := &fakeContributionStore{owner: "id7"}
 		deps := &ContributionDeps{Store: st}
 		r := httptest.NewRequest(http.MethodGet, "/api/contributions/stats"+tc.query, nil)
 		p := &auth.Principal{AccountID: "7"}
@@ -482,7 +495,7 @@ func TestContributionStatsRange(t *testing.T) {
 	}
 
 	t.Run("非法 range → 400 且 param=range", func(t *testing.T) {
-		st := &fakeContributionStore{owner: 7}
+		st := &fakeContributionStore{owner: "id7"}
 		deps := &ContributionDeps{Store: st}
 		r := httptest.NewRequest(http.MethodGet, "/api/contributions/stats?range=week", nil)
 		p := &auth.Principal{AccountID: "7"}

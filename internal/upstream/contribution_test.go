@@ -130,25 +130,25 @@ func TestContractContributionFingerprintAndValidation(t *testing.T) {
 		sub  Submission
 	}{
 		{"无归属账户", Submission{Provider: "p", BaseURL: "https://x/v1", APIKey: "sk-123456789"}},
-		{"provider 空", Submission{OwnerAccountID: 1, BaseURL: "https://x/v1", APIKey: "sk-123456789"}},
-		{"URL 不合法", Submission{OwnerAccountID: 1, Provider: "p", BaseURL: "://x", APIKey: "sk-123456789"}},
-		{"key 为空", Submission{OwnerAccountID: 1, Provider: "p", BaseURL: "https://x/v1"}},
-		{"key 太短", Submission{OwnerAccountID: 1, Provider: "p", BaseURL: "https://x/v1", APIKey: "short"}},
-		{"标签含明文 key", Submission{OwnerAccountID: 1, Provider: "p", BaseURL: "https://x/v1", APIKey: "sk-123456789", Label: "我的 sk-123456789"}},
+		{"provider 空", Submission{OwnerAccountID: "acct-1", BaseURL: "https://x/v1", APIKey: "sk-123456789"}},
+		{"URL 不合法", Submission{OwnerAccountID: "acct-1", Provider: "p", BaseURL: "://x", APIKey: "sk-123456789"}},
+		{"key 为空", Submission{OwnerAccountID: "acct-1", Provider: "p", BaseURL: "https://x/v1"}},
+		{"key 太短", Submission{OwnerAccountID: "acct-1", Provider: "p", BaseURL: "https://x/v1", APIKey: "short"}},
+		{"标签含明文 key", Submission{OwnerAccountID: "acct-1", Provider: "p", BaseURL: "https://x/v1", APIKey: "sk-123456789", Label: "我的 sk-123456789"}},
 	}
 	for _, tc := range cases {
 		if err := validateSubmission(tc.sub); err == nil {
 			t.Errorf("%s：应被 L0 拒绝", tc.name)
 		}
 	}
-	ok := Submission{OwnerAccountID: 1, Provider: "p", BaseURL: "https://api.example.com/v1", APIKey: "sk-1234567890", Label: "我的魔搭 key"}
+	ok := Submission{OwnerAccountID: "acct-1", Provider: "p", BaseURL: "https://api.example.com/v1", APIKey: "sk-1234567890", Label: "我的魔搭 key"}
 	if err := validateSubmission(ok); err != nil {
 		t.Fatalf("合法提交被误杀：%v", err)
 	}
 	// 公网明文 http 必须走不出去（凭据会裸奔在链路上）。
 	svc := NewContributionService(newFakeContributionStore(), nil, ContributionOptions{})
 	if _, err := svc.Submit(context.Background(), Submission{
-		OwnerAccountID: 1, Provider: "p", BaseURL: "http://api.example.com/v1", APIKey: "sk-1234567890",
+		OwnerAccountID: "acct-1", Provider: "p", BaseURL: "http://api.example.com/v1", APIKey: "sk-1234567890",
 	}); err == nil {
 		t.Fatal("公网 http 端点应被出站边界拒绝")
 	}
@@ -172,7 +172,7 @@ func TestContractContributionSubmitFlow(t *testing.T) {
 	}}, ContributionOptions{})
 
 	res, err := svc.Submit(ctx, Submission{
-		OwnerAccountID: 7, Provider: "demo-provider", BaseURL: "https://api.example.com/v1",
+		OwnerAccountID: "acct-7", Provider: "demo-provider", BaseURL: "https://api.example.com/v1",
 		APIKey: "sk-secret-value-123", ClaimedModels: []string{"m1"}, Label: "我的 key",
 	})
 	if err != nil {
@@ -181,18 +181,21 @@ func TestContractContributionSubmitFlow(t *testing.T) {
 	if !res.InPool || res.Status != store.CredActive || res.VerifyStatus != store.VerifyVerified {
 		t.Fatalf("判定应为入池 verified，得 %+v", res)
 	}
-	// 密文只经 PutSecret 落库一次；凭据行拿到的是**十进制密文 id**（不是明文）。
+	// 密文只经 PutSecret 落库一次；凭据行拿到的是**密文行的 id**（不是明文）。
 	if len(fs.secretPlaintext) != 1 || fs.secretPlaintext[0] != "sk-secret-value-123" {
 		t.Fatalf("应把明文交给 PutSecret 加密，实际 %v", fs.secretPlaintext)
 	}
 	if fs.lastSecretRef == "sk-secret-value-123" || strings.Contains(fs.lastSecretRef, "sk-") {
 		t.Fatalf("secret_ref 不得是明文，得 %q", fs.lastSecretRef)
 	}
-	if _, ok := parseSecretRefDecimal(fs.lastSecretRef); !ok {
-		t.Fatalf("secret_ref 应是十进制 id，得 %q", fs.lastSecretRef)
+	// fake 的 id 是 "id-N"（可读、可断言 map 键），不是真 store 的 UUID；
+	// 这条只钉「引用形态是一个 id 而不是明文」——真实 UUID 形状由
+	// internal/store 与 internal/idgen 的测试负责，在这里重复钉没意义。
+	if fs.lastSecretRef == "" || strings.Contains(fs.lastSecretRef, "sk-") {
+		t.Fatalf("secret_ref 应是 id 形态而非明文，得 %q", fs.lastSecretRef)
 	}
 	// 入池才启用上游行（01-flow 5.2「落库与可调用分开」）。
-	if !fs.upstreamEnabled[1] {
+	if !fs.upstreamEnabled["id-1"] {
 		t.Error("入池后上游行应 enabled=true")
 	}
 	// 未过判定的凭据绝不能可调用：建行时必须是 disabled。
@@ -203,14 +206,14 @@ func TestContractContributionSubmitFlow(t *testing.T) {
 	// 幂等：同账户同 key 再提交一次 → 复用同一行，不新建。
 	before := len(fs.credentials)
 	res2, err := svc.Submit(ctx, Submission{
-		OwnerAccountID: 7, Provider: "demo-provider", BaseURL: "https://api.example.com/v1",
+		OwnerAccountID: "acct-7", Provider: "demo-provider", BaseURL: "https://api.example.com/v1",
 		APIKey: "sk-secret-value-123", ClaimedModels: []string{"m1"},
 	})
 	if err != nil {
 		t.Fatalf("幂等提交失败：%v", err)
 	}
 	if !res2.Reused || res2.CredentialID != res.CredentialID {
-		t.Fatalf("同 key 重复提交应幂等复用，得 %+v（原 id=%d）", res2, res.CredentialID)
+		t.Fatalf("同 key 重复提交应幂等复用，得 %+v（原 id=%s）", res2, res.CredentialID)
 	}
 	if len(fs.credentials) != before {
 		t.Error("幂等路径不得新建凭据行")
@@ -225,7 +228,7 @@ func TestContractContributionRejectKeepsEvidence(t *testing.T) {
 	}}, ContributionOptions{})
 
 	res, err := svc.Submit(ctx, Submission{
-		OwnerAccountID: 9, Provider: "fake", BaseURL: "https://api.example.com/v1",
+		OwnerAccountID: "acct-9", Provider: "fake", BaseURL: "https://api.example.com/v1",
 		APIKey: "sk-not-gpt4-key", ClaimedModels: []string{"gpt-4"},
 	})
 	if err != nil {
@@ -242,7 +245,7 @@ func TestContractContributionRejectKeepsEvidence(t *testing.T) {
 		t.Errorf("证据应可执行（说明为什么被拒）：%s", res.Evidence)
 	}
 	// 被拒的凭据不得可调用：上游行保持 disabled。
-	if fs.upstreamEnabled[1] {
+	if fs.upstreamEnabled["id-1"] {
 		t.Error("被拒凭据的上游行必须保持 disabled")
 	}
 }
@@ -254,7 +257,7 @@ func TestContractContributionRevoke(t *testing.T) {
 		Reachable: true, AuthOK: true, Models: []string{"m1"}, UsedModels: []string{"m1"},
 	}}, ContributionOptions{})
 	res, err := svc.Submit(ctx, Submission{
-		OwnerAccountID: 3, Provider: "p", BaseURL: "https://api.example.com/v1",
+		OwnerAccountID: "acct-3", Provider: "p", BaseURL: "https://api.example.com/v1",
 		APIKey: "sk-revoke-me-1234", ClaimedModels: []string{"m1"},
 	})
 	if err != nil {
@@ -262,25 +265,25 @@ func TestContractContributionRevoke(t *testing.T) {
 	}
 
 	// 越权撤销必须被拒（别人不能收回你的凭据）。
-	if err := svc.Revoke(ctx, res.CredentialID, RevokeActor{AccountID: 99}); !errors.Is(err, ErrContributionForbidden) {
+	if err := svc.Revoke(ctx, res.CredentialID, RevokeActor{AccountID: "acct-99"}); !errors.Is(err, ErrContributionForbidden) {
 		t.Fatalf("他人撤销应 ErrContributionForbidden，得 %v", err)
 	}
 
-	if err := svc.Revoke(ctx, res.CredentialID, RevokeActor{AccountID: 3}); err != nil {
+	if err := svc.Revoke(ctx, res.CredentialID, RevokeActor{AccountID: "acct-3"}); err != nil {
 		t.Fatalf("本人撤销失败：%v", err)
 	}
 	// 三件事都要发生：状态 disabled、上游行停用（唯一能移出候选的开关）、密文被替换。
 	if fs.credentials[res.CredentialID].Status != string(store.CredDisabled) {
 		t.Error("撤销后凭据应为 disabled")
 	}
-	if fs.upstreamEnabled[1] {
+	if fs.upstreamEnabled["id-1"] {
 		t.Error("撤销后上游行必须 enabled=false（否则凭据仍能被调用）")
 	}
 	if fs.secretPlaintext[len(fs.secretPlaintext)-1] == "sk-revoke-me-1234" {
 		t.Error("撤销应把密钥材料替换成墓碑，而不是原样保留")
 	}
 	// 重复撤销幂等（不报错）。
-	if err := svc.Revoke(ctx, res.CredentialID, RevokeActor{AccountID: 3}); err != nil {
+	if err := svc.Revoke(ctx, res.CredentialID, RevokeActor{AccountID: "acct-3"}); err != nil {
 		t.Errorf("重复撤销应幂等，得 %v", err)
 	}
 }
@@ -292,7 +295,7 @@ func TestContractContributionFailureDisables(t *testing.T) {
 		Reachable: true, AuthOK: true, Models: []string{"m1"}, UsedModels: []string{"m1"},
 	}}, ContributionOptions{FailThreshold: 3})
 	res, err := svc.Submit(ctx, Submission{
-		OwnerAccountID: 5, Provider: "p", BaseURL: "https://api.example.com/v1",
+		OwnerAccountID: "acct-5", Provider: "p", BaseURL: "https://api.example.com/v1",
 		APIKey: "sk-flaky-key-12345", ClaimedModels: []string{"m1"},
 	})
 	if err != nil {
@@ -349,29 +352,30 @@ func (p fakeProbe) Probe(context.Context, ProbeInput) (ProbeOutput, error) { ret
 // fakeContributionStore 是内存实现：记录每次调用的关键形态，便于断言「服务做了什么」。
 type fakeContributionStore struct {
 	mu              sync.Mutex
-	upstreamEnabled map[int64]bool
-	upstreams       map[int64]store.Upstream
-	credentials     map[int64]*store.Credential
+	upstreamEnabled map[string]bool
+	upstreams       map[string]store.Upstream
+	credentials     map[string]*store.Credential
 	secretPlaintext []string
 	lastSecretRef   string
-	nextID          int64
+	nextSeq         int // 自增序号；id() 用它造可区分的 id（不再依赖整型主键）
 	trace           string
 }
 
 func newFakeContributionStore() *fakeContributionStore {
 	return &fakeContributionStore{
-		upstreamEnabled: map[int64]bool{},
-		upstreams:       map[int64]store.Upstream{},
-		credentials:     map[int64]*store.Credential{},
+		upstreamEnabled: map[string]bool{},
+		upstreams:       map[string]store.Upstream{},
+		credentials:     map[string]*store.Credential{},
 	}
 }
 
-func (f *fakeContributionStore) id() int64 {
-	f.nextID++
-	return f.nextID
+// id 造一个可区分的 id：形状不再重要（fake 不查库），唯一性才重要。
+func (f *fakeContributionStore) id() string {
+	f.nextSeq++
+	return fmt.Sprintf("id-%d", f.nextSeq)
 }
 
-func (f *fakeContributionStore) UpsertUpstream(_ context.Context, kind, name, baseURL string, owner *int64, enabled bool) (int64, error) {
+func (f *fakeContributionStore) UpsertUpstream(_ context.Context, kind, name, baseURL string, owner *string, enabled bool) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.trace += fmt.Sprintf("upsert enabled=%v; ", enabled)
@@ -391,18 +395,18 @@ func (f *fakeContributionStore) UpsertUpstream(_ context.Context, kind, name, ba
 	return id, nil
 }
 
-func (f *fakeContributionStore) PutSecret(_ context.Context, upstreamID int64, plaintext []byte) (int64, error) {
+func (f *fakeContributionStore) PutSecret(_ context.Context, upstreamID string, plaintext []byte) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.secretPlaintext = append(f.secretPlaintext, string(plaintext))
 	id := f.id()
-	f.lastSecretRef = fmt.Sprintf("%d", id)
+	f.lastSecretRef = id
 	return id, nil
 }
 
-func (f *fakeContributionStore) DeleteSecret(_ context.Context, secretID int64) error { return nil }
+func (f *fakeContributionStore) DeleteSecret(_ context.Context, secretID string) error { return nil }
 
-func (f *fakeContributionStore) CreateCredential(_ context.Context, owner int64, provider, externalID, label, secretRef string) (int64, error) {
+func (f *fakeContributionStore) CreateCredential(_ context.Context, owner string, provider, externalID, label, secretRef string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for id, c := range f.credentials {
@@ -418,7 +422,7 @@ func (f *fakeContributionStore) CreateCredential(_ context.Context, owner int64,
 	return id, nil
 }
 
-func (f *fakeContributionStore) SetCredentialStatus(_ context.Context, id int64, status store.CredentialStatus) error {
+func (f *fakeContributionStore) SetCredentialStatus(_ context.Context, id string, status store.CredentialStatus) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	c, ok := f.credentials[id]
@@ -429,7 +433,7 @@ func (f *fakeContributionStore) SetCredentialStatus(_ context.Context, id int64,
 	return nil
 }
 
-func (f *fakeContributionStore) MarkVerified(_ context.Context, id int64, status store.VerifyStatus, evidence string) error {
+func (f *fakeContributionStore) MarkVerified(_ context.Context, id string, status store.VerifyStatus, evidence string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	c, ok := f.credentials[id]
@@ -441,7 +445,7 @@ func (f *fakeContributionStore) MarkVerified(_ context.Context, id int64, status
 	return nil
 }
 
-func (f *fakeContributionStore) LookupCredential(_ context.Context, id int64) (*store.Credential, error) {
+func (f *fakeContributionStore) LookupCredential(_ context.Context, id string) (*store.Credential, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	c, ok := f.credentials[id]
@@ -478,7 +482,7 @@ func (f *fakeContributionStore) ListUpstreams(context.Context) ([]store.Upstream
 	return out, nil
 }
 
-func (f *fakeContributionStore) UpdateUpstream(_ context.Context, id int64, name, baseURL string, enabled bool) error {
+func (f *fakeContributionStore) UpdateUpstream(_ context.Context, id string, name, baseURL string, enabled bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	u, ok := f.upstreams[id]
@@ -489,22 +493,6 @@ func (f *fakeContributionStore) UpdateUpstream(_ context.Context, id int64, name
 	f.upstreams[id] = u
 	f.upstreamEnabled[id] = enabled
 	return nil
-}
-
-// parseSecretRefDecimal 是测试侧对引用形态的独立断言（不复用被测实现的解析器，
-// 否则「解析器坏了」与「引用写错了」会同时通过）。
-func parseSecretRefDecimal(ref string) (int64, bool) {
-	if ref == "" {
-		return 0, false
-	}
-	var n int64
-	for _, c := range ref {
-		if c < '0' || c > '9' {
-			return 0, false
-		}
-		n = n*10 + int64(c-'0')
-	}
-	return n, n > 0
 }
 
 // TestContractRedactionSingleSource 钉住「Go 侧只有一份遮蔽模式」（code-review 建议 ④）。

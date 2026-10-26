@@ -138,10 +138,10 @@ func encodePolicyDoc(ctx context.Context, models *store.ModelRepo, doc json.RawM
 		}
 		put(k, q.Limit)
 	}
-	modelID := func(name string) (int64, error) {
+	modelID := func(name string) (string, error) {
 		m, err := models.GetAbstractModelByName(ctx, name)
 		if err != nil {
-			return 0, fmt.Errorf("抽象模型 %q 不存在（给不可见模型设限额是死配置）", name)
+			return "", fmt.Errorf("抽象模型 %q 不存在（给不可见模型设限额是死配置）", name)
 		}
 		return m.ID, nil
 	}
@@ -161,7 +161,7 @@ func encodePolicyDoc(ctx context.Context, models *store.ModelRepo, doc json.RawM
 		caps = append(caps, store.ModelCap{AbstractModelID: mid, Unit: unit, Period: period, Cap: c.Limit})
 	}
 	for _, pl := range d.Pool {
-		mid := int64(0)
+		mid := store.TotalScope
 		if pl.Model != nil && *pl.Model != "" {
 			var merr error
 			if mid, merr = modelID(*pl.Model); merr != nil {
@@ -182,7 +182,7 @@ func encodePolicyDoc(ctx context.Context, models *store.ModelRepo, doc json.RawM
 }
 
 // decodePolicyDoc 反向：从三张表拼回管理面文档（读侧展示）。
-func decodePolicyDoc(ctx context.Context, repos *store.Repos, gid int64) json.RawMessage {
+func decodePolicyDoc(ctx context.Context, repos *store.Repos, gid string) json.RawMessage {
 	out := map[string]any{}
 	keys := []store.PolicyKey{
 		store.PolicyCanCreateKey, store.PolicyMaxKeys, store.PolicyKeyAllowlistWiden,
@@ -238,7 +238,7 @@ func decodePolicyDoc(ctx context.Context, repos *store.Repos, gid int64) json.Ra
 		rows := []map[string]any{}
 		for _, pl := range pools {
 			var model any
-			if pl.AbstractModelID > 0 {
+			if pl.AbstractModelID != store.TotalScope {
 				model = modelName(ctx, repos, pl.AbstractModelID)
 			}
 			rows = append(rows, map[string]any{"model": model, "unit": string(pl.Unit), "period": string(pl.Period), "limit": pl.Limit})
@@ -266,11 +266,11 @@ func splitQuotaKey(k store.PolicyKey) (string, string, bool) {
 }
 
 // modelName 按 id 取对外名（读侧展示；查不到回 id 字符串而不是空）。
-func modelName(ctx context.Context, repos *store.Repos, id int64) string {
+func modelName(ctx context.Context, repos *store.Repos, id string) string {
 	if m, err := repos.Models.GetAbstractModel(ctx, id); err == nil {
 		return m.Name
 	}
-	return fmt.Sprintf("am_%d", id)
+	return id
 }
 
 // applyPolicyDoc 把策略文档整组替换进三张表（键值 / 池 / 按模型上限）。
@@ -280,7 +280,7 @@ func modelName(ctx context.Context, repos *store.Repos, id int64) string {
 //
 // 池与上限是「行」而不是键：先删该组全部行再按文档写入，与键值表的
 // 整组替换同一语义（PUT = 集合 A → 集合 B 的完整记录）。
-func applyPolicyDoc(ctx context.Context, tx *store.Repos, gid int64, doc json.RawMessage) error {
+func applyPolicyDoc(ctx context.Context, tx *store.Repos, gid string, doc json.RawMessage) error {
 	policies, caps, pools, err := encodePolicyDoc(ctx, tx.Models, doc)
 	if err != nil {
 		return err

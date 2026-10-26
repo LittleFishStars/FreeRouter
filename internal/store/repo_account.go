@@ -371,6 +371,46 @@ func (r *AccountRepo) CountAccounts(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// ListAllAccounts 列出全部账户（管理面「账户全览」的读面）。
+//
+// 为什么必须有这个方法（2026-10-26 UUID 改造带出的真实缺口）：
+// 管理面的全览此前用「for i := 1; i <= Count+32; i++ { GetAccount(i) }」这种
+// 稀疏 id 扫描——那是 INTEGER 自增主键下的权宜之计（id 连续，加 32 容忍删除
+// 造成的空洞）。主键换成 UUID 后**没有任何连续区间可扫**，那套写法一条都取不到；
+// 而且即便能扫，逐行探查 N+32 次也是把「一次查询」换成 N 次往返。
+//
+// 排序：created_at 升序（与「账户列表默认按创建时间」同口径），id 只作并列
+// 时的确定 tiebreak（UUID 无时间序，但字典序是确定全序）。
+func (r *AccountRepo) ListAllAccounts(ctx context.Context) ([]*Account, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, display_name, username, status, created_at, last_login_at, note,
+		        rpm_limit, tpm_limit, max_concurrency, must_change_password
+		   FROM accounts ORDER BY created_at ASC, id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列出账户失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []*Account{}
+	for rows.Next() {
+		var a Account
+		var status string
+		var mustChange int
+		if err := rows.Scan(&a.ID, &a.DisplayName, &a.Username, &status,
+			&a.CreatedAt, &a.LastLoginAt, &a.Note,
+			&a.RPMLimit, &a.TPMLimit, &a.MaxConcurrency, &mustChange); err != nil {
+			return nil, fmt.Errorf("store: 扫描账户失败: %w", err)
+		}
+		a.Status = AccountStatus(status)
+		a.MustChangePassword = mustChange != 0
+		out = append(out, &a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历账户失败: %w", err)
+	}
+	return out, nil
+}
+
 func (c Class) valid() bool {
 	switch c {
 	case ClassAdmin, ClassTenant, ClassContributor:

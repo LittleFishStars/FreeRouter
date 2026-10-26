@@ -91,13 +91,13 @@ func (h *m5Harness) build(next http.Handler) http.Handler {
 		}
 		return h.limitsOf(ctx, accountID)
 	}
-	modelOf := func(ctx context.Context, name string) (int64, bool) {
+	modelOf := func(ctx context.Context, name string) (string, bool) {
 		if h.modelOf == nil {
-			return 0, false
+			return "", false
 		}
 		return h.modelOf(ctx, name)
 	}
-	groupOf := func(ctx context.Context, accountID string) ([]int64, bool) {
+	groupOf := func(ctx context.Context, accountID string) ([]string, bool) {
 		if h.groupOf == nil {
 			return nil, false
 		}

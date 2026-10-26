@@ -39,7 +39,7 @@ const DefaultAlpha = 0.3
 // 唯一确定一条上游路径；routing 的 RealModelInfo 带 UpstreamID +
 // UpstreamModelID。两者能互相换算，这里统一用 (UpstreamID, RealModel)。
 type SamplerKey struct {
-	UpstreamID int64
+	UpstreamID string // UUID
 	RealModel  string
 }
 
@@ -153,10 +153,10 @@ var _ LatencyQuery = (*LatencySampler)(nil)
 type LatencySinkKeySampler struct {
 	sampler *LatencySampler
 	// resolve 把 realModelID 解析成 SamplerKey；返回 ok=false 表示未知行。
-	resolve func(realModelID int64) (SamplerKey, bool)
+	resolve func(realModelID string) (SamplerKey, bool)
 }
 
-func (l *LatencySinkKeySampler) RecordLatency(ctx context.Context, realModelID int64, ttftMs, totalMs int64) {
+func (l *LatencySinkKeySampler) RecordLatency(ctx context.Context, realModelID string, ttftMs, totalMs int64) {
 	key, ok := l.resolve(realModelID)
 	if !ok {
 		return

@@ -80,8 +80,8 @@ type Pool struct {
 	mu         sync.Mutex
 	cfg        PoolConfig
 	transports map[string]*http.Transport // key: kind|scheme|host
-	limits     map[int64]chan struct{}    // 单上游并发信号量，key: upstream id
-	healths    map[int64]*Health
+	limits     map[string]chan struct{}   // 单上游并发信号量，key: upstream UUID
+	healths    map[string]*Health
 }
 
 func NewPool(cfg PoolConfig) *Pool {
@@ -104,8 +104,8 @@ func NewPool(cfg PoolConfig) *Pool {
 	return &Pool{
 		cfg:        d,
 		transports: make(map[string]*http.Transport),
-		limits:     make(map[int64]chan struct{}),
-		healths:    make(map[int64]*Health),
+		limits:     make(map[string]chan struct{}),
+		healths:    make(map[string]*Health),
 	}
 }
 
@@ -165,7 +165,7 @@ func parseHostOnly(rawURL string) (string, error) {
 // ctx 取消时返回 false——连接数上限是硬限，排队等名额不该比请求本身活得久。
 // 为什么按「上游实体」而不是 host：熔断与健康标记也挂在上游实体上（§7.1 粒度），
 // 两个口径一致才能把「一个坏上游吃光 fd」和「一个坏上游吃光重试预算」一起治。
-func (p *Pool) Acquire(ctx context.Context, upstreamID int64) (release func(), ok bool) {
+func (p *Pool) Acquire(ctx context.Context, upstreamID string) (release func(), ok bool) {
 	p.mu.Lock()
 	sem, exists := p.limits[upstreamID]
 	if !exists {
@@ -184,7 +184,7 @@ func (p *Pool) Acquire(ctx context.Context, upstreamID int64) (release func(), o
 // Health 返回该上游实体的健康计数器（不存在则创建）。
 // 粒度挂 upstreams.id（§7.1）：relay 整类一起熔断（共享同一个 sidecar 与账号池）、
 // vendor 每凭据一实体、selfhosted 每地址一实体。
-func (p *Pool) Health(upstreamID int64) *Health {
+func (p *Pool) Health(upstreamID string) *Health {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	h, ok := p.healths[upstreamID]

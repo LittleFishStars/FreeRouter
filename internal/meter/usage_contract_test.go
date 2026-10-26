@@ -120,7 +120,7 @@ func TestContractSettleCarriesActualTotals(t *testing.T) {
 	rec := NewSettlementRecorder(fl, nil)
 	err := rec.SettleUsage(t.Context(), SettledUsage{
 		AccountID:    "1",
-		ModelID:      7,
+		ModelID:      tidA,
 		QuotaRequest: 1,
 		Totals:       UsageTotals{Input: 100, Output: 20},
 		CreditCost:   3,
@@ -136,8 +136,8 @@ func TestContractSettleCarriesActualTotals(t *testing.T) {
 	if cc.Cost.Token != 120 || cc.Cost.Request != 1 || cc.Cost.Credit != 3 {
 		t.Fatalf("结算数字错误: %+v", cc.Cost)
 	}
-	if cc.AbstractModelID != 7 {
-		t.Fatalf("模型 id 应透传: %d", cc.AbstractModelID)
+	if cc.AbstractModelID != tidA {
+		t.Fatalf("模型 id 应透传: %s", cc.AbstractModelID)
 	}
 }
 
@@ -145,9 +145,9 @@ func TestContractSettlePoolScopeFromSource(t *testing.T) {
 	// poolsOf 提供的组范围决定池补账面（nil/未命中=无池——宁少算）。
 	fl := &fakeLedger{}
 	poolsCalled := 0
-	rec := NewSettlementRecorder(fl, func(context.Context, string) ([]int64, bool) {
+	rec := NewSettlementRecorder(fl, func(context.Context, string) ([]string, bool) {
 		poolsCalled++
-		return []int64{11, 12}, true
+		return []string{tidA, tidB}, true
 	})
 	_ = rec.SettleUsage(t.Context(), SettledUsage{AccountID: "1", EndedAt: time.Now(),
 		Totals: UsageTotals{Input: 1}})
@@ -155,7 +155,7 @@ func TestContractSettlePoolScopeFromSource(t *testing.T) {
 		t.Fatalf("池范围应从 source 取: called=%d credits=%v", poolsCalled, fl.credits)
 	}
 	// 不命中（ok=false）→ 无池。
-	rec2 := NewSettlementRecorder(fl, func(context.Context, string) ([]int64, bool) {
+	rec2 := NewSettlementRecorder(fl, func(context.Context, string) ([]string, bool) {
 		return nil, false
 	})
 	_ = rec2.SettleUsage(t.Context(), SettledUsage{AccountID: "1", EndedAt: time.Now(),

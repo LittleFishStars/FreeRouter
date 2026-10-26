@@ -39,7 +39,7 @@ func NewStoreVerificationWriter(st *store.Store) *StoreVerificationWriter {
 //
 // version 是判定所用指纹库版本（§6.2「判定可追溯」）；列存的是文本标识而不是数字，
 // 映射由 VerifySourceOf 唯一负责。
-func (w *StoreVerificationWriter) WriteVerification(ctx context.Context, realModelID int64, state VerifyState, evidence string, fingerprintVersion int) error {
+func (w *StoreVerificationWriter) WriteVerification(ctx context.Context, realModelID string, state VerifyState, evidence string, fingerprintVersion int) error {
 	if w == nil || w.store == nil {
 		return errors.New("upstream: 鉴定写回未装配 storage（WriteVerification）")
 	}
@@ -49,7 +49,7 @@ func (w *StoreVerificationWriter) WriteVerification(ctx context.Context, realMod
 	}
 	if err := w.store.Repos().Models.SetRealModelVerification(
 		ctx, realModelID, status, evidence, VerifySourceOf(fingerprintVersion)); err != nil {
-		return fmt.Errorf("upstream: 写回 real_model %d 的鉴定结果失败: %w", realModelID, err)
+		return fmt.Errorf("upstream: 写回 real_model %s 的鉴定结果失败: %w", realModelID, err)
 	}
 	return nil
 }

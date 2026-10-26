@@ -98,7 +98,7 @@ func seedCatalog() []dshprovider.ModelInfo {
 	}
 }
 
-func realRows(t *testing.T, st *store.Store, upstreamID int64) []store.RealModel {
+func realRows(t *testing.T, st *store.Store, upstreamID string) []store.RealModel {
 	t.Helper()
 	rows, err := st.Repos().Models.ListRealModelsByUpstream(context.Background(), upstreamID)
 	if err != nil {
@@ -132,7 +132,7 @@ func stRows(t *testing.T, st *store.Store, res RefreshResult, provider string) {
 	if err != nil {
 		t.Fatalf("列上游失败: %v", err)
 	}
-	var relayID int64
+	var relayID string
 	for _, u := range ups {
 		if u.Kind == "relay" {
 			relayID = u.ID
@@ -194,7 +194,7 @@ func TestContractRefreshIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("列上游失败: %v", err)
 	}
-	var relayID int64
+	var relayID string
 	for _, u := range ups {
 		if u.Kind == "relay" {
 			relayID = u.ID
@@ -216,7 +216,7 @@ func TestContractRefreshUpdatesLastSeen(t *testing.T) {
 		t.Fatalf("首轮刷新失败: %v", err)
 	}
 	ups, _ := st.Repos().Models.ListUpstreams(ctx)
-	var relayID int64
+	var relayID string
 	for _, u := range ups {
 		if u.Kind == "relay" {
 			relayID = u.ID
@@ -259,7 +259,7 @@ func TestContractRefreshMarksMissing(t *testing.T) {
 		t.Fatalf("首轮刷新失败: %v", err)
 	}
 	ups, _ := st.Repos().Models.ListUpstreams(ctx)
-	var relayID int64
+	var relayID string
 	for _, u := range ups {
 		if u.Kind == "relay" {
 			relayID = u.ID
@@ -318,7 +318,7 @@ func TestContractRefreshFailureNoPanic(t *testing.T) {
 		t.Fatalf("首轮刷新失败: %v", err)
 	}
 	ups, _ := st.Repos().Models.ListUpstreams(ctx)
-	var relayID int64
+	var relayID string
 	for _, u := range ups {
 		if u.Kind == "relay" {
 			relayID = u.ID

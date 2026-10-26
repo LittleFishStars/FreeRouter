@@ -21,25 +21,25 @@ import (
 // TestSnapshotToGroupPoliciesNoPanic 覆盖 ModelCaps / Pools / Numbers 三个分支。
 func TestSnapshotToGroupPoliciesNoPanic(t *testing.T) {
 	snap := &store.PolicySnapshot{
-		AccountID: 7,
-		GroupIDs:  []int64{3},
+		AccountID: "acct-7",
+		GroupIDs:  []string{"grp-3"},
 		Groups: []store.GroupPolicySet{{
-			GroupID: 3,
+			GroupID: "grp-3",
 			// Numbers 走 policyKeyToUnitPeriod（6 键闭集合之一）。
 			Numbers: map[store.PolicyKey]int64{store.PolicyRPMLimit: 60},
 		}},
 		// 关键：这两个切片非空才会执行到 FormatInt。
 		ModelCaps: []store.ModelCap{{
-			GroupID: 3, AbstractModelID: 42,
+			GroupID: "grp-3", AbstractModelID: "am-42",
 			Unit: store.UnitRequest, Period: store.PeriodDay, Cap: 50,
 		}},
 		Pools: []store.PoolRef{{
-			GroupID: 3, AbstractModelID: 0,
+			GroupID: "grp-3", AbstractModelID: store.TotalScope,
 			Unit: store.UnitToken, Period: store.PeriodMonth, Limit: 100000,
 		}},
 	}
 
-	// 不 panic 即通过；再校验两处 id 确实按十进制渲染。
+	// 不 panic 即通过；再校验两处 id 原样透传（UUID 改造后无十进制渲染）。
 	got, err := snapshotToGroupPolicies(context.Background(), nil, snap)
 	if err != nil {
 		t.Fatalf("转换失败: %v", err)
@@ -47,19 +47,19 @@ func TestSnapshotToGroupPoliciesNoPanic(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("应有 1 个 GroupPolicy，got %d", len(got))
 	}
-	if got[0].Group.ID != "3" {
-		t.Fatalf("组 id 应为十进制 \"3\"，got %q", got[0].Group.ID)
+	if got[0].Group.ID != "grp-3" {
+		t.Fatalf("组 id 应原样透传，got %q", got[0].Group.ID)
 	}
 	for k, v := range got[0].ModelQuotas {
-		if k.Model != "42" {
-			t.Fatalf("按模型上限的 model 应为十进制 \"42\"，got %q（值 %d）", k.Model, v)
+		if k.Model != "am-42" {
+			t.Fatalf("按模型上限的 model 应原样透传，got %q（值 %d）", k.Model, v)
 		}
 	}
 	if len(got[0].Pools) != 1 {
 		t.Fatalf("应有 1 个池，got %d", len(got[0].Pools))
 	}
-	if got[0].Pools[0].GroupID != "3" {
-		t.Fatalf("池的 GroupID 应为十进制 \"3\"，got %q", got[0].Pools[0].GroupID)
+	if got[0].Pools[0].GroupID != "grp-3" {
+		t.Fatalf("池的 GroupID 应原样透传，got %q", got[0].Pools[0].GroupID)
 	}
 }
 
@@ -67,14 +67,15 @@ func TestSnapshotToGroupPoliciesNoPanic(t *testing.T) {
 func TestKeyRowToAuthNoPanic(t *testing.T) {
 	name := "prod"
 	k := &store.APIKey{
-		ID: 11, AccountID: 7, Prefix: "fr-abc", Name: &name, Status: store.KeyActive,
+		ID: "key-11", AccountID: "acct-7", Prefix: "fr-abc", Name: &name, Status: store.KeyActive,
 	}
 	out, err := keyRowToAuth(k, []byte("hash"))
 	if err != nil {
 		t.Fatalf("转换失败: %v", err)
 	}
-	if out.ID != "11" || out.AccountID != "7" {
-		t.Fatalf("id 应为十进制字符串，got ID=%q AccountID=%q", out.ID, out.AccountID)
+	// id 直接透传（UUID 改造后 auth 与 store 同形状，无十进制转换）。
+	if out.ID != "key-11" || out.AccountID != "acct-7" {
+		t.Fatalf("id 应原样透传，got ID=%q AccountID=%q", out.ID, out.AccountID)
 	}
 	if out.Name != "prod" || out.Prefix != "fr-abc" {
 		t.Fatalf("字段搬运错误: %+v", out)

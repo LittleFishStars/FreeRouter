@@ -26,34 +26,34 @@ import (
 func ValidateTarget(t Target) error {
 	if t.Kind == KindRelay {
 		if t.BaseURL != "" {
-			return fmt.Errorf("upstream#%d：relay 不持有可配地址（BaseURL 必须为空，adapter 直连由 sidecar 决定），got %q", t.UpstreamID, t.BaseURL)
+			return fmt.Errorf("upstream#%s：relay 不持有可配地址（BaseURL 必须为空，adapter 直连由 sidecar 决定），got %q", t.UpstreamID, t.BaseURL)
 		}
 		return nil
 	}
 	if t.Kind != KindVendor && t.Kind != KindSelfHosted {
-		return fmt.Errorf("upstream#%d：未知上游类型 %q", t.UpstreamID, t.Kind)
+		return fmt.Errorf("upstream#%s：未知上游类型 %q", t.UpstreamID, t.Kind)
 	}
 	if strings.TrimSpace(t.BaseURL) == "" {
-		return fmt.Errorf("upstream#%d：%s 类上游缺少 base_url", t.UpstreamID, t.Kind)
+		return fmt.Errorf("upstream#%s：%s 类上游缺少 base_url", t.UpstreamID, t.Kind)
 	}
 	u, err := url.Parse(t.BaseURL)
 	if err != nil {
-		return fmt.Errorf("upstream#%d：base_url 不可解析：%w", t.UpstreamID, err)
+		return fmt.Errorf("upstream#%s：base_url 不可解析：%w", t.UpstreamID, err)
 	}
 	host := u.Hostname()
 	if u.Scheme == "http" {
 		// 唯一例外：回环地址，用于本地联调（§4「只允许 https」的理由是贡献凭据
 		// 不得在公网裸奔，回环上没有公网）。
 		if !isLoopback(host) {
-			return fmt.Errorf("upstream#%d：http 协议仅回环地址放行，got %q", t.UpstreamID, t.BaseURL)
+			return fmt.Errorf("upstream#%s：http 协议仅回环地址放行，got %q", t.UpstreamID, t.BaseURL)
 		}
 	} else if u.Scheme != "https" {
-		return fmt.Errorf("upstream#%d：base_url 必须是 https（仅回环可放行 http），got scheme %q", t.UpstreamID, u.Scheme)
+		return fmt.Errorf("upstream#%s：base_url 必须是 https（仅回环可放行 http），got scheme %q", t.UpstreamID, u.Scheme)
 	}
 	// 0.0.0.0 / :: 是「本机所有地址」的通配形式，作为**目标**出现说明配置
 	// 写的是监听语句而不是端点——打出去的行为未定义且必然出界。
 	if host == "0.0.0.0" || host == "::" {
-		return fmt.Errorf("upstream#%d：拒绝通配地址作为目标主机：%q", t.UpstreamID, host)
+		return fmt.Errorf("upstream#%s：拒绝通配地址作为目标主机：%q", t.UpstreamID, host)
 	}
 	return nil
 }

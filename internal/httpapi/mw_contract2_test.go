@@ -149,10 +149,10 @@ func TestContractQuotaExceededCarriesQuotaObject(t *testing.T) {
 	h := newM5Harness(t)
 	h.putAccount("acc-q", auth.StatusActive, auth.ClassTenant)
 	key := h.putKey(t, "key-q", "acc-q", auth.KeyActive)
-	h.modelOf = func(_ context.Context, _ string) (int64, bool) { return 7, true }
+	h.modelOf = func(_ context.Context, _ string) (string, bool) { return "7", true }
 	h.debiter.script = func(dc meter.DebitContext) error {
 		return meter.ErrQuotaExceeded.
-			WithQuota("token", "day", fmt.Sprintf("%d", dc.AbstractModelID)).
+			WithQuota("token", "day", fmt.Sprintf("%s", dc.AbstractModelID)).
 			WithRetryAfter(90 * time.Minute)
 	}
 
@@ -176,7 +176,7 @@ func TestContractQuotaExceededCarriesQuotaObject(t *testing.T) {
 		t.Fatal("quota_exceeded 必须带 Retry-After 头（指向命中行重置时刻）")
 	}
 	// 扣减参数确实带了模型 id（按模型行才进错误体）。
-	if len(h.debiter.calls) == 0 || h.debiter.calls[0].AbstractModelID != 7 {
+	if len(h.debiter.calls) == 0 || h.debiter.calls[0].AbstractModelID != "7" {
 		t.Fatalf("TryDebit 应收到 mid=7: %+v", h.debiter.calls)
 	}
 }
@@ -277,7 +277,7 @@ func TestContractAdapterDebitsRealStore(t *testing.T) {
 
 	adapt := meter.NewStoreAdapter(st.Repos().Quotas, fakeGroupReader{})
 	dc := meter.DebitContext{
-		AccountID:       fmt.Sprintf("%d", accID),
+		AccountID:       fmt.Sprintf("%s", accID),
 		AbstractModelID: store.TotalScope,
 		Cost:            meter.UsageCost{Request: 1},
 	}
@@ -306,7 +306,7 @@ func TestContractAdapterDebitsRealStore(t *testing.T) {
 		t.Fatalf("Retry-After 应指向命中行重置时刻，得 %v", ae.RetryAfter)
 	}
 	// 读路径对齐：AccountQuotaRows 回来的是行化快照。
-	rows, err := adapt.AccountQuotaRows(ctx, fmt.Sprintf("%d", accID))
+	rows, err := adapt.AccountQuotaRows(ctx, fmt.Sprintf("%s", accID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestContractAdapterDebitsRealStore(t *testing.T) {
 // fakeGroupReader：无组（GroupPools 返回空）——池路径的零值场景。
 type fakeGroupReader struct{}
 
-func (fakeGroupReader) GroupIDsOfAccount(context.Context, int64) ([]int64, error) {
+func (fakeGroupReader) GroupIDsOfAccount(context.Context, string) ([]string, error) {
 	return nil, nil
 }
 

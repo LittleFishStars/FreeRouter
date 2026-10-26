@@ -195,12 +195,12 @@ func (b *RelayBootstrapper) notify(ctx context.Context, kind, relatedID, title, 
 // 为什么放这里：Candidate→Target 的映射是 upstream 包的知识（kind/base_url 语义
 // 都在本包），httpapi 只管消费；装配层拿 CandidateInfo 构造 httpapi.Candidate。
 type CandidateInfo struct {
-	UpstreamID   int64
+	UpstreamID   string // 上游行 UUID
 	Kind         Kind
 	BaseURL      string // relay: "sidecar://provider"；vendor/selfhosted: https 端点
 	RealModel    string // relay: "provider/model"；vendor: 原始模型 id
 	SecretRef    string
-	CredentialID int64
+	CredentialID string
 }
 
 // TargetOf 把候选信息映射成一次尝试的 Target。

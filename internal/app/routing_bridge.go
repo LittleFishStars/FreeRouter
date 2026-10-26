@@ -57,7 +57,7 @@ type abstractModelBridge struct {
 	log    *slog.Logger
 
 	mu        sync.Mutex
-	upstreams map[int64]store.Upstream
+	upstreams map[string]store.Upstream
 	snapAt    time.Time
 }
 
@@ -73,7 +73,7 @@ func (b *abstractModelBridge) GetAbstractModelByName(ctx context.Context, name s
 }
 
 // GetAbstractModel 按 id 查（弃用链逐跳）。
-func (b *abstractModelBridge) GetAbstractModel(ctx context.Context, id int64) (*routing.AbstractModel, error) {
+func (b *abstractModelBridge) GetAbstractModel(ctx context.Context, id string) (*routing.AbstractModel, error) {
 	m, err := b.models.GetAbstractModel(ctx, id)
 	return convertAbstractModel(m, err)
 }
@@ -104,10 +104,10 @@ func convertAbstractModel(m *store.AbstractModel, err error) (*routing.AbstractM
 // ListCandidates 列候选声明（行序即配置序），约束 JSON 在这里解析成
 // routing.Constraint——store 存原文是刻意的（05-storage.md §4：约束是不透明
 // 声明，只在读时解释），解释责任落装配层。
-func (b *abstractModelBridge) ListCandidates(ctx context.Context, abstractModelID int64) ([]routing.CandidateDecl, error) {
+func (b *abstractModelBridge) ListCandidates(ctx context.Context, abstractModelID string) ([]routing.CandidateDecl, error) {
 	rows, err := b.models.ListCandidates(ctx, abstractModelID)
 	if err != nil {
-		return nil, fmt.Errorf("app: 查询候选声明 %d 失败: %w", abstractModelID, err)
+		return nil, fmt.Errorf("app: 查询候选声明 %s 失败: %w", abstractModelID, err)
 	}
 	out := make([]routing.CandidateDecl, 0, len(rows))
 	for _, r := range rows {
@@ -125,13 +125,13 @@ func (b *abstractModelBridge) ListCandidates(ctx context.Context, abstractModelI
 }
 
 // GetRealModel 按 id 查真实模型读面；不存在 → (nil, nil)。
-func (b *abstractModelBridge) GetRealModel(ctx context.Context, id int64) (*routing.RealModelInfo, error) {
+func (b *abstractModelBridge) GetRealModel(ctx context.Context, id string) (*routing.RealModelInfo, error) {
 	rm, err := b.models.GetRealModel(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("app: 读取真实模型 %d 失败: %w", id, err)
+		return nil, fmt.Errorf("app: 读取真实模型 %s 失败: %w", id, err)
 	}
 	if rm == nil {
 		return nil, nil
@@ -163,7 +163,7 @@ func (b *abstractModelBridge) GetRealModel(ctx context.Context, id int64) (*rout
 }
 
 // upstreamSnapshot 返回上游表快照（TTL 内复用）。
-func (b *abstractModelBridge) upstreamSnapshot(ctx context.Context) (map[int64]store.Upstream, error) {
+func (b *abstractModelBridge) upstreamSnapshot(ctx context.Context) (map[string]store.Upstream, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.upstreams != nil && time.Since(b.snapAt) < upstreamSnapshotTTL {
@@ -173,7 +173,7 @@ func (b *abstractModelBridge) upstreamSnapshot(ctx context.Context) (map[int64]s
 	if err != nil {
 		return nil, fmt.Errorf("app: 查询上游列表失败: %w", err)
 	}
-	snap := make(map[int64]store.Upstream, len(rows))
+	snap := make(map[string]store.Upstream, len(rows))
 	for _, u := range rows {
 		snap[u.ID] = u
 	}
@@ -211,7 +211,7 @@ type routingCandidates struct {
 	balance *BalanceLoop
 
 	mu  sync.Mutex
-	rrs map[int64]*routing.RoundRobinCursor // 按抽象模型持有游标（03-strategy §3.4）
+	rrs map[string]*routing.RoundRobinCursor // 按抽象模型持有游标（03-strategy §3.4）
 }
 
 func newRoutingCandidates(app *App) *routingCandidates {
@@ -222,7 +222,7 @@ func newRoutingCandidates(app *App) *routingCandidates {
 		resolver: routing.NewResolver(b),
 		cd:       routing.NewCooldowns(),
 		balance:  app.balanceLoop,
-		rrs:      map[int64]*routing.RoundRobinCursor{},
+		rrs:      map[string]*routing.RoundRobinCursor{},
 	}
 }
 
@@ -275,7 +275,7 @@ func (c *routingCandidates) Candidates(ctx context.Context, model string, req ir
 			UpstreamModelID: p.RealModel.UpstreamModelID,
 			// Display 走渠道名而非上游行 id：日志可读且不泄露行号对外
 			//（Display 只在内部日志/trace 出现，v1.go Candidate 注释）。
-			Display: fmt.Sprintf("%s/%s#%d", p.RealModel.Channel, p.RealModel.UpstreamModelID, p.RealModel.ID),
+			Display: fmt.Sprintf("%s/%s#%s", p.RealModel.Channel, p.RealModel.UpstreamModelID, p.RealModel.ID),
 			Adapter: adapter,
 			ID:      p.RealModel.ID,
 		})
@@ -288,14 +288,14 @@ func (c *routingCandidates) Candidates(ctx context.Context, model string, req ir
 // 只记 real_models 行 ID：冷却的作用域是「这条上游路径」，不是模型名——
 // 同名模型可能有多条路径，一条坏了不该牵连其它（cooldown.go 实体=路径）。
 func (c *routingCandidates) NotifyCandidateFailure(cand httpapi.Candidate) {
-	if cand.ID <= 0 {
+	if cand.ID == "" {
 		return // 来源不提供行 ID（测试 fake/旧源）：跳过冷却。
 	}
 	c.cd.MarkFailure(cand.ID, 0)
 }
 
 // cursorOf 取（或创建）抽象模型的 round-robin 游标。
-func (c *routingCandidates) cursorOf(abstractModelID int64) *routing.RoundRobinCursor {
+func (c *routingCandidates) cursorOf(abstractModelID string) *routing.RoundRobinCursor {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	rr, ok := c.rrs[abstractModelID]
@@ -321,7 +321,7 @@ func (c *routingCandidates) pathsOf(ctx context.Context, resolved *routing.Resol
 		c.app.log.Warn("routing: 读取候选声明失败，按无约束继续",
 			"model", resolved.Model.Name, "error", err)
 	}
-	byModel := make(map[int64]routing.Constraint, len(decls))
+	byModel := make(map[string]routing.Constraint, len(decls))
 	for _, d := range decls {
 		byModel[d.RealModelID] = d.Constraint
 	}
@@ -508,8 +508,8 @@ type latencyDefaultSink struct {
 }
 
 // RecordLatency 实现 httpapi.LatencySink。
-func (l latencyDefaultSink) RecordLatency(ctx context.Context, realModelID int64, ttftMs, totalMs int64) {
-	if l.sampler == nil || realModelID <= 0 {
+func (l latencyDefaultSink) RecordLatency(ctx context.Context, realModelID string, ttftMs, totalMs int64) {
+	if l.sampler == nil || realModelID == "" {
 		return
 	}
 	// 查 real_model → (UpstreamID, RealModel)。查询失败按未知行丢弃，
@@ -525,13 +525,13 @@ func (l latencyDefaultSink) RecordLatency(ctx context.Context, realModelID int64
 }
 
 // resolveReal 解析 realModelID → (UpstreamID, RealModel)。ok=false 表示未知行。
-func (l latencyDefaultSink) resolveReal(ctx context.Context, realModelID int64) (int64, string, bool) {
+func (l latencyDefaultSink) resolveReal(ctx context.Context, realModelID string) (string, string, bool) {
 	if l.bridge == nil {
-		return 0, "", false
+		return "", "", false
 	}
 	info, err := l.bridge.GetRealModel(ctx, realModelID)
 	if err != nil || info == nil {
-		return 0, "", false
+		return "", "", false
 	}
 	return info.UpstreamID, info.UpstreamModelID, true
 }
@@ -562,7 +562,7 @@ func (c *routingCandidates) latencyMs(rm routing.RealModelInfo, ttft bool) int64
 }
 
 // balanceOf 返回某上游的余额（weight 量级未知时为 0）。
-func (c *routingCandidates) balanceOf(upstreamID int64) float64 {
+func (c *routingCandidates) balanceOf(upstreamID string) float64 {
 	if c.balance == nil {
 		return 0
 	}
@@ -574,7 +574,7 @@ func (c *routingCandidates) balanceOf(upstreamID int64) float64 {
 }
 
 // balanceKnown 报告该上游的余额是否已知（未知则 balanceOf 无意义）。
-func (c *routingCandidates) balanceKnown(upstreamID int64) bool {
+func (c *routingCandidates) balanceKnown(upstreamID string) bool {
 	if c.balance == nil {
 		return false
 	}
@@ -583,7 +583,7 @@ func (c *routingCandidates) balanceKnown(upstreamID int64) bool {
 }
 
 // expiresAtOf 返回该上游的到期时间（无则 0）。
-func (c *routingCandidates) expiresAtOf(upstreamID int64) int64 {
+func (c *routingCandidates) expiresAtOf(upstreamID string) int64 {
 	if c.balance == nil {
 		return 0
 	}

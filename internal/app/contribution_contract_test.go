@@ -49,7 +49,17 @@ func newContributionTestApp(t *testing.T, logBuf *bytes.Buffer) *App {
 }
 
 // newContributorAccount 建一个 contributor 类账户（匿名贡献的最终形态：零权限容器）。
-func newContributorAccount(t *testing.T, a *App, username string) int64 {
+// otherAccount 现建一个与 owner 无关的 contributor 账户，用于越权断言。
+// UUID 主键下不能再靠 owner+N 造"另一个账户"。
+func otherAccount(t *testing.T, a *App) string {
+	t.Helper()
+	seqNo++
+	return newContributorAccount(t, a, fmt.Sprintf("other-contrib-%d", seqNo))
+}
+
+var seqNo int
+
+func newContributorAccount(t *testing.T, a *App, username string) string {
 	t.Helper()
 	id, err := a.store.Repos().Accounts.CreateAccount(context.Background(), store.AccountAuth{
 		// 匿名贡献者没有密码（01-flow 2.2：contributor 类没有密码，只有恢复码）；
@@ -273,8 +283,13 @@ func TestContractContributionRevokeReal(t *testing.T) {
 	}
 
 	// 越权撤销：另一个账户不行（01-flow 里的承诺是「自己的凭据随时可收回」，
-	// 不是「任何人的都能收」）。
-	if err := a.Contribution().Revoke(ctx, res.CredentialID, upstream.RevokeActor{AccountID: owner + 1000}); err == nil {
+	// 不是「任何人的都能收」）。id 是 UUID，不能再靠 owner+1000 造"另一个账户"，
+	// 真建一个。
+	other := newContributorAccount(t, a, "anonymous-contrib-2-other")
+	if other == owner {
+		t.Fatal("两个账户的 id 撞了")
+	}
+	if err := a.Contribution().Revoke(ctx, res.CredentialID, upstream.RevokeActor{AccountID: other}); err == nil {
 		t.Fatal("他人撤销应被拒绝")
 	}
 
@@ -391,16 +406,18 @@ func TestContractSecretSourceWiring(t *testing.T) {
 // 再用真 App 的日志验证「有 broken 时确实 Warn 出来」。
 func TestContractCredentialWiringAudit(t *testing.T) {
 	ctx := context.Background()
-	id1, id2, id3 := int64(1), int64(2), int64(3)
+	id1, id2, id3 := "sec-1", "sec-2", "sec-3"
 	ups := []store.Upstream{
-		{ID: 10, Kind: "vendor", Name: "no-secret", SecretID: nil}, // 无鉴权：不计入
-		{ID: 11, Kind: "selfhosted", Name: "local", SecretID: nil}, // 无鉴权：不计入
-		{ID: 12, Kind: "relay", Name: "buddy", SecretID: &id1},     // relay 的凭据在 sidecar 池里：不计入
-		{ID: 13, Kind: "vendor", Name: "ok", SecretID: &id2},       // 有引用且解得到
-		{ID: 14, Kind: "vendor", Name: "broken", SecretID: &id3},   // 有引用但解不到
+		{ID: "up-10", Kind: "vendor", Name: "no-secret", SecretID: nil}, // 无鉴权：不计入
+		{ID: "up-11", Kind: "selfhosted", Name: "local", SecretID: nil}, // 无鉴权：不计入
+		{ID: "up-12", Kind: "relay", Name: "buddy", SecretID: &id1},     // relay 的凭据在 sidecar 池里：不计入
+		{ID: "up-13", Kind: "vendor", Name: "ok", SecretID: &id2},       // 有引用且解得到
+		{ID: "up-14", Kind: "vendor", Name: "broken", SecretID: &id3},   // 有引用但解不到
 	}
-	has := func(_ context.Context, upstreamID int64) (bool, error) {
-		return upstreamID == 13, nil
+	// 这个自检只看「声明了 secret_id 的上游能否解到密文行」，id 只是行标识的
+	// 载体，用可读字符串即可（不经过 idgen 校验面）。
+	has := func(_ context.Context, upstreamID string) (bool, error) {
+		return upstreamID == "up-13", nil
 	}
 	need, wired, broken := credentialWiringIssues(ctx, ups, has, true)
 	if need != 2 || wired != 1 || broken != 1 {
@@ -519,7 +536,7 @@ func TestContractContributionPauseResumeReal(t *testing.T) {
 	}
 
 	// —— 非属主 ——
-	if _, err := svc.SetPaused(ctx, res.CredentialID, upstream.RevokeActor{AccountID: owner + 1000}, true); !errors.Is(err, upstream.ErrContributionForbidden) {
+	if _, err := svc.SetPaused(ctx, res.CredentialID, upstream.RevokeActor{AccountID: otherAccount(t, a)}, true); !errors.Is(err, upstream.ErrContributionForbidden) {
 		t.Fatalf("他人操作应被拒绝（ErrContributionForbidden），得 %v", err)
 	}
 

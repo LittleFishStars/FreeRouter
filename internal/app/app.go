@@ -260,10 +260,10 @@ func (a *App) startBalanceProbe(ctx context.Context) {
 	a.balanceLoop = NewBalanceLoop(
 		upstream.NewQuotaProbe(a.sidecar),
 		balanceSource{
-			relayUpstreams: func(c context.Context) (map[int64]string, error) {
+			relayUpstreams: func(c context.Context) (map[string]string, error) {
 				return a.relayProviders(c)
 			},
-			providerOfUpstream: func(c context.Context, upstreamID int64) string {
+			providerOfUpstream: func(c context.Context, upstreamID string) string {
 				// 每次反查重读上游行：relay 上游数量少，且余额排序不需要强一致。
 				u, err := a.store.Repos().Models.GetUpstreamByID(c, upstreamID)
 				if err != nil || u == nil || u.Kind != "relay" {
@@ -278,12 +278,12 @@ func (a *App) startBalanceProbe(ctx context.Context) {
 }
 
 // relayProviders 列出所有 relay 上游 (upstreamID → provider)，从 base_url 解析。
-func (a *App) relayProviders(ctx context.Context) (map[int64]string, error) {
+func (a *App) relayProviders(ctx context.Context) (map[string]string, error) {
 	ups, err := a.store.Repos().Models.ListUpstreams(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := map[int64]string{}
+	out := map[string]string{}
 	for _, u := range ups {
 		if u.Kind != "relay" {
 			continue

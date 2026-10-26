@@ -37,7 +37,7 @@ const aggregateChannel = "aggregate"
 
 // AbstractModel 是对外暴露的抽象模型。
 type AbstractModel struct {
-	ID                 int64
+	ID                 string // UUID
 	Name               string
 	DisplayName        string
 	Strategy           string
@@ -768,14 +768,15 @@ type UpstreamCredentialSummary struct {
 //
 // 关联路径是**全库唯一一条凭据↔上游的边**，要照 internal/upstream/contribution.go
 // 的 Submit 落库顺序读：先建 upstreams 行 → 写 upstream_secrets（带 upstream_id）
-// → 凭据的 secret_ref 存密文行 id 的十进制字符串。所以
-// credential.secret_ref →(CAST)→ upstream_secrets.id → upstream_secrets.upstream_id
+// → 凭据的 secret_ref 存密文行 id 本身（UUID 文本）。所以
+// credential.secret_ref → upstream_secrets.id → upstream_secrets.upstream_id
 // 是唯一走得通的连接。反方向的 upstreams.secret_id 只对「上游自己那把 key」成立，
 // 对贡献凭据不成立——拿它当连接边会把贡献凭据算到别的上游头上。
 //
-// secret_ref 可能是非数字（自定义流程/历史数据）：CAST 得 0，join 自然落空，
-// 该行不进聚合。这是**有意的**：给它加兜底（比如退回字符串比对）会把「关不上」
-// 变成「关到 id=0 的行上」，那是伪造事实，不是容错。
+// secret_ref 引用了一行不存在的密文时 join 落空、该行不进聚合。这是**有意的**：
+// 给它加兜底会把「关不上」变成「关到别的行上」，那是伪造事实，不是容错。
+// （2026-10-26 UUID 改造前，这里的形状是十进制字符串 + CAST(... AS INTEGER)，
+// 容错成因是「非数字 CAST 得 0」；现在两边都是 UUID 文本，纯字符串相等。）
 //
 // c.provider 在聚合查询里是 bare column（SQLite 取组内任意一行）。这里可以这么写，
 // 是因为上游名由 contributeUpstreamName(provider, 指纹) 生成（provider 进了
@@ -786,7 +787,7 @@ func (r *ModelRepo) ListUpstreamCredentials(ctx context.Context) (map[string]Ups
 		`SELECT s.upstream_id, c.provider, COUNT(*) AS total,
 		        SUM(CASE WHEN c.status = 'active' THEN 1 ELSE 0 END) AS active
 		   FROM upstream_credentials c
-		   JOIN upstream_secrets s ON s.id = CAST(c.secret_ref AS INTEGER)
+		   JOIN upstream_secrets s ON s.id = c.secret_ref
 		  GROUP BY s.upstream_id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: 聚合上游凭据失败: %w", err)
@@ -825,7 +826,7 @@ type UpstreamCredentialRow struct {
 //
 // 关联边与 ListUpstreamCredentials 相同（secret_ref → upstream_secrets.id
 // → upstream_id，全库唯一一条凭据↔上游的边）：这条边上的行才属于该上游。
-// secret_ref 非数字的行（自定义流程/历史数据）CAST 得 0，join 落空不返回，
+// secret_ref 指向不存在密文行的凭据 join 落空不返回，
 // 与聚合口径一致——两份读面对「哪些凭据属于哪个上游」必须给出同一个答案，
 // 否则凭据池右栏和可用实例数会互相矛盾。
 func (r *ModelRepo) ListUpstreamCredentialRows(ctx context.Context) (map[string][]UpstreamCredentialRow, error) {
@@ -833,7 +834,7 @@ func (r *ModelRepo) ListUpstreamCredentialRows(ctx context.Context) (map[string]
 		`SELECT s.upstream_id, c.id, c.owner_account_id, c.provider, COALESCE(c.external_label, ''),
 		        c.status, c.verify_status, c.created_at, COALESCE(c.last_used_at, 0)
 		   FROM upstream_credentials c
-		   JOIN upstream_secrets s ON s.id = CAST(c.secret_ref AS INTEGER)
+		   JOIN upstream_secrets s ON s.id = c.secret_ref
 		  ORDER BY c.created_at, c.id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: 列出上游凭据行失败: %w", err)
@@ -872,7 +873,7 @@ type Upstream struct {
 	Kind           string
 	Name           string
 	BaseURL        string
-	SecretID       *int64
+	SecretID       *string
 	OwnerAccountID *string
 	Enabled        bool
 	LastSeenAt     *int64

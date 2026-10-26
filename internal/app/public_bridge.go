@@ -87,21 +87,29 @@ func newContributionBridge(st *store.Store, svc *upstream.ContributionService, m
 	return &contributionBridge{st: st, svc: svc, maxKeys: maxKeys}
 }
 
-func (b *contributionBridge) AccountIDOf(ctx context.Context, accountID string) (int64, error) {
-	return parseID(accountID)
+// AccountIDOf 现在只做存在性检查：认证面 id 与库内主键已是同一串 UUID，
+// 不再需要 string→int64 的翻译（那层翻译正是 UUID 改造删掉的接缝之一）。
+func (b *contributionBridge) AccountIDOf(ctx context.Context, accountID string) (string, error) {
+	if _, err := parseID(accountID); err != nil {
+		return "", err
+	}
+	if _, err := b.st.Repos().Accounts.GetAccount(ctx, accountID); err != nil {
+		return "", err
+	}
+	return accountID, nil
 }
 
 // CreateContributor 创建 contributor 类账户（active、无密码）。
 //
 // 用户名随机生成（contrib-<hex>）：贡献者没有登录口令，用户名只是唯一约束
 // 的载体；与恢复码一起使用登录（RecoverWithCode）。
-func (b *contributionBridge) CreateContributor(ctx context.Context, displayName string) (int64, error) {
+func (b *contributionBridge) CreateContributor(ctx context.Context, displayName string) (string, error) {
 	raw := make([]byte, 6)
 	if _, err := rand.Read(raw); err != nil {
-		return 0, err
+		return "", err
 	}
 	username := "contrib-" + hex.EncodeToString(raw)
-	var id int64
+	var id string
 	err := b.st.WithTx(ctx, func(tx *store.Repos) error {
 		nid, err := tx.Accounts.CreateAccount(ctx, store.AccountAuth{
 			Account: store.Account{
@@ -121,20 +129,20 @@ func (b *contributionBridge) CreateContributor(ctx context.Context, displayName 
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	return id, nil
 }
 
-func (b *contributionBridge) SetRecoveryCodeHash(ctx context.Context, accountID int64, hash string) error {
+func (b *contributionBridge) SetRecoveryCodeHash(ctx context.Context, accountID string, hash string) error {
 	return b.st.Repos().Accounts.SetRecoveryCodeHash(ctx, accountID, hash)
 }
 
-func (b *contributionBridge) RecoveryHashOf(ctx context.Context, accountID int64) (string, error) {
+func (b *contributionBridge) RecoveryHashOf(ctx context.Context, accountID string) (string, error) {
 	return b.st.Repos().Accounts.RecoveryCodeHashOf(ctx, accountID)
 }
 
-func (b *contributionBridge) RecoveryStateOf(ctx context.Context, accountID int64) (bool, error) {
+func (b *contributionBridge) RecoveryStateOf(ctx context.Context, accountID string) (bool, error) {
 	hash, err := b.st.Repos().Accounts.RecoveryCodeHashOf(ctx, accountID)
 	if err != nil {
 		return false, err
@@ -142,7 +150,7 @@ func (b *contributionBridge) RecoveryStateOf(ctx context.Context, accountID int6
 	return hash != "", nil
 }
 
-func (b *contributionBridge) CredentialsOf(ctx context.Context, owner int64) ([]httpapi.ContributionCredentialRow, error) {
+func (b *contributionBridge) CredentialsOf(ctx context.Context, owner string) ([]httpapi.ContributionCredentialRow, error) {
 	rows, err := b.st.Repos().Models.ListCredentialsByOwner(ctx, owner)
 	if err != nil {
 		return nil, err
@@ -158,7 +166,7 @@ func (b *contributionBridge) CredentialsOf(ctx context.Context, owner int64) ([]
 	return out, nil
 }
 
-func (b *contributionBridge) CredentialOf(ctx context.Context, owner, id int64) (*httpapi.ContributionCredentialRow, error) {
+func (b *contributionBridge) CredentialOf(ctx context.Context, owner, id string) (*httpapi.ContributionCredentialRow, error) {
 	c, err := b.st.Repos().Models.LookupCredential(ctx, id)
 	if err != nil {
 		return nil, err
@@ -174,7 +182,7 @@ func (b *contributionBridge) CredentialOf(ctx context.Context, owner, id int64) 
 	}, nil
 }
 
-func (b *contributionBridge) ContributionUsage(ctx context.Context, owner, since int64) (int64, int64, int64, error) {
+func (b *contributionBridge) ContributionUsage(ctx context.Context, owner string, since int64) (int64, int64, int64, error) {
 	return b.st.Repos().Usage.ContributionUsageByOwner(ctx, owner, since)
 }
 

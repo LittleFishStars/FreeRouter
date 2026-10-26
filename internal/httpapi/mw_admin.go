@@ -45,7 +45,7 @@ import (
 
 	"github.com/LittleFishStars/FreeRouter/internal/apidir"
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
-	"github.com/LittleFishStars/FreeRouter/internal/idcode"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 )
 
 // ---------------------------------------------------------------------------
@@ -609,7 +609,7 @@ type AdminRealModelCreator interface {
 	// CreateRealModel 落库一条手工模型；upstreamID 已由 handler 解码校验。
 	// upstream_model_id 在该上游下已存在时返回既有行 + false（幂等语义，
 	// handler 回 200），新建返回 true。写审计由桥完成（动作 model.manual_add）。
-	CreateRealModel(ctx context.Context, upstreamID int64, upstreamModelID, displayName string, contextWindow *int64, audit AdminAuditEntry) (*AdminRealModel, bool, string, error)
+	CreateRealModel(ctx context.Context, upstreamID string, upstreamModelID, displayName string, contextWindow *int64, audit AdminAuditEntry) (*AdminRealModel, bool, string, error)
 }
 
 // AdminModelRefresher 是目录刷新触发（POST /real-models/refresh）。
@@ -1386,13 +1386,19 @@ func adminWriteParamErr(w http.ResponseWriter, param, msg string) {
 // 九个资源面都是同一个形状，各写一份就必然出现「改了期望前缀但忘了改 msg，
 // 或者反过来」的漂移。want 只是给人看的中文资源名，前缀取自 idcode 常量，
 // 所以 400 文案里的「期望 xx_<数字>」与 Decode 的判据永远同源。
-func idParamValid(w http.ResponseWriter, r *http.Request, param, prefix, want string) (string, bool) {
-	raw := chi.URLParam(r, param)
-	if _, err := idcode.Decode(prefix, raw); err != nil {
-		adminWriteParamErr(w, param, want+" id 形状非法（期望 "+prefix+"_<数字>）")
+// idParamValid 校验路径参数的形状。
+//
+// 2026-10-26 UUID 改造：id 不再带前缀（见 internal/idgen 包注释），prefix
+// 形参随之消失；错误提示改成期望 UUID。校验通过时返回**归一化后的值**
+// （trim + 小写），调用方拿去解码/查库的就是这一份——带空格的同一个 id
+// 被当成两个不同 id 是数据问题，必须在门口归一。
+func idParamValid(w http.ResponseWriter, r *http.Request, param, want string) (string, bool) {
+	id, err := idgen.Parse(chi.URLParam(r, param))
+	if err != nil {
+		adminWriteParamErr(w, param, want+" id 形状非法（期望 UUID）")
 		return "", false
 	}
-	return raw, true
+	return id, true
 }
 
 // adminFail 是"校验错误自动落 param"的小工具：错误串以 "字段名:" 开头

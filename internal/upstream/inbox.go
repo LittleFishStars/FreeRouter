@@ -30,7 +30,7 @@ type VerificationWriter interface {
 	// WriteVerification 写回一条 real_model 的鉴定结果。
 	// realModelID 是 real_models.id；state/evidence 来自 JudgeRealModel。
 	// fingerprintVersion 是判定所用指纹库版本（§6.2：判定可追溯）。
-	WriteVerification(ctx context.Context, realModelID int64, state VerifyState, evidence string, fingerprintVersion int) error
+	WriteVerification(ctx context.Context, realModelID string, state VerifyState, evidence string, fingerprintVersion int) error
 }
 
 // InboxWriter 是 admin_inbox 投递的窄接口（任务第 3 点）。
@@ -184,7 +184,7 @@ func (h *RefreshHooks) applyVerification(ctx context.Context, items []verifyItem
 // verifyItem 是鉴定单元：目录条目 + 落库行 id + 上游类型。
 type verifyItem struct {
 	info        ModelInfoInput
-	realModelID int64
+	realModelID string // UUID
 	kind        string
 }
 
@@ -205,7 +205,7 @@ func (h *RefreshHooks) notifySuspect(ctx context.Context, log *slog.Logger, it v
 
 // notifyAdded / notifyMissing 投递目录事件（刷新联动的另两事件）。
 // 与 suspect 同纪律：失败只记日志。
-func (h *RefreshHooks) notifyAdded(ctx context.Context, log *slog.Logger, upstream string, realModelID int64, model string) {
+func (h *RefreshHooks) notifyAdded(ctx context.Context, log *slog.Logger, upstream string, realModelID string, model string) {
 	if h == nil || h.Inbox == nil {
 		return
 	}
@@ -220,7 +220,7 @@ func (h *RefreshHooks) notifyAdded(ctx context.Context, log *slog.Logger, upstre
 	}
 }
 
-func (h *RefreshHooks) notifyMissing(ctx context.Context, log *slog.Logger, upstream string, realModelID int64, model string) {
+func (h *RefreshHooks) notifyMissing(ctx context.Context, log *slog.Logger, upstream string, realModelID string, model string) {
 	if h == nil || h.Inbox == nil {
 		return
 	}

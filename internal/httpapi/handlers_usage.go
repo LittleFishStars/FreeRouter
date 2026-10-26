@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"net/http"
 	"strconv"
 	"time"
@@ -60,7 +61,7 @@ type TenantUsageStore interface {
 
 // UsageQuotaRow 是一条额度行。Model 为空 = 合计行。
 type UsageQuotaRow struct {
-	ModelID int64
+	ModelID string // 抽象模型 UUID（空串=合计行）
 	Model   string
 	Unit    string // request | token | credit
 	Period  string // day | month
@@ -71,11 +72,11 @@ type UsageQuotaRow struct {
 
 // UsageLogRow 是一条调用日志行。
 type UsageLogRow struct {
-	ID            int64
+	ID            string // UUID
 	TS            int64
 	Endpoint      string
 	AbstractModel string
-	KeyID         *int64
+	KeyID         *string
 	KeyName       string
 	KeyPrefix     string
 	Status        string
@@ -91,8 +92,8 @@ type UsageLogRow struct {
 // UsageLogFilter 是调用日志筛选（httpapi 侧形状，桥翻译成 SQL 条件）。
 type UsageLogFilter struct {
 	From, To time.Time
-	KeyID    *int64
-	Model    string // 抽象模型名（桥负责名字→id）
+	KeyID    *string // Key UUID
+	Model    string  // 抽象模型名（桥负责名字→id）
 	// ErrorCode 精确匹配错误码（03-errors 的机器码，如 no_candidate）；
 	// 空串 = 不筛。为什么它不归在 Failed 里：failed 是“有没有错”，错误码是
 	// “错在哪”，两者正交——“所有失败”与“no_candidate 失败”都是合法查询。
@@ -157,7 +158,7 @@ func (s *Server) HandleUsageOverview(deps *TenantUsageDeps) http.HandlerFunc {
 				"used":     row.Used,
 				"reset_at": resetAtOf(row.Anchor, row.Period, now),
 			}
-			if row.ModelID == 0 {
+			if row.ModelID == "" {
 				if dims == nil {
 					dims = make([]map[string]any, 0, 4)
 				}
@@ -219,7 +220,7 @@ func (s *Server) HandleUsageLogs(deps *TenantUsageDeps) http.HandlerFunc {
 			f.To = v
 		}
 		if q.Get("key_id") != "" {
-			if id, err := strconv.ParseInt(q.Get("key_id"), 10, 64); err == nil {
+			if id, err := idgen.Parse(q.Get("key_id")); err == nil {
 				f.KeyID = &id
 			} else {
 				writeError(w, http.StatusBadRequest, "invalid_request", "key_id 非法", nil)
@@ -259,7 +260,7 @@ func (s *Server) HandleUsageLogs(deps *TenantUsageDeps) http.HandlerFunc {
 		out := make([]map[string]any, 0, len(rows))
 		for _, row := range rows {
 			entry := map[string]any{
-				"id":             strconv.FormatInt(row.ID, 10),
+				"id":             row.ID,
 				"ts":             unixRFC3339(row.TS),
 				"endpoint":       row.Endpoint,
 				"abstract_model": row.AbstractModel,
@@ -274,7 +275,7 @@ func (s *Server) HandleUsageLogs(deps *TenantUsageDeps) http.HandlerFunc {
 				"output_tokens":  row.OutTokens,
 			}
 			if row.KeyID != nil {
-				entry["key_id"] = strconv.FormatInt(*row.KeyID, 10)
+				entry["key_id"] = *row.KeyID
 			}
 			out = append(out, entry)
 		}

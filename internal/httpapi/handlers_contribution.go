@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 
 	"github.com/LittleFishStars/FreeRouter/internal/apidir"
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 )
 
 // handlers_contribution.go —— 贡献者面（docs/ui/05-contributor.md + 02-public §6）。
@@ -66,7 +66,7 @@ type ContributionSubmitter interface {
 
 // ContributionSubmission 是一次提交的入参（形状与 upstream.Submission 对齐）。
 type ContributionSubmission struct {
-	OwnerAccountID int64
+	OwnerAccountID string
 	Provider       string
 	BaseURL        string
 	APIKey         string
@@ -77,7 +77,7 @@ type ContributionSubmission struct {
 
 // ContributionOutcome 是一次提交的结果。
 type ContributionOutcome struct {
-	CredentialID int64
+	CredentialID string // UUID
 	Status       string
 	VerifyStatus string
 	InPool       bool
@@ -86,27 +86,28 @@ type ContributionOutcome struct {
 
 // ContributionStore 是贡献面的存储窄接口（装配桥实现）。
 type ContributionStore interface {
-	// AccountIDOf 把认证面账户 id（字符串）转成贡献链路的 int64。
-	AccountIDOf(ctx context.Context, accountID string) (int64, error)
+	// AccountIDOf 校验账户确实存在（认证面的 id 与库内主键已是同一串 UUID，
+	// 这层不再做类型转换，只保留"这个账户还在吗"的存在性检查）。
+	AccountIDOf(ctx context.Context, accountID string) (string, error)
 	// CreateContributor 创建 contributor 类账户（active、无密码），返回 id。
-	CreateContributor(ctx context.Context, displayName string) (int64, error)
+	CreateContributor(ctx context.Context, displayName string) (string, error)
 	// SetRecoveryCodeHash 写恢复码哈希（覆盖旧码）。
-	SetRecoveryCodeHash(ctx context.Context, accountID int64, hash string) error
+	SetRecoveryCodeHash(ctx context.Context, accountID string, hash string) error
 	// RecoveryHashOf 读恢复码哈希（无码返回空串）。
-	RecoveryHashOf(ctx context.Context, accountID int64) (string, error)
+	RecoveryHashOf(ctx context.Context, accountID string) (string, error)
 	// RecoveryStateOf 读恢复码是否已生成（生成时间列暂无，恒 null）。
-	RecoveryStateOf(ctx context.Context, accountID int64) (generated bool, err error)
+	RecoveryStateOf(ctx context.Context, accountID string) (generated bool, err error)
 	// CredentialsOf 列出属主的贡献凭据。
-	CredentialsOf(ctx context.Context, owner int64) ([]ContributionCredentialRow, error)
+	CredentialsOf(ctx context.Context, owner string) ([]ContributionCredentialRow, error)
 	// CredentialOf 读属主的一条凭据（非属主 not_found）。
-	CredentialOf(ctx context.Context, owner, id int64) (*ContributionCredentialRow, error)
+	CredentialOf(ctx context.Context, owner, id string) (*ContributionCredentialRow, error)
 	// ContributionUsage 汇总贡献凭据自 since（Unix 秒，0 = 不限）以来的调用量。
-	ContributionUsage(ctx context.Context, owner int64, since int64) (calls, inTokens, outTokens int64, err error)
+	ContributionUsage(ctx context.Context, owner string, since int64) (calls, inTokens, outTokens int64, err error)
 }
 
 // ContributionCredentialRow 是一条贡献凭据的展示行。
 type ContributionCredentialRow struct {
-	ID           int64
+	ID           string // UUID
 	Label        string
 	Status       string
 	VerifyStatus string
@@ -123,7 +124,7 @@ type ContributionCredentialRow struct {
 //
 // SetPaused 返回操作后的可调用状态（"paused" / "enabled"）；重复调用幂等。
 type ContributionPauser interface {
-	SetPaused(ctx context.Context, owner, credentialID int64, paused bool) (string, error)
+	SetPaused(ctx context.Context, owner, credentialID string, paused bool) (string, error)
 }
 
 // 贡献入口的三个分类 id（前端按 id 分 Tab，契约 v2 §1）。
@@ -339,12 +340,12 @@ func resolveSubmissionTarget(w http.ResponseWriter, kind, providerID, endpoint s
 }
 
 // contributeOwner 解析可选会话 → 贡献属主。未登录时创建 contributor 账户。
-func (s *Server) contributeOwner(r *http.Request, deps *ContributionDeps, label string) (int64, bool, error) {
+func (s *Server) contributeOwner(r *http.Request, deps *ContributionDeps, label string) (string, bool, error) {
 	if deps.Sess != nil {
 		if c, err := r.Cookie(SessionCookieName); err == nil && c.Value != "" {
 			if p, verr := deps.Sess.Validate(r.Context(), c.Value, ""); verr == nil {
-				id, aerr := deps.Store.AccountIDOf(r.Context(), p.AccountID)
-				return id, false, aerr
+				id, err := deps.Store.AccountIDOf(r.Context(), p.AccountID)
+				return id, false, err
 			}
 		}
 	}
@@ -357,8 +358,12 @@ func (s *Server) contributeOwner(r *http.Request, deps *ContributionDeps, label 
 }
 
 // issueRecoveryCode 生成并落库一条新恢复码（覆盖旧码）。
-// 格式 `frv-<accountID>-<secret>`；secret 用 argon2id 哈希落库。
-func issueRecoveryCode(ctx context.Context, deps *ContributionDeps, accountID int64) (string, error) {
+// 格式 `frv_<accountID>_<secret>`；secret 用 argon2id 哈希落库。
+//
+// 为什么分隔符从 `-` 改成 `_`（2026-10-26 UUID 改造）：accountID 现在是 UUID
+// 文本，自身含 4 个 `-`，用 `-` 分隔会让 SplitN(code,"-",3) 把 UUID 拆成两截，
+// 兑换必然失败。`_` 不在 UUID 字符集里，是唯一安全的分隔符。
+func issueRecoveryCode(ctx context.Context, deps *ContributionDeps, accountID string) (string, error) {
 	raw := make([]byte, 18)
 	if _, err := rand.Read(raw); err != nil {
 		return "", err
@@ -371,7 +376,7 @@ func issueRecoveryCode(ctx context.Context, deps *ContributionDeps, accountID in
 	if err := deps.Store.SetRecoveryCodeHash(ctx, accountID, hash); err != nil {
 		return "", err
 	}
-	return "frv-" + strconv.FormatInt(accountID, 10) + "-" + secret, nil
+	return "frv_" + accountID + "_" + secret, nil
 }
 
 // HandleContributeRecovery POST /api/contributions/recovery（公开）。
@@ -411,17 +416,25 @@ func (s *Server) recoveryValid(ctx context.Context, deps *ContributionDeps, code
 	return okVerify
 }
 
-// parseRecoveryCode 拆 `frv-<id>-<secret>`。
-func parseRecoveryCode(code string) (int64, string, bool) {
-	parts := strings.SplitN(code, "-", 3)
+// parseRecoveryCode 拆 `frv_<id>_<secret>`。
+//
+// 分隔符是 `_` 而不是 `-`：id 是 UUID v4 文本，自带 4 个 `-`（见 issueRecoveryCode
+// 的注释）。拆三段的写法（SplitN(...,3)）保证 secret 里即使出现 `_` 也不受影响——
+// secret 是 base64url，不含 `_`，但这条保证不依赖那个事实。
+//
+// 形状非法就返回 ok=false，**不做「看起来像 UUID 才继续」的宽松解析**：
+// 恢复码的失败面必须与「码错」同形（防枚举，见 HandleContributeRecovery），
+// 多一个分支就多一处可区分的时序。
+func parseRecoveryCode(code string) (string, string, bool) {
+	parts := strings.SplitN(code, "_", 3)
 	if len(parts) != 3 || parts[0] != "frv" {
-		return 0, "", false
+		return "", "", false
 	}
-	id, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil || id <= 0 || parts[2] == "" {
-		return 0, "", false
+	id, secret := parts[1], parts[2]
+	if !idgen.Valid(id) || secret == "" {
+		return "", "", false
 	}
-	return id, parts[2], true
+	return id, secret, true
 }
 
 // HandleMyContributions GET /api/contributions（会话）。
@@ -462,8 +475,8 @@ func (s *Server) HandleMyCredentialDetail(deps *ContributionDeps) http.HandlerFu
 		if !ok {
 			return
 		}
-		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-		if err != nil || id <= 0 {
+		id, err := idgen.Parse(chi.URLParam(r, "id"))
+		if err != nil {
 			writeError(w, http.StatusNotFound, "not_found", "接口不存在", nil)
 			return
 		}
@@ -517,8 +530,8 @@ func (s *Server) handleCredentialPause(deps *ContributionDeps, paused bool) http
 			writeError(w, http.StatusInternalServerError, "internal_error", "暂停/恢复服务未装配", nil)
 			return
 		}
-		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-		if err != nil || id <= 0 {
+		id, err := idgen.Parse(chi.URLParam(r, "id"))
+		if err != nil {
 			writeError(w, http.StatusNotFound, "not_found", "接口不存在", nil)
 			return
 		}
@@ -647,21 +660,21 @@ func (s *Server) HandleRecoveryCodeRegenerate(deps *ContributionDeps) http.Handl
 }
 
 // requireContributor 是贡献者面的公共前置（会话 + 装配依赖）。
-func requireContributor(w http.ResponseWriter, r *http.Request, deps *ContributionDeps) (int64, bool) {
+func requireContributor(w http.ResponseWriter, r *http.Request, deps *ContributionDeps) (string, bool) {
 	if deps == nil || deps.Store == nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "贡献服务未装配", nil)
-		return 0, false
+		return "", false
 	}
 	p := SessionPrincipalFromContext(r.Context())
 	if p == nil {
 		writeError(w, http.StatusUnauthorized, "session_expired",
 			"会话不存在或已过期，请重新登录", nil)
-		return 0, false
+		return "", false
 	}
 	id, err := deps.Store.AccountIDOf(r.Context(), p.AccountID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "读取账户失败", nil)
-		return 0, false
+		return "", false
 	}
 	return id, true
 }
@@ -671,7 +684,7 @@ func requireContributor(w http.ResponseWriter, r *http.Request, deps *Contributi
 // claimed_model 无列，给空串。改这两个值要同步前端契约。
 func renderContributionCredential(row ContributionCredentialRow) map[string]any {
 	return map[string]any{
-		"id":             strconv.FormatInt(row.ID, 10),
+		"id":             row.ID,
 		"external_label": row.Label,
 		"kind":           "api_key",
 		"claimed_model":  "",

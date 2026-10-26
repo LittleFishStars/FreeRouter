@@ -80,7 +80,7 @@ func TestContractUsageLogsParamsReachStore(t *testing.T) {
 	code := "no_candidate"
 	ttft := int64(120)
 	store := &fakeTenantStore{rows: []UsageLogRow{{
-		ID: 7, TS: 1_700_000_000, Endpoint: "openai-chat", AbstractModel: "fast",
+		ID: "7", TS: 1_700_000_000, Endpoint: "openai-chat", AbstractModel: "fast",
 		KeyName: "cli", KeyPrefix: "fr-abcd…wxyz", Status: "error",
 		ErrorCode: &code, TTFTMs: &ttft,
 	}}}

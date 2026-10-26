@@ -2,12 +2,13 @@
 //
 // 桥的三条纪律（与 bridges.go 相同）：
 //  1. 只翻译，不判定——「什么算有效」属于 httpapi（它已在 handler 层做完
-//     契约校验）；桥只做 idcode 编解码、字段逐个搬运、错误哨兵换壳。
+//     契约校验）；桥只做 id 形状校验、字段逐个搬运、错误哨兵换壳。
 //  2. 业务写与审计写**同事务**（06-audit §5）：AdminDeps 的写方法都带
 //     audit 入参、回 auditID——实现统一走 store.WithTx（先业务后审计，
 //     Appendf 用 ActionCategory* 常量拼 action），崩溃窗口为零。
-//  3. 出入站 id 一律 internal/idcode：入参 Decode（前缀校验在 httpapi 已做，
-//     这里解出 int64），出参 Encode（Store 行的 int64 → "acc_1" 形态）。
+//  3. 出入站 id 一律 internal/idgen：对外 id 与库内主键是同一串 UUID
+//     （2026-10-26 改造），所以这里不再有编解码，只剩形状校验——decodeID /
+//     encodeID 两个函数保留为**审计锚点**（grep 它们就能列全 id 出入站点）。
 //
 // 错误哨兵映射（集中在此一处）：
 //   store.ErrNotFound / ErrGroupNotFound / ErrCredentialNotFound → httpapi.ErrAdmin*
@@ -28,7 +29,7 @@ import (
 	"strings"
 
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
-	"github.com/LittleFishStars/FreeRouter/internal/idcode"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
 
@@ -80,13 +81,20 @@ func isDuplicateRow(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint")
 }
 
-// decodeID 解对外 id（前缀已由 httpapi 校验，这里只取数字）。
-func decodeID(prefix, s string) (int64, error) {
-	return idcode.Decode(prefix, s)
+// decodeID 校验对外 id 的形状并原样返回（2026-10-26 UUID 改造后**不再是解码**）。
+//
+// 为什么保留这两个函数：它们是「id 出入站」的唯一审计点（grep decodeID /
+// encodeID 就能列全站点）。前缀参数现在没有语义（前缀体系已废弃，见
+// internal/idgen 的包注释），保留它只为让调用点不因这次改造大面积挪动——
+// 挪动会让"哪些地方碰过 id"这条审计线索断掉。
+func decodeID(s string) (string, error) {
+	return idgen.Parse(s)
 }
 
-// encodeID 是 idcode.Encode 的直通（集中一处便于 grep 审计出入站点）。
-func encodeID(prefix string, id int64) string { return idcode.Encode(prefix, id) }
+// encodeID 是 decodeID 的对偶：形状校验后原样返回（不再是编码）。
+func encodeID(id string) string {
+	return idgen.MustParse(id)
+}
 
 // adminStrPtr 是字段搬运的指针小工具（NULL 列 ↔ 指针）。
 // 为什么带 admin 前缀：同包其它桥文件（后续 admin_bridge_*.go）共用这一个，
@@ -98,9 +106,9 @@ func jsonUnmarshal(b []byte, m *map[string]any) error { return json.Unmarshal(b,
 
 // auditInToStore 把 httpapi 的审计入参翻成 store 的行形状。
 // Target 拆成 target 字符串（audit_log.target 一列即可，06-audit §2）。
-func auditInToStore(e httpapi.AdminAuditEntry) (accountID *int64, actingClass, target string) {
+func auditInToStore(e httpapi.AdminAuditEntry) (accountID *string, actingClass, target string) {
 	if e.AccountID != "" {
-		if id, err := idcode.Decode(idcode.Account, e.AccountID); err == nil {
+		if id, err := idgen.Parse(e.AccountID); err == nil {
 			accountID = &id
 		}
 	}
@@ -136,5 +144,5 @@ func appendAudit(ctx context.Context, logs *store.LogRepo, e httpapi.AdminAuditE
 	if err != nil {
 		return "", err
 	}
-	return encodeID(idcode.Audit, n), nil
+	return n, nil
 }

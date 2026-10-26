@@ -95,7 +95,7 @@ type UsageRecorder interface {
 // SettledUsage 是折算完成的终态结算包（UsageSink → store 的中间形状）。
 type SettledUsage struct {
 	AccountID string // store 主键串（adapter 翻 int64）
-	ModelID   int64  // 抽象模型 id（0=合计行；名字解析归调用方）
+	ModelID   string // 抽象模型 id（""=合计行；名字解析归调用方）
 	// QuotaRequest 是 request 维度的实际计费（通常 1：一次请求 = 1；
 	// 失败请求调用方传 0——"没有消耗的尝试不扣"，03-groups §4）。
 	QuotaRequest int64
@@ -119,7 +119,7 @@ type SettledUsage struct {
 type SettlementRecorder struct {
 	debiter QuotaLedger
 	// poolsOf 返回该请求涉及的组 id（池补账范围；nil/空=无池）。
-	poolsOf func(ctx context.Context, accountID string) ([]int64, bool)
+	poolsOf func(ctx context.Context, accountID string) ([]string, bool)
 }
 
 // QuotaLedger 是 meter 自己的结算面：TryDebit（入站预扣）+ Credit（终态
@@ -134,7 +134,7 @@ type QuotaLedger interface {
 
 // NewSettlementRecorder 构造。debiter 必须非 nil（nil 时 SettleUsage 返回
 // internal_error——装配错误第一枪暴露）。
-func NewSettlementRecorder(debiter QuotaLedger, poolsOf func(ctx context.Context, accountID string) ([]int64, bool)) *SettlementRecorder {
+func NewSettlementRecorder(debiter QuotaLedger, poolsOf func(ctx context.Context, accountID string) ([]string, bool)) *SettlementRecorder {
 	return &SettlementRecorder{debiter: debiter, poolsOf: poolsOf}
 }
 
@@ -151,7 +151,7 @@ func (r *SettlementRecorder) SettleUsage(ctx context.Context, su SettledUsage) e
 	if su.QuotaRequest < 0 || su.Totals.TokenCost() < 0 || su.CreditCost < 0 {
 		return ErrorfInternal("负消耗进入结算（宁少算不可多算的反面）")
 	}
-	var gids []int64
+	var gids []string
 	if r.poolsOf != nil {
 		if got, ok := r.poolsOf(ctx, su.AccountID); ok {
 			gids = got
@@ -172,8 +172,8 @@ func (r *SettlementRecorder) SettleUsage(ctx context.Context, su SettledUsage) e
 // CreditContext 是终态记账的范围描述（TryDebit 的记账版）。
 type CreditContext struct {
 	AccountID       string
-	AbstractModelID int64
-	GroupIDs        []int64
+	AbstractModelID string // "" = 合计行（store.TotalScope）
+	GroupIDs        []string
 	Cost            UsageCost
 }
 

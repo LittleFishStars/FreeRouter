@@ -372,7 +372,7 @@ func (b *oauthBridge) Cancel(ctx context.Context, sessionID string) error {
 
 // settle 把拿到的凭据落到指定归属账户（或新建 contributor），并生成恢复码。
 func (b *oauthBridge) settle(ctx context.Context, provider, credential, sessionToken string) (*httpapi.OAuthOutcome, error) {
-	var owner int64
+	var owner string
 	created := false
 	if id, ok := b.sessionAccount(ctx, sessionToken); ok {
 		owner = id
@@ -404,17 +404,17 @@ func (b *oauthBridge) settle(ctx context.Context, provider, credential, sessionT
 }
 
 // sessionAccount 解析会话 Cookie → 账户 id。无效/过期一律当作未登录。
-func (b *oauthBridge) sessionAccount(ctx context.Context, token string) (int64, bool) {
+func (b *oauthBridge) sessionAccount(ctx context.Context, token string) (string, bool) {
 	if b.sess == nil || token == "" {
-		return 0, false
+		return "", false
 	}
 	p, err := b.sess.Validate(ctx, token, "")
 	if err != nil {
-		return 0, false
+		return "", false
 	}
 	id, err := b.contrib.AccountIDOf(ctx, p.AccountID)
 	if err != nil {
-		return 0, false
+		return "", false
 	}
 	return id, true
 }
@@ -423,7 +423,7 @@ func (b *oauthBridge) sessionAccount(ctx context.Context, token string) (int64, 
 //
 // 上游行的 base_url/kind 来自 sidecar 的 provider 清单（每家推理端点不同）；
 // 拿不到时退回 defaultEndpoint。
-func (b *oauthBridge) persist(ctx context.Context, owner int64, provider, credential string) (int64, error) {
+func (b *oauthBridge) persist(ctx context.Context, owner string, provider, credential string) (string, error) {
 	fingerprint := upstream.KeyFingerprint(credential)
 	short := fingerprint
 	if len(short) > 8 {
@@ -432,7 +432,7 @@ func (b *oauthBridge) persist(ctx context.Context, owner int64, provider, creden
 	upstreamName := fmt.Sprintf("%s-oauth-%s", provider, short)
 	kind, baseURL := b.endpointFor(ctx, provider)
 
-	var credID int64
+	var credID string
 	err := b.st.WithTx(ctx, func(tx *store.Repos) error {
 		// 上游行先建且 enabled=false：未通过判定的凭据绝不能可调用。
 		uid, err := tx.Models.UpsertUpstream(ctx, kind, upstreamName, baseURL, &owner, false)
@@ -444,7 +444,7 @@ func (b *oauthBridge) persist(ctx context.Context, owner int64, provider, creden
 			return err
 		}
 		cid, err := tx.Models.CreateCredential(ctx, owner, provider, fingerprint,
-			provider+" OAuth", fmt.Sprintf("%d", sid))
+			provider+" OAuth", fmt.Sprintf("%s", sid))
 		if err != nil {
 			// 建行失败要把刚写的密文收回去，避免留下无主的密钥材料。
 			_ = tx.Secrets.DeleteSecret(ctx, sid)
@@ -454,7 +454,7 @@ func (b *oauthBridge) persist(ctx context.Context, owner int64, provider, creden
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	if err := b.st.Repos().Models.MarkVerified(ctx, credID,
 		store.VerifyUnverified, "oauth: 已获取凭据，等待目录探测"); err != nil {
@@ -502,7 +502,7 @@ func sidecarMessage(err error) string {
 }
 
 // issueRecoveryFor 生成并落库一次性恢复码（与 API Key 贡献路径同格式）。
-func issueRecoveryFor(ctx context.Context, b *contributionBridge, owner int64) (string, error) {
+func issueRecoveryFor(ctx context.Context, b *contributionBridge, owner string) (string, error) {
 	secret := randomToken(18)
 	hash, err := auth.NewPasswordHasher(12).Hash(secret)
 	if err != nil {
@@ -511,7 +511,7 @@ func issueRecoveryFor(ctx context.Context, b *contributionBridge, owner int64) (
 	if err := b.SetRecoveryCodeHash(ctx, owner, hash); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("frv-%d-%s", owner, secret), nil
+	return fmt.Sprintf("frv-%s-%s", owner, secret), nil
 }
 
 // newOAuthBridge 构造供应商 OAuth 桥（装配层唯一入口）。

@@ -133,9 +133,9 @@ func modelKeys() []string {
 }
 
 // sourcesFixture 是三条来源，各自覆盖一种形状：
-//   - up_1：目录命中的 vendor，两个协议、有模型、字段齐全；
-//   - up_2：relay，available_instances 必须原样保 null（"池内可展开"）；
-//   - up_3：停用的自建端点，全是 nil 切片——出站必须规范化成 []。
+//   - 00000050-0000-4000-8000-000000000001：目录命中的 vendor，两个协议、有模型、字段齐全；
+//   - 00000050-0000-4000-8000-000000000002：relay，available_instances 必须原样保 null（"池内可展开"）；
+//   - 00000050-0000-4000-8000-000000000003：停用的自建端点，全是 nil 切片——出站必须规范化成 []。
 //
 // 假体故意给 nil 切片：handler 的空数组口径如果哪天被删掉，这一组会立刻变红，
 // 而不是等到某个库恰好为空时才在前端炸出一个 null。
@@ -148,7 +148,7 @@ func sourcesFixture() ([]AdminModelSource, []string) {
 
 	rows := []AdminModelSource{
 		{
-			ID: "up_1", Kind: "vendor", Name: "DeepSeek",
+			ID: "00000050-0000-4000-8000-000000000001", Kind: "vendor", Name: "DeepSeek",
 			UpstreamName: "api:deepseek-com-contrib-key_de2c",
 			ProviderID:   "deepseek-com", Region: "cn",
 			Website: "https://platform.deepseek.com", APIDoc: "https://api-docs.deepseek.com",
@@ -156,14 +156,14 @@ func sourcesFixture() ([]AdminModelSource, []string) {
 			CredentialCount: 1, ModelCount: 1,
 			Protocols: []string{"openai", "anthropic"}, AvailableInstances: &one,
 			LastSeenAt: &seen,
-			// 凭据池改版（pool-merge 契约 §1.2）：up_1 带一条凭据，
-			// up_2/up_3 故意不给（nil）——出站必须规范化成 []。
+			// 凭据池改版（pool-merge 契约 §1.2）：00000050-0000-4000-8000-000000000001 带一条凭据，
+			// 00000050-0000-4000-8000-000000000002/00000050-0000-4000-8000-000000000003 故意不给（nil）——出站必须规范化成 []。
 			Credentials: []AdminSourceCredential{{
-				ID: "cred_1", Provider: "api:deepseek-com", ExternalLabel: "贡献凭据",
+				ID: "00000040-0000-4000-8000-000000000001", Provider: "api:deepseek-com", ExternalLabel: "贡献凭据",
 				Status: "active", VerifyStatus: "unverified", CreatedAt: &seen,
 			}},
 			Models: []AdminModelSourceModel{{
-				RealModelID: "rm_1", UpstreamModelID: "deepseek-flash",
+				RealModelID: "00000060-0000-4000-8000-000000000001", UpstreamModelID: "deepseek-flash",
 				DisplayName: "DeepSeek-V4.1-Flash", Channel: &chanOfficial,
 				ContextWindow: &ctxWin, Modalities: []string{"text"}, Efforts: []string{},
 				Status: "active", Protocols: []string{"openai", "anthropic"},
@@ -171,18 +171,18 @@ func sourcesFixture() ([]AdminModelSource, []string) {
 			}},
 		},
 		{
-			ID: "up_2", Kind: "relay", Name: "cline", UpstreamName: "cline",
+			ID: "00000050-0000-4000-8000-000000000002", Kind: "relay", Name: "cline", UpstreamName: "cline",
 			BaseURL: "sidecar://cline", Enabled: true, Contributed: false,
 			Protocols: []string{"openai"}, AvailableInstances: nil,
 			Models: []AdminModelSourceModel{{
-				RealModelID: "rm_2", UpstreamModelID: "cline-x", DisplayName: "cline-x",
+				RealModelID: "00000060-0000-4000-8000-000000000002", UpstreamModelID: "cline-x", DisplayName: "cline-x",
 				Channel: nil, ContextWindow: nil, Modalities: nil, Efforts: nil,
 				Status: "active", Protocols: []string{"openai"},
 				AvailableInstances: nil,
 			}},
 		},
 		{
-			ID: "up_3", Kind: "selfhosted", Name: "自建端点", UpstreamName: "my-endpoint",
+			ID: "00000050-0000-4000-8000-000000000003", Kind: "selfhosted", Name: "自建端点", UpstreamName: "my-endpoint",
 			BaseURL: "https://llm.example.com/v1", Enabled: false, Contributed: false,
 			CredentialCount: 0, ModelCount: 0,
 			Protocols: []string{"openai"}, AvailableInstances: &zero,
@@ -241,10 +241,10 @@ func TestContractModelSourcesWireShape(t *testing.T) {
 	// 凭据池改版（pool-merge 契约 §1.2）：来源内嵌的凭据行字段逐个落位。
 	c0 := asObjects(t, "source.credentials", deepseek["credentials"])
 	if len(c0) != 1 {
-		t.Fatalf("up_1 应有 1 条内嵌凭据，得 %d", len(c0))
+		t.Fatalf("00000050-0000-4000-8000-000000000001 应有 1 条内嵌凭据，得 %d", len(c0))
 	}
 	assertKeys(t, "credential", c0[0], "id", "provider", "external_label", "status", "verify_status", "created_at", "last_used_at")
-	if c0[0]["id"] != "cred_1" || c0[0]["provider"] != "api:deepseek-com" || c0[0]["status"] != "active" {
+	if c0[0]["id"] != "00000040-0000-4000-8000-000000000001" || c0[0]["provider"] != "api:deepseek-com" || c0[0]["status"] != "active" {
 		t.Fatalf("凭据行字段不符：%v", c0[0])
 	}
 	if c0[0]["created_at"] != float64(1761350400) {
@@ -253,7 +253,7 @@ func TestContractModelSourcesWireShape(t *testing.T) {
 	if v, present := c0[0]["last_used_at"]; !present || v != nil {
 		t.Fatalf("last_used_at 未用过应是 null，得 %v（present=%v）", v, present)
 	}
-	// 没给凭据的来源（up_2/up_3）必须是 [] 而不是 null：同一个「没有」在全站
+	// 没给凭据的来源（00000050-0000-4000-8000-000000000002/00000050-0000-4000-8000-000000000003）必须是 [] 而不是 null：同一个「没有」在全站
 	// 只有一种 JSON 形状，前端才能只写一个空态分支。
 	if got := asObjects(t, "relay.credentials", srcs[1]["credentials"]); len(got) != 0 {
 		t.Fatalf("relay 的 credentials 应是 []，得 %v", got)
@@ -313,11 +313,11 @@ func TestContractModelSourcesSorting(t *testing.T) {
 	// 乱序给：期望 contributed 组在前（组内 Alpha < Zed），非 contributed 组按
 	// name（两个 Alpha 撞名）再用 id 决胜。
 	rows := []AdminModelSource{
-		mk("up_3", "Beta", false),
-		mk("up_1", "Zed", true),
-		mk("up_9", "Alpha", false),
-		mk("up_2", "Alpha", true),
-		mk("up_10", "Alpha", false),
+		mk("00000050-0000-4000-8000-000000000003", "Beta", false),
+		mk("00000050-0000-4000-8000-000000000001", "Zed", true),
+		mk("00000050-0000-4000-8000-000000000009", "Alpha", false),
+		mk("00000050-0000-4000-8000-000000000002", "Alpha", true),
+		mk("00000050-0000-4000-8000-000000000010", "Alpha", false),
 	}
 	h, tok := newSourcesHarness(t, &sourcesFake{rows: rows})
 	srcs := asObjects(t, "响应体.sources", fetchSources(t, h, tok)["sources"])
@@ -326,9 +326,10 @@ func TestContractModelSourcesSorting(t *testing.T) {
 	for _, s := range srcs {
 		got = append(got, s["id"].(string))
 	}
-	// 末位按**对外 id 字符串**比较：up_10 在 up_9 之前（字符串序，"1"<"9"）。
+	// 末位按**对外 id 字符串**比较。UUID 是定宽补零的十进制段，字符串序与
+	// 数字序一致（旧 rm_9/rm_10 时代 "rm_10" < "rm_9" 的反直觉不再成立）。
 	// 这条断言把口径钉死——id 是响应里可见的值，前端不解码也能复现同一顺序。
-	want := "up_2,up_1,up_10,up_9,up_3"
+	want := "00000050-0000-4000-8000-000000000002,00000050-0000-4000-8000-000000000001,00000050-0000-4000-8000-000000000009,00000050-0000-4000-8000-000000000010,00000050-0000-4000-8000-000000000003"
 	if strings.Join(got, ",") != want {
 		t.Fatalf("sources 排序不符 §1.1\n实得：%v\n期望：%s", got, want)
 	}

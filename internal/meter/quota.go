@@ -1,6 +1,7 @@
 package meter
 
 import (
+	"github.com/LittleFishStars/FreeRouter/internal/store"
 	"sort"
 	"strconv"
 	"sync"
@@ -204,7 +205,7 @@ func CheckPools(pools []auth.PoolRef, cost int64) (denied *auth.PoolRef, err err
 		p := &pools[i]
 		if p.Limit <= 0 {
 			return nil, auth.Errorf(auth.CodeInternal, nil,
-				"池 %s/%d/%s/%s 上限非法 %d（严格正整数；不设池=没有这一行）", p.GroupID, p.AbstractModelID, p.Unit, p.Period, p.Limit)
+				"池 %s/%s/%s/%s 上限非法 %d（严格正整数；不设池=没有这一行）", p.GroupID, modelTag(p.AbstractModelID), p.Unit, p.Period, p.Limit)
 		}
 		if p.PoolExhausted(cost) {
 			return p, ErrPoolExhausted.WithDetail(p.Unit, p.GroupID).
@@ -323,22 +324,23 @@ func (g *Ledger) QuotaSnapshot(accountID, modelID string, limits map[auth.QuotaK
 	return rows
 }
 
-// modelTag 把 storage 的哨兵 int64 转成错误体标识：合计池不填 model
-// （docs/api/03-errors.md：pool 项 model:null=合计池）。
-func modelTag(mid int64) string {
-	if mid == 0 {
+// modelTag 把存储侧的合计哨兵转成错误体标识：合计池不填 model
+// （docs/api/03-errors.md：pool 项 model:null=合计池）。UUID 改造后
+// mid 已是 string，只剩哨兵翻译。
+func modelTag(mid string) string {
+	if mid == store.TotalScope {
 		return ""
 	}
-	return strconv.FormatInt(mid, 10)
+	return mid
 }
 
 // poolKey 池键带锚点：period 字符串 + 当期 anchor（与 store 的 period_anchor 同义）。
-func (g *Ledger) poolKey(groupID string, mid int64, unit, period string) string {
+func (g *Ledger) poolKey(groupID string, mid string, unit, period string) string {
 	p := Period(period)
 	if !p.Valid() {
 		p = PeriodDay
 	}
-	return groupID + "|" + strconv.FormatInt(mid, 10) + "|" + unit + "/" + period + "@" + p.Anchor(g.now())
+	return groupID + "|" + mid + "|" + unit + "/" + period + "@" + p.Anchor(g.now())
 }
 
 // ChargePools 对全部池做"逐个都要满足"的**原子**判定+扣减（进程内版本）。
@@ -354,7 +356,7 @@ func (g *Ledger) ChargePools(pools []auth.PoolRef, cost int64) (*auth.PoolRef, e
 		p := pools[i]
 		if p.Limit <= 0 {
 			return nil, auth.Errorf(auth.CodeInternal, nil,
-				"池 %s/%d/%s/%s 上限非法 %d（严格正整数；不设池=没有这一行）", p.GroupID, p.AbstractModelID, p.Unit, p.Period, p.Limit)
+				"池 %s/%s/%s/%s 上限非法 %d（严格正整数；不设池=没有这一行）", p.GroupID, modelTag(p.AbstractModelID), p.Unit, p.Period, p.Limit)
 		}
 		used := g.pools[g.poolKey(p.GroupID, p.AbstractModelID, p.Unit, p.Period)]
 		if used+cost > p.Limit {
@@ -371,7 +373,7 @@ func (g *Ledger) ChargePools(pools []auth.PoolRef, cost int64) (*auth.PoolRef, e
 }
 
 // PoolUsed 返回池的当期消耗（观测/测试）。
-func (g *Ledger) PoolUsed(groupID string, mid int64, unit, period string) int64 {
+func (g *Ledger) PoolUsed(groupID string, mid string, unit, period string) int64 {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.pools[g.poolKey(groupID, mid, unit, period)]

@@ -61,20 +61,20 @@ var ErrContributionForbidden = errors.New("upstream: 无权撤销该凭据")
 // 「同一账户重复提交」（幂等接受）与「另一个账户提交同一身份」（拒绝），
 // 而 store 侧没有 by-external-id 的读，用 owner+provider 列再筛是现有的能力。
 type ContributionStore interface {
-	UpsertUpstream(ctx context.Context, kind, name, baseURL string, ownerAccountID *int64, enabled bool) (int64, error)
-	PutSecret(ctx context.Context, upstreamID int64, plaintext []byte) (int64, error)
-	DeleteSecret(ctx context.Context, secretID int64) error
-	CreateCredential(ctx context.Context, ownerAccountID int64, provider, externalID, label, secretRef string) (int64, error)
-	SetCredentialStatus(ctx context.Context, id int64, status store.CredentialStatus) error
-	MarkVerified(ctx context.Context, credentialID int64, status store.VerifyStatus, evidence string) error
-	LookupCredential(ctx context.Context, id int64) (*store.Credential, error)
+	UpsertUpstream(ctx context.Context, kind, name, baseURL string, ownerAccountID *string, enabled bool) (string, error)
+	PutSecret(ctx context.Context, upstreamID string, plaintext []byte) (string, error)
+	DeleteSecret(ctx context.Context, secretID string) error
+	CreateCredential(ctx context.Context, ownerAccountID string, provider, externalID, label, secretRef string) (string, error)
+	SetCredentialStatus(ctx context.Context, id string, status store.CredentialStatus) error
+	MarkVerified(ctx context.Context, credentialID string, status store.VerifyStatus, evidence string) error
+	LookupCredential(ctx context.Context, id string) (*store.Credential, error)
 	ListCredentials(ctx context.Context, f store.CredentialFilter) ([]store.Credential, error)
 	// ListUpstreams / UpdateUpstream 是撤销的必要读面：
 	// **候选池的入口是 upstreams.enabled + real_models 可见性**，不是凭据 status
 	// （realModelCandidates 走 ListVisibleRealModels + ListUpstreams）。
 	// 所以「撤销立即生效」必须把上游行一起停掉，只改 credential.status 是假的撤销。
 	ListUpstreams(ctx context.Context) ([]store.Upstream, error)
-	UpdateUpstream(ctx context.Context, id int64, name, baseURL string, enabled bool) error
+	UpdateUpstream(ctx context.Context, id string, name, baseURL string, enabled bool) error
 }
 
 // ProbeInput 是一次探测的输入。APIKey 只在本进程内存里流转。
@@ -131,8 +131,8 @@ type ContributionService struct {
 	probe  CredentialProbe
 	opt    ContributionOptions
 	mu     sync.Mutex
-	fails  map[int64]int // credentialID → 连续失败次数（仅进程内；重启即清零）
-	lastAt map[int64]time.Time
+	fails  map[string]int // credentialID → 连续失败次数（仅进程内；重启即清零）
+	lastAt map[string]time.Time
 }
 
 // NewContributionService 构造服务。probe 为 nil 时用 HTTPProbe（默认实现）。
@@ -148,8 +148,8 @@ func NewContributionService(st ContributionStore, probe CredentialProbe, opt Con
 	}
 	return &ContributionService{
 		store: st, probe: probe, opt: opt,
-		fails:  make(map[int64]int),
-		lastAt: make(map[int64]time.Time),
+		fails:  make(map[string]int),
+		lastAt: make(map[string]time.Time),
 	}
 }
 
@@ -160,7 +160,7 @@ func NewContributionService(st ContributionStore, probe CredentialProbe, opt Con
 // OwnerAccountID 必填：**匿名贡献也先建账户**（contributor 类是零权限容器，
 // 见 01-flow 2.2）——账户创建属于 auth 包，本服务只负责「有账户之后的凭据链路」。
 type Submission struct {
-	OwnerAccountID int64
+	OwnerAccountID string
 	Provider       string
 	// BaseURL 是 OpenAI 兼容端点根（如 https://api.example.com/v1）。
 	BaseURL string
@@ -179,7 +179,7 @@ type Submission struct {
 
 // Outcome 是一次提交的结果（可以直接回给控制台）。
 type Outcome struct {
-	CredentialID int64
+	CredentialID string
 	Status       store.CredentialStatus
 	VerifyStatus store.VerifyStatus
 	Evidence     string
@@ -245,7 +245,7 @@ func (s *ContributionService) Submit(ctx context.Context, sub Submission) (Outco
 	}
 	// secretRef 用密文行 id 的字符串形态（Assembly 的 secretSource 按它解密；
 	// 02-credentials 6.4 的「引用形式」待定项在这里先钉成 id，换成字符串前缀时只改这两处）。
-	secretRef := fmt.Sprintf("%d", secretID)
+	secretRef := fmt.Sprintf("%s", secretID)
 
 	credID, err := s.store.CreateCredential(ctx, sub.OwnerAccountID, sub.Provider, fingerprint,
 		sanitizeLabel(sub.Label, sub.APIKey), secretRef)
@@ -299,7 +299,7 @@ func contributeUpstreamName(provider, fingerprint string) string {
 }
 
 // findOwned 在同一账户的凭据里找 external_id 命中项（幂等判定的读面）。
-func (s *ContributionService) findOwned(ctx context.Context, owner int64, provider, externalID string) (*store.Credential, bool, error) {
+func (s *ContributionService) findOwned(ctx context.Context, owner string, provider, externalID string) (*store.Credential, bool, error) {
 	rows, err := s.store.ListCredentials(ctx, store.CredentialFilter{
 		OwnerAccountID: &owner, Provider: provider, Limit: 500,
 	})
@@ -319,7 +319,7 @@ func (s *ContributionService) findOwned(ctx context.Context, owner int64, provid
 // 「廉价闸门」的意义（05-verification 4.2）：它必须便宜到「全部贡献必经」，
 // 所以只挡结构性垃圾——空字段、明显不是 URL、明显不是 key、标签里含 key。
 func validateSubmission(sub Submission) error {
-	if sub.OwnerAccountID <= 0 {
+	if sub.OwnerAccountID == "" {
 		return errors.New("upstream: 贡献必须归属某个账户（匿名贡献也先建 contributor 账户）")
 	}
 	if strings.TrimSpace(sub.Provider) == "" {
@@ -505,8 +505,8 @@ func decodeEvidence(raw string) string {
 
 // RevokeActor 是撤销的发起人。
 type RevokeActor struct {
-	// AccountID 是操作者账户；IsAdmin=true 时不受归属限制。
-	AccountID int64
+	// AccountID 是操作者账户 UUID；IsAdmin=true 时不受归属限制。
+	AccountID string
 	IsAdmin   bool
 }
 
@@ -520,7 +520,7 @@ type RevokeActor struct {
 // 为什么 status 用 disabled 而不是文档建议的 revoked：库里的 CHECK 枚举
 // （pending/active/invalid/expired/disabled）没有 revoked（02-credentials 5.2 与 DDL
 // 的已知张力，已在 repo_verification.go 记录）。disabled 是「不可调用且可留痕」的唯一落点。
-func (s *ContributionService) Revoke(ctx context.Context, credentialID int64, actor RevokeActor) error {
+func (s *ContributionService) Revoke(ctx context.Context, credentialID string, actor RevokeActor) error {
 	cred, err := s.store.LookupCredential(ctx, credentialID)
 	if err != nil {
 		return fmt.Errorf("upstream: 撤销前读凭据失败：%w", err)
@@ -586,7 +586,7 @@ func (s *ContributionService) findContributeUpstream(ctx context.Context, provid
 // 恢复有一道闸：只有 status=active 的凭据能被恢复。未通过鉴定的行 enabled=false
 // 是**判定的结果**而不是暂停造成的，借「恢复」把它打开等于让一把没验过的 key
 // 回到候选池。此时不报错（契约要求幂等 200），只是状态保持不可调用。
-func (s *ContributionService) SetPaused(ctx context.Context, credentialID int64, actor RevokeActor, paused bool) (bool, error) {
+func (s *ContributionService) SetPaused(ctx context.Context, credentialID string, actor RevokeActor, paused bool) (bool, error) {
 	cred, err := s.store.LookupCredential(ctx, credentialID)
 	if err != nil {
 		return false, fmt.Errorf("upstream: 切换凭据状态前读凭据失败：%w", err)
@@ -626,7 +626,7 @@ func (s *ContributionService) SetPaused(ctx context.Context, credentialID int64,
 // 为什么计数器在内存而不是库：这是**运行时熔断状态**（01-catalog 7 节的口径），
 // 不是账本——它每成功一次就清零，持久化只会带来「重启后还在冷却」的假状态。
 // 重启丢失的代价是「最多再放 5 次失败进来」，而持久化带来的代价是状态机泄漏。
-func (s *ContributionService) RecordFailure(ctx context.Context, credentialID int64, reason string) (bool, int, error) {
+func (s *ContributionService) RecordFailure(ctx context.Context, credentialID string, reason string) (bool, int, error) {
 	s.mu.Lock()
 	s.fails[credentialID]++
 	n := s.fails[credentialID]
@@ -650,18 +650,18 @@ func (s *ContributionService) RecordFailure(ctx context.Context, credentialID in
 }
 
 // RecordSuccess 清零连续失败计数（成功即复位，01-catalog 7 节的健康复位）。
-func (s *ContributionService) RecordSuccess(credentialID int64) {
+func (s *ContributionService) RecordSuccess(credentialID string) {
 	s.clearFailures(credentialID)
 }
 
 // Failures 返回当前连续失败次数（只读，测试与展示用）。
-func (s *ContributionService) Failures(credentialID int64) int {
+func (s *ContributionService) Failures(credentialID string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.fails[credentialID]
 }
 
-func (s *ContributionService) clearFailures(credentialID int64) {
+func (s *ContributionService) clearFailures(credentialID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.fails, credentialID)

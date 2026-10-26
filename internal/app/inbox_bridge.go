@@ -2,7 +2,7 @@ package app
 
 import (
 	"context"
-	"strconv"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 	"github.com/LittleFishStars/FreeRouter/internal/upstream"
@@ -28,9 +28,10 @@ func (b *refreshInboxBridge) NotifyInbox(ctx context.Context, kind, relatedID, t
 	if b == nil || b.repo == nil {
 		return errInboxNotWired
 	}
-	var rel *int64
+	var rel *string
 	if relatedID != "" {
-		if id, err := strconv.ParseInt(relatedID, 10, 64); err == nil {
+		// related_id 是 UUID 文本（多态列，kind 决定指向哪张表）。
+		if id, err := idgen.Parse(relatedID); err == nil {
 			rel = &id
 		}
 		// 解析失败不报错：相关行 id 只是导航线索，丢导航比丢整条通知好。

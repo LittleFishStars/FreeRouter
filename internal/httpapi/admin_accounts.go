@@ -27,13 +27,13 @@ package httpapi
 
 import (
 	"encoding/json"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
-	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 )
 
 // mountAdminAccounts 注册账户面路由。
@@ -141,7 +141,7 @@ func adminFilterStatusValid(st string) bool {
 
 // accountIDParam 解 /accounts/{id} 路径参数：idcode 前缀校验（lead 裁决①）。
 func accountIDParam(w http.ResponseWriter, r *http.Request) (string, bool) {
-	return idParamValid(w, r, "id", idcode.Account, "账户")
+	return idParamValid(w, r, "id", "账户")
 }
 
 // handleAdminAccountDetail GET /api/admin/accounts/{id}：详情只给行字段
@@ -607,7 +607,7 @@ func (s *Server) handleAdminAccountMergePrecheck(deps *AdminDeps) http.HandlerFu
 			adminWriteParamErr(w, "target", "预检必须带目标账户（?target=acc_<n>）")
 			return
 		}
-		if _, err := idcode.Decode(idcode.Account, target); err != nil {
+		if _, err := idgen.Parse(target); err != nil {
 			adminWriteParamErr(w, "target", "目标账户 id 形状非法（期望 acc_<数字>）")
 			return
 		}
@@ -649,7 +649,7 @@ func (s *Server) handleAdminAccountMerge(deps *AdminDeps) http.HandlerFunc {
 			adminWriteParamErr(w, "target_account_id", "必须指定合并目标账户")
 			return
 		}
-		if _, err := idcode.Decode(idcode.Account, target); err != nil {
+		if _, err := idgen.Parse(target); err != nil {
 			adminWriteParamErr(w, "target_account_id", "目标账户 id 形状非法（期望 acc_<数字>）")
 			return
 		}

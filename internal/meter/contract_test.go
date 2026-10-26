@@ -306,34 +306,34 @@ func TestContractPoolsAllAndAndAtomicCharge(t *testing.T) {
 	if denied == nil || denied.GroupID != "ga" {
 		t.Fatalf("必须归因到先拒的池 ga: %v", denied)
 	}
-	if g.PoolUsed("gb", 0, "credit", "month") != 0 {
+	if g.PoolUsed("gb", "", "credit", "month") != 0 {
 		t.Fatal("B 池被 A 池拖累时必须零写入（免回滚）")
 	}
 	// cost=50 全过（ga 900+50≤1000、gb 0+50≤100）。
 	if _, err := g.ChargePools(pools, 50); err != nil {
 		t.Fatalf("均应扣减: %v", err)
 	}
-	if g.PoolUsed("ga", 0, "token", "day") != 950 || g.PoolUsed("gb", 0, "credit", "month") != 50 {
-		t.Fatalf("ga=950 gb=50，实得 %d / %d", g.PoolUsed("ga", 0, "token", "day"), g.PoolUsed("gb", 0, "credit", "month"))
+	if g.PoolUsed("ga", "", "token", "day") != 950 || g.PoolUsed("gb", "", "credit", "month") != 50 {
+		t.Fatalf("ga=950 gb=50，实得 %d / %d", g.PoolUsed("ga", "", "token", "day"), g.PoolUsed("gb", "", "credit", "month"))
 	}
 	// §4.5 硬规则：同一模型上"合计池"与"模型级池"是两道独立闸（交集）。
 	// 模型池先拒也要归因到它，且 quota.model 指名模型（客户端 pool 项 model:null 判合计）。
 	mid := []auth.PoolRef{
-		{GroupID: "ga", AbstractModelID: 0, Unit: "token", Period: "day", Limit: 100000},
-		{GroupID: "ga", AbstractModelID: 42, Unit: "token", Period: "day", Limit: 100},
+		{GroupID: "ga", AbstractModelID: "", Unit: "token", Period: "day", Limit: 100000},
+		{GroupID: "ga", AbstractModelID: tidA, Unit: "token", Period: "day", Limit: 100},
 	}
 	denied, err = g.ChargePools(mid, 150)
 	errCode(t, err, auth.CodePoolExhausted)
-	if denied == nil || denied.AbstractModelID != 42 {
+	if denied == nil || denied.AbstractModelID != tidA {
 		t.Fatalf("必须归因到模型池 42: %+v", denied)
 	}
 	var pae *auth.Error
-	if !errors.As(err, &pae) || pae.Quota == nil || pae.Quota.Model != "42" {
+	if !errors.As(err, &pae) || pae.Quota == nil || pae.Quota.Model != tidA {
 		t.Fatalf("模型池错误必须带 quota.model=42: %+v", pae.Quota)
 	}
 	// ga 合计池此前已被扣到 950；模型池这次拒绝后它必须**不再增长**。
-	if g.PoolUsed("ga", 0, "token", "day") != 950 {
-		t.Fatalf("合计池在模型池拒绝时必须零写入（保持 950），实得 %d", g.PoolUsed("ga", 0, "token", "day"))
+	if g.PoolUsed("ga", "", "token", "day") != 950 {
+		t.Fatalf("合计池在模型池拒绝时必须零写入（保持 950），实得 %d", g.PoolUsed("ga", "", "token", "day"))
 	}
 
 	// 纯函数面：CheckPools 对非法上限（<=0）报 internal_error——"不设池=删行"，

@@ -22,11 +22,10 @@ package httpapi
 
 import (
 	"encoding/json"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-
-	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 )
 
 func (s *Server) mountAdminGroups(r chi.Router, deps *AdminDeps) {
@@ -45,7 +44,7 @@ func (s *Server) mountAdminGroups(r chi.Router, deps *AdminDeps) {
 // groupIDParam 解组路径参数：idcode 前缀校验（lead 裁决①——拿 acc_1 打
 // groups 端点必须在解码层失败，而不是去查错表）。
 func groupIDParam(w http.ResponseWriter, r *http.Request) (string, bool) {
-	return idParamValid(w, r, "id", idcode.Group, "组")
+	return idParamValid(w, r, "id", "组")
 }
 
 func (s *Server) handleAdminGroupsList(deps *AdminDeps) http.HandlerFunc {
@@ -346,7 +345,7 @@ func (s *Server) handleAdminGroupMembersAdd(deps *AdminDeps) http.HandlerFunc {
 		// 逐个前缀校验（lead 裁决①）：一个坏 id 整单拒——半途加一半
 		// 比全拒更难归因（桥的单事务只防崩溃窗口，不防"手滑"）。
 		for _, a := range body.AccountIDs {
-			if _, err := idcode.Decode(idcode.Account, a); err != nil {
+			if _, err := idgen.Parse(a); err != nil {
 				adminWriteParamErr(w, "account_ids", "账户 id 形状非法："+a)
 				return
 			}
@@ -377,7 +376,7 @@ func (s *Server) handleAdminGroupMemberRemove(deps *AdminDeps) http.HandlerFunc 
 			return
 		}
 		acc := chi.URLParam(r, "accountID")
-		if _, err := idcode.Decode(idcode.Account, acc); err != nil {
+		if _, err := idgen.Parse(acc); err != nil {
 			adminWriteParamErr(w, "account_id", "账户 id 形状非法（期望 acc_<数字>）")
 			return
 		}

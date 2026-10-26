@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
@@ -21,10 +22,10 @@ import (
 // adapter 作为**装配层**正是窄接口存在的目的——判定面（quota.go/limiter.go）
 // 依旧只认数字、不认仓储，这条边界不因 adapter 的存在而软化。
 //
-// id 口径：store 的主键是 int64；meter.QuotaRow.ModelID 是 string。
-// 这里**不**把模型名翻译进 Row——429 热路径不碰模型表（lead 定案的分层
-// 先验），名字由错误组装侧（httpapi）拿 QuotaDetail.Model（此时是 id 字符串）
-// 按需解析。ModelID 刻意用 strconv 而不是查表，保持 adapter 零额外读取。
+// id 口径：store 的主键是 UUID 文本（2026-10-26 改造），与 meter.QuotaRow.ModelID
+// 的 string 形态天然同型，adapter 不再做任何 id 翻译。这里**不**把模型名翻译进
+// Row——429 热路径不碰模型表（lead 定案的分层先验），名字由错误组装侧
+// （httpapi）拿 QuotaDetail.Model（此时是 id 字符串）按需解析。
 
 // StoreAdapter 把 store.QuotaRepo + 组成员关系接到 meter.QuotaStore。
 type StoreAdapter struct {
@@ -38,7 +39,7 @@ type StoreAdapter struct {
 // "这个账户在哪些组"（group_members 一条 JOIN），策略键值的解析
 // （can_create_key 等）是 authz 装配的事，额度域不需要。
 type groupMemberReader interface {
-	GroupIDsOfAccount(ctx context.Context, accountID int64) ([]int64, error)
+	GroupIDsOfAccount(ctx context.Context, accountID string) ([]string, error)
 }
 
 // NewStoreAdapter 构造。参数任一为 nil 会在第一次调用时返回 internal_error。
@@ -114,15 +115,15 @@ func (a *StoreAdapter) GroupPools(ctx context.Context, accountID string) ([]auth
 	for _, gid := range gids {
 		states, err := a.quotas.ListPoolsByGroup(ctx, gid)
 		if err != nil {
-			return nil, fmt.Errorf("meter adapter: 读组 %d 池: %w", gid, err)
+			return nil, fmt.Errorf("meter adapter: 读组 %s 池: %w", gid, err)
 		}
 		for _, st := range states {
 			if st.Limit <= 0 {
 				return nil, auth.Errorf(auth.CodeInternal, nil,
-					"组 %d 池上限非法 %d（DDL CHECK pool_limit>0，出现即数据损坏）", gid, st.Limit)
+					"组 %s 池上限非法 %d（DDL CHECK pool_limit>0，出现即数据损坏）", gid, st.Limit)
 			}
 			pools = append(pools, auth.PoolRef{
-				GroupID:         fmt.Sprintf("%d", gid),
+				GroupID:         gid,
 				AbstractModelID: st.AbstractModelID,
 				Unit:            string(st.Unit),
 				Period:          string(st.Period),
@@ -143,8 +144,8 @@ func (a *StoreAdapter) GroupPools(ctx context.Context, accountID string) ([]auth
 // 429（客户端无法自动降级）。
 type DebitContext struct {
 	AccountID       string
-	AbstractModelID int64 // 0 = 只扣合计行
-	GroupIDs        []int64
+	AbstractModelID string // "" = 只扣合计行（TotalScope）
+	GroupIDs        []string
 	Cost            UsageCost
 }
 
@@ -174,10 +175,10 @@ func (a *StoreAdapter) TryDebit(ctx context.Context, dc DebitContext) error {
 	// mid 去重：AbstractModelID=TotalScope（无按模型行）时列表是 [0,0]，
 	// 不去重会对合计行**扣两次**——每次请求凭空吃掉两份额度（复现于
 	// TestContractAdapterDebitsRealStore：limit=2 第一发后 used 即 2）。
-	mids := []int64{store.TotalScope}
+	mids := []string{store.TotalScope}
 	if dc.AbstractModelID != store.TotalScope {
-		if dc.AbstractModelID < 0 {
-			return auth.Errorf(auth.CodeInternal, nil, "模型 id 非法 %d", dc.AbstractModelID)
+		if !idgen.Valid(dc.AbstractModelID) {
+			return auth.Errorf(auth.CodeInternal, nil, "模型 id 非法 %q", dc.AbstractModelID)
 		}
 		mids = append(mids, dc.AbstractModelID)
 	}
@@ -222,7 +223,7 @@ func (a *StoreAdapter) TryDebit(ctx context.Context, dc DebitContext) error {
 				if qe, ok := asQuotaExhausted(err); ok {
 					return translatePool(qe, gid, dc.AbstractModelID, now)
 				}
-				return fmt.Errorf("meter adapter: 扣组 %d 池: %w", gid, err)
+				return fmt.Errorf("meter adapter: 扣组 %s 池: %w", gid, err)
 			}
 		}
 	}
@@ -243,10 +244,10 @@ func (a *StoreAdapter) Credit(ctx context.Context, cc CreditContext) error {
 	if err != nil {
 		return err
 	}
-	mids := []int64{store.TotalScope}
+	mids := []string{store.TotalScope}
 	if cc.AbstractModelID != store.TotalScope {
-		if cc.AbstractModelID < 0 {
-			return auth.Errorf(auth.CodeInternal, nil, "模型 id 非法 %d", cc.AbstractModelID)
+		if !idgen.Valid(cc.AbstractModelID) {
+			return auth.Errorf(auth.CodeInternal, nil, "模型 id 非法 %q", cc.AbstractModelID)
 		}
 		mids = append(mids, cc.AbstractModelID)
 	}
@@ -300,7 +301,7 @@ func (a *StoreAdapter) Credit(ctx context.Context, cc CreditContext) error {
 		}
 		if len(credits) > 0 {
 			if err := a.quotas.CreditQuota(ctx, nil, credits); err != nil {
-				return fmt.Errorf("meter adapter: 记组 %d 池: %w", gid, err)
+				return fmt.Errorf("meter adapter: 记组 %s 池: %w", gid, err)
 			}
 		}
 	}
@@ -310,7 +311,7 @@ func (a *StoreAdapter) Credit(ctx context.Context, cc CreditContext) error {
 var _ QuotaLedger = (*StoreAdapter)(nil)
 
 // translateQuota 把 store.ErrQuotaExhausted 翻成 auth 哨兵 + 四元组。
-func translateQuota(qe store.ErrQuotaExhausted, modelID int64, now time.Time) error {
+func translateQuota(qe store.ErrQuotaExhausted, modelID string, now time.Time) error {
 	e := ErrQuotaExceeded.WithQuota(
 		string(qe.Unit), string(qe.Period), modelIDString(modelID))
 	if reset, ok := qe.ResetAt(); ok {
@@ -322,10 +323,10 @@ func translateQuota(qe store.ErrQuotaExhausted, modelID int64, now time.Time) er
 }
 
 // translatePool 同形翻译组池耗尽（GroupID 只进日志不进响应体）。
-func translatePool(qe store.ErrQuotaExhausted, groupID, modelID int64, now time.Time) error {
+func translatePool(qe store.ErrQuotaExhausted, groupID, modelID string, now time.Time) error {
 	e := ErrPoolExhausted.
 		WithQuota(string(qe.Unit), string(qe.Period), modelIDString(modelID)).
-		WithDetail(string(qe.Unit), fmt.Sprintf("%d", groupID))
+		WithDetail(string(qe.Unit), fmt.Sprintf("%s", groupID))
 	if reset, ok := qe.ResetAt(); ok {
 		if d := reset.Sub(now); d > 0 {
 			e = e.WithRetryAfter(d)
@@ -343,19 +344,21 @@ func asQuotaExhausted(err error) (store.ErrQuotaExhausted, bool) {
 	return qe, false
 }
 
-// modelIDString 把 store 的 int64 模型 id 变成 meter 的 string 形态；
-// 合计行（0）返回空串 = 错误体 quota.model 缺省（03-errors §6 定案）。
-func modelIDString(mid int64) string {
+// modelIDString 把 store 的模型 id 归一成错误体 quota.model 的形态：
+// 合计行（TotalScope=""）返回空串 = quota.model 缺省（03-errors §6 定案）。
+// UUID 改造后 store 侧已是 string，这里只剩哨兵翻译。
+func modelIDString(mid string) string {
 	if mid == store.TotalScope {
 		return ""
 	}
-	return fmt.Sprintf("%d", mid)
+	return mid
 }
 
-func parseID(s, kind string) (int64, error) {
-	var id int64
-	if _, err := fmt.Sscanf(s, "%d", &id); err != nil || id <= 0 {
-		return 0, auth.Errorf(auth.CodeInternal, nil, "meter adapter: 非法%s id %q（store 主键是 int64）", kind, s)
+// parseID 校验外部传入的 id 形状（UUID 文本）；非法即 internal_error——
+// 能走到这里的 id 都来自库内行或已鉴权的请求，形状非法是编程错误不是用户输入。
+func parseID(s, kind string) (string, error) {
+	if !idgen.Valid(s) {
+		return "", auth.Errorf(auth.CodeInternal, nil, "meter adapter: 非法%s id %q（期望 UUID）", kind, s)
 	}
-	return id, nil
+	return s, nil
 }

@@ -25,7 +25,6 @@ import (
 	"strings"
 
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
-	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
 
@@ -41,7 +40,7 @@ type upstreamsBridge struct{ b *adminBridge }
 
 func upstreamToAdmin(u *store.Upstream) *httpapi.AdminUpstream {
 	out := &httpapi.AdminUpstream{
-		ID:         encodeID(idcode.Upstream, u.ID),
+		ID:         u.ID,
 		Kind:       u.Kind,
 		Name:       u.Name,
 		BaseURL:    u.BaseURL,
@@ -51,7 +50,7 @@ func upstreamToAdmin(u *store.Upstream) *httpapi.AdminUpstream {
 		SecretPresent: u.SecretID != nil,
 	}
 	if u.OwnerAccountID != nil {
-		s := encodeID(idcode.Account, *u.OwnerAccountID)
+		s := *u.OwnerAccountID
 		out.OwnerAccountID = &s
 	}
 	return out
@@ -72,7 +71,7 @@ func (ub *upstreamsBridge) ListUpstreams(ctx context.Context, limit, offset int)
 }
 
 func (ub *upstreamsBridge) GetUpstream(ctx context.Context, id string) (*httpapi.AdminUpstream, error) {
-	uid, err := decodeID(idcode.Upstream, id)
+	uid, err := decodeID(id)
 	if err != nil {
 		return nil, errAdminNotImplemented
 	}
@@ -97,13 +96,13 @@ func (ub *upstreamsBridge) CreateUpstream(ctx context.Context, in httpapi.AdminU
 		// 的非空校验不能被空串绊倒）。
 		baseURL = relayPrefix + in.Name
 	}
-	var newID int64
+	var newID string
 	var auditID string
 	err := ub.b.st.WithTx(ctx, func(tx *store.Repos) error {
 		// ownerAccountID 指针：owner 字符串 id → int64。
-		var owner *int64
+		var owner *string
 		if in.OwnerAccountID != nil {
-			oid, derr := decodeID(idcode.Account, *in.OwnerAccountID)
+			oid, derr := decodeID(*in.OwnerAccountID)
 			if derr != nil {
 				return derr
 			}
@@ -124,11 +123,11 @@ func (ub *upstreamsBridge) CreateUpstream(ctx context.Context, in httpapi.AdminU
 	if err != nil {
 		return "", "", mapStoreErr(err)
 	}
-	return encodeID(idcode.Upstream, newID), auditID, nil
+	return newID, auditID, nil
 }
 
 func (ub *upstreamsBridge) UpdateUpstream(ctx context.Context, id string, in httpapi.AdminUpstreamUpdate, audit httpapi.AdminAuditEntry) (*httpapi.AdminUpstream, string, error) {
-	uid, err := decodeID(idcode.Upstream, id)
+	uid, err := decodeID(id)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
@@ -179,7 +178,7 @@ func (ub *upstreamsBridge) UpdateUpstream(ctx context.Context, id string, in htt
 }
 
 func (ub *upstreamsBridge) SetUpstreamKind(ctx context.Context, id, kind string, audit httpapi.AdminAuditEntry) (*httpapi.AdminUpstream, string, error) {
-	uid, err := decodeID(idcode.Upstream, id)
+	uid, err := decodeID(id)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
@@ -229,8 +228,8 @@ type credentialsBridge struct{ b *adminBridge }
 
 func credentialToAdmin(c *store.Credential) *httpapi.AdminCredential {
 	out := &httpapi.AdminCredential{
-		ID:             encodeID(idcode.Credential, c.ID),
-		OwnerAccountID: encodeID(idcode.Account, c.OwnerAccountID),
+		ID:             c.ID,
+		OwnerAccountID: c.OwnerAccountID,
 		Provider:       c.Provider,
 		ExternalID:     c.ExternalID,
 		ExternalLabel:  c.ExternalLabel,
@@ -250,7 +249,7 @@ func credentialToAdmin(c *store.Credential) *httpapi.AdminCredential {
 }
 
 func (cb *credentialsBridge) CountCredentials(ctx context.Context, ownerAccountID string) (int64, error) {
-	oid, err := decodeID(idcode.Account, ownerAccountID)
+	oid, err := decodeID(ownerAccountID)
 	if err != nil {
 		return 0, err
 	}
@@ -264,7 +263,7 @@ func (cb *credentialsBridge) CountCredentials(ctx context.Context, ownerAccountI
 func (cb *credentialsBridge) ListCredentials(ctx context.Context, f httpapi.AdminCredentialFilter) ([]httpapi.AdminCredential, int64, error) {
 	sf := store.CredentialFilter{Provider: f.Provider, Limit: f.Limit, Offset: f.Offset}
 	if f.OwnerAccountID != "" {
-		oid, err := decodeID(idcode.Account, f.OwnerAccountID)
+		oid, err := decodeID(f.OwnerAccountID)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -288,7 +287,7 @@ func (cb *credentialsBridge) ListCredentials(ctx context.Context, f httpapi.Admi
 }
 
 func (cb *credentialsBridge) GetCredential(ctx context.Context, id string) (*httpapi.AdminCredential, error) {
-	cid, err := decodeID(idcode.Credential, id)
+	cid, err := decodeID(id)
 	if err != nil {
 		return nil, errAdminNotImplemented
 	}
@@ -300,7 +299,7 @@ func (cb *credentialsBridge) GetCredential(ctx context.Context, id string) (*htt
 }
 
 func (cb *credentialsBridge) SetCredentialStatus(ctx context.Context, id, status string, audit httpapi.AdminAuditEntry) (*httpapi.AdminCredential, string, error) {
-	cid, err := decodeID(idcode.Credential, id)
+	cid, err := decodeID(id)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
@@ -330,7 +329,7 @@ func (cb *credentialsBridge) SetCredentialStatus(ctx context.Context, id, status
 // 通知通道（站内信/email）等后续里程碑——消息**只存摘要与长度**，
 // 不存原文（06-audit §4 脱敏线：管理员写的文本可能含用户内容）。
 func (cb *credentialsBridge) NotifyCredential(ctx context.Context, id, message string, audit httpapi.AdminAuditEntry) (string, error) {
-	cid, err := decodeID(idcode.Credential, id)
+	cid, err := decodeID(id)
 	if err != nil {
 		return "", errAdminNotImplemented
 	}
@@ -339,7 +338,7 @@ func (cb *credentialsBridge) NotifyCredential(ctx context.Context, id, message s
 		if _, err := tx.Models.LookupCredential(ctx, cid); err != nil {
 			return err
 		}
-		detail := map[string]any{"credential": encodeID(idcode.Credential, cid), "notified": true}
+		detail := map[string]any{"credential": cid, "notified": true}
 		if message != "" {
 			detail["message_len"] = len(message) // 只存长度，原文不进审计
 		}
@@ -399,8 +398,8 @@ type L2Outcome struct {
 
 func credentialToVerification(c *store.Credential) *httpapi.AdminVerification {
 	v := &httpapi.AdminVerification{
-		ID:           encodeID(idcode.Verification, c.ID),
-		CredentialID: encodeID(idcode.Credential, c.ID),
+		ID:           c.ID,
+		CredentialID: c.ID,
 		Provider:     c.Provider,
 		Verdict:      string(c.VerifyStatus),
 	}
@@ -432,7 +431,7 @@ func (vb *verificationsBridge) ListVerifications(ctx context.Context, f httpapi.
 }
 
 func (vb *verificationsBridge) GetVerification(ctx context.Context, id string) (*httpapi.AdminVerification, error) {
-	vid, err := decodeID(idcode.Verification, id)
+	vid, err := decodeID(id)
 	if err != nil {
 		return nil, errAdminNotImplemented
 	}
@@ -444,7 +443,7 @@ func (vb *verificationsBridge) GetVerification(ctx context.Context, id string) (
 }
 
 func (vb *verificationsBridge) OverrideVerification(ctx context.Context, id, verdict, reason, operatorAccountID string, audit httpapi.AdminAuditEntry) (*httpapi.AdminVerification, string, error) {
-	vid, err := decodeID(idcode.Verification, id)
+	vid, err := decodeID(id)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
@@ -508,7 +507,7 @@ func (vb *verificationsBridge) TriggerL2(ctx context.Context, id string, audit h
 // 定时复检标志先从凭据行的 verify_detail 读再写回。调度器（多久跑一次）
 // 未装配，所以这里只持久化开关，不做定时——但开关没有落库就白记了。
 func (s *verificationsBridge) ToggleRecheck(ctx context.Context, id string, enabled bool, audit httpapi.AdminAuditEntry) (*httpapi.AdminVerification, string, error) {
-	vid, err := decodeID(idcode.Verification, id)
+	vid, err := decodeID(id)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
@@ -555,13 +554,13 @@ type auditBridge struct{ b *adminBridge }
 
 func auditEntryToAdmin(e *store.AuditEntry) *httpapi.AdminAuditEntry {
 	out := &httpapi.AdminAuditEntry{
-		ID:     encodeID(idcode.Audit, e.ID),
+		ID:     e.ID,
 		TS:     e.TS,
 		Action: e.Action,
 		Result: e.Result,
 	}
 	if e.AccountID != nil {
-		out.AccountID = encodeID(idcode.Account, *e.AccountID)
+		out.AccountID = *e.AccountID
 	}
 	if e.ActingClass != nil {
 		out.ActingClass = *e.ActingClass
@@ -613,14 +612,14 @@ func (ab *auditBridge) Append(ctx context.Context, e httpapi.AdminAuditEntry) (s
 	if err != nil {
 		return "", mapStoreErr(err)
 	}
-	return encodeID(idcode.Audit, n), nil
+	return n, nil
 }
 
 // adminFilterToStore 把管理面审计筛选翻成 store 形状。
 func adminFilterToStore(f httpapi.AdminAuditFilter) store.AuditFilter {
 	sf := store.AuditFilter{Action: f.Action, FromTS: f.FromTS, ToTS: f.ToTS, Limit: f.Limit, Offset: f.Offset}
 	if f.AccountID != "" {
-		if id, err := decodeID(idcode.Account, f.AccountID); err == nil {
+		if id, err := decodeID(f.AccountID); err == nil {
 			sf.AccountID = &id
 		}
 	}
@@ -662,7 +661,7 @@ func (ab *auditBridge) List(ctx context.Context, f httpapi.AdminAuditFilter) ([]
 }
 
 func (ab *auditBridge) Get(ctx context.Context, id string) (*httpapi.AdminAuditEntry, error) {
-	aid, err := decodeID(idcode.Audit, id)
+	aid, err := decodeID(id)
 	if err != nil {
 		return nil, errAdminNotImplemented
 	}
@@ -727,7 +726,7 @@ type inboxBridge struct{ b *adminBridge }
 
 func inboxItemToAdmin(i *store.InboxItem) *httpapi.AdminInboxItem {
 	out := &httpapi.AdminInboxItem{
-		ID:        encodeID(idcode.Inbox, i.ID),
+		ID:        i.ID,
 		Kind:      string(i.Kind),
 		Severity:  string(i.Severity),
 		Title:     i.Title,
@@ -738,36 +737,21 @@ func inboxItemToAdmin(i *store.InboxItem) *httpapi.AdminInboxItem {
 		out.Detail = json.RawMessage(i.DetailJSON)
 	}
 	if i.RelatedID != nil {
-		// related_id 按条目 kind 选前缀编码（lead 裁决①：kind 隐含目标表，
-		// 不额外存表名字段）。未知 kind 退化为 inb_ 前缀自身（可定位回条目）。
-		s := encodeID(inboxRelatedPrefix(i.Kind), *i.RelatedID)
-		out.RelatedID = &s
+		// related_id 就是关联对象的 UUID（对外 id 与库内主键同值）。
+		// 旧实现按 kind 选前缀再编码（lead 裁决①：kind 隐含目标表），
+		// 前缀体系随 UUID 改造一并废弃——kind 仍然隐含目标表，只是不再
+		// 把它编进 id 里（见 internal/idgen 包注释）。
+		rel := *i.RelatedID
+		out.RelatedID = &rel
 	}
 	if i.ReadBy != nil {
-		s := encodeID(idcode.Account, *i.ReadBy)
+		s := *i.ReadBy
 		out.ReadBy = &s
 	}
 	return out
 }
 
 // inboxRelatedPrefix 按 kind 映射关联对象前缀（06-audit §3.1 的十个 kind）。
-func inboxRelatedPrefix(k store.InboxKind) string {
-	switch k {
-	case store.InboxAccountPending:
-		return idcode.Account
-	case store.InboxModelAdded, store.InboxModelMissing, store.InboxModelChanged:
-		return idcode.RealModel
-	case store.InboxChannelFailing:
-		return idcode.Upstream
-	case store.InboxCredentialInvalid, store.InboxVerificationFailed:
-		return idcode.Credential
-	case store.InboxPoolExhausted:
-		return idcode.Group
-	case store.InboxGlobalBudget, store.InboxKeyAnomaly:
-		return idcode.Account
-	}
-	return idcode.Inbox
-}
 
 func (ib *inboxBridge) List(ctx context.Context, f httpapi.AdminInboxFilter) ([]httpapi.AdminInboxItem, int64, error) {
 	sf := store.InboxFilter{
@@ -812,7 +796,7 @@ func (ib *inboxBridge) CountUnread(ctx context.Context) (int64, error) {
 }
 
 func (ib *inboxBridge) Get(ctx context.Context, id string) (*httpapi.AdminInboxItem, error) {
-	iid, err := decodeID(idcode.Inbox, id)
+	iid, err := decodeID(id)
 	if err != nil {
 		return nil, errAdminNotImplemented
 	}
@@ -824,11 +808,11 @@ func (ib *inboxBridge) Get(ctx context.Context, id string) (*httpapi.AdminInboxI
 }
 
 func (ib *inboxBridge) SetRead(ctx context.Context, id string, read bool, readBy string, audit httpapi.AdminAuditEntry) (*httpapi.AdminInboxItem, string, error) {
-	iid, err := decodeID(idcode.Inbox, id)
+	iid, err := decodeID(id)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
-	rid, err := decodeID(idcode.Account, readBy)
+	rid, err := decodeID(readBy)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
@@ -862,13 +846,13 @@ func (ib *inboxBridge) SetRead(ctx context.Context, id string, read bool, readBy
 }
 
 func (ib *inboxBridge) MarkReadBatch(ctx context.Context, ids []string, readBy string, audit httpapi.AdminAuditEntry) (int, string, error) {
-	rid, err := decodeID(idcode.Account, readBy)
+	rid, err := decodeID(readBy)
 	if err != nil {
 		return 0, "", errAdminNotImplemented
 	}
-	nids := make([]int64, 0, len(ids))
+	nids := make([]string, 0, len(ids))
 	for _, s := range ids {
-		iid, derr := decodeID(idcode.Inbox, s)
+		iid, derr := decodeID(s)
 		if derr != nil {
 			return 0, "", errAdminNotImplemented
 		}
@@ -900,7 +884,7 @@ func (ib *inboxBridge) MarkReadBatch(ctx context.Context, ids []string, readBy s
 // 为什么明文只在这里出现一次：加密与落库都在 store.PutSecret 内完成，
 // 桥不缓存明文、不记日志、不回显——与 API Key 的「只回一次」同口径。
 func (ub *upstreamsBridge) SetUpstreamSecret(ctx context.Context, id, plaintext string, audit httpapi.AdminAuditEntry) (string, error) {
-	uid, err := decodeID(idcode.Upstream, id)
+	uid, err := decodeID(id)
 	if err != nil {
 		return "", fmt.Errorf("%w: 上游 id 形状非法", httpapi.ErrAdminNotFound)
 	}

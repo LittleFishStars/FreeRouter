@@ -17,7 +17,7 @@ import (
 // 断言对象是「写入后 real_models 三列可读」与 0004 的默认值语义，不是 SQL 文本。
 
 // openVerificationFixture 起临时库 + 一条 relay 上游 + 一条未鉴定的目录行。
-func openVerificationFixture(t *testing.T) (*store.Store, int64) {
+func openVerificationFixture(t *testing.T) (*store.Store, string) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(context.Background(), store.Options{
@@ -119,7 +119,7 @@ func TestContractStoreVerificationWriterRejectsBadInput(t *testing.T) {
 	}
 
 	// 不存在的行：ErrNotFound 可被 errors.Is 识别（装配层据此区分“行没了”与“库坏了”）。
-	if err := w.WriteVerification(ctx, 999_999, VerifyVerified, "x", 1); !errors.Is(err, store.ErrNotFound) {
+	if err := w.WriteVerification(ctx, "no-such-row", VerifyVerified, "x", 1); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("不存在的 real_model 应返回 ErrNotFound，got %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestContractRefreshWritesVerificationColumns(t *testing.T) {
 	st, refresher, fake, provider := openRefreshFixture(t)
 	ctx := context.Background()
 
-	upstreamID := int64(0)
+	var upstreamID string
 	ups, err := st.Repos().Models.ListUpstreams(ctx)
 	if err != nil {
 		t.Fatalf("列上游失败: %v", err)
@@ -168,7 +168,7 @@ func TestContractRefreshWritesVerificationColumns(t *testing.T) {
 			upstreamID = u.ID
 		}
 	}
-	if upstreamID == 0 {
+	if upstreamID == "" {
 		t.Fatal("fixture 上游不存在")
 	}
 

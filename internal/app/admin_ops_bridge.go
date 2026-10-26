@@ -10,7 +10,6 @@ import (
 
 	"github.com/LittleFishStars/FreeRouter/internal/config"
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
-	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 	"github.com/LittleFishStars/FreeRouter/internal/upstream"
 	"github.com/LittleFishStars/FreeRouter/internal/upstream/dshprovider"
@@ -74,7 +73,7 @@ func (t *upstreamTesterBridge) TestUpstream(ctx context.Context, id string) (map
 	if t == nil || t.store == nil {
 		return nil, httpapi.ErrAdminNotWired
 	}
-	uid, err := idcode.Decode(idcode.Upstream, id)
+	uid, err := decodeID(id)
 	if err != nil {
 		return nil, fmt.Errorf("%w: 上游 id 形状非法", httpapi.ErrAdminNotFound)
 	}

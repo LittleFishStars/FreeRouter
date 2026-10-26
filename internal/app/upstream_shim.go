@@ -10,6 +10,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"strings"
 
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
@@ -93,7 +94,7 @@ func (c realModelCandidates) Candidates(ctx context.Context, model string, _ ir.
 	if err != nil {
 		return nil, fmt.Errorf("app: 查询上游列表失败: %w", err)
 	}
-	kindByUpstream := make(map[int64]string, len(ups))
+	kindByUpstream := make(map[string]string, len(ups))
 	for _, u := range ups {
 		kindByUpstream[u.ID] = u.Kind
 	}
@@ -117,7 +118,7 @@ func (c realModelCandidates) Candidates(ctx context.Context, model string, _ ir.
 			UpstreamModelID: r.UpstreamModelID,
 			// Display 是内部日志/trace 用的落点描述（不外发，防泄露池结构——
 			// v1.go Candidate 注释的同一纪律）。
-			Display: fmt.Sprintf("%s/%s#%d", kind, r.UpstreamModelID, r.ID),
+			Display: fmt.Sprintf("%s/%s#%s", kind, r.UpstreamModelID, r.ID),
 			Adapter: adapter,
 		})
 	}
@@ -220,36 +221,24 @@ func (a *App) secretSource() upstream.SecretSource {
 			//   不存在 → 配置缺失，凭据应标 invalid；
 			//   解密失败 → 安全事件（密钥不符/密文被篡改），要告警而非重试；
 			//   其它 → 主密钥不可用等，运维处理。
-			return "", fmt.Errorf("app: 解密上游凭据失败（secret id=%d）：%w", secretID, err)
+			return "", fmt.Errorf("app: 解密上游凭据失败（secret id=%s）：%w", secretID, err)
 		}
 		token := strings.TrimSpace(string(plain))
 		if token == "" {
-			return "", fmt.Errorf("app: 上游凭据解密结果为空（secret id=%d）", secretID)
+			return "", fmt.Errorf("app: 上游凭据解密结果为空（secret id=%s）", secretID)
 		}
 		return token, nil
 	}
 }
 
-// parseSecretRefID 把 secretRef 解析成 upstream_secrets.id。
+// parseSecretRefID 校验 secretRef 的 id 形状。
 //
-// 值域约定（与 contribution.Submit 写入口径一致）：纯十进制 id。
-// 为什么不用更花哨的形态（如 "secret:<id>"）：引用只在我们自己的两个包里流转，
-// 少一层语法就少一处解析分歧；将来要加前缀时改这两处 + 一个测试即可。
-func parseSecretRefID(ref string) (int64, error) {
-	var id int64
-	for _, c := range ref {
-		if c < '0' || c > '9' {
-			return 0, fmt.Errorf("含非数字字符 %q", string(c))
-		}
-		id = id*10 + int64(c-'0')
-		if id > 1<<62 {
-			return 0, fmt.Errorf("数值越界")
-		}
-	}
-	if id == 0 {
-		return 0, fmt.Errorf("id 为 0")
-	}
-	return id, nil
+// 2026-10-26 UUID 改造后 secret_ref 列**直接存 upstream_secrets.id（UUID 文本）**，
+// 不再需要十进制解析——旧实现在这里把 "42" 折成整数并拒绝含非数字字符的形态，
+// 那层值域约定随整型主键一起作废。函数保留（名字与调用点不变）只做形状校验：
+// 非法形状 = 装配写坏了引用，报错而不是拿去查库。
+func parseSecretRefID(ref string) (string, error) {
+	return idgen.Parse(ref)
 }
 
 // targetOf 构造 Caller 的候选→Target 闭包。
@@ -266,7 +255,7 @@ func (a *App) targetOf() func(upstream.CallCandidate) (upstream.Target, error) {
 		if err != nil {
 			return upstream.Target{}, err
 		}
-		kindByUpstream := make(map[int64]store.Upstream, len(ups))
+		kindByUpstream := make(map[string]store.Upstream, len(ups))
 		for _, u := range ups {
 			kindByUpstream[u.ID] = u
 		}
@@ -312,31 +301,31 @@ type contributionStore struct {
 	repos *store.Repos
 }
 
-func (c contributionStore) UpsertUpstream(ctx context.Context, kind, name, baseURL string, ownerAccountID *int64, enabled bool) (int64, error) {
+func (c contributionStore) UpsertUpstream(ctx context.Context, kind, name, baseURL string, ownerAccountID *string, enabled bool) (string, error) {
 	return c.repos.Models.UpsertUpstream(ctx, kind, name, baseURL, ownerAccountID, enabled)
 }
 
-func (c contributionStore) PutSecret(ctx context.Context, upstreamID int64, plaintext []byte) (int64, error) {
+func (c contributionStore) PutSecret(ctx context.Context, upstreamID string, plaintext []byte) (string, error) {
 	return c.repos.Secrets.PutSecret(ctx, upstreamID, plaintext)
 }
 
-func (c contributionStore) DeleteSecret(ctx context.Context, secretID int64) error {
+func (c contributionStore) DeleteSecret(ctx context.Context, secretID string) error {
 	return c.repos.Secrets.DeleteSecret(ctx, secretID)
 }
 
-func (c contributionStore) CreateCredential(ctx context.Context, ownerAccountID int64, provider, externalID, label, secretRef string) (int64, error) {
+func (c contributionStore) CreateCredential(ctx context.Context, ownerAccountID string, provider, externalID, label, secretRef string) (string, error) {
 	return c.repos.Models.CreateCredential(ctx, ownerAccountID, provider, externalID, label, secretRef)
 }
 
-func (c contributionStore) SetCredentialStatus(ctx context.Context, id int64, status store.CredentialStatus) error {
+func (c contributionStore) SetCredentialStatus(ctx context.Context, id string, status store.CredentialStatus) error {
 	return c.repos.Models.SetCredentialStatus(ctx, id, status)
 }
 
-func (c contributionStore) MarkVerified(ctx context.Context, credentialID int64, status store.VerifyStatus, evidence string) error {
+func (c contributionStore) MarkVerified(ctx context.Context, credentialID string, status store.VerifyStatus, evidence string) error {
 	return c.repos.Models.MarkVerified(ctx, credentialID, status, evidence)
 }
 
-func (c contributionStore) LookupCredential(ctx context.Context, id int64) (*store.Credential, error) {
+func (c contributionStore) LookupCredential(ctx context.Context, id string) (*store.Credential, error) {
 	return c.repos.Models.LookupCredential(ctx, id)
 }
 
@@ -348,7 +337,7 @@ func (c contributionStore) ListUpstreams(ctx context.Context) ([]store.Upstream,
 	return c.repos.Models.ListUpstreams(ctx)
 }
 
-func (c contributionStore) UpdateUpstream(ctx context.Context, id int64, name, baseURL string, enabled bool) error {
+func (c contributionStore) UpdateUpstream(ctx context.Context, id string, name, baseURL string, enabled bool) error {
 	return c.repos.Models.UpdateUpstream(ctx, id, name, baseURL, enabled)
 }
 
@@ -391,7 +380,7 @@ func (a *App) auditCredentialWiring(ctx context.Context) {
 		return
 	}
 	masterOK := !allZero(a.store.MasterKey())
-	hasSecret := func(ctx context.Context, upstreamID int64) (bool, error) {
+	hasSecret := func(ctx context.Context, upstreamID string) (bool, error) {
 		if !masterOK {
 			return false, nil
 		}
@@ -421,12 +410,12 @@ func (a *App) logCredentialWiring(need, wired, broken int) {
 // credentialWiringIssues 是自检的**纯判定**部分（便于测试：不需要真库的悬空外键）。
 //
 // 返回 (声明了密钥材料的上游数, 解得到的, 解不到的)。
-func credentialWiringIssues(ctx context.Context, ups []store.Upstream, hasSecret func(context.Context, int64) (bool, error), masterOK bool) (need, wired, broken int) {
+func credentialWiringIssues(ctx context.Context, ups []store.Upstream, hasSecret func(context.Context, string) (bool, error), masterOK bool) (need, wired, broken int) {
 	for _, u := range ups {
 		if u.Kind != string(upstream.KindVendor) && u.Kind != string(upstream.KindSelfHosted) {
 			continue
 		}
-		if u.SecretID == nil || *u.SecretID == 0 {
+		if u.SecretID == nil || *u.SecretID == "" {
 			continue // 无鉴权的 selfhosted：正当形态
 		}
 		need++

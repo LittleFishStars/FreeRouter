@@ -14,6 +14,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
@@ -46,8 +47,8 @@ func (b keyAuthBridge) KeyByHash(ctx context.Context, keyHash []byte) (*auth.API
 		return nil, err // store.ErrNotFound 原样透传（哨兵在 auth 侧收敛）
 	}
 	out := &auth.APIKey{
-		ID:        fmt.Sprintf("%d", k.ID),
-		AccountID: fmt.Sprintf("%d", k.AccountID),
+		ID:        fmt.Sprintf("%s", k.ID),
+		AccountID: fmt.Sprintf("%s", k.AccountID),
 		KeyHash:   keyHash,
 		Prefix:    k.Prefix,
 		Status:    auth.KeyStatus(k.Status),
@@ -84,7 +85,7 @@ func accountToAuth(a *store.Account) *auth.Account {
 		classes[auth.Class(c)] = true
 	}
 	out := &auth.Account{
-		ID:          fmt.Sprintf("%d", a.ID),
+		ID:          fmt.Sprintf("%s", a.ID),
 		DisplayName: a.DisplayName,
 		Username:    a.Username,
 		Classes:     classes,
@@ -112,7 +113,7 @@ func accountToAuth(a *store.Account) *auth.Account {
 // groupIDsOfAccount 满足 meter.StoreAdapter 的 groupMemberReader。
 // 组无 disabled 态（删组即停用，成员随 CASCADE 退回默认组——task-12 定案），
 // group_members 行本身就是「关系当前有效」的唯一事实。
-func (a *App) groupIDsOfAccount(ctx context.Context, accountID int64) ([]int64, error) {
+func (a *App) groupIDsOfAccount(ctx context.Context, accountID string) ([]string, error) {
 	return a.store.Repos().Groups.GroupIDsOfAccount(ctx, accountID)
 }
 
@@ -144,8 +145,8 @@ func (a *App) rateLimitsOf(ctx context.Context, accountID string) (meter.Account
 	}, true
 }
 
-// groupIDsSource 给 mwQuota 的 GroupIDsSource（string 账户 id → []int64 组）。
-func (a *App) groupIDsSource(ctx context.Context, accountID string) ([]int64, bool) {
+// groupIDsSource 给 mwQuota 的 GroupIDsSource（账户 UUID → 组 UUID 列表）。
+func (a *App) groupIDsSource(ctx context.Context, accountID string) ([]string, bool) {
 	id, err := parseID(accountID)
 	if err != nil {
 		return nil, false
@@ -187,13 +188,15 @@ func (m modelCatalog) ListModelIDs(ctx context.Context) ([]string, error) {
 // 小工具
 // ---------------------------------------------------------------------------
 
-// parseID 把 string 形账户/Key id 解析回 int64。
-// auth 侧用 string id（Key 形如 "fr-…"、无全局 id 约束），store 侧用 int64
-// 自增——两边的翻译点全在这一个函数，改任何一侧只动这里。
-func parseID(s string) (int64, error) {
-	var id int64
-	if _, err := fmt.Sscanf(s, "%d", &id); err != nil || id <= 0 {
-		return 0, fmt.Errorf("app: 非法的账户 id 形状 %q", s)
+// parseID 校验 id 形状并原样返回。
+//
+// 2026-10-26 UUID 改造后 auth 侧与 store 侧的 id 是**同一串**，这个函数
+// 不再是"翻译点"，只剩形状校验（非法形状说明上游装配有 bug，回错误而不是
+// 带着一个查不到的 id 继续走）。函数名与位置保留：它是"哪里碰过 id"的
+// grep 锚点。
+func parseID(s string) (string, error) {
+	if _, err := idgen.Parse(s); err != nil {
+		return "", fmt.Errorf("app: 非法的 id 形状 %q（期望 UUID）", s)
 	}
-	return id, nil
+	return idgen.MustParse(s), nil
 }

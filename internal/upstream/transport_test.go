@@ -58,7 +58,7 @@ var testCtx = context.Background()
 // vendorTarget 构造一个 selfhosted（httptest 回环 http 放行）目标。
 func vendorTarget(baseURL string) Target {
 	return Target{
-		UpstreamID: 1,
+		UpstreamID: "u1",
 		Kind:       KindSelfHosted,
 		BaseURL:    baseURL,
 		RealModel:  "deepseek-chat",
@@ -182,7 +182,7 @@ func TestContractVendorErrorClassification(t *testing.T) {
 
 	// 连接拒绝 → connect（http=000）。
 	tr := NewHTTPTransport(nil, nil)
-	refused := Target{UpstreamID: 9, Kind: KindSelfHosted, BaseURL: "http://127.0.0.1:1", RealModel: "x"}
+	refused := Target{UpstreamID: "u9", Kind: KindSelfHosted, BaseURL: "http://127.0.0.1:1", RealModel: "x"}
 	_, _, err := tr.Do(testCtx, refused, []byte(`{}`), httpCallOptions{})
 	if err == nil {
 		t.Fatal("连接拒绝应失败")
@@ -386,7 +386,7 @@ func TestContractRelayEndToEndFakeSidecar(t *testing.T) {
 	defer func() { _ = client.Close(testCtx) }()
 
 	tr := NewRelayTransport(client)
-	tgt := Target{UpstreamID: 1, Kind: KindRelay, RealModel: "buddy/deepseek-v4.1"}
+	tgt := Target{UpstreamID: "u1", Kind: KindRelay, RealModel: "buddy/deepseek-v4.1"}
 	// M8 后 fake 真的实现了 infer.stream，且返回 {"sse": ...} 信封——
 	// 这条 e2e 验证的是**生产调用点**：InferStream 必须先拆信封再交给
 	// adapter 的 StreamReader，否则会得到「200 + 空回答」（信封不是 SSE）。
@@ -590,7 +590,7 @@ func TestContractBootstrapFailureIsSideEffect(t *testing.T) {
 func TestContractTargetOfRelayPrefixStripped(t *testing.T) {
 	// 正常 relay：前缀剥离，BaseURL 恒空。
 	tgt, err := TargetOf(CandidateInfo{
-		UpstreamID: 1, Kind: KindRelay, BaseURL: "sidecar://buddy", RealModel: "buddy/deepseek-v4.1",
+		UpstreamID: "u1", Kind: KindRelay, BaseURL: "sidecar://buddy", RealModel: "buddy/deepseek-v4.1",
 	})
 	if err != nil {
 		t.Fatalf("应合法：%v", err)
@@ -631,7 +631,7 @@ func TestContractTargetOfRelayPrefixStripped(t *testing.T) {
 func TestContractCallerDispatchAndC6(t *testing.T) {
 	// targetOf 固定回 relay 目标。
 	caller := NewCaller(NewRelayTransport(nil), NewHTTPTransport(nil, nil), func(cand CallCandidate) (Target, error) {
-		return Target{UpstreamID: 1, Kind: KindRelay, RealModel: cand.UpstreamModelID}, nil
+		return Target{UpstreamID: "u1", Kind: KindRelay, RealModel: cand.UpstreamModelID}, nil
 	})
 	req := minIREquest()
 	cand := CallCandidate{UpstreamModelID: "buddy/deepseek-v4.1", Display: "relay:buddy", Adapter: openai.Adapter()}
@@ -667,7 +667,7 @@ func TestContractCallerDispatchAndC6(t *testing.T) {
 	}))
 	defer srv.Close()
 	caller3 := NewCaller(nil, NewHTTPTransport(nil, nil), func(cand CallCandidate) (Target, error) {
-		return Target{UpstreamID: 2, Kind: KindSelfHosted, BaseURL: srv.URL, RealModel: cand.UpstreamModelID}, nil
+		return Target{UpstreamID: "u2", Kind: KindSelfHosted, BaseURL: srv.URL, RealModel: cand.UpstreamModelID}, nil
 	})
 	res3, err := caller3.Call(testCtx, cand, req, false)
 	if err != nil || res3.Err != nil {
@@ -696,7 +696,7 @@ func TestContractCallerDispatchAndC6(t *testing.T) {
 	// 时报 Unsupported——这里用一个必然触发的方式：Adapter 传一个自定义 stub）。
 	stub := unsupportedAdapter{}
 	caller5 := NewCaller(nil, NewHTTPTransport(nil, nil), func(cand CallCandidate) (Target, error) {
-		return Target{UpstreamID: 3, Kind: KindVendor, BaseURL: srv.URL, RealModel: "m"}, nil
+		return Target{UpstreamID: "u3", Kind: KindVendor, BaseURL: srv.URL, RealModel: "m"}, nil
 	})
 	res5, _ := caller5.Call(testCtx, CallCandidate{UpstreamModelID: "m", Adapter: stub}, req, false)
 	if res5 == nil || res5.Err == nil {

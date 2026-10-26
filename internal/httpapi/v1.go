@@ -38,7 +38,7 @@ type Candidate struct {
 	// ID 是 real_models 行 ID（M6 接线加）：上游失败时回传给
 	// CandidateFailureNotifier（冷却账本按它记账）。0 = 来源不提供
 	//（测试 fake/旧候选源），冷却跳过。
-	ID int64
+	ID string // real_models 行 UUID（失败回传冷却用）
 }
 
 // CandidateSource 产出候选序列：按顺序尝试，耗尽即 no_candidate（503）。

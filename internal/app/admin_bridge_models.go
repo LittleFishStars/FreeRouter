@@ -38,7 +38,6 @@ import (
 
 	"github.com/LittleFishStars/FreeRouter/internal/apidir"
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
-	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
 
@@ -50,9 +49,9 @@ type modelsBridge struct{ b *adminBridge }
 // realModelToAdmin 翻真实模型行。
 func realModelToAdmin(m *store.RealModel) *httpapi.AdminRealModel {
 	out := &httpapi.AdminRealModel{
-		ID:                     encodeID(idcode.RealModel, m.ID),
+		ID:                     m.ID,
 		DisplayName:            m.DisplayName,
-		UpstreamID:             encodeID(idcode.Upstream, m.UpstreamID),
+		UpstreamID:             m.UpstreamID,
 		UpstreamModelID:        m.UpstreamModelID,
 		GroupName:              m.GroupName,
 		Channel:                m.Channel,
@@ -83,12 +82,12 @@ func realModelToAdmin(m *store.RealModel) *httpapi.AdminRealModel {
 
 // modelsLookup 是 absModelToAdmin 反查替代目标名的通道（包级注入，
 // init 时指向 modelsBridge 的实现——避免在纯翻译函数上背 ctx/receiver）。
-var modelsLookup func(id int64) (string, error)
+var modelsLookup func(id string) (string, error)
 
 // absModelToAdmin 翻抽象模型行（能力文档从 note 解析）。
 func absModelToAdmin(m *store.AbstractModel) *httpapi.AdminAbstractModel {
 	out := &httpapi.AdminAbstractModel{
-		ID:             encodeID(idcode.AbstractModel, m.ID),
+		ID:             m.ID,
 		Name:           m.Name,
 		DisplayName:    m.DisplayName,
 		CapabilityMode: m.CapabilityMode,
@@ -120,7 +119,7 @@ func absModelToAdmin(m *store.AbstractModel) *httpapi.AdminAbstractModel {
 // 路径承担，读路径容许）。
 // replacementNameOf 把替代目标 id 反查成名字（absModelToAdmin 经包级
 // modelsLookup 调用；newAdminBridge 绑定）。
-func (mb *modelsBridge) replacementNameOf(id int64) (string, error) {
+func (mb *modelsBridge) replacementNameOf(id string) (string, error) {
 	rep, err := mb.b.repos.Models.GetAbstractModel(context.Background(), id)
 	if err != nil {
 		return "", err
@@ -157,7 +156,7 @@ func (mb *modelsBridge) ListRealModels(ctx context.Context, status string, hidde
 	var rows []httpapi.AdminRealModel
 	for _, up := range ups {
 		if upstreamID != "" {
-			if encodeID(idcode.Upstream, up.ID) != upstreamID {
+			if up.ID != upstreamID {
 				continue
 			}
 		}
@@ -188,7 +187,7 @@ func (mb *modelsBridge) ListRealModels(ctx context.Context, status string, hidde
 }
 
 func (mb *modelsBridge) GetRealModel(ctx context.Context, id string) (*httpapi.AdminRealModel, error) {
-	rid, err := decodeID(idcode.RealModel, id)
+	rid, err := decodeID(id)
 	if err != nil {
 		return nil, errAdminNotImplemented
 	}
@@ -200,7 +199,7 @@ func (mb *modelsBridge) GetRealModel(ctx context.Context, id string) (*httpapi.A
 }
 
 func (mb *modelsBridge) UpdateRealModel(ctx context.Context, id string, patch map[string]json.RawMessage, audit httpapi.AdminAuditEntry) (*httpapi.AdminRealModel, string, error) {
-	rid, err := decodeID(idcode.RealModel, id)
+	rid, err := decodeID(id)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
@@ -260,7 +259,7 @@ func (mb *modelsBridge) UpdateRealModel(ctx context.Context, id string, patch ma
 }
 
 func (mb *modelsBridge) SetRealModelExcluded(ctx context.Context, id string, excluded bool, audit httpapi.AdminAuditEntry) (*httpapi.AdminRealModel, string, error) {
-	rid, err := decodeID(idcode.RealModel, id)
+	rid, err := decodeID(id)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
@@ -314,7 +313,7 @@ func (mb *modelsBridge) ListAbstractModels(ctx context.Context, limit, offset in
 }
 
 func (mb *modelsBridge) GetAbstractModel(ctx context.Context, id string) (*httpapi.AdminAbstractModel, error) {
-	aid, err := decodeID(idcode.AbstractModel, id)
+	aid, err := decodeID(id)
 	if err != nil {
 		return nil, errAdminNotImplemented
 	}
@@ -363,7 +362,7 @@ func (mb *modelsBridge) CreateAbstractModel(ctx context.Context, in httpapi.Admi
 	if note != "" {
 		m.Note = adminStrPtr(note)
 	}
-	var newID int64
+	var newID string
 	var auditID string
 	err := mb.b.st.WithTx(ctx, func(tx *store.Repos) error {
 		id, err := tx.Models.CreateAbstractModel(ctx, m)
@@ -386,14 +385,14 @@ func (mb *modelsBridge) CreateAbstractModel(ctx context.Context, in httpapi.Admi
 	if err != nil {
 		return "", "", mapStoreErr(err)
 	}
-	return encodeID(idcode.AbstractModel, newID), auditID, nil
+	return newID, auditID, nil
 }
 
 // putCandidates 翻候选载荷并整表写入。
-func (mb *modelsBridge) putCandidates(ctx context.Context, models *store.ModelRepo, abstractID int64, cands []httpapi.AdminCandidateItem) error {
+func (mb *modelsBridge) putCandidates(ctx context.Context, models *store.ModelRepo, abstractID string, cands []httpapi.AdminCandidateItem) error {
 	out := make([]store.Candidate, 0, len(cands))
 	for _, c := range cands {
-		rid, err := decodeID(idcode.RealModel, c.RealModelID)
+		rid, err := decodeID(c.RealModelID)
 		if err != nil {
 			return fmt.Errorf("候选 real_model_id %q 非法: %w", c.RealModelID, err)
 		}
@@ -410,7 +409,7 @@ func (mb *modelsBridge) putCandidates(ctx context.Context, models *store.ModelRe
 }
 
 func (mb *modelsBridge) UpdateAbstractModel(ctx context.Context, id string, patch map[string]json.RawMessage, _ json.RawMessage, audit httpapi.AdminAuditEntry) (*httpapi.AdminAbstractModel, string, error) {
-	aid, err := decodeID(idcode.AbstractModel, id)
+	aid, err := decodeID(id)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
@@ -485,7 +484,7 @@ func (mb *modelsBridge) UpdateAbstractModel(ctx context.Context, id string, patc
 }
 
 func (mb *modelsBridge) SetAbstractStatus(ctx context.Context, id, status string, audit httpapi.AdminAuditEntry) (string, error) {
-	aid, err := decodeID(idcode.AbstractModel, id)
+	aid, err := decodeID(id)
 	if err != nil {
 		return "", errAdminNotImplemented
 	}
@@ -508,7 +507,7 @@ func (mb *modelsBridge) SetAbstractStatus(ctx context.Context, id, status string
 }
 
 func (mb *modelsBridge) SetDeprecation(ctx context.Context, id string, in httpapi.AdminDeprecationUpdate, audit httpapi.AdminAuditEntry) (string, error) {
-	aid, err := decodeID(idcode.AbstractModel, id)
+	aid, err := decodeID(id)
 	if err != nil {
 		return "", errAdminNotImplemented
 	}
@@ -543,7 +542,7 @@ func (mb *modelsBridge) SetDeprecation(ctx context.Context, id string, in httpap
 }
 
 func (mb *modelsBridge) ListCandidates(ctx context.Context, abstractModelID string) ([]httpapi.AdminCandidateItem, error) {
-	aid, err := decodeID(idcode.AbstractModel, abstractModelID)
+	aid, err := decodeID(abstractModelID)
 	if err != nil {
 		return nil, errAdminNotImplemented
 	}
@@ -579,7 +578,7 @@ func (mb *modelsBridge) ListCandidates(ctx context.Context, abstractModelID stri
 			inst = insts[rm.UpstreamID]
 		}
 		item := httpapi.AdminCandidateItem{
-			RealModelID: encodeID(idcode.RealModel, c.RealModelID),
+			RealModelID: c.RealModelID,
 			// Weight 恒 0（已退役）：字段位留着只为不破坏 DTO 形状。
 			Weight:             0,
 			AvailableInstances: inst,
@@ -608,7 +607,7 @@ func (mb *modelsBridge) ListCandidates(ctx context.Context, abstractModelID stri
 // 为什么不做「凭据是否真能调通」的探测：探测要出网、要花额度，而这是管理面
 // 列表的读路径，秒级响应是硬要求。这里给的是「有没有凭据支撑」这一层事实，
 // 够回答「配了但永远选不中」的问题。
-func (mb *modelsBridge) candidateInstances(ctx context.Context) (map[int64]int64, error) {
+func (mb *modelsBridge) candidateInstances(ctx context.Context) (map[string]int64, error) {
 	ups, err := mb.b.repos.Models.ListUpstreams(ctx)
 	if err != nil {
 		return nil, mapStoreErr(err)
@@ -617,7 +616,7 @@ func (mb *modelsBridge) candidateInstances(ctx context.Context) (map[int64]int64
 	if err != nil {
 		return nil, mapStoreErr(err)
 	}
-	out := make(map[int64]int64, len(ups))
+	out := make(map[string]int64, len(ups))
 	for _, u := range ups {
 		switch {
 		case !u.Enabled:
@@ -660,7 +659,7 @@ func (mb *modelsBridge) availableCandidates(ctx context.Context, cands []store.C
 }
 
 func (mb *modelsBridge) ReplaceCandidates(ctx context.Context, abstractModelID string, cands []httpapi.AdminCandidateItem, audit httpapi.AdminAuditEntry) ([]httpapi.AdminCandidateItem, string, error) {
-	aid, err := decodeID(idcode.AbstractModel, abstractModelID)
+	aid, err := decodeID(abstractModelID)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
@@ -670,7 +669,7 @@ func (mb *modelsBridge) ReplaceCandidates(ctx context.Context, abstractModelID s
 		if prev, err := tx.Models.ListCandidates(ctx, aid); err == nil {
 			for _, c := range prev {
 				item := httpapi.AdminCandidateItem{
-					RealModelID: encodeID(idcode.RealModel, c.RealModelID),
+					RealModelID: c.RealModelID,
 					// Weight 恒 0（已退役）。
 					Weight: 0,
 				}
@@ -781,7 +780,7 @@ func (mb *modelsBridge) ListModelSources(ctx context.Context) ([]httpapi.AdminMo
 	}
 
 	// 先读齐再装配：channels 是**全池**事实（跨所有上游），必须看完全部行才能去重。
-	byUpstream := make(map[int64][]store.RealModel, len(ups))
+	byUpstream := make(map[string][]store.RealModel, len(ups))
 	channelSet := make(map[string]struct{})
 	for _, u := range ups {
 		models, err := mb.b.repos.Models.ListRealModelsByUpstream(ctx, u.ID)
@@ -824,12 +823,12 @@ func (mb *modelsBridge) ListModelSources(ctx context.Context) ([]httpapi.AdminMo
 // 为什么恒给空切片：前端对「没有凭据」渲染空态，对 null 渲染错误——
 // 同一个语义两种 JSON 形状会让前端多一个分支，而 null 在这里没有额外含义
 // （「未知」不成立：查询失败时整条请求已经 500 了）。
-func sourceCredentialsOf(upstreamID int64, rows []store.UpstreamCredentialRow) []httpapi.AdminSourceCredential {
+func sourceCredentialsOf(upstreamID string, rows []store.UpstreamCredentialRow) []httpapi.AdminSourceCredential {
 	out := make([]httpapi.AdminSourceCredential, 0, len(rows))
 	for i := range rows {
 		r := &rows[i]
 		item := httpapi.AdminSourceCredential{
-			ID:            encodeID(idcode.Credential, r.ID),
+			ID:            r.ID,
 			Provider:      r.Provider,
 			ExternalLabel: r.ExternalLabel,
 			Status:        r.Status,
@@ -859,7 +858,7 @@ func modelSourceOf(u store.Upstream, cred store.UpstreamCredentialSummary, model
 	protocols := httpapi.AdminModelSourceProtocols(u.Kind, pid)
 
 	src := httpapi.AdminModelSource{
-		ID:                 encodeID(idcode.Upstream, u.ID),
+		ID:                 u.ID,
 		Kind:               u.Kind,
 		Name:               u.Name, // 目录未命中时用上游行名；命中了在下面换掉
 		UpstreamName:       u.Name,
@@ -885,7 +884,7 @@ func modelSourceOf(u store.Upstream, cred store.UpstreamCredentialSummary, model
 	for i := range models {
 		m := &models[i]
 		src.Models = append(src.Models, httpapi.AdminModelSourceModel{
-			RealModelID:            encodeID(idcode.RealModel, m.ID),
+			RealModelID:            m.ID,
 			UpstreamModelID:        m.UpstreamModelID,
 			DisplayName:            m.DisplayName,
 			Channel:                m.Channel,
@@ -935,7 +934,7 @@ func providerIDOf(provider string) string {
 //
 // 上游行不存在 → ErrAdminUpstreamNotFound（对外 404）：存在性校验只有桥
 // 拿得到仓储，handler 的 idcode 形状校验拦的是"连形状都不对"。
-func (mb *modelsBridge) CreateRealModel(ctx context.Context, upstreamID int64, upstreamModelID, displayName string, contextWindow *int64, audit httpapi.AdminAuditEntry) (*httpapi.AdminRealModel, bool, string, error) {
+func (mb *modelsBridge) CreateRealModel(ctx context.Context, upstreamID string, upstreamModelID, displayName string, contextWindow *int64, audit httpapi.AdminAuditEntry) (*httpapi.AdminRealModel, bool, string, error) {
 	if _, err := mb.b.repos.Models.GetUpstreamByID(ctx, upstreamID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, false, "", httpapi.ErrAdminUpstreamNotFound

@@ -28,7 +28,7 @@ func newTenantBridge(st *store.Store) *tenantBridge {
 
 var _ httpapi.TenantUsageStore = (*tenantBridge)(nil)
 
-func (b *tenantBridge) parse(accountID string) (int64, error) {
+func (b *tenantBridge) parse(accountID string) (string, error) {
 	return parseID(accountID)
 }
 
@@ -99,7 +99,7 @@ func (b *tenantBridge) QuotaRows(ctx context.Context, accountID string) ([]httpa
 	out := make([]httpapi.UsageQuotaRow, 0, len(states))
 	for _, q := range states {
 		name := ""
-		if q.AbstractModelID > 0 {
+		if q.AbstractModelID != store.TotalScope {
 			if m, err := b.reps.Models.GetAbstractModel(ctx, q.AbstractModelID); err == nil {
 				name = m.Name
 			}
@@ -208,7 +208,7 @@ func (b *tenantBridge) AllowedModels(ctx context.Context, accountID string, keyI
 	if err != nil {
 		return nil, err
 	}
-	allowed := map[int64]bool{}
+	allowed := map[string]bool{}
 	for _, gid := range mustList(b.reps.Groups.GroupIDsOfAccount(ctx, id)) {
 		for _, mid := range mustList(b.reps.Groups.ListGroupModels(ctx, gid)) {
 			allowed[mid] = true
@@ -223,7 +223,7 @@ func (b *tenantBridge) AllowedModels(ctx context.Context, accountID string, keyI
 		if err != nil {
 			return nil, err
 		}
-		set := map[int64]bool{}
+		set := map[string]bool{}
 		for _, mid := range allowIDs {
 			set[mid] = true
 		}

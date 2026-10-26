@@ -26,7 +26,6 @@ import (
 	"fmt"
 
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
-	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
 
@@ -35,7 +34,7 @@ type groupsBridge struct{ b *adminBridge }
 // groupToAdmin 翻组行（MemberCount 由调用方填——列表与详情各自取数）。
 func groupToAdmin(g *store.Group) httpapi.AdminGroup {
 	return httpapi.AdminGroup{
-		ID:          encodeID(idcode.Group, g.ID),
+		ID:          g.ID,
 		Name:        g.Name,
 		Description: g.Description,
 		IsDefault:   g.IsDefault,
@@ -62,7 +61,7 @@ func (gb *groupsBridge) ListGroups(ctx context.Context, limit, offset int) ([]ht
 }
 
 func (gb *groupsBridge) GetGroup(ctx context.Context, id string) (*httpapi.AdminGroupDetail, error) {
-	gid, err := decodeID(idcode.Group, id)
+	gid, err := decodeID(id)
 	if err != nil {
 		return nil, errAdminNotImplemented
 	}
@@ -73,7 +72,7 @@ func (gb *groupsBridge) GetGroup(ctx context.Context, id string) (*httpapi.Admin
 	detail := &httpapi.AdminGroupDetail{AdminGroup: groupToAdmin(g)}
 	if members, err := gb.b.repos.Groups.ListMembers(ctx, gid); err == nil {
 		for _, m := range members {
-			detail.Members = append(detail.Members, encodeID(idcode.Account, m))
+			detail.Members = append(detail.Members, m)
 		}
 	}
 	if detail.Members == nil {
@@ -95,7 +94,7 @@ func (gb *groupsBridge) GetGroup(ctx context.Context, id string) (*httpapi.Admin
 }
 
 func (gb *groupsBridge) CreateGroup(ctx context.Context, in httpapi.AdminGroup, models []string, policies json.RawMessage, audit httpapi.AdminAuditEntry) (string, string, error) {
-	var newID int64
+	var newID string
 	var auditID string
 	err := gb.b.st.WithTx(ctx, func(tx *store.Repos) error {
 		id, err := tx.Groups.CreateGroup(ctx, in.Name, in.Description, in.IsDefault)
@@ -127,13 +126,13 @@ func (gb *groupsBridge) CreateGroup(ctx context.Context, in httpapi.AdminGroup, 
 	if err != nil {
 		return "", "", mapStoreErr(err)
 	}
-	return encodeID(idcode.Group, newID), auditID, nil
+	return newID, auditID, nil
 }
 
 // resolveModelNames 把抽象模型名数组翻成 id 数组（创建/替换共用）。
 // 名字查不到即报错（整单拒——半套授权比全拒更难归因）。
-func (gb *groupsBridge) resolveModelNames(ctx context.Context, models *store.ModelRepo, names []string) ([]int64, error) {
-	ids := make([]int64, 0, len(names))
+func (gb *groupsBridge) resolveModelNames(ctx context.Context, models *store.ModelRepo, names []string) ([]string, error) {
+	ids := make([]string, 0, len(names))
 	for _, n := range names {
 		m, err := models.GetAbstractModelByName(ctx, n)
 		if err != nil {
@@ -145,7 +144,7 @@ func (gb *groupsBridge) resolveModelNames(ctx context.Context, models *store.Mod
 }
 
 func (gb *groupsBridge) UpdateGroup(ctx context.Context, id string, name, description *string, setDefault *bool, audit httpapi.AdminAuditEntry) (*httpapi.AdminGroup, string, error) {
-	gid, err := decodeID(idcode.Group, id)
+	gid, err := decodeID(id)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
@@ -200,7 +199,7 @@ func (gb *groupsBridge) UpdateGroup(ctx context.Context, id string, name, descri
 }
 
 func (gb *groupsBridge) DeleteGroup(ctx context.Context, id string, audit httpapi.AdminAuditEntry) (string, error) {
-	gid, err := decodeID(idcode.Group, id)
+	gid, err := decodeID(id)
 	if err != nil {
 		return "", errAdminNotImplemented
 	}
@@ -245,25 +244,25 @@ func (gb *groupsBridge) DeleteGroup(ctx context.Context, id string, audit httpap
 }
 
 // defaultGroupID 取当前默认组 id（无默认组 = 数据不变式破坏，报错）。
-func (gb *groupsBridge) defaultGroupID(ctx context.Context, groups *store.GroupRepo) (int64, error) {
+func (gb *groupsBridge) defaultGroupID(ctx context.Context, groups *store.GroupRepo) (string, error) {
 	rows, err := groups.ListGroups(ctx)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	for _, g := range rows {
 		if g.IsDefault {
 			return g.ID, nil
 		}
 	}
-	return 0, errors.New("admin 桥：库中无默认组（不变式破坏——03-groups §5 要求恒有一个）")
+	return "", errors.New("admin 桥：库中无默认组（不变式破坏——03-groups §5 要求恒有一个）")
 }
 
 func (gb *groupsBridge) DuplicateGroup(ctx context.Context, id, newName string, audit httpapi.AdminAuditEntry) (*httpapi.AdminGroup, string, error) {
-	gid, err := decodeID(idcode.Group, id)
+	gid, err := decodeID(id)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
-	var newID int64
+	var newID string
 	var auditID string
 	err = gb.b.st.WithTx(ctx, func(tx *store.Repos) error {
 		src, err := tx.Groups.GetGroup(ctx, gid)
@@ -325,14 +324,14 @@ func (gb *groupsBridge) DuplicateGroup(ctx context.Context, id, newName string, 
 	}
 	g, err := gb.b.repos.Groups.GetGroup(ctx, newID)
 	if err != nil {
-		return nil, encodeID(idcode.Group, newID), nil
+		return nil, newID, nil
 	}
 	out := groupToAdmin(g)
 	return &out, auditID, nil
 }
 
 func (gb *groupsBridge) ListGroupMembers(ctx context.Context, groupID string) ([]string, error) {
-	gid, err := decodeID(idcode.Group, groupID)
+	gid, err := decodeID(groupID)
 	if err != nil {
 		return nil, errAdminNotImplemented
 	}
@@ -342,20 +341,20 @@ func (gb *groupsBridge) ListGroupMembers(ctx context.Context, groupID string) ([
 	}
 	out := make([]string, 0, len(members))
 	for _, m := range members {
-		out = append(out, encodeID(idcode.Account, m))
+		out = append(out, m)
 	}
 	return out, nil
 }
 
 func (gb *groupsBridge) AddGroupMembers(ctx context.Context, groupID string, accountIDs []string, audit httpapi.AdminAuditEntry) (string, error) {
-	gid, err := decodeID(idcode.Group, groupID)
+	gid, err := decodeID(groupID)
 	if err != nil {
 		return "", errAdminNotImplemented
 	}
 	var auditID string
 	err = gb.b.st.WithTx(ctx, func(tx *store.Repos) error {
 		for _, a := range accountIDs {
-			aid, derr := decodeID(idcode.Account, a)
+			aid, derr := decodeID(a)
 			if derr != nil {
 				return derr
 			}
@@ -377,11 +376,11 @@ func (gb *groupsBridge) AddGroupMembers(ctx context.Context, groupID string, acc
 }
 
 func (gb *groupsBridge) RemoveGroupMember(ctx context.Context, groupID, accountID string, audit httpapi.AdminAuditEntry) (string, error) {
-	gid, err := decodeID(idcode.Group, groupID)
+	gid, err := decodeID(groupID)
 	if err != nil {
 		return "", errAdminNotImplemented
 	}
-	aid, err := decodeID(idcode.Account, accountID)
+	aid, err := decodeID(accountID)
 	if err != nil {
 		return "", errAdminNotImplemented
 	}
@@ -414,7 +413,7 @@ func (gb *groupsBridge) RemoveGroupMember(ctx context.Context, groupID, accountI
 }
 
 func (gb *groupsBridge) ReplaceGroupModels(ctx context.Context, groupID string, modelNames []string, audit httpapi.AdminAuditEntry) ([]string, string, error) {
-	gid, err := decodeID(idcode.Group, groupID)
+	gid, err := decodeID(groupID)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}
@@ -454,7 +453,7 @@ func (gb *groupsBridge) ReplaceGroupModels(ctx context.Context, groupID string, 
 }
 
 func (gb *groupsBridge) ReplaceGroupPolicies(ctx context.Context, groupID string, doc json.RawMessage, audit httpapi.AdminAuditEntry) (json.RawMessage, string, error) {
-	gid, err := decodeID(idcode.Group, groupID)
+	gid, err := decodeID(groupID)
 	if err != nil {
 		return nil, "", errAdminNotImplemented
 	}

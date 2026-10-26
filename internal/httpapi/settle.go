@@ -42,7 +42,7 @@ type SettleInput struct {
 	// 翻译成 store 的模型 id 是装配层的事——本包不查模型表（配额中间件同理）。
 	ModelName string
 	// RealModelID 是成功候选的 real_models 行 id；0 = 来源不提供（测试 fake）。
-	RealModelID int64
+	RealModelID string
 	// Status 是请求终态："ok" / "error"。
 	Status string
 	// HTTPStatus 是对外状态码（200 成功；404/502/503 等失败）。
@@ -85,7 +85,7 @@ func (s *Server) SetSettler(v Settler) { s.settler = v }
 type LatencySink interface {
 	// RecordLatency 记录一次成功调用的延迟（路由按 realModelID 聚合）。
 	// ttftMs/totalMs 用 -1 表示无样本。
-	RecordLatency(ctx context.Context, realModelID int64, ttftMs, totalMs int64)
+	RecordLatency(ctx context.Context, realModelID string, ttftMs, totalMs int64)
 }
 
 // SetLatencySink 注入每请求延迟采样出口。
@@ -125,8 +125,8 @@ type attemptObs struct {
 	TTFTMs int64
 	// TotalMs 是本次尝试的总耗时毫秒。
 	TotalMs int64
-	// RealModelID 是本次尝试命中的 real_models 行 id（0 = 未知）。
-	RealModelID int64
+	// RealModelID 是本次尝试命中的 real_models 行 UUID（空串 = 未知）。
+	RealModelID string
 }
 
 // settleRequest 在 proxyV1 的 defer 里执行一次终态结算。
@@ -143,7 +143,7 @@ func (s *Server) settleRequest(ctx context.Context, pr proxyReq, requestID strin
 	// 每请求延迟进采样器（路由排序键 speed 的数据源）。
 	// 放在 Settler 判定之前：即使结算未装配，延迟采样仍要喂——排序是独立能力。
 	// 只在 RealModelID 已知时记（未知行无法归属到速排序，丢弃）。
-	if s.latencySink != nil && st.obs.RealModelID > 0 {
+	if s.latencySink != nil && st.obs.RealModelID != "" {
 		s.latencySink.RecordLatency(ctx, st.obs.RealModelID, st.obs.TTFTMs, st.obs.TotalMs)
 	}
 	if s.settler == nil {

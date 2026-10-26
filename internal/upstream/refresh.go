@@ -176,7 +176,7 @@ func (r *ModelRefresher) refreshUpstream(ctx context.Context, u store.Upstream) 
 	// 「本来就存在」与「本轮新落」——目录刷新的天然时序给了我们免费的新增检测。
 	before := r.visibleModelIDs(ctx, u.ID)
 
-	keepIDs := make([]int64, 0, len(models))
+	keepIDs := make([]string, 0, len(models))
 	verifyItems := make([]verifyItem, 0, len(models))
 	for _, m := range models {
 		if m.UpstreamModelID == "" {
@@ -227,7 +227,7 @@ func (r *ModelRefresher) refreshUpstream(ctx context.Context, u store.Upstream) 
 	// missing 事件（06-audit §3.1 词表 model_missing，warning）：MarkMissing 只给
 	// 条数不给 id——用 before 快照与 keepIDs 的差集还原本轮消失的行。
 	if r.hooks != nil && r.hooks.Inbox != nil && marked > 0 {
-		keep := make(map[int64]struct{}, len(keepIDs))
+		keep := make(map[string]struct{}, len(keepIDs))
 		for _, id := range keepIDs {
 			keep[id] = struct{}{}
 		}
@@ -246,8 +246,8 @@ func (r *ModelRefresher) refreshUpstream(ctx context.Context, u store.Upstream) 
 // 查询失败返回空 map：新增检测降级为「每轮全量投递」比「刷新挂掉」好——
 // 空集合会让 before 判定全部 miss，配合 Inbox 侧去重（§3.3 read_at IS NULL
 // 不重复插入）不会刷屏。
-func (r *ModelRefresher) visibleModelIDs(ctx context.Context, upstreamID int64) map[int64]string {
-	out := make(map[int64]string)
+func (r *ModelRefresher) visibleModelIDs(ctx context.Context, upstreamID string) map[string]string {
+	out := make(map[string]string)
 	rows, err := r.store.Repos().Models.ListVisibleRealModels(ctx)
 	if err != nil {
 		r.log.Warn("upstream: 刷新前快照可见模型失败（新增检测降级）", "error", err)
@@ -290,7 +290,7 @@ func modelInfoInputOf(m dshprovider.ModelInfo) ModelInfoInput {
 // last_seen_at 不在这里手工赋值：UpsertRealModel 对 nil 自动取 now()，
 // 且 ON CONFLICT 分支同样刷新 last_seen_at、清 missing_since——
 // "目录里又见到了"与"首次见到"在存储侧是同一次写入。
-func (r *ModelRefresher) upsertModel(ctx context.Context, upstreamID int64, m dshprovider.ModelInfo) (int64, error) {
+func (r *ModelRefresher) upsertModel(ctx context.Context, upstreamID string, m dshprovider.ModelInfo) (string, error) {
 	row := store.RealModel{
 		UpstreamID:      upstreamID,
 		UpstreamModelID: m.UpstreamModelID,
@@ -357,7 +357,7 @@ func (r *ModelRefresher) upsertModel(ctx context.Context, upstreamID int64, m ds
 	}
 	id, err := r.store.Repos().Models.UpsertRealModel(ctx, row)
 	if err != nil {
-		return 0, fmt.Errorf("upstream: 落库模型 %s 失败: %w", m.UpstreamModelID, err)
+		return "", fmt.Errorf("upstream: 落库模型 %s 失败: %w", m.UpstreamModelID, err)
 	}
 	return id, nil
 }

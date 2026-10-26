@@ -383,11 +383,11 @@ func (s *Session) Expired(now time.Time) bool {
 // "是哪个组的池先耗尽"这个归因信息，而错误码（pool_exhausted）与审计都需要它。
 type PoolRef struct {
 	GroupID string
-	// AbstractModelID：0 = 全模型合计池；>0 = 按模型的组级共享池
-	// （group_quota_pools 的哨兵列，03-groups.md §4.5 硬规则：同一模型上
-	// "每人按模型上限"与"模型级池"是两道独立闸，都是交集）。
-	// 用 int64 与 storage 主键同形，避免字符串 id 的映射层再翻一次。
-	AbstractModelID int64
+	// AbstractModelID：空串 = 全模型合计池（store.TotalScope）；否则是抽象
+	// 模型 UUID（group_quota_pools 的哨兵列，03-groups.md §4.5 硬规则：同一
+	// 模型上"每人按模型上限"与"模型级池"是两道独立闸，都是交集）。
+	// 与 storage 主键同形（都是 UUID 文本），没有映射层可翻。
+	AbstractModelID string
 	Unit            string // request / token / credit
 	Period          string // day / month
 	Limit           int64  // 严格正整数；不设池由"没有这一行"表达

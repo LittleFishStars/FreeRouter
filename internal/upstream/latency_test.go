@@ -8,7 +8,7 @@ import (
 
 func TestLatencySamplerEWMA(t *testing.T) {
 	s := NewLatencySampler(0.5) // α=0.5 方便心算
-	key := SamplerKey{UpstreamID: 1, RealModel: "deepseek-v3"}
+	key := SamplerKey{UpstreamID: "u1", RealModel: "deepseek-v3"}
 	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
 
 	// 第一次观测初始化 EWMA（n==0 直接用该样本）。
@@ -35,7 +35,7 @@ func TestLatencySamplerEWMA(t *testing.T) {
 
 func TestLatencySamplerNoSample(t *testing.T) {
 	s := NewLatencySampler(0)
-	got := s.Latency(SamplerKey{UpstreamID: 9, RealModel: "x"})
+	got := s.Latency(SamplerKey{UpstreamID: "u9", RealModel: "x"})
 	if got.TTFTMs != -1 || got.TotalMs != -1 {
 		t.Fatalf("无样本应返回 -1 垫底，got %v/%v", got.TTFTMs, got.TotalMs)
 	}
@@ -43,7 +43,7 @@ func TestLatencySamplerNoSample(t *testing.T) {
 
 func TestLatencySamplerRejectsNegative(t *testing.T) {
 	s := NewLatencySampler(0)
-	key := SamplerKey{UpstreamID: 1, RealModel: "m"}
+	key := SamplerKey{UpstreamID: "u1", RealModel: "m"}
 	now := time.Now()
 	// 负值（-1 是无样本哨兵）不该进窗口。
 	s.RecordSuccess(context.Background(), key, -1, 500, now)
@@ -63,9 +63,9 @@ func TestLatencySamplerRejectsNegative(t *testing.T) {
 func TestLatencySamplerKeyIsolation(t *testing.T) {
 	s := NewLatencySampler(0)
 	now := time.Now()
-	s.RecordSuccess(context.Background(), SamplerKey{UpstreamID: 1, RealModel: "a"}, 100, 100, now)
+	s.RecordSuccess(context.Background(), SamplerKey{UpstreamID: "u1", RealModel: "a"}, 100, 100, now)
 	// 不同上游同一模型名不串。
-	got := s.Latency(SamplerKey{UpstreamID: 2, RealModel: "a"})
+	got := s.Latency(SamplerKey{UpstreamID: "u2", RealModel: "a"})
 	if got.TTFTMs != -1 {
 		t.Fatalf("不同 upstream 的样本不应共享，got %v", got.TTFTMs)
 	}
@@ -73,7 +73,7 @@ func TestLatencySamplerKeyIsolation(t *testing.T) {
 
 func TestLatencySamplerConcurrent(t *testing.T) {
 	s := NewLatencySampler(0)
-	key := SamplerKey{UpstreamID: 1, RealModel: "m"}
+	key := SamplerKey{UpstreamID: "u1", RealModel: "m"}
 	done := make(chan struct{})
 	now := time.Now()
 	// 并发写读不应 panic / 数据竞争（-race 跑）。

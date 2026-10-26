@@ -45,7 +45,7 @@ func TestContractTypesAndInterface(t *testing.T) {
 	var _ Upstream = stubUpstream{}
 
 	// Target 的 relay 语义：CredentialID=0 且 SecretRef 为空是合法（账号池在 sidecar 侧）。
-	tgt := Target{UpstreamID: 1, Kind: KindRelay, RealModel: "buddy/deepseek-v4.1", Dialect: DialectAdapter}
+	tgt := Target{UpstreamID: "u1", Kind: KindRelay, RealModel: "buddy/deepseek-v4.1", Dialect: DialectAdapter}
 	if err := ValidateTarget(tgt); err != nil {
 		t.Fatalf("relay 目标应合法：%v", err)
 	}
@@ -172,7 +172,7 @@ func TestContractPoolAcquireLimit(t *testing.T) {
 	ctx := context.Background()
 	var releases []func()
 	for i := 0; i < 3; i++ {
-		r, ok := p.Acquire(ctx, 42)
+		r, ok := p.Acquire(ctx, "u42")
 		if !ok {
 			t.Fatal("前 3 个名额应全部拿到")
 		}
@@ -181,12 +181,12 @@ func TestContractPoolAcquireLimit(t *testing.T) {
 	// 第 4 个：带短超时的 ctx 应拿不到（硬限）。
 	ctx2, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
-	if _, ok := p.Acquire(ctx2, 42); ok {
+	if _, ok := p.Acquire(ctx2, "u42"); ok {
 		t.Fatal("超限后不应再拿到名额")
 	}
 	// 释放一个后能再拿到。
 	releases[0]()
-	if r, ok := p.Acquire(ctx, 42); !ok {
+	if r, ok := p.Acquire(ctx, "u42"); !ok {
 		t.Fatal("释放后应能再拿到")
 	} else {
 		r()
@@ -195,7 +195,7 @@ func TestContractPoolAcquireLimit(t *testing.T) {
 		r()
 	}
 	// 不同上游互不影响（上限按上游实体独立）。
-	if _, ok := p.Acquire(ctx, 43); !ok {
+	if _, ok := p.Acquire(ctx, "u43"); !ok {
 		t.Fatal("不同上游的名额互不影响")
 	}
 }
@@ -596,7 +596,7 @@ loop:
 func TestContractLoggingNoPanic(t *testing.T) {
 	// 无 logger 的 ctx：FromContext 退回全局 default，绝不 nil。
 	ctx := context.Background()
-	tgt := Target{UpstreamID: 7, Kind: KindVendor, CredentialID: 9}
+	tgt := Target{UpstreamID: "u7", Kind: KindVendor, CredentialID: "c9"}
 	LogUpstreamFailure(ctx, tgt, 1, ErrConnReset, 0, 150*time.Millisecond)
 	LogUpstreamSuccess(ctx, tgt, 200, 42*time.Millisecond, 0)
 	LogQuotaResult(ctx, Quota{Provider: "buddy", Source: QuotaUnverified, Detail: "x"})

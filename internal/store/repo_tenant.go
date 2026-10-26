@@ -69,7 +69,7 @@ func (r *SessionRepo) ListSessionsByAccount(ctx context.Context, accountID strin
 // 指针只会让每个调用方多写一层 nil 判断。
 type RequestLogFilter struct {
 	From, To       int64
-	KeyID, ModelID *int64
+	KeyID, ModelID *string
 	Failed         bool
 	ErrorCode      string
 	Limit, Offset  int
@@ -84,7 +84,7 @@ type RequestLogRow struct {
 	TS            int64
 	Endpoint      string
 	AbstractModel string
-	KeyID         *int64
+	KeyID         *string
 	KeyName       string
 	KeyPrefix     string
 	Status        string
@@ -176,7 +176,7 @@ func (r *UsageRepo) ListRequestLogsByAccount(ctx context.Context, accountID stri
 
 // CountKeysUsedSince 统计某账户在 since（Unix 秒）以来用过的 Key 数（DISTINCT）。
 // keys_used_7d 用；没有请求 = 0。
-func (r *UsageRepo) CountKeysUsedSince(ctx context.Context, accountID, since int64) (int64, error) {
+func (r *UsageRepo) CountKeysUsedSince(ctx context.Context, accountID string, since int64) (int64, error) {
 	var n int64
 	err := r.db.QueryRowContext(ctx,
 		`SELECT COUNT(DISTINCT key_id) FROM requests WHERE account_id = ? AND key_id IS NOT NULL AND ts >= ?`,
@@ -221,7 +221,7 @@ func (r *ModelRepo) ListCredentialsByOwner(ctx context.Context, ownerAccountID s
 // since 是 Unix 秒，**0 = 不限**（保留旧行为，也让「全量」不需要另一个方法）。
 // 问询走 ix_requests_credential_ts(resolved_credential_id, ts)：先按凭据等值命中，
 // 再在该凭据的请求上做 ts 区间扫描，不带因 COUNT(1) 退化成全表扫。
-func (r *UsageRepo) ContributionUsageByOwner(ctx context.Context, ownerAccountID, since int64) (calls, inTokens, outTokens int64, err error) {
+func (r *UsageRepo) ContributionUsageByOwner(ctx context.Context, ownerAccountID string, since int64) (calls, inTokens, outTokens int64, err error) {
 	where := ` WHERE c.owner_account_id = ?`
 	args := []any{ownerAccountID}
 	if since > 0 {

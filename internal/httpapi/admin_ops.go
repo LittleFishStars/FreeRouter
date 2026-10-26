@@ -41,12 +41,11 @@ package httpapi
 
 import (
 	"encoding/json"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-
-	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 )
 
 // relayBaseURLPrefix 与 upstream.RelayBaseURLPrefix、app.sidecarScheme 同值。
@@ -97,19 +96,19 @@ func (s *Server) mountAdminOps(r chi.Router, deps *AdminDeps) {
 }
 
 func adminUpstreamID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	return idParamValid(w, r, "id", idcode.Upstream, "上游")
+	return idParamValid(w, r, "id", "上游")
 }
 func adminCredentialID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	return idParamValid(w, r, "id", idcode.Credential, "凭据")
+	return idParamValid(w, r, "id", "凭据")
 }
 func adminVerificationID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	return idParamValid(w, r, "id", idcode.Verification, "鉴定条目")
+	return idParamValid(w, r, "id", "鉴定条目")
 }
 func adminAuditID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	return idParamValid(w, r, "id", idcode.Audit, "审计条目")
+	return idParamValid(w, r, "id", "审计条目")
 }
 func adminInboxID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	return idParamValid(w, r, "id", idcode.Inbox, "收件箱条目")
+	return idParamValid(w, r, "id", "收件箱条目")
 }
 
 // ---------------------------------------------------------------------------
@@ -394,7 +393,7 @@ func (s *Server) handleAdminCredentialsList(deps *AdminDeps) http.HandlerFunc {
 			Status: q.Get("status"), Limit: limit, Offset: offset,
 		}
 		if o := q.Get("owner"); o != "" {
-			if _, err := idcode.Decode(idcode.Account, o); err != nil {
+			if _, err := idgen.Parse(o); err != nil {
 				adminWriteParamErr(w, "owner", "owner 须为 acc_<数字> 形态")
 				return
 			}
@@ -701,7 +700,7 @@ func auditFilterFromQuery(w http.ResponseWriter, r *http.Request) (AdminAuditFil
 		return f, false
 	}
 	if a := q.Get("account_id"); a != "" {
-		if _, derr := idcode.Decode(idcode.Account, a); derr != nil {
+		if _, derr := idgen.Parse(a); derr != nil {
 			adminWriteParamErr(w, "account_id", "account_id 须为 acc_<数字> 形态")
 			return f, false
 		}
@@ -1049,7 +1048,7 @@ func (s *Server) handleAdminInboxReadBatch(deps *AdminDeps) http.HandlerFunc {
 			return
 		}
 		for _, one := range body.IDs {
-			if _, err := idcode.Decode(idcode.Inbox, one); err != nil {
+			if _, err := idgen.Parse(one); err != nil {
 				adminWriteParamErr(w, "ids", "收件箱 id 形状非法："+one)
 				return
 			}

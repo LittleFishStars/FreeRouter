@@ -40,7 +40,7 @@ func newRoutingTestApp(t *testing.T) *App {
 // seedModel 建一条完整链路：上游 → 真实模型 → 抽象模型 → 候选声明。
 //
 // 返回抽象模型名与真实模型行 ID（测试用它断言冷却/排序结果）。
-func seedModel(t *testing.T, a *App, abstractName, upstreamModel string, ctxWin *int64, constraint string) (int64, int64) {
+func seedModel(t *testing.T, a *App, abstractName, upstreamModel string, ctxWin *int64, constraint string) (string, string) {
 	t.Helper()
 	ctx := context.Background()
 	up, err := a.store.Repos().Models.UpsertUpstream(ctx, "selfhosted", "test-u-"+abstractName,
@@ -111,7 +111,7 @@ func TestContractRoutingCandidatesByAbstractName(t *testing.T) {
 		t.Fatalf("期望 1 条候选，得到 %d", len(cands))
 	}
 	if cands[0].ID != rmID {
-		t.Fatalf("候选 ID = %d，期望 %d（冷却回填要靠它）", cands[0].ID, rmID)
+		t.Fatalf("候选 ID = %s，期望 %s（冷却回填要靠它）", cands[0].ID, rmID)
 	}
 	if cands[0].UpstreamModelID != "deepseek-chat" {
 		t.Fatalf("UpstreamModelID = %q", cands[0].UpstreamModelID)
@@ -190,10 +190,10 @@ func TestContractRoutingCooldownMovesToEnd(t *testing.T) {
 		t.Fatalf("冷却中候选不该被剔除（err=%v, got %d）", err, len(after))
 	}
 	if after[0].ID == first.ID {
-		t.Fatalf("冷却中的候选应排到末尾，仍出现在首位（id=%d）", first.ID)
+		t.Fatalf("冷却中的候选应排到末尾，仍出现在首位（id=%s）", first.ID)
 	}
 	if after[len(after)-1].ID != first.ID {
-		t.Fatalf("冷却中的候选应在末位，末位是 %d（期望 %d）", after[len(after)-1].ID, first.ID)
+		t.Fatalf("冷却中的候选应在末位，末位是 %s（期望 %s）", after[len(after)-1].ID, first.ID)
 	}
 }
 

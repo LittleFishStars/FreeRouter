@@ -38,13 +38,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"net/http"
 	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-
-	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 )
 
 func (s *Server) mountAdminModels(r chi.Router, deps *AdminDeps) {
@@ -73,11 +72,11 @@ func (s *Server) mountAdminModels(r chi.Router, deps *AdminDeps) {
 // realModelIDParam / abstractModelIDParam：idcode 前缀校验（lead 裁决①，
 // 跨资源 id 混用在解码层失败）。
 func realModelIDParam(w http.ResponseWriter, r *http.Request) (string, bool) {
-	return idParamValid(w, r, "id", idcode.RealModel, "真实模型")
+	return idParamValid(w, r, "id", "真实模型")
 }
 
 func abstractModelIDParam(w http.ResponseWriter, r *http.Request) (string, bool) {
-	return idParamValid(w, r, "id", idcode.AbstractModel, "抽象模型")
+	return idParamValid(w, r, "id", "抽象模型")
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +108,7 @@ func (s *Server) handleAdminRealModelsList(deps *AdminDeps) http.HandlerFunc {
 		}
 		var upID string
 		if u := q.Get("upstream_id"); u != "" {
-			if _, err := idcode.Decode(idcode.Upstream, u); err != nil {
+			if _, err := idgen.Parse(u); err != nil {
 				adminWriteParamErr(w, "upstream_id", "upstream_id 形状非法（期望 up_<数字>）")
 				return
 			}
@@ -206,9 +205,10 @@ func (s *Server) handleAdminRealModelCreate(deps *AdminDeps) http.HandlerFunc {
 		if _, ok := adminDecodeBoth(w, r, &body); !ok {
 			return
 		}
-		upNum, err := idcode.Decode(idcode.Upstream, body.UpstreamID)
-		if err != nil || body.UpstreamID == "" {
-			adminWriteParamErr(w, "upstream_id", "upstream_id 形状非法（期望 up_<数字>）")
+		// 上游 id 是 UUID 文本；形状非法即 400（不再是 up_<数字>）。
+		upNum, err := idgen.Parse(body.UpstreamID)
+		if err != nil {
+			adminWriteParamErr(w, "upstream_id", "upstream_id 形状非法（期望 UUID）")
 			return
 		}
 		mid := strings.TrimSpace(body.UpstreamModelID)
@@ -623,7 +623,7 @@ func (s *Server) handleAdminAbstractCandidatesPut(deps *AdminDeps) http.HandlerF
 			c := &(*body.Candidates)[i]
 			c.AvailableInstances = 0 // 响应字段归零，绝不让请求值穿透到桥
 			if c.RealModelID != "" {
-				if _, err := idcode.Decode(idcode.RealModel, c.RealModelID); err != nil {
+				if _, err := idgen.Parse(c.RealModelID); err != nil {
 					adminWriteParamErr(w, "candidates", fmt.Sprintf("第 %d 条候选的 real_model_id 形状非法（期望 rm_<数字>）", i+1))
 					return
 				}
@@ -949,10 +949,13 @@ func (s *Server) handleAdminAbstractDeprecation(deps *AdminDeps) http.HandlerFun
 			adminWriteParamErr(w, "replacement_model_id", "弃用必须指定替代目标")
 			return
 		}
-		if strings.HasPrefix(in.ReplacementName, idcode.AbstractModel+"_") {
-			// 给了 am_<数字> 形态：解出数字后按 id 查行（§8.4 字段名叫
-			// replacement_model_id，例子却给名字——两种都收下，前缀判型）。
-			nid, derr := idcode.Decode(idcode.AbstractModel, in.ReplacementName)
+		if idgen.Valid(in.ReplacementName) {
+			// §8.4 的字段名叫 replacement_model_id、例子却给名字，两种都收下。
+			// 判型方式随 UUID 改造换了：旧做法看 `am_` 前缀，现在前缀体系已
+			// 废弃，改成看形状——合法 UUID 就当 id 查行，否则当模型名查。
+			// （抽象模型名不可能长得像 UUID：ux_abstract_models_name 唯一且
+			// 是给人读的短词。）
+			nid, derr := idgen.Parse(in.ReplacementName)
 			if derr != nil {
 				adminWriteParamErr(w, "replacement_model_id", "替代目标 id 形状非法")
 				return

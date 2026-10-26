@@ -43,10 +43,10 @@ const (
 // 一个 HTTP 地址，而是 sidecar 进程里的一个 provider adapter 实例——写进地址
 // 就等于把「不经任何 HTTP 网关」的架构决定（ALIGN-SPEC H）悄悄推翻。
 type Target struct {
-	UpstreamID   int64
+	UpstreamID   string // 上游行 UUID
 	Kind         Kind
 	BaseURL      string // relay：恒为空（见 ValidateTarget）；vendor/selfhosted：https 地址
-	CredentialID int64  // 0 = 库里没有凭据（relay 走 sidecar 侧的账号池）
+	CredentialID string // 空串 = 库里没有凭据（relay 走 sidecar 侧的账号池）
 	SecretRef    string // relay：空；其余：upstream_secrets.id
 	RealModel    string // 上游模型 id（provider 前缀 + 模型名，如 codearts/deepseek-v4.1-flash）
 	Dialect      Dialect

@@ -27,7 +27,6 @@ import (
 	"testing"
 
 	"github.com/LittleFishStars/FreeRouter/internal/config"
-	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
 
@@ -49,8 +48,8 @@ func newCandidateInstanceTestApp(t *testing.T) *App {
 
 // seedCandidateChain 建「上游 → 真实模型 → 抽象模型 → 候选」这条链路。
 //
-// 返回抽象模型 id 与真实模型行 id。
-func seedCandidateChain(t *testing.T, a *App, abstractName, upstreamModel string) (int64, int64) {
+// 返回抽象模型 id 与真实模型行 id（都是 UUID 文本）。
+func seedCandidateChain(t *testing.T, a *App, abstractName, upstreamModel string) (string, string) {
 	t.Helper()
 	ctx := context.Background()
 	up, err := a.store.Repos().Models.UpsertUpstream(ctx, "selfhosted", "u-"+abstractName,
@@ -85,9 +84,9 @@ func seedCandidateChain(t *testing.T, a *App, abstractName, upstreamModel string
 // seedActiveCredential 给某个上游建一条 status=active 的贡献凭据。
 //
 // 落库顺序照 contribution.go：upstreams 行 → upstream_secrets（带 upstream_id）
-// → upstream_credentials（secret_ref = 密文行 id 的十进制字符串）。少任何一步
-// 都接不上「凭据↔上游」这条唯一的边，聚合就会认为这个上游没有凭据。
-func seedActiveCredential(t *testing.T, a *App, upstreamID int64, provider string) {
+// → upstream_credentials（secret_ref = 密文行 id 本身，即 UUID 文本）。
+// 少任何一步都接不上「凭据↔上游」这条唯一的边，聚合就会认为这个上游没有凭据。
+func seedActiveCredential(t *testing.T, a *App, upstreamID string, provider string) {
 	t.Helper()
 	ctx := context.Background()
 	acctID, err := a.store.Repos().Accounts.CreateAccount(ctx, store.AccountAuth{
@@ -102,7 +101,7 @@ func seedActiveCredential(t *testing.T, a *App, upstreamID int64, provider strin
 		t.Fatalf("写密文失败: %v", err)
 	}
 	credID, err := a.store.Repos().Models.CreateCredential(ctx, acctID, provider,
-		"fp-"+provider, "标签", formatInt(secretID))
+		"fp-"+provider, "标签", secretID)
 	if err != nil {
 		t.Fatalf("建凭据失败: %v", err)
 	}
@@ -111,29 +110,11 @@ func seedActiveCredential(t *testing.T, a *App, upstreamID int64, provider strin
 	}
 }
 
-// idcodeAbs 把抽象模型的行 id 转成桥接口要的对外 id（am_<n>）。
-func idcodeAbs(t *testing.T, id int64) string {
+// idcodeAbs 现在是恒等：桥对外的 id 就是库内主键（UUID 文本），不再有
+// am_<n> 这层编码（2026-10-26 UUID 改造）。函数保留只为少改调用点。
+func idcodeAbs(t *testing.T, id string) string {
 	t.Helper()
-	s := encodeID(idcode.AbstractModel, id)
-	if s == "" {
-		t.Fatalf("行 id %d 转不出 am_<n> 形态", id)
-	}
-	return s
-}
-
-// formatInt 把 id 转成十进制字符串（secret_ref 的落库形态）。
-func formatInt(v int64) string {
-	if v == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	return string(buf[i:])
+	return id
 }
 
 // TestContractCandidateInstancesFollowCredentials 钉住「候选的可用实例数来自
@@ -152,13 +133,13 @@ func TestContractCandidateInstancesFollowCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("列上游失败: %v", err)
 	}
-	var withCredUp int64
+	var withCredUp string
 	for _, u := range ups {
 		if u.Name == "u-with-cred" {
 			withCredUp = u.ID
 		}
 	}
-	if withCredUp == 0 {
+	if withCredUp == "" {
 		t.Fatalf("没找到 u-with-cred 上游，现有：%+v", ups)
 	}
 	seedActiveCredential(t, a, withCredUp, "api:deepseek-com")
@@ -203,13 +184,13 @@ func TestContractAvailableCandidateCountCountsSupported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("列上游失败: %v", err)
 	}
-	var up int64
+	var up string
 	for _, u := range ups {
 		if u.Name == "u-counted" {
 			up = u.ID
 		}
 	}
-	if up == 0 {
+	if up == "" {
 		t.Fatalf("没找到 u-counted 上游")
 	}
 	seedActiveCredential(t, a, up, "api:deepseek-com")
@@ -247,13 +228,13 @@ func TestContractDisabledUpstreamHasNoInstances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("列上游失败: %v", err)
 	}
-	var up int64
+	var up string
 	for _, u := range ups {
 		if u.Name == "u-stopped" {
 			up = u.ID
 		}
 	}
-	if up == 0 {
+	if up == "" {
 		t.Fatalf("没找到 u-stopped 上游")
 	}
 	seedActiveCredential(t, a, up, "api:deepseek-com")

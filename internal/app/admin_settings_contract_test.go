@@ -10,7 +10,6 @@ import (
 
 	"github.com/LittleFishStars/FreeRouter/internal/config"
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
-	"github.com/LittleFishStars/FreeRouter/internal/idcode"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
 
@@ -93,7 +92,7 @@ func TestContractAdminSettingsWired(t *testing.T) {
 	}
 	// 造一条 relay 上游行。
 	ctx := context.Background()
-	var uid int64
+	var uid string
 	if err := st.WithTx(ctx, func(tx *store.Repos) error {
 		id, _, err := tx.Models.UpsertUpstreamWithCreated(ctx, "relay", "测试 relay", "sidecar://fake_provider", nil, true)
 		uid = id
@@ -101,7 +100,7 @@ func TestContractAdminSettingsWired(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("建 upstream 行: %v", err)
 	}
-	out, err := tb.TestUpstream(ctx, idcode.Encode(idcode.Upstream, uid))
+	out, err := tb.TestUpstream(ctx, uid)
 	if err != nil {
 		t.Fatalf("relay 测试应返回结构化结论: %v", err)
 	}

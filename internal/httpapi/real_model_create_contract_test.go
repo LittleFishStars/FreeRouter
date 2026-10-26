@@ -36,7 +36,7 @@ type createFake struct {
 	err       error
 }
 
-func (f *createFake) CreateRealModel(_ context.Context, _ int64, upstreamModelID, _ string, _ *int64, audit AdminAuditEntry) (*AdminRealModel, bool, string, error) {
+func (f *createFake) CreateRealModel(_ context.Context, _ string, upstreamModelID, _ string, _ *int64, audit AdminAuditEntry) (*AdminRealModel, bool, string, error) {
 	f.calls++
 	f.lastModel = upstreamModelID
 	if f.upMissing {
@@ -46,11 +46,11 @@ func (f *createFake) CreateRealModel(_ context.Context, _ int64, upstreamModelID
 		return nil, false, "", f.err
 	}
 	if f.existing {
-		return &AdminRealModel{ID: "rm_9", UpstreamModelID: upstreamModelID, Status: "active", Source: "auto"}, false, "", nil
+		return &AdminRealModel{ID: "00000060-0000-4000-8000-000000000009", UpstreamModelID: upstreamModelID, Status: "active", Source: "auto"}, false, "", nil
 	}
 	f.audits++
 	f.lastAudit = audit
-	return &AdminRealModel{ID: "rm_1", UpstreamModelID: upstreamModelID, DisplayName: upstreamModelID, Status: "active", Source: "override"}, true, fmt.Sprintf("aud_%d", f.audits), nil
+	return &AdminRealModel{ID: "00000060-0000-4000-8000-000000000001", UpstreamModelID: upstreamModelID, DisplayName: upstreamModelID, Status: "active", Source: "override"}, true, fmt.Sprintf("00000090-0000-4000-8000-%012d", f.audits), nil
 }
 
 func newCreateHarness(t *testing.T, f *createFake) (*adminHarness, string) {
@@ -68,13 +68,14 @@ func TestContractRealModelCreateValidation(t *testing.T) {
 		name, body, wantParam string
 	}{
 		{"upstream_id 形状", `{"upstream_id":"nope","upstream_model_id":"m1"}`, "upstream_id"},
-		{"upstream_id 前串用", `{"upstream_id":"rm_1","upstream_model_id":"m1"}`, "upstream_id"},
-		{"模型 id 空", `{"upstream_id":"up_1","upstream_model_id":"  "}`, "upstream_model_id"},
-		{"模型 id 含空白", `{"upstream_id":"up_1","upstream_model_id":"a b"}`, "upstream_model_id"},
+		// 旧用例「upstream_id 填 rm_ 前缀 → 400」随前缀体系一起消失：跨资源误用
+		// 现在由「上游表里查不到这一行 → 404」承担（见 UpstreamMissing 用例）。
+		{"模型 id 空", `{"upstream_id":"00000050-0000-4000-8000-000000000001","upstream_model_id":"  "}`, "upstream_model_id"},
+		{"模型 id 含空白", `{"upstream_id":"00000050-0000-4000-8000-000000000001","upstream_model_id":"a b"}`, "upstream_model_id"},
 		// aggregate/* 恒不可选（01-catalog §5）：手工通道也不能绕过。
-		{"aggregate 前缀", `{"upstream_id":"up_1","upstream_model_id":"aggregate/x"}`, "upstream_model_id"},
-		{"上下文 0", `{"upstream_id":"up_1","upstream_model_id":"m1","context_window":0}`, "context_window"},
-		{"上下文负数", `{"upstream_id":"up_1","upstream_model_id":"m1","context_window":-5}`, "context_window"},
+		{"aggregate 前缀", `{"upstream_id":"00000050-0000-4000-8000-000000000001","upstream_model_id":"aggregate/x"}`, "upstream_model_id"},
+		{"上下文 0", `{"upstream_id":"00000050-0000-4000-8000-000000000001","upstream_model_id":"m1","context_window":0}`, "context_window"},
+		{"上下文负数", `{"upstream_id":"00000050-0000-4000-8000-000000000001","upstream_model_id":"m1","context_window":-5}`, "context_window"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -113,7 +114,7 @@ func TestContractRealModelCreateSuccess(t *testing.T) {
 	f := &createFake{}
 	h, tok := newCreateHarness(t, f)
 	w := h.req(t, http.MethodPost, "/api/admin/real-models", tok,
-		`{"upstream_id":"up_1","upstream_model_id":"my-model-x","display_name":"我的模型"}`)
+		`{"upstream_id":"00000050-0000-4000-8000-000000000001","upstream_model_id":"my-model-x","display_name":"我的模型"}`)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("新建应 201，得 %d：%s", w.Code, w.Body.String())
 	}
@@ -130,7 +131,7 @@ func TestContractRealModelCreateSuccess(t *testing.T) {
 	if !env.Data.Created {
 		t.Fatalf("created 应为 true：%s", w.Body.String())
 	}
-	if env.Data.Model["id"] != "rm_1" || env.Data.Model["upstream_model_id"] != "my-model-x" {
+	if env.Data.Model["id"] != "00000060-0000-4000-8000-000000000001" || env.Data.Model["upstream_model_id"] != "my-model-x" {
 		t.Fatalf("data.model 形状不对：%v", env.Data.Model)
 	}
 	// 契约 §1.3：source=override 是刷新保护的前提，响应必须回显它。
@@ -151,7 +152,7 @@ func TestContractRealModelCreateIdempotent(t *testing.T) {
 	f := &createFake{existing: true}
 	h, tok := newCreateHarness(t, f)
 	w := h.req(t, http.MethodPost, "/api/admin/real-models", tok,
-		`{"upstream_id":"up_1","upstream_model_id":"deepseek-flash"}`)
+		`{"upstream_id":"00000050-0000-4000-8000-000000000001","upstream_model_id":"deepseek-flash"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("命中既有行应 200（幂等），得 %d：%s", w.Code, w.Body.String())
 	}
@@ -176,7 +177,7 @@ func TestContractRealModelCreateUpstreamMissing(t *testing.T) {
 	f := &createFake{upMissing: true}
 	h, tok := newCreateHarness(t, f)
 	w := h.req(t, http.MethodPost, "/api/admin/real-models", tok,
-		`{"upstream_id":"up_999","upstream_model_id":"m1"}`)
+		`{"upstream_id":"00000050-0000-4000-8000-000000000999","upstream_model_id":"m1"}`)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("上游不存在应 404，得 %d：%s", w.Code, w.Body.String())
 	}
@@ -188,7 +189,7 @@ func TestContractRealModelCreateUnwired(t *testing.T) {
 	h := newAdminHarness(t) // 默认不接 ModelCreate
 	tok := h.issueSession(t, "plain-admin", auth.ClassAdmin, auth.ClassTenant)
 	w := h.req(t, http.MethodPost, "/api/admin/real-models", tok,
-		`{"upstream_id":"up_1","upstream_model_id":"m1"}`)
+		`{"upstream_id":"00000050-0000-4000-8000-000000000001","upstream_model_id":"m1"}`)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("未装配应 404，得 %d：%s", w.Code, w.Body.String())
 	}

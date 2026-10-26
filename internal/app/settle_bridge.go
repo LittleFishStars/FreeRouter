@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
 	"github.com/LittleFishStars/FreeRouter/internal/meter"
@@ -45,7 +44,7 @@ type settleBridge struct {
 	// usage 是请求面仓储（RecordRequest 自开事务）。
 	usage *store.UsageRepo
 	// modelIDOf 把抽象模型名翻成 store 主键（与配额中间件同一个解析器）。
-	modelIDOf func(ctx context.Context, name string) (int64, bool)
+	modelIDOf func(ctx context.Context, name string) (string, bool)
 	// log 用于两半各自的结构性告警（errors.Join 后调用方分不清哪一半失败）。
 	log *slog.Logger
 }
@@ -70,10 +69,10 @@ func (b *settleBridge) Settle(ctx context.Context, in httpapi.SettleInput) error
 		return errors.New("settle bridge 未装配 usage 仓储")
 	}
 
-	// 账户 id：KeyPrincipal 给的是 store 主键的十进制串（bridges.go 的
-	// keyAuthBridge 用 fmt.Sprintf("%d") 产出），不是 acc_42 形状。
-	// 这里 parseID 与 groupIDsSource 共用同一个解码口径。
-	var accountID int64
+	// 账户 id：KeyPrincipal 给的就是 store 主键（UUID 文本）本身
+	// （bridges.go 的 keyAuthBridge 直接透传）。parseID 与 groupIDsSource
+	// 共用同一个形状校验口径。
+	var accountID string
 	if in.AccountID != "" {
 		id, err := parseID(in.AccountID)
 		if err != nil {
@@ -82,7 +81,7 @@ func (b *settleBridge) Settle(ctx context.Context, in httpapi.SettleInput) error
 		accountID = id
 	}
 
-	var modelID int64
+	var modelID string
 	if in.ModelName != "" {
 		if id, ok := b.modelIDOf(ctx, in.ModelName); ok {
 			modelID = id
@@ -93,13 +92,13 @@ func (b *settleBridge) Settle(ctx context.Context, in httpapi.SettleInput) error
 	// 失败请求 QuotaRequest=0（不扣 request 维度）；token/credit 维度仍按
 	// Usage 实记——上游可能已经算过 token，不记就是少算。
 	var quotaErr error
-	if accountID > 0 {
+	if accountID != "" {
 		quotaReq := int64(0)
 		if in.Status == "ok" {
 			quotaReq = 1
 		}
 		quotaErr = b.recorder.SettleUsage(ctx, meter.SettledUsage{
-			AccountID:    strconv.FormatInt(accountID, 10),
+			AccountID:    accountID,
 			ModelID:      modelID,
 			QuotaRequest: quotaReq,
 			Totals:       meter.TotalFromUsage(in.Usage),
@@ -116,19 +115,19 @@ func (b *settleBridge) Settle(ctx context.Context, in httpapi.SettleInput) error
 		Endpoint: in.Endpoint,
 		Status:   in.Status,
 	}
-	if accountID > 0 {
-		rec.AccountID = ptrInt64(accountID)
+	if accountID != "" {
+		rec.AccountID = ptrStr(accountID)
 	}
 	if in.KeyID != "" {
 		if id, err := parseID(in.KeyID); err == nil {
-			rec.KeyID = ptrInt64(id)
+			rec.KeyID = ptrStr(id)
 		}
 	}
-	if modelID > 0 {
-		rec.VirtualModelID = ptrInt64(modelID)
+	if modelID != "" {
+		rec.VirtualModelID = ptrStr(modelID)
 	}
-	if in.RealModelID > 0 {
-		rec.ResolvedRealModelID = ptrInt64(in.RealModelID)
+	if in.RealModelID != "" {
+		rec.ResolvedRealModelID = ptrStr(in.RealModelID)
 	}
 	// ResolvedCredentialID 留空：候选展开的凭据归属尚未回传（03-upstream
 	// 的 credential id 在 relay 路径上是 sidecar 内部概念）。等 M8 贡献
@@ -183,6 +182,9 @@ func (b *settleBridge) Settle(ctx context.Context, in httpapi.SettleInput) error
 }
 
 func ptrInt64(v int64) *int64 { return &v }
+
+// ptrStr 装 *string（id 列的可空引用）。
+func ptrStr(v string) *string { return &v }
 
 // compile-time 断言：settleBridge 满足 httpapi.Settler。
 var _ httpapi.Settler = (*settleBridge)(nil)

@@ -22,11 +22,33 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
 
+// auditActor 在真实库里建一个 admin 账户并返回其 id。
+//
+// 为什么必须现建而不是写死一个形状合法的 UUID：AdminAuditEntry.AccountID 会
+// 落到 audit_log.account_id，那一列有外键指向 accounts——写死的 id 在库里
+// 不存在，审计写入直接被外键拒绝（这不是测试的问题，正是外键在起作用）。
+func auditActor(t *testing.T, a *App) string {
+	t.Helper()
+	ctx := context.Background()
+	realModelSeq++
+	id, err := a.store.Repos().Accounts.CreateAccount(ctx, store.AccountAuth{
+		Account:      store.Account{DisplayName: "登记人", Username: fmt.Sprintf("model-actor-%d", realModelSeq), Status: store.AccountActive},
+		PasswordHash: "x",
+	}, []store.Class{store.ClassAdmin})
+	if err != nil {
+		t.Fatalf("建审计主体失败: %v", err)
+	}
+	return id
+}
+
+var realModelSeq int
+
 // TestContractCreateRealModelOverrideSource 钉住新建行的落库形状。
 func TestContractCreateRealModelOverrideSource(t *testing.T) {
 	a := newCandidateInstanceTestApp(t)
 	ctx := context.Background()
 	mb := &modelsBridge{b: newAdminBridge(a.store)}
+	actor := auditActor(t, a)
 
 	// 建一条上游（不建模型）。
 	up, err := a.store.Repos().Models.UpsertUpstream(ctx, "vendor", "manual-u",
@@ -36,7 +58,7 @@ func TestContractCreateRealModelOverrideSource(t *testing.T) {
 	}
 
 	row, created, auditID, err := mb.CreateRealModel(ctx, up, "hidden-model", "", nil,
-		httpapi.AdminAuditEntry{AccountID: "acc_1", Action: "model.manual_add", Result: "ok"})
+		httpapi.AdminAuditEntry{AccountID: actor, Action: "model.manual_add", Result: "ok"})
 	if err != nil {
 		t.Fatalf("登记失败: %v", err)
 	}
@@ -69,16 +91,17 @@ func TestContractCreateRealModelIdempotent(t *testing.T) {
 	a := newCandidateInstanceTestApp(t)
 	ctx := context.Background()
 	mb := &modelsBridge{b: newAdminBridge(a.store)}
+	actor := auditActor(t, a)
 	up, _ := a.store.Repos().Models.UpsertUpstream(ctx, "vendor", "idem-u",
 		"https://example.com/v1", nil, true)
 
 	first, created, _, err := mb.CreateRealModel(ctx, up, "same-model", "名字", nil,
-		httpapi.AdminAuditEntry{AccountID: "acc_1", Action: "model.manual_add", Result: "ok"})
+		httpapi.AdminAuditEntry{AccountID: actor, Action: "model.manual_add", Result: "ok"})
 	if err != nil || !created {
 		t.Fatalf("首次登记应 created=true：%v (err=%v)", created, err)
 	}
 	second, created2, auditID2, err := mb.CreateRealModel(ctx, up, "same-model", "另一个名字", nil,
-		httpapi.AdminAuditEntry{AccountID: "acc_1", Action: "model.manual_add", Result: "ok"})
+		httpapi.AdminAuditEntry{AccountID: actor, Action: "model.manual_add", Result: "ok"})
 	if err != nil {
 		t.Fatalf("二次登记失败: %v", err)
 	}
@@ -102,8 +125,9 @@ func TestContractCreateRealModelUpstreamMissing(t *testing.T) {
 	a := newCandidateInstanceTestApp(t)
 	ctx := context.Background()
 	mb := &modelsBridge{b: newAdminBridge(a.store)}
-	_, _, _, err := mb.CreateRealModel(ctx, 99999, "m", "", nil,
-		httpapi.AdminAuditEntry{AccountID: "acc_1", Action: "model.manual_add", Result: "ok"})
+	actor := auditActor(t, a)
+	_, _, _, err := mb.CreateRealModel(ctx, "not-a-uuid-shape", "m", "", nil,
+		httpapi.AdminAuditEntry{AccountID: actor, Action: "model.manual_add", Result: "ok"})
 	if !errors.Is(err, httpapi.ErrAdminUpstreamNotFound) {
 		t.Fatalf("上游不存在应 ErrAdminUpstreamNotFound，得 %v", err)
 	}
@@ -122,10 +146,11 @@ func TestContractCreateRealModelSurvivesRefresh(t *testing.T) {
 	a := newCandidateInstanceTestApp(t)
 	ctx := context.Background()
 	mb := &modelsBridge{b: newAdminBridge(a.store)}
+	actor := auditActor(t, a)
 	up, _ := a.store.Repos().Models.UpsertUpstream(ctx, "vendor", "refresh-u",
 		"https://example.com/v1", nil, true)
 	row, _, _, err := mb.CreateRealModel(ctx, up, "manual-only", "手工模型", nil,
-		httpapi.AdminAuditEntry{AccountID: "acc_1", Action: "model.manual_add", Result: "ok"})
+		httpapi.AdminAuditEntry{AccountID: actor, Action: "model.manual_add", Result: "ok"})
 	if err != nil {
 		t.Fatalf("登记失败: %v", err)
 	}
@@ -136,11 +161,8 @@ func TestContractCreateRealModelSurvivesRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("建抽象模型失败: %v", err)
 	}
-	// row.ID 形如 rm_<n>，解码回行 id。
-	var rmNum int64
-	if _, err := fmt.Sscanf(row.ID, "rm_%d", &rmNum); err != nil {
-		t.Fatalf("解析行 id 失败: %q", row.ID)
-	}
+	// 对外 id 就是行 id 本身（UUID），不再需要解 rm_<n>（2026-10-26 改造）。
+	rmNum := row.ID
 	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
 		{AbstractModelID: amID, RealModelID: rmNum},
 	}); err != nil {
@@ -154,7 +176,7 @@ func TestContractCreateRealModelSurvivesRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("建 auto 行失败: %v", err)
 	}
-	if _, err := a.store.Repos().Models.MarkMissingRealModels(ctx, up, []int64{autoID}); err != nil {
+	if _, err := a.store.Repos().Models.MarkMissingRealModels(ctx, up, []string{autoID}); err != nil {
 		t.Fatalf("标 missing 失败: %v", err)
 	}
 	got, err := a.store.Repos().Models.GetRealModel(ctx, rmNum)

@@ -3,7 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
-	"strconv"
+	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
@@ -39,7 +39,7 @@ func (b *keymanagerBridge) CreateKey(ctx context.Context, k *auth.APIKey) error 
 	if err != nil {
 		return err
 	}
-	k.ID = strconv.FormatInt(id, 10)
+	k.ID = id
 	return nil
 }
 
@@ -52,7 +52,7 @@ func (b *keymanagerBridge) KeyByHash(ctx context.Context, keyHash []byte) (*auth
 }
 
 func (b *keymanagerBridge) KeyByID(ctx context.Context, keyID string) (*auth.APIKey, error) {
-	id, err := strconv.ParseInt(keyID, 10, 64)
+	id, err := idgen.Parse(keyID)
 	if err != nil {
 		return nil, store.ErrNotFound
 	}
@@ -76,7 +76,7 @@ func (b *keymanagerBridge) ListKeysByAccount(ctx context.Context, accountID stri
 }
 
 func (b *keymanagerBridge) SetKeyStatus(ctx context.Context, keyID string, status auth.KeyStatus) error {
-	id, err := strconv.ParseInt(keyID, 10, 64)
+	id, err := idgen.Parse(keyID)
 	if err != nil {
 		return store.ErrNotFound
 	}
@@ -87,7 +87,7 @@ func (b *keymanagerBridge) SetKeyStatus(ctx context.Context, keyID string, statu
 // 名字在 api_keys.name，一次 UPDATE 足够；放桥里而不是让 store 多一个
 // 只被这里用一次的方法。
 func (b *keymanagerBridge) RenameKey(ctx context.Context, keyID, name string) error {
-	id, err := strconv.ParseInt(keyID, 10, 64)
+	id, err := idgen.Parse(keyID)
 	if err != nil {
 		return store.ErrNotFound
 	}
@@ -97,7 +97,7 @@ func (b *keymanagerBridge) RenameKey(ctx context.Context, keyID, name string) er
 // RotateKey 在一个事务里吊销旧 Key 并写入新 Key（auth 侧已在同一方法里
 // 构造好 newKey；这里只负责两笔写的原子性）。
 func (b *keymanagerBridge) RotateKey(ctx context.Context, oldKeyID string, newKey *auth.APIKey) error {
-	oldID, err := strconv.ParseInt(oldKeyID, 10, 64)
+	oldID, err := idgen.Parse(oldKeyID)
 	if err != nil {
 		return store.ErrNotFound
 	}
@@ -111,7 +111,7 @@ func (b *keymanagerBridge) RotateKey(ctx context.Context, oldKeyID string, newKe
 	if err != nil {
 		return err
 	}
-	newKey.ID = strconv.FormatInt(id, 10)
+	newKey.ID = id
 	return b.keys.SetKeyStatus(ctx, oldID, store.KeyRevoked)
 }
 
@@ -122,11 +122,11 @@ func (b *keymanagerBridge) RotateKey(ctx context.Context, oldKeyID string, newKe
 // 旧实现把名字字符串直接 strconv.ParseInt，全部 parse 失败后白名单恒为空
 // （租户设了等于没设，静默失效）；这里显式查表，名字不存在时报错而不是吞掉。
 func (b *keymanagerBridge) SetKeyAllowlist(ctx context.Context, keyID string, abstractModelNames []string) error {
-	id, err := strconv.ParseInt(keyID, 10, 64)
+	id, err := idgen.Parse(keyID)
 	if err != nil {
 		return store.ErrNotFound
 	}
-	ids := make([]int64, 0, len(abstractModelNames))
+	ids := make([]string, 0, len(abstractModelNames))
 	for _, name := range abstractModelNames {
 		m, err := b.models.GetAbstractModelByName(ctx, name)
 		if err != nil {
@@ -139,7 +139,7 @@ func (b *keymanagerBridge) SetKeyAllowlist(ctx context.Context, keyID string, ab
 
 // KeyAllowlist 读白名单（翻译成模型名，与 auth 层/前端的语言一致）。
 func (b *keymanagerBridge) KeyAllowlist(ctx context.Context, keyID string) ([]string, error) {
-	id, err := strconv.ParseInt(keyID, 10, 64)
+	id, err := idgen.Parse(keyID)
 	if err != nil {
 		return nil, store.ErrNotFound
 	}
@@ -153,7 +153,7 @@ func (b *keymanagerBridge) KeyAllowlist(ctx context.Context, keyID string) ([]st
 			out = append(out, m.Name)
 		} else {
 			// 引用的模型已被删：保留占位而不是静默少一行（界面上看得见异常）。
-			out = append(out, fmt.Sprintf("#%d", v))
+			out = append(out, fmt.Sprintf("#%s", v))
 		}
 	}
 	return out, nil
@@ -163,8 +163,8 @@ var _ auth.KeyRepository = (*keymanagerBridge)(nil)
 
 func toAuthKey(k *store.APIKey) *auth.APIKey {
 	out := &auth.APIKey{
-		ID:        strconv.FormatInt(k.ID, 10),
-		AccountID: strconv.FormatInt(k.AccountID, 10),
+		ID:        k.ID,
+		AccountID: k.AccountID,
 		Prefix:    k.Prefix,
 		Status:    auth.KeyStatus(k.Status),
 	}
@@ -178,9 +178,12 @@ func toAuthKey(k *store.APIKey) *auth.APIKey {
 	return out
 }
 
-func mustParseID(s string) int64 {
-	v, _ := strconv.ParseInt(s, 10, 64)
-	return v
+// mustParseID 校验并返回 id（调用点已保证形状；失败返回空串）。
+func mustParseID(s string) string {
+	if v, err := idgen.Parse(s); err == nil {
+		return v
+	}
+	return ""
 }
 
 func ptrString(s string) *string { return &s }

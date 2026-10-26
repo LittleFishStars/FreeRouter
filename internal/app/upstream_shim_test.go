@@ -41,13 +41,13 @@ func (f *fakeRealModelSource) ListUpstreams(context.Context) ([]store.Upstream, 
 func TestContractCandidatesHit(t *testing.T) {
 	src := &fakeRealModelSource{
 		models: []store.RealModel{
-			{ID: 11, UpstreamID: 1, UpstreamModelID: "deepseek-v4.1", Status: store.RealModelActive},
-			{ID: 12, UpstreamID: 1, UpstreamModelID: "deepseek-v4.1-flash", Status: store.RealModelActive},
-			{ID: 13, UpstreamID: 2, UpstreamModelID: "deepseek-v4.1", Status: store.RealModelActive}, // 同名不同上游：也应命中
+			{ID: "id11", UpstreamID: "id1", UpstreamModelID: "deepseek-v4.1", Status: store.RealModelActive},
+			{ID: "id12", UpstreamID: "id1", UpstreamModelID: "deepseek-v4.1-flash", Status: store.RealModelActive},
+			{ID: "id13", UpstreamID: "id2", UpstreamModelID: "deepseek-v4.1", Status: store.RealModelActive}, // 同名不同上游：也应命中
 		},
 		ups: []store.Upstream{
-			{ID: 1, Kind: "relay", Name: "buddy", BaseURL: "sidecar://buddy", Enabled: true},
-			{ID: 2, Kind: "selfhosted", Name: "llama", BaseURL: "http://127.0.0.1:11434", Enabled: true},
+			{ID: "id1", Kind: "relay", Name: "buddy", BaseURL: "sidecar://buddy", Enabled: true},
+			{ID: "id2", Kind: "selfhosted", Name: "llama", BaseURL: "http://127.0.0.1:11434", Enabled: true},
 		},
 	}
 	cs := &realModelCandidates{models: src}
@@ -97,7 +97,7 @@ func TestContractCandidatesEmptyNoCandidate(t *testing.T) {
 
 	// 外键悬空（模型指向上游行不存在）：跳过该候选不报错。
 	cs2 := &realModelCandidates{models: &fakeRealModelSource{
-		models: []store.RealModel{{ID: 1, UpstreamID: 99, UpstreamModelID: "x", Status: store.RealModelActive}},
+		models: []store.RealModel{{ID: "id1", UpstreamID: "id99", UpstreamModelID: "x", Status: store.RealModelActive}},
 	}}
 	if c, err := cs2.Candidates(context.Background(), "x", ir.Request{}); err != nil || len(c) != 0 {
 		t.Fatalf("悬空外键应跳过：%d/%v", len(c), err)
@@ -105,8 +105,8 @@ func TestContractCandidatesEmptyNoCandidate(t *testing.T) {
 
 	// 未知 kind（数据坏行）：跳过。
 	cs3 := &realModelCandidates{models: &fakeRealModelSource{
-		models: []store.RealModel{{ID: 1, UpstreamID: 5, UpstreamModelID: "x", Status: store.RealModelActive}},
-		ups:    []store.Upstream{{ID: 5, Kind: "weird"}},
+		models: []store.RealModel{{ID: "id1", UpstreamID: "id5", UpstreamModelID: "x", Status: store.RealModelActive}},
+		ups:    []store.Upstream{{ID: "id5", Kind: "weird"}},
 	}}
 	if c, err := cs3.Candidates(context.Background(), "x", ir.Request{}); err != nil || len(c) != 0 {
 		t.Fatalf("未知 kind 应跳过：%d/%v", len(c), err)
@@ -136,7 +136,7 @@ func TestContractShimCallRoundTrip(t *testing.T) {
 	// targetOf：vendor/selfhosted 走 httptest 端点（回环 http 放行）。
 	caller := upstream.NewCaller(nil, upstream.NewHTTPTransport(nil, nil), func(cand upstream.CallCandidate) (upstream.Target, error) {
 		return upstream.Target{
-			UpstreamID: 7,
+			UpstreamID: "id7",
 			Kind:       upstream.KindSelfHosted,
 			BaseURL:    srv.URL,
 			RealModel:  cand.UpstreamModelID,
@@ -189,7 +189,7 @@ func TestContractShimCallErrTransport(t *testing.T) {
 	dead.Close()
 
 	caller := upstream.NewCaller(nil, upstream.NewHTTPTransport(nil, nil), func(cand upstream.CallCandidate) (upstream.Target, error) {
-		return upstream.Target{UpstreamID: 1, Kind: upstream.KindSelfHosted, BaseURL: deadURL, RealModel: cand.UpstreamModelID}, nil
+		return upstream.Target{UpstreamID: "id1", Kind: upstream.KindSelfHosted, BaseURL: deadURL, RealModel: cand.UpstreamModelID}, nil
 	})
 	shim := upstreamShim{caller: caller}
 
@@ -232,7 +232,7 @@ func TestContractTargetOfClosure(t *testing.T) {
 	// relay 行：base_url=sidecar://buddy + UpstreamModelID=deepseek-v4.1
 	// → RealModel 合成 "buddy/deepseek-v4.1"（RelayTransport 拆分约定）。
 	info := upstream.CandidateInfo{
-		UpstreamID: 1,
+		UpstreamID: "id1",
 		Kind:       upstream.KindRelay,
 		BaseURL:    "sidecar://buddy",
 		RealModel:  "buddy/deepseek-v4.1",
@@ -250,7 +250,7 @@ func TestContractTargetOfClosure(t *testing.T) {
 
 	// selfhosted：原样。
 	tgt2, err := upstream.TargetOf(upstream.CandidateInfo{
-		UpstreamID: 2, Kind: upstream.KindSelfHosted,
+		UpstreamID: "id2", Kind: upstream.KindSelfHosted,
 		BaseURL: "http://127.0.0.1:11434", RealModel: "llama3",
 	})
 	if err != nil || tgt2.BaseURL != "http://127.0.0.1:11434" {

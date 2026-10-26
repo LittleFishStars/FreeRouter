@@ -124,10 +124,10 @@ const defaultTokenBudget = 1 << 23 // 8M token：32MiB 纯文本的保守上界
 // modelIDOf 把请求体里的模型名翻成抽象模型 id。
 // M5 阶段（无抽象模型表数据）返回 false：配额走合计行（mid=0），
 // 404 判定归 v1 面板的 isRealModelName 接口位——两不抢。
-func (a *App) modelIDOf(ctx context.Context, modelName string) (int64, bool) {
+func (a *App) modelIDOf(ctx context.Context, modelName string) (string, bool) {
 	m, err := a.store.Repos().Models.GetAbstractModelByName(ctx, modelName)
 	if err != nil || m == nil {
-		return 0, false
+		return "", false
 	}
 	return m.ID, true
 }

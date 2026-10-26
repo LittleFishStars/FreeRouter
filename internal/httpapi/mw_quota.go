@@ -32,10 +32,10 @@ import (
 // 404 model_not_found 的归属面），配额只需要它的**结果**。装配层把
 // 解析器接进来；配额拿不到模型 id 时按合计行扣（mid=0），
 // 语义是"模型未知先记总账"——比"拒掉请求"温和，比"跳过配额"正确。
-type ModelIDSource func(ctx context.Context, modelName string) (int64, bool)
+type ModelIDSource func(ctx context.Context, modelName string) (string, bool)
 
 // GroupIDsSource 给出账户所属组 id（池扣减的遍历范围）。
-type GroupIDsSource func(ctx context.Context, accountID string) ([]int64, bool)
+type GroupIDsSource func(ctx context.Context, accountID string) ([]string, bool)
 
 // TokenBudget 是 token 维度的预检估计值（配置的每请求预算或上限推导）。
 type TokenBudget int64
@@ -63,15 +63,15 @@ func (s *Server) mwQuota(debiter QuotaDebiter, modelIDOf ModelIDSource, groupIDs
 				return
 			}
 
-			// 模型 id：装配层解析不出（未知模型）时走合计行（mid=0）。
+			// 模型 id：装配层解析不出（未知模型）时走合计行（mid = store.TotalScope = ""）。
 			// 未知模型的 404 归模型解析中间件；这里不抢那个码。
-			var mid int64
+			var mid string
 			if modelIDOf != nil {
 				if id, ok := modelIDOf(r.Context(), pathModel(r.URL.Path)); ok {
 					mid = id
 				}
 			}
-			var gids []int64
+			var gids []string
 			if groupIDsOf != nil {
 				if got, ok := groupIDsOf(r.Context(), p.AccountID); ok {
 					gids = got
