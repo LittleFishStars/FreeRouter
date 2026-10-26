@@ -3,7 +3,7 @@
 # 存储层
 
 本册给出完整的表结构、索引策略、迁移机制、WAL 与连接配置、事务边界，以及备份与恢复。
-所有表结构逐字对齐 [PLAN.md](../PLAN.md) 第 10 章的字段清单；本册只做细化。
+表结构的**权威定义是迁移链的最终叠加结果**（§3 说明这条关系在 2026-10-26 如何变化）；本册给约定、理由与索引策略。
 
 ---
 
@@ -46,529 +46,115 @@
 
 ## 3. 完整 DDL
 
+**事实源关系（2026-10-26 起）**：本节不再逐字内联建表语句。UUID 改造需要
+「拆掉整型 schema 重建为 TEXT 主键」，而迁移文件一经应用 checksum 就不可改
+（§5），于是最终 schema 只能由 `0001 → 0009` 的**叠加结果**定义，一份内联拷贝
+必然漂移成假事实。（0001 文件头仍写着"本文件与该节逐字对齐"——那句话已不成立，
+但 0001 的字节不能改，所以它留在原地；以本节为准。）
+
+权威定义：**`internal/store/migrations/0009_uuid_schema.sql` 的 CREATE 段**。
+它包含 0001~0008 累积后的全部列（`real_models` 的 channel 与 verify_* 三列、
+`api_keys` 的 revoked 状态、`accounts` 的 must_change_password、
+`abstract_candidates` 的 sort_order、`admin_inbox` 的部分唯一索引
+`ux_admin_inbox_open` 都在这里一次建全）。下面按原节号列出对象与只在这里
+讲的形状要点；每张表为什么这么设计的理由写在该迁移的注释里。
+
+三处全局形状（其余见 §2 与 0009 文件头）：
+
+- 主键一律 `TEXT NOT NULL PRIMARY KEY`（UUID 文本），id 由 store 生成。
+- 合计哨兵是空串：`account_quotas.abstract_model_id` / `group_quota_pools.abstract_model_id`
+  （Go 侧 `store.TotalScope`）。
+- `upstream_credentials.secret_ref` 存 `upstream_secrets.id` 本身（UUID 文本），
+  聚合 join 是纯字符串相等——旧方案的 `CAST(... AS INTEGER)` 与其容错一并消失。
+
 ### 3.1 账户与权限类
 
-```sql
-CREATE TABLE accounts (
-    id                 INTEGER PRIMARY KEY,
-    display_name       TEXT    NOT NULL,
-    username           TEXT    NOT NULL,
-    password_hash      TEXT    NOT NULL,       -- argon2id，含参数与盐的自描述串
-    status             TEXT    NOT NULL DEFAULT 'pending'
-                       CHECK (status IN ('pending','active','disabled','rejected','merged')),
-    recovery_code_hash TEXT,                   -- 可空
-    created_at         INTEGER NOT NULL,
-    last_login_at      INTEGER,
-    note               TEXT,
-    rpm_limit          INTEGER NOT NULL DEFAULT -1 CHECK (rpm_limit >= -1),
-    tpm_limit          INTEGER NOT NULL DEFAULT -1 CHECK (tpm_limit >= -1),
-    max_concurrency    INTEGER NOT NULL DEFAULT -1 CHECK (max_concurrency >= -1)
-);
--- 速率/并发上界统一用哨兵值 -1 表达「不限」（2026-10-20 定案，见
--- [../security/03-groups.md](../security/03-groups.md) 第 3 节）；`0` = 零额度（全拒），
--- 与 -1 意思完全相反。禁止 NULL：NULL 参与比较得 UNKNOWN，条件 UPDATE 与取 min 全部要额外分支。
-CREATE UNIQUE INDEX ux_accounts_username ON accounts(username);
-CREATE INDEX ix_accounts_status ON accounts(status);
+`accounts` · `account_classes` · `account_merges` · `account_quotas`
 
-CREATE TABLE account_classes (
-    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    class      TEXT    NOT NULL CHECK (class IN ('admin','tenant','contributor')),
-    PRIMARY KEY (account_id, class)
-) WITHOUT ROWID;
-CREATE INDEX ix_account_classes_class ON account_classes(class);
-
-CREATE TABLE account_merges (
-    id               INTEGER PRIMARY KEY,
-    source_id        INTEGER NOT NULL REFERENCES accounts(id),
-    target_id        INTEGER NOT NULL REFERENCES accounts(id),
-    merged_at        INTEGER NOT NULL,
-    reversible_until INTEGER NOT NULL,          -- merged_at + 7 天
-    undone_at        INTEGER,                  -- NULL = 未撤销；撤销只写这里，不删行
-    CHECK (source_id <> target_id)
-);
-CREATE INDEX ix_account_merges_source ON account_merges(source_id);
-CREATE INDEX ix_account_merges_target ON account_merges(target_id);
-
--- 账户级周期额度（2026-10-20 定案：**行化**，不在 accounts 上开单列）
--- abstract_model_id = 0 → 全模型合计（即原「账户总额度」）；> 0 → 只限该抽象模型
-CREATE TABLE account_quotas (
-    account_id        INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    abstract_model_id INTEGER NOT NULL DEFAULT 0,   -- 0 = 合计哨兵（见 3.3 节同形说明）
-    unit              TEXT    NOT NULL CHECK (unit IN ('request', 'token', 'credit')),
-    period            TEXT    NOT NULL CHECK (period IN ('day', 'month')),
-    quota_limit       INTEGER NOT NULL CHECK (quota_limit >= 0),  -- 0 = 全拒；"不限"由没有这一行表达（-1 哨兵只用于组侧标量策略）
-    quota_used        INTEGER NOT NULL DEFAULT 0 CHECK (quota_used >= 0),
-    period_anchor     TEXT    NOT NULL,             -- 'YYYY-MM-DD'：quota_used 属于哪个周期
-    updated_at        INTEGER NOT NULL,
-    PRIMARY KEY (account_id, abstract_model_id, unit, period)
-) WITHOUT ROWID;
-```
-
-**为什么额度不落在 `accounts` 的列上（2026-10-20 定案，取代旧的 `quota_limit`/`quota_used`/`quota_unit` 三列）**：单列只能存一个周期与一个维度，而组侧的限制类策略是逐 `(unit, period)` 键取 min 的（[../security/03-groups.md](../security/03-groups.md) 第 4 节）；若账户侧只有一行「总额度」，管理员在审批时给的值与组给的「token/日」与「credit/月」根本对不上口径。行化后一个账户可以有 `request/day` + `credit/month` 两行，与组策略键一一对应。`quota_limit` 允许 `0`（全拒）；「不限」由**没有这一行**表达，不用 -1（-1 只适用于组侧的可合并**标量**策略）。
-
-**为什么 `account_classes` 是独立表而不是 `accounts.role`**：一个账户可同时拥有多个权限类
-（README 术语表）；单列存不了集合。另外 `account_classes` 上的 `CHECK` 是**权限类的唯一权威
-枚举**——多一个类就必须改这里，无法悄悄多出来。
-
-**为什么 `account_merges` 不级联删除**：合并是**可逆**的（`reversible_until`）。源账户被删除后
-追溯链断裂，"可逆"就无从执行。外键默认 `RESTRICT` 正是我们要的行为。
+`account_classes` 独立成表是因为一个账户可同时持多个权限类；`account_merges`
+刻意不级联删除（合并可逆，源账户被删后追溯链断裂就没法撤销）；三份
+`moved_*_ids` 存 JSON 数组文本，只在回滚那一刻整体读一次。
 
 ### 3.2 会话
 
-```sql
-CREATE TABLE sessions (
-    id             TEXT    PRIMARY KEY,        -- 不透明随机串（128bit base64url）
-    account_id     INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    token_hash     BLOB    NOT NULL,           -- SHA-256(token)，32 字节
-    created_at     INTEGER NOT NULL,
-    expires_at     INTEGER NOT NULL,
-    ip             TEXT,
-    ua             TEXT
-) WITHOUT ROWID;
-CREATE UNIQUE INDEX ux_sessions_token_hash ON sessions(token_hash);
-CREATE INDEX ix_sessions_account ON sessions(account_id);
-CREATE INDEX ix_sessions_expires ON sessions(expires_at);
-```
+`sessions`
 
-**为什么 `token_hash` 是 `BLOB` 而不是十六进制 `TEXT`**：32 字节 vs 64 字符，索引体积减半，
-且比较无需大小写归一。**为什么它单独建唯一索引**：会话校验是**每个管理请求**都要做的热路径查询，
-必须走唯一索引（一次 B 树探测），不能全表扫。
+`sessions.id` 本来就是 TEXT（不透明随机串），本次只有 `account_id` 换了类型。
+`token_hash` 用 BLOB 而非十六进制 TEXT：32 字节 vs 64 字符，索引体积减半。
 
 ### 3.3 组与授权
 
-```sql
-CREATE TABLE groups (
-    id          INTEGER PRIMARY KEY,
-    name        TEXT    NOT NULL,
-    description TEXT,
-    is_default  INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0,1)),
-    created_at  INTEGER NOT NULL
-);
-CREATE UNIQUE INDEX ux_groups_name ON groups(name);
-CREATE UNIQUE INDEX ux_groups_default ON groups(is_default) WHERE is_default = 1;
+`groups` · `group_members` · `group_models` · `group_policies` ·
+`group_quota_pools` · `group_model_quota_caps`
 
-CREATE TABLE group_members (
-    group_id   INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    PRIMARY KEY (group_id, account_id)
-) WITHOUT ROWID;
-CREATE INDEX ix_group_members_account ON group_members(account_id);
-
-CREATE TABLE group_models (
-    group_id          INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    abstract_model_id INTEGER NOT NULL REFERENCES abstract_models(id) ON DELETE CASCADE,
-    PRIMARY KEY (group_id, abstract_model_id)
-) WITHOUT ROWID;
-CREATE INDEX ix_group_models_model ON group_models(abstract_model_id);
-
-CREATE TABLE group_policies (
-    group_id     INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    policy_key   TEXT    NOT NULL,
-    policy_value TEXT    NOT NULL,       -- JSON
-    PRIMARY KEY (group_id, policy_key)
-) WITHOUT ROWID;
-
--- 组级共享池：有状态的消耗计数，**不进** group_policies（原因见下文）
-CREATE TABLE group_quota_pools (
-    group_id      INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    abstract_model_id INTEGER NOT NULL DEFAULT 0,   -- 0 = 全模型合计；> 0 = 只限该抽象模型
-    unit          TEXT    NOT NULL CHECK (unit IN ('request', 'token', 'credit')),
-    period        TEXT    NOT NULL CHECK (period IN ('day', 'month')),
-    pool_limit    INTEGER NOT NULL CHECK (pool_limit > 0),
-    pool_used     INTEGER NOT NULL DEFAULT 0 CHECK (pool_used >= 0),
-    period_anchor TEXT    NOT NULL,              -- 'YYYY-MM-DD'：pool_used 属于哪个周期的起点
-    updated_at    INTEGER NOT NULL,
-    PRIMARY KEY (group_id, abstract_model_id, unit, period)
-) WITHOUT ROWID;
-```
-
-**为什么 `ux_groups_default` 是部分唯一索引**：默认组**有且只有一个**（新账户的兜底授权）。
-用 `WHERE is_default = 1` 的部分索引让"唯一"只约束默认组那一行，其它组不受影响。
-
-**为什么 `group_policies` 用 `policy_key`/`policy_value` 的键值形状**：策略集合会随功能增长
-（限速覆盖、额度覆盖、能力开关……）。每加一个策略就改表结构，会带来"每加一个功能一次迁移"，
-而迁移是线上操作中风险最高的一类。**代价**：值无法由 DB 约束校验形状，必须在应用层用
-schema 校验——这个代价我们接受，因为策略值本来就是 JSON 文档。
-
-**为什么共享池另开一表，而不是又往 `group_policies` 里塞一行 `{"unit":…,"limit":…}`**：
-
-| 理由 | 说明 |
-|---|---|
-| 它是**状态**，不是**策略** | `group_policies` 存的是"管理员设了什么"，值是声明；`pool_used` 是"已经消耗了多少"，每次请求都变。两类数据写频差几个数量级，混在同一张表里会让"改策略"与"扣额度"争同一个行的写锁 |
-| 它需要**单条条件 UPDATE** | 扣减必须写成 `UPDATE … WHERE … AND pool_used + :cost <= pool_limit`（见 [第 7.4 节](#74-组级共享池的并发扣减与惰性重置)）。JSON 列里的数字无法在 `WHERE` 里参与计算与比较，只能先读出来再写回去——正是要避免的读-改-写 |
-| 主键形态不同 | 策略的主键是 `(group_id, policy_key)`；池的主键是 `(group_id, abstract_model_id, unit, period)`，一个组可以同时有 `request/day` 合计池与 `credit/month` 合计池（外加若干的**按模型**池，见 3.3.1）；`unit` 列名与 `account_quotas.unit` 同形（旧名 `dimension` 及其两值枚举 `requests`/`tokens` 已于 2026-10-20 废弃：与账户级额度统一拼写，且必须容纳第三维 `credit`） |
-| 可索引、可审计 | `pool_used` 是要拿来排序与告警的（"哪些组快满了"），JSON 值不可索引 |
-
-**为什么"没设"与"设为 0"在类型层面就已经互斥**：`pool_limit` 是 `NOT NULL CHECK (pool_limit > 0)`，
-因此"有行"必然是一个严格正的上限，`0` 无法写入。为什么不允许 `0`：`0` 唯一可能的意图是"全停本组"，
-而"全停"有更明确的表达——把组授权里的抽象模型全部取消（那才是"这个组不能用"的正解），
-或在应急时把上限调到低于已用量（关闸，见本节末尾）。让 `0` 不可写，就把"到底是没配还是配了 0"这个问题
-从运行期挪到了写入期。
-
-**为什么"不设池"用"没有这一行"表达，而不是把 `pool_limit` 设为可空**：
-SQL 里 `NULL` 参与比较的结果是 `UNKNOWN`（既不真也不假），而条件 `UPDATE` 的 `WHERE` 只接受"真"。
-于是"有行但 `pool_limit IS NULL`"会让 `pool_used + :cost <= NULL` 恒为 `UNKNOWN`，**每一次扣减都静默失败**——表现与"池子已耗尽"一模一样，
-管理员会把"我明明没设池"误当成"额度被用完了"去排查。用"无行 = 不设池"，
-"有行"就必然有一个正整数的上限，两种状态在表结构层面互斥，不需要任何额外判断。
-**停用池 = 删行**；**保留配置但停用**这个需求我们主动不做（见 [../security/03-groups.md](../security/03-groups.md) 第 4 节）。
-
-**为什么 `period_anchor` 与 `period` 要分两列**：`period` 说明"周期粒度"，`period_anchor` 说明
-"`pool_used` 这个数字属于哪一个具体周期"。只有粒度没有锚点，就无法判断跨日/跨月时该不该清零；
-从 `updated_at` 反推也不行——一个组可能连续几天没有任何请求，`updated_at` 会停在旧日期，
-反推出来的"周期"与实际不符。
-
-**不加 `CHECK (pool_used <= pool_limit)`**：管理员把上限**调小到低于已用量**是合法且必要的应急手段
-（等价于"立刻停止本周期消耗"），而这条 CHECK 会让该操作直接写入失败。
-上限是闸门，不是不变式：闸门可以被关到"已经过不去了"，这时的正确表现是**后续请求全被拒**，
-而不是**拒绝管理员关闸**。
-
-**为什么 `group_quota_pools` 带 `abstract_model_id`（0 = 合计哨兵，2026-10-20 新增按模型限额）**：
-按模型的**组级共享池**与合计池是同一形态的资源，只是作用域多一维；用哨兵行而不是另开一张表，
-是为了让结算热路径的扣减语句只有一种形状（见 7.4）。`0` 不是合法模型 id（`abstract_models.id`
-从 1 起），因此哨兵不会与真实模型碰撞。
+策略用 `policy_key/policy_value` 键值形状（每加一个策略就改表结构 = 每加一个
+功能一次迁移，而迁移是风险最高的操作）；共享池刻意不塞进 `group_policies`——
+它是状态不是策略，写频高几个数量级，且需要单条条件 `UPDATE`（JSON 列里的数字
+不能参与计算）。「不设池 = 没有这一行」由 `pool_limit > 0` 的 CHECK 承载。
 
 ### 3.3.1 按模型的每人上限（组侧声明）
 
-```sql
--- 每人按模型上限：组侧的**声明**，与池不同它不带计数器（消耗按人记在 account_quotas）
-CREATE TABLE group_model_quota_caps (
-    group_id          INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    abstract_model_id INTEGER NOT NULL REFERENCES abstract_models(id) ON DELETE CASCADE,
-    unit              TEXT    NOT NULL CHECK (unit IN ('request', 'token', 'credit')),
-    period            TEXT    NOT NULL CHECK (period IN ('day', 'month')),
-    cap               INTEGER NOT NULL CHECK (cap > 0),   -- 每人上限；无行 = 不限
-    PRIMARY KEY (group_id, abstract_model_id, unit, period)
-) WITHOUT ROWID;
-CREATE INDEX ix_gmqc_model ON group_model_quota_caps(abstract_model_id);
-```
-
-**为什么拆成「组侧 cap 声明 + 账户侧计数器」两处**：组侧的 `cap` 是策略（管理员设了什么），
-全组成员共享同一行；而消耗必须**按人记账**——"每人在 `smart` 上每天 50 次"若把计数器挂在
-组行上，就把"每人限额"错实现成了"组共享池再加一维模型"，两者是完全不同的闸（交集语义见
-[../security/03-groups.md](../security/03-groups.md) 第 4 节）。账户侧的生效值由 `EffectivePolicy`
-在成员关系/策略变更时重算：对每个 `(账户, 模型, unit, period)`，取全部所属组 cap 的
-min 后 upsert 进 `account_quotas`（`abstract_model_id > 0` 的行）；任一所属组都没设 = 不限 =
-删行。重算**不清 `quota_used`**：已发生的消耗是事实，换上限不改账本；把上限调到低于已用量
-是合法关闸（同 `pool_limit` 的取舍）。
+`group_model_quota_caps` 与池不同它**不带计数器**：cap 是策略（管理员设了什么，
+全组共享一行），消耗必须按人记账（记在 `account_quotas`）。把计数器挂组行上
+会把「每人限额」错实现成「共享池再加一维」，两者是完全不同的闸。
 
 ### 3.4 抽象模型与目录
 
-```sql
-CREATE TABLE abstract_models (
-    id                   INTEGER PRIMARY KEY,
-    name                 TEXT    NOT NULL,     -- 对外模型名（fast / balanced / …）
-    display_name         TEXT    NOT NULL,
-    strategy             TEXT    NOT NULL DEFAULT 'expiry-first',
-    capability_mode      TEXT    NOT NULL DEFAULT 'strict'
-                         CHECK (capability_mode IN ('strict','filter')),
-    status               TEXT    NOT NULL DEFAULT 'active'
-                         CHECK (status IN ('active','deprecated','disabled')),
-    replacement_model_id INTEGER REFERENCES abstract_models(id),
-    deprecated_at        INTEGER,
-    sunset_at            INTEGER,
-    note                 TEXT,
-    CHECK (replacement_model_id IS NULL OR replacement_model_id <> id)
-);
-CREATE UNIQUE INDEX ux_abstract_models_name ON abstract_models(name);
-CREATE INDEX ix_abstract_models_status ON abstract_models(status);
+`abstract_models` · `real_models` · `abstract_candidates`
 
-CREATE TABLE abstract_candidates (
-    abstract_model_id INTEGER NOT NULL REFERENCES abstract_models(id) ON DELETE CASCADE,
-    real_model_id     INTEGER NOT NULL REFERENCES real_models(id)     ON DELETE CASCADE,
-    constraint_json   TEXT,                    -- 候选级约束（渠道范围等）
-    weight            INTEGER NOT NULL DEFAULT 0,   -- 历史字段（03-strategy 3.3.2）：不参与任何排序，写入恒 0
-    sort_order        INTEGER NOT NULL DEFAULT 0,   -- 声明序（0008）：管理员在候选集编辑器里排的次序；平局决胜按它
-    PRIMARY KEY (abstract_model_id, real_model_id)
-) WITHOUT ROWID;   -- 正因无 rowid，「保存顺序」必须显式落 sort_order 列，否则不可复现
-CREATE INDEX ix_abstract_candidates_real ON abstract_candidates(real_model_id);
-
-CREATE TABLE real_models (
-    id                      INTEGER PRIMARY KEY,
-    upstream_id             INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
-    upstream_model_id       TEXT    NOT NULL,
-    display_name            TEXT    NOT NULL,
-    group_name              TEXT,              -- 上游给的分组/前缀（20 个前缀）
-    context_window          INTEGER,
-    modalities              TEXT,              -- JSON 数组
-    efforts                 TEXT,              -- JSON 数组（off/low/high/max）
-    status                  TEXT    NOT NULL DEFAULT 'active'
-                            CHECK (status IN ('active','missing','disabled')),
-    hidden                  INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0,1)),
-    excluded_from_candidates INTEGER NOT NULL DEFAULT 0 CHECK (excluded_from_candidates IN (0,1)),
-    sort_order              INTEGER NOT NULL DEFAULT 0,
-    source                  TEXT    NOT NULL DEFAULT 'auto' CHECK (source IN ('auto','override')),
-    last_seen_at            INTEGER,
-    missing_since           INTEGER
-);
-CREATE UNIQUE INDEX ux_real_models_upstream_model ON real_models(upstream_id, upstream_model_id);
-CREATE INDEX ix_real_models_upstream ON real_models(upstream_id);
-CREATE INDEX ix_real_models_status ON real_models(status);
-```
-
-**`CHECK (replacement_model_id <> id)` 只能防自环**。多跳成环（A→B→C→A）不设跳数上限
-（2026-10-20 定案，旧的「5 跳」已废除），但两条业务规则让环无法形成：**弃用只能指向此刻
-`status = active` 的抽象模型**、**弃用了就不能再改回 active**。这两条把替代关系变成一条
-只出不进的有向路径，长度上限由「可用模型数量」天然封顶。
-写入时仍由应用层做一次 visited 游走作为**兜底**（防并发写入绕过规则），由它在同一个事务里完成。
-**为什么不在 DB 里用递归 CTE 触发器做**：SQLite 触发器里的递归查询代价高、调试难，
-而且"成环"是一个**业务判定**（要给出"哪一跳成环"的错误信息），DB 层给不出这个体验。
-
-**`excluded_from_candidates`**：来自 PLAN 11.2——上游 `aggregate/*` 默认排除在候选来源之外。
-它必须是一个**独立于 `status` 的列**：`status = missing/disabled` 表达"这个模型不可用"，
-而 `excluded_from_candidates` 表达"它可用，但我们不拿它当候选"。两者的运维含义完全不同
-（前者要排障、后者是策略）。
+`abstract_models.replacement_model_id` 的自环由 CHECK 拦，多跳成环由应用层
+在同一事务里做 visited 游走兜底。`abstract_candidates` 是 WITHOUT ROWID 的
+声明表：`weight` 已退役（恒 0），声明序看 `sort_order`（§5 的 0008）。
 
 ### 3.5 上游与凭据
 
-```sql
-CREATE TABLE upstreams (
-    id               INTEGER PRIMARY KEY,
-    kind             TEXT    NOT NULL CHECK (kind IN ('relay','vendor','selfhosted')),
-    name             TEXT    NOT NULL,
-    base_url         TEXT    NOT NULL,
-    secret_id        INTEGER REFERENCES upstream_secrets(id),
-    owner_account_id INTEGER REFERENCES accounts(id),   -- NULL = 平台自有
-    enabled          INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
-    last_seen_at     INTEGER
-);
-CREATE UNIQUE INDEX ux_upstreams_kind_name ON upstreams(kind, name);
-CREATE INDEX ix_upstreams_owner ON upstreams(owner_account_id);
+`upstreams` · `upstream_secrets` · `upstream_credentials`
 
-CREATE TABLE upstream_secrets (
-    id         INTEGER PRIMARY KEY,
-    upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
-    ciphertext BLOB    NOT NULL,     -- AES-GCM 密文
-    nonce      BLOB    NOT NULL      -- AES-GCM nonce（每次加密唯一）
-);
-CREATE UNIQUE INDEX ux_upstream_secrets_upstream ON upstream_secrets(upstream_id);
-
-CREATE TABLE upstream_credentials (
-    id               INTEGER PRIMARY KEY,
-    owner_account_id INTEGER NOT NULL REFERENCES accounts(id),
-    provider         TEXT    NOT NULL,
-    external_id      TEXT    NOT NULL,
-    external_label   TEXT,
-    secret_ref       TEXT    NOT NULL,     -- 指向本地安全存储的引用，不含明文
-    status           TEXT    NOT NULL DEFAULT 'pending'
-                     CHECK (status IN ('pending','active','invalid','expired','disabled')),
-    login_enabled    INTEGER NOT NULL DEFAULT 1 CHECK (login_enabled IN (0,1)),
-    verify_status    TEXT    NOT NULL DEFAULT 'unverified'
-                     CHECK (verify_status IN ('verified','suspect','unverified','trusted')),
-    verify_detail    TEXT,                 -- JSON：鉴定证据（L0/L1）
-    created_at       INTEGER NOT NULL,
-    last_used_at     INTEGER
-);
-CREATE UNIQUE INDEX ux_upstream_credentials_external
-    ON upstream_credentials(provider, external_id);
-CREATE INDEX ix_upstream_credentials_owner ON upstream_credentials(owner_account_id);
-CREATE INDEX ix_upstream_credentials_status ON upstream_credentials(status, verify_status);
-```
-
-**`UNIQUE(provider, external_id)` 是防重放的硬约束**（PLAN 10 明确要求）：同一个上游账号
-被两个贡献者重复提交时，必须被 DB 拒绝而不是变成两条候选。**为什么 `external_id` 可以是
-上游账号 id、也可以是其哈希**：不同 provider 暴露的标识不同，我们只需它**稳定且唯一**。
-
-**为什么 `verify_detail` 用 JSON 而不是拆列**：鉴定证据（PLAN 第 4.4 节的 L0/L1 信号）会演化，
-且不同 provider 的信号集合不同。JSON 让我们能在不迁移的情况下补充信号。
-
-> **待定**：是否需要独立的 `verifications` 表来记录**历史**鉴定过程（当前只存最新结果）。
-> 影响：无法回答"这个凭据是什么时候从 `verified` 变成 `suspect` 的"。
+环形外键（`upstreams.secret_id` ↔ `upstream_secrets.upstream_id`）在 SQLite 里
+延迟解析，两个方向都能建表成功。凭据↔上游的唯一一条边是
+`secret_ref → upstream_secrets.id → upstream_id`；反方向的 `upstreams.secret_id`
+只对「上游自己那把 key」成立，拿它当连接边会把贡献凭据算到别的上游头上。
 
 ### 3.6 API Key
 
-```sql
-CREATE TABLE api_keys (
-    id              INTEGER PRIMARY KEY,
-    account_id      INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    key_hash        BLOB    NOT NULL,     -- SHA-256(明文 key)
-    prefix          TEXT    NOT NULL,     -- 展示用前缀（fr-xxxx…）
-    name            TEXT,
-    status          TEXT    NOT NULL DEFAULT 'active'
-                    CHECK (status IN ('active','disabled','expired')),
-    expires_at      INTEGER
--- （2026-10-20 定案：Key 不持有任何额度/速率字段，旧版本表的 quota_limit/quota_used/
---   rpm_limit/tpm_limit/daily_token_cap/max_concurrency 六列已删；见
---   [../security/05-keys.md](../security/05-keys.md) 第 4 节：Key 只剩认证、白名单收窄、生命周期）
-);
-CREATE UNIQUE INDEX ux_api_keys_key_hash ON api_keys(key_hash);
-CREATE INDEX ix_api_keys_account ON api_keys(account_id);
-CREATE INDEX ix_api_keys_prefix ON api_keys(prefix);
+`api_keys` · `key_model_allow`
 
-CREATE TABLE key_model_allow (
-    key_id            INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
-    abstract_model_id INTEGER NOT NULL REFERENCES abstract_models(id) ON DELETE CASCADE,
-    PRIMARY KEY (key_id, abstract_model_id)
-) WITHOUT ROWID;
-CREATE INDEX ix_key_model_allow_model ON key_model_allow(abstract_model_id);
-```
-
-**为什么只存 `key_hash` 且用 `BLOB`**：PLAN 9——明文只在创建时返回一次。Hash 用 BLOB 的理由
-同 `sessions.token_hash`。**为什么校验必须走唯一索引**：Key 校验是转发热路径上的第一跳。
-
-**为什么额度不再挂在 Key 上（2026-10-20 定案，取代旧的「`NULL` = 不限」可空列设计）**：若每把 Key
-有自己的 `quota_limit`，用户建 10 把 Key 就得到 10 份额度，账户级上限形同虚设；额度一律在
-`account_quotas` 按账户计，判定与扣减与本次请求用的是哪把 Key 无关。旧设计里"NULL = 不限与 0 = 全拒"的
-三态问题，现由"行存在与否"取代（与池同形），不再存在可空上限列。
+Key 不持有任何额度/速率字段（每把 Key 一份额度等于账户级上限形同虚设）。
+只存 `key_hash`（BLOB），明文只在创建时返回一次。
 
 ### 3.7 请求记录与计量
 
-```sql
-CREATE TABLE requests (
-    id                     INTEGER PRIMARY KEY,
-    ts                     INTEGER NOT NULL,
-    key_id                 INTEGER REFERENCES api_keys(id),
-    account_id             INTEGER REFERENCES accounts(id),
-    endpoint               TEXT    NOT NULL
-                           CHECK (endpoint IN ('openai-chat','openai-responses',
-                                               'anthropic-messages','gemini-generate')),
-    virtual_model_id       INTEGER REFERENCES abstract_models(id),
-    resolved_real_model_id INTEGER REFERENCES real_models(id),
-    resolved_credential_id INTEGER REFERENCES upstream_credentials(id),
-    status                 TEXT    NOT NULL,   -- ok | error | cancelled | timeout
-    http_status            INTEGER,
-    error_code             TEXT,
-    retry_count            INTEGER NOT NULL DEFAULT 0,
-    ttft_ms                INTEGER,
-    total_ms               INTEGER,
-    in_tokens              INTEGER,            -- NULL = 上游未上报（≠ 0）
-    out_tokens             INTEGER
-);
-CREATE INDEX ix_requests_ts ON requests(ts);
-CREATE INDEX ix_requests_key_ts ON requests(key_id, ts);
-CREATE INDEX ix_requests_account_ts ON requests(account_id, ts);
-CREATE INDEX ix_requests_credential_ts ON requests(resolved_credential_id, ts);
-CREATE INDEX ix_requests_error ON requests(error_code, ts);
+`requests` · `usage_daily`
 
-CREATE TABLE usage_daily (
-    day               TEXT    NOT NULL,        -- 'YYYY-MM-DD'（UTC）
-    account_id        INTEGER NOT NULL,        -- 2026-10-20 改定：按账户聚合（额度判定目标就是账户，见 06-audit 第 1 节）
-    abstract_model_id INTEGER NOT NULL,
-    real_model_id     INTEGER NOT NULL,
-    requests          INTEGER NOT NULL DEFAULT 0,
-    in_tokens         INTEGER NOT NULL DEFAULT 0,
-    out_tokens        INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (day, account_id, abstract_model_id, real_model_id)
-) WITHOUT ROWID;
-CREATE INDEX ix_usage_daily_day ON usage_daily(day);
-CREATE INDEX ix_usage_daily_account ON usage_daily(account_id, day);
-```
-
-**`requests` 里没有 `cost` 列，这是刻意的**（PLAN 10 明确）：我们**不做计价**。理由：每个上游
-的计价方式不同且会变（订阅额度池、按量、赠送额度），把价格写进我们的表意味着要么维护一张
-永远滞后的价目表，要么给用户一个不可信的金额。我们只记录 token 与归因字段，
-金额由**对账**环节与上游账本（`token-ledger.json`）比对后得出。
-
-**`retry_count` 是对第 10 章字段表的细化**：PLAN 11.5 要求契约测试覆盖"偶发连接失败与重试
-是否成功"，PLAN 13 把"上游偶发连接失败"列为风险。没有这个列就只能看日志，无法统计。
-它**不是**新概念，只是同一件事的计数字段。
-
-**为什么 `in_tokens` 可空**：见 [02-ir.md](02-ir.md) 第 9 节——`NULL`（上游没报）与 `0`
-（上游说零）在配额护栏与对账上语义完全不同。`usage_daily` 上的 `NOT NULL DEFAULT 0` 是
-**聚合值**：聚合时把 `NULL` 记为 0 并把"有未知"通过 `requests` 表可回溯，这是唯一可接受的
-折中（聚合键必须非空）。
+刻意没有 cost 列（不做计价，金额由对账与上游账本比对得出）。`in_tokens` /
+`out_tokens` 可空：NULL（上游没报）与 0（上游说零）在额度护栏与对账上语义不同。
+`usage_daily` 按 account_id 聚合（额度判定目标是账户）；requests 按 90 天清理后
+它是唯一的长期事实。
 
 ### 3.8 审计
 
-```sql
-CREATE TABLE audit_log (
-    id          INTEGER PRIMARY KEY,
-    ts          INTEGER NOT NULL,
-    account_id  INTEGER REFERENCES accounts(id),
-    acting_class TEXT,                    -- 以哪个权限类身份操作
-    elevated    INTEGER NOT NULL DEFAULT 0 CHECK (elevated IN (0,1)),
-    action      TEXT    NOT NULL,
-    target      TEXT,
-    ip          TEXT,
-    ua          TEXT,
-    result      TEXT    NOT NULL,
-    detail      TEXT                       -- JSON
-);
-CREATE INDEX ix_audit_log_ts ON audit_log(ts);
-CREATE INDEX ix_audit_log_account_ts ON audit_log(account_id, ts);
-CREATE INDEX ix_audit_log_action_ts ON audit_log(action, ts);
+`audit_log` + `trg_audit_log_no_update` / `trg_audit_log_no_delete`
 
--- append-only 由机制保障，而不是靠"我们不会写 UPDATE"
-CREATE TRIGGER trg_audit_log_no_update BEFORE UPDATE ON audit_log
-BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
-CREATE TRIGGER trg_audit_log_no_delete BEFORE DELETE ON audit_log
-BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
-```
-
-**为什么 `account_id` 可空**：登录失败、Key 尝试等事件发生在**身份确定之前**。
-把它们记成某个账户的审计是伪造归因；记 NULL 才是事实。
-
-**为什么 `acting_class` 与请求时的权限类都要记**（PLAN 9）：一个账户可能同时是 `admin`
-与 `tenant`。"以管理员身份改了这个组"和"以租户身份建了这个 Key"是不同性质的操作，
-隔离与分账都依赖这个字段。
-
-**append-only 触发器的代价**：保留期清理不能再用 `DELETE`。见第 9 节待定项。
+`account_id` 可空：登录失败这类事件发生在身份确定之前，记成某账户的审计是伪造
+归因。`acting_class` 必记：一个账户可能同时是 admin 与 tenant。append-only 由
+触发器保障而非靠自觉；保留期清理走 `store.PruneAudit` 的受控通道（导出 → 回读
+校验 → 摘触发器 → 单事务删除 → 建回触发器 → 写审计），UUID 改造后该通道的
+首尾 id 校验也跟着改成文本比较（`returning`/`ORDER BY ts, id`）。
 
 ### 3.9 系统表
 
-```sql
-CREATE TABLE settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL          -- JSON
-) WITHOUT ROWID;
+`admin_inbox` · `model_multipliers` · `settings`
 
-CREATE TABLE schema_migrations (
-    version    INTEGER PRIMARY KEY,
-    name       TEXT    NOT NULL,
-    checksum   TEXT    NOT NULL,
-    applied_at INTEGER NOT NULL
-);
-```
-
-**为什么 `settings` 与业务表分开**：它是运维可改的运行时开关（横幅文案、探测间隔等），
-与业务数据生命周期不同，混在一起会让"备份业务数据"与"备份配置"无法分开。
+`related_id` 是多态列（按 `kind` 解释指向哪张表），不加外键。`settings` 与业务
+表分开：它是运维可改的运行时开关，混在一起就没法把「备份业务数据」与「备份配置」
+分开。
 
 ### 3.10 贡献统计（不建表）
 
-贡献者侧**没有任何回报**：不折算额度、不给优先使用权、不给升级凭据（PLAN 4.5）。因此不存在"回报表 / 回报率 / 结算流水"，也不给它们留字段。要展示的只有**贡献统计**：贡献量、被调用次数、消耗 token、健康度——它们全部是已有事实的聚合。
-
-```sql
--- 贡献统计：纯读取视图，不落表
-CREATE VIEW v_contributor_stats AS
-SELECT uc.owner_account_id            AS account_id,
-       uc.id                          AS credential_id,
-       uc.provider,
-       uc.status,                     -- 凭据状态
-       uc.verify_status,              -- 健康度（鉴定结果）
-       COUNT(r.id)                    AS request_count,
-       COALESCE(SUM(r.in_tokens), 0)  AS in_tokens,
-       COALESCE(SUM(r.out_tokens), 0) AS out_tokens,
-       MAX(r.ts)                      AS last_request_at
-FROM upstream_credentials uc
-LEFT JOIN requests r ON r.resolved_credential_id = uc.id
-GROUP BY uc.id;
-```
-
-贡献量 = 该账户在 `upstream_credentials` 里的行数（视图按凭据分组，外层 `COUNT(*)` 即得）；其余三项按 `requests` 归该凭据聚合。
-
-- **为什么统计不单独建表**：统计是**纯读取**，读的是已落库的 `requests` 与 `upstream_credentials`，没有写路径，也就没有理由维护一份副本。
-- **为什么这一点比"省一张表"重要**：一旦落成汇总表，就必须在请求落库的**同一事务**里维护它（见 7.2、7.3——热路径上多一次写就多一份代价），而任何一处漏更新都会让"贡献者看到的数字"与"实际请求"永久分叉，事后无法判断该信谁。视图的答案永远与事实表同源，这个风险直接消失。
-- **为什么成本可接受**：`ix_requests_credential_ts` 的前导列正是 `(credential_id, ts)`，按凭据分组走索引；日均请求量在万级、贡献者数在百级，聚合是毫秒级；贡献页也不在转发热路径上，没有延迟预算的压力。
-- **日后量级**：若 `requests` 的 90 天明细涨到聚合明显变慢（千万行级），再升级为**物化视图 / 定时汇总表**（按 `credential_id + day` 预聚合，与 `usage_daily` 同构）——届时仍以 `requests` 为准，汇总表只当缓存。现在不预建，因为提前落表就是提前背上上面那条一致性负担。
-
-**那为什么 `usage_daily` 这个汇总表可以有**（总纲第 10 章与本节看似矛盾，实际上不）：
-
-| | 贡献统计 | `usage_daily` |
-|---|---|---|
-| 读者 | 贡献者自己看 | 管理员看板 + 租户用量页 |
-| 查询频率 | 低（进页才查） | **高**（每次打开看板都扫多天 × 多 Key） |
-| 保留时长 | 同 `requests`（90 天） | **永久**（`requests` 清后它是唯一依据） |
-| 不留表会怎样 | 直接查 `requests` 就行，毫秒级 | `requests` 被清后数据**永久丢失** |
-
-决定性区别是**保留时长**：一旦 `requests` 按 90 天清理，`usage_daily` 就成了唯一的
-长期事实，它必须落表；而贡献统计的期间与 `requests` 完全重叠，多存一份只得到
-一份可能不一致的副本。
-
-> **已定（2026-10-20）+ 待定**：`usage_daily` 已改为按 `account_id` 聚合（额度判定目标就是账户，
-> 见 [../security/06-audit.md](../security/06-audit.md) 第 1 节，DDL 已同步）。若贡献统计日后也需要
-> 长期保留（例如贡献者服务了两年想看历史总量），要么给它加 `credential_id` 维度，
-> 要么单独建表。目前按「不建」处理，因为贡献统计的定位是**当下可用性反馈**。
-
----
+贡献者侧没有任何回报，所以不存在回报表/结算流水。要展示的只有贡献统计，而统计是
+纯读取——视图 `v_contributor_stats` 的答案永远与事实表同源；落成汇总表就必须
+在请求落库的同一事务里维护它，任何一处漏更新都会让贡献者看到的数字与实际请求
+永久分叉。聚合走 `ix_requests_credential_ts` 的前导列。
 
 ## 4. 索引策略
 
@@ -619,6 +205,15 @@ migrations/
 | **编号连续 + 启动时校验** | 缺号或重号时拒绝启动。两个分支各自新增 `0007` 是并行开发的必然事件，宁可启动失败也不要静默跳过 |
 | **单事务** | SQLite 的 DDL 是事务性的。迁移中途失败能整体回滚，不会留下"半升级"的库 |
 | **启动时执行** | 避免"忘记跑迁移"这种部署事故；代价是迁移必须在秒级完成（见下） |
+
+**0009 是一个刻意的例外：它重建 schema 而不是增量改表**。UUID 主键改造没法用
+`ALTER TABLE` 表达（SQLite 不能改主键列类型），所以 0009 按依赖逆序 DROP 全部
+业务表再按 UUID 形状重建——它**不搬数据**。这不违反"前滚 + 保数据"的直觉，因为
+配套的 Go 侧守卫 `rejectLegacyIntegerDB` 会在应用 0009 前检查业务表有没有行，
+有数据就直接拒绝启动并提示"备份后删库重建"。判据是**有没有行**而不是"id 列是不是
+INTEGER"：全新库也会先跑 0001~0008 建出空的整型表再被 0009 拆掉，按列类型检测会
+把全新库一起拦死。这条决策的来龙去脉（用户 2026-10-26 明确不做旧库数据迁移）见
+仓库内 `tmp/uuid-migration-contract.md`。
 
 **为什么迁移必须在秒级完成**：它在启动路径上。SQLite 的 `ALTER TABLE` 能力有限
 （不能改列类型、不能加非空无默认值的列），大表加列在旧版本需要重建表。因此

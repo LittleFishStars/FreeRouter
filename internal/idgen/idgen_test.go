@@ -107,13 +107,19 @@ func TestParseNormalizes(t *testing.T) {
 	}
 }
 
-// TestMustParsePanicsOnBadConstant 钉住 MustParse 的用途边界：只给源码常量用，
-// 非法就崩（带着一个空 id 跑起来比启动即崩难查得多）。
-func TestMustParsePanicsOnBadConstant(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("MustParse 对非法常量应 panic")
-		}
+// TestMustParse 两个方向都要钉：合法常量归一化返回（调用点用它写库），
+// 非法常量必须崩（带着一个空 id 跑起来比启动即崩难查得多）。
+func TestMustParse(t *testing.T) {
+	const canonical = "550e8400-e29b-41d4-a716-446655440000"
+	if got := MustParse("  " + strings.ToUpper(canonical) + " "); got != canonical {
+		t.Fatalf("MustParse 应归一并返回 %q，实得 %q", canonical, got)
+	}
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("MustParse 对非法常量应 panic")
+			}
+		}()
+		_ = MustParse("acc_1")
 	}()
-	_ = MustParse("acc_1")
 }

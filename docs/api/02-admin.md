@@ -82,25 +82,25 @@
 
 ```json
 {
-  "data": {"id": "grp_<id>"},
-  "audit_id": "aud_<id>"
+  "data": {"id": "<uuid>"},
+  "audit_id": "<uuid>"
 }
 ```
 
-### 3.3 对外 id 的编码规则
+### 3.3 对外 id 的形状
 
-库里所有主键都是 `INTEGER PRIMARY KEY`，而**对外一律是带资源前缀的字符串**：
-`<前缀>_<十进制 id>`，例如 `acc_1203`、`grp_7`、`inb_42`。上文示例里的 `<id>` 即此形状。
-
-唯一实现是 `internal/idcode`（Encode/Decode/DecodeOptional + 前缀常量表），
-存储层与管理面都必须走它——两边各写一套会让对外 id 前后不一致、无法反查。
+库里所有主键都是 `TEXT NOT NULL PRIMARY KEY`（UUID v4），**对外 id 与库内主键是
+同一串**（2026-10-26 改造，迁移 0009）。上文的 `<uuid>` 即 36 字符小写、
+`8-4-4-4-12` 分段的 `xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx`（y ∈ 8/9/a/b）。
+实现只有 `internal/idgen`（New / Valid / Parse / MustParse）一处。
 
 | 约定 | 理由 |
 |---|---|
-| 十进制而非 ULID | 可逆零歧义：运维在日志里看到 `acc_1203` 能直接 `WHERE id=1203`，不必解码。本项目的 id 不需要防猜（API Key 本身是随机串，id 只出现在管理面，而管理面对无权限者一律 404）；换 ULID 要改列语义 + 全量迁移，收益只是"看起来更现代" |
-| 前缀必须匹配 | 拿 `acc_1` 去解 `Group` 会失败。不拦的话就是拿账户 id 去查 `groups` 表——命中别人的行或静默 not_found，都是难查的错 |
-| 拒绝前导零 | 否则同一行有两个合法写法，"id 可比对"的直觉破产 |
-| `related_id` 的前缀取自 `kind` | 收件箱条目关联五张表，`kind` 已隐含目标表；解码时按 kind 选前缀，不额外存一个"表名"字段（两个字段要保一致，是自造漂移源） |
+| UUID 而非「前缀 + 自增十进制」 | 旧方案是两层 id（库内整型、对外 `acc_1203`），接缝由已删除的 `internal/idcode` 维护。换 UUID 后那层编解码整体消失（桥层 35 处 encode / 54 处 decode 没了），id 不可枚举（不泄露池子规模），跨环境搬运不撞号。代价如实记：主键索引随机写、索引体积变大，本地 SQLite 万级行测不出差异；取舍全文见 [05-storage §2](../architecture/05-storage.md) |
+| 无前缀 | 前缀原本的两个价值在新形状下都不成立——防跨资源误用由「在错误的表里查不到 → 404」承担（本来就是最终判定），日志可读由「同时打 account_id / key_id 字段名」承担。再叠一层前缀只多出一个必须登记的枚举表 |
+| 形状非法 → 400，形状合法但指错资源 → 404 | 这是前缀校验消失后跨资源防护的新落点：入口只判形状（正则可判，不必查库），真正判定资源归属的是「按主键去对应的表查」这一次查询本身 |
+| id 由存储层生成 | TEXT 主键没有自增兜底，漏设 id 在 SQLite 里会写出 NULL 主键行（`TEXT PRIMARY KEY` 不强制非空，且多行 NULL 不冲突）。所以 id 只在 store 的插入路径上生成一次，调用方不传，否则漏一处就是永远查不到的幽灵行 |
+| `related_id` 存裸 UUID | 收件箱条目的关联对象按 `kind` 解释指向哪张表——旧做法是给 `related_id` 按 kind 编前缀，前缀体系废弃后只剩「kind 隐含目标表」这一条，不再有两个字段要保一致 |
 
 **为什么每个写响应都带 `audit_id`**：总纲 9.5 的审计是 append-only 的， 但它必须能被界面回指。带 `audit_id` 让"我刚做的这次修改"在审计页 是可定位的，从根上避免"改完不知道有没有生效"的疑问。
 
@@ -152,10 +152,10 @@
 
 ```json
 {
-  "id": "acc_<id>", "display_name": "alice", "username": "alice",
+  "id": "<uuid>", "display_name": "alice", "username": "alice",
   "classes": ["admin", "tenant"],
   "status": "active",
-  "groups": ["grp_default", "grp_power"],
+  "groups": ["<uuid-默认组>", "<uuid-高额度组>"],
   "created_at": "2026-01-01T00:00:00Z", "last_login_at": "2026-01-02T00:00:00Z", "key_count": 3,
   "credential_count": 0, "note": "内部备注",
   "quota": {"unit": "token", "limit": 200000, "used": 34000, "period": "day"},
@@ -226,7 +226,7 @@ bob,,grp_default,request,1000
 
 ```json
 {
-  "id": "grp_power", "name": "高额度组", "description": "内部试点", "is_default": false,
+  "id": "<uuid>", "name": "高额度组", "description": "内部试点", "is_default": false,
   "member_count": 12,
   "models": ["smart", "fast"],
   "policies": {
@@ -266,8 +266,8 @@ bob,,grp_default,request,1000
 
 ```json
 {
-  "id": "rm_<id>", "display_name": "DeepSeek-V4.1-Flash",
-  "qualified_name": "dsh:deepseek-official/deepseek-flash", "upstream_id": "up_provider_a",
+  "id": "<uuid>", "display_name": "DeepSeek-V4.1-Flash",
+  "qualified_name": "dsh:deepseek-official/deepseek-flash", "upstream_id": "<uuid>",
   "upstream_model_id": "deepseek-official/deepseek-flash", "group_name": "deepseek",
   "context_window": 128000,
   "modalities": ["text", "image"],
@@ -313,7 +313,7 @@ bob,,grp_default,request,1000
 
 ```json
 {
-  "id": "am_smart", "name": "smart", "display_name": "通用智能", "capability_mode": "strict",
+  "id": "<uuid>", "name": "smart", "display_name": "通用智能", "capability_mode": "strict",
   "capabilities": {
     "context_window": 128000, "max_output": 8192, "vision": true, "tool_calling": true,
     "json_mode": true
@@ -341,7 +341,7 @@ bob,,grp_default,request,1000
 {
   "candidates": [
     {
-      "real_model_id": "rm_<id>",
+      "real_model_id": "<uuid>",
       "constraint": {"channel_scope": "all", "require": {"vision": true}},
       "weight": 100, "available_instances": 2
     }
@@ -375,7 +375,7 @@ POST /api/admin/abstract-models/am_smart/dry-run
 PUT /api/admin/abstract-models/am_fast/deprecation
 {
   "status": "deprecated",
-  "replacement_model_id": "am_smart",
+  "replacement_model_id": "<uuid>",
   "deprecated_at": "@1688169599",
   "sunset_at": "Sun, 30 Jun 2026 23:59:59 UTC",
   "migration_doc": "/docs/models/fast"
@@ -458,7 +458,7 @@ GET /api/admin/abstract-models/am_fast/chain
 
 ```json
 {
-  "id": "ver_<id>", "credential_id": "cred_<id>", "provider": "example-provider",
+  "id": "<uuid>", "credential_id": "<uuid>", "provider": "example-provider",
   "claimed_model": "some-model-id", "source": "new_contribution", "stage": "L1",
   "verdict": "unverified",
   "stage_results": {
@@ -533,10 +533,10 @@ GET /api/admin/abstract-models/am_fast/chain
 
 ```json
 {
-  "id": "inb_<id>", "kind": "model_change", "severity": "warning",
+  "id": "<uuid>", "kind": "model_change", "severity": "warning",
   "title": "渠道 A 下模型 X 已从上游消失",
-  "detail_json": {"real_model_id": "rm_<id>", "change": "disappeared"},
-  "related_id": "rm_<id>", "created_at": "2026-01-02T00:00:00Z",
+  "detail_json": {"real_model_id": "<uuid>", "change": "disappeared"},
+  "related_id": "<uuid>", "created_at": "2026-01-02T00:00:00Z",
   "read_at": null, "read_by": null
 }
 ```
@@ -550,7 +550,7 @@ GET /api/admin/abstract-models/am_fast/chain
 
 **为什么 `related_id` 是一个不带头缀的裸 id 而不是外键**：关联对象横跨五张表（账户、真实模型、上游、组、凭据），单一外键列放不下。裸 id + `kind` 组合足以定位，代价是数据库层不能做级联约束——**这个代价可以接受**，因为收件箱条目本来就是"发生过的事"，关联对象被删掉之后条目仍应存在（用户点进去看到 404 即可，不该让整条记录消失）。
 
-**为什么不给 `related_id` 加表名后缀**（如 `real_model:rm_<id>`）：`kind` 已经隐含了目标表，再加一层会造出两个必须保持一致的字段。
+**为什么不给 `related_id` 加表名后缀**（如 `real_model:<uuid>`）：`kind` 已经隐含了目标表，再加一层会造出两个必须保持一致的字段。
 
 **为什么不在这个接口里做"处理"**：注册审批要选组与配额、弃用要过两条硬校验、池上限要算已用量——把这些搬进来等于把各页面的校验逻辑复制一份，必然漂移。控制台只做"跳转"，处理仍在原页面（[../ui/03-admin.md](../ui/03-admin.md) 第 12.2 节）。
 

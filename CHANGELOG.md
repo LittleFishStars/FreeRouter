@@ -13,6 +13,31 @@
 
 ### 变更
 
+- **全站 id 改用 UUID，库内主键一起换**（2026-10-26 用户决定）：所有主键从
+  `INTEGER PRIMARY KEY` 改为 `TEXT NOT NULL PRIMARY KEY`（UUID v4），对外 id 与
+  库内主键从此是同一串。旧行为是「库内自增整型 + 对外 `acc_1`/`rm_1` 前缀字符串」
+  两层，接缝由 `internal/idcode` 维护；现在该包删除，新增 `internal/idgen`
+  （New/Valid/Parse/MustParse）。**运维会感知的三件事**：
+  ① **不做旧库迁移**（用户决定）：检测到已有数据的整型主键库时启动直接失败，
+  错误文案含"备份数据目录后删除 freerouter.db / .db-wal / .db-shm 重建"；
+  守卫判据是「业务表有没有行」而不是列类型（全新库也会先跑 0001~0008 建出
+  整型表，按列类型检测会把新库一起拦死）。
+  ② **贡献恢复码格式变了**：`frv-<id>-<secret>` → `frv_<uuid>_<secret>`。
+  分隔符换成下划线是因为 UUID 自带 4 个连字符，用 `-` 会把 id 拆断；
+  已发放的旧码随旧库一起作废。5 条格式守卫测试钉住两侧（这类"格式变了但
+  编译器看不出来"的点是本次改造最容易静默失效的地方）。
+  ③ **前缀消失**：`acc_1` 变成裸 UUID。前缀原以为的两个价值（防跨资源误用、
+  日志可读）在新形状下都由别的东西承担——误用的判定从解码层挪到查询层
+  （形状非法 → 400 带 param；形状合法但指错资源 → 在错误的表里查不到 → 404），
+  日志可读性靠打字段名而不是靠 id 前缀。
+  连带修掉的两个真问题：`upstream_credentials.secret_ref` 的
+  `CAST(... AS INTEGER)` join 会让 available_instances 恒 0（历史上出现过同一
+  症状的静默故障）；「合计」哨兵从整型 0 改为空串（`store.TotalScope`），因为
+  0 不再是合法 id，而 NULL 会破坏 WITHOUT ROWID 复合主键的 upsert 冲突判定。
+  迁移 0009 的做法是按依赖逆序 DROP 全部业务表再按 UUID 重建（SQLite 不能
+  ALTER 主键类型），0001~0008 一个字节未改（checksum 纪律）。设计契约、
+  分里程碑的实施与实测记录见仓库内 `tmp/uuid-migration-contract.md`。
+
 - **候选集编辑收编进弹窗，删除独立编辑页**（2026-10-26 用户决定）：
   路由 `/admin/abstract-models/:id/candidates` 与 `CandidatesPage` 删除；
   其全部职责（加入/移出、声明序调序、渠道范围编辑、整表替换保存）收编进

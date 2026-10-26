@@ -159,17 +159,20 @@ gosec 的 G101 靠「变量名含 credential/secret/password + 字符串字面�
 ## 4. 测试覆盖基线
 
 ```
-internal/idcode            100.0%
-internal/upstream          83.5%   internal/routing           82.4%
+internal/idgen            100.0%   internal/apidir            87.0%
+internal/upstream          82.2%   internal/routing           82.4%
 internal/upstream/dshprovider 80.5%   internal/auth          67.9%
 internal/ir                58.5%   internal/config           59.6%
-internal/meter             55.4%   internal/store            50.0%
-internal/httpapi           42.7%   internal/app              23.6%
-internal/ir/anthropic       2.6%   internal/ir/openai         7.8%
+internal/meter             55.5%   internal/store            52.7%
+internal/httpapi           49.0%   internal/app              25.2%
+internal/ir/openai          7.8%   internal/ir/anthropic      2.6%
 ```
 
 **怎么读这张表**：
 
+- `internal/idgen` 是 2026-10-26 UUID 改造新增的包，取代已删除的 `internal/idcode`
+  （旧基线里的 idcode 100.0% 就是它的前身），New/Valid/Parse/MustParse 四条路径
+  都有用例，含"非法装配期常量必崩"与"异形态输入必被拒"两侧。
 - `internal/app` 偏低是**结构性的**——它绝大部分是跨类型搬运的装配代码
   （桥接函数），行为由被桥接的两端测试覆盖。真正有逻辑的部分
   （策略快照转换、延迟/余额采样）已有测试。

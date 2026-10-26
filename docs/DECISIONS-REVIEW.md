@@ -88,7 +88,7 @@
 | 1.55 | 数据目录 `$FR_DATA_DIR/{freerouter.db,-wal,-shm,sidecar.sock,master.key,backups/}`；主密钥支持文件与环境变量、**都不入库** | `01-overview.md:242-259` |
 | 1.56 | 静态资源 SPA fallback；`Cache-Control: max-age=31536000, immutable`；`index.html` 必须 `no-cache`；静态资源**不走鉴权中间件** | `01-overview.md:336-338` |
 | 1.57 | 时间列一律 `INTEGER` UTC unix 秒（仅 `usage_daily.day` 用 `TEXT "YYYY-MM-DD"`） | `05-storage.md:36-37` |
-| 1.58 | 主键 `INTEGER PRIMARY KEY`；**对外不暴露自增 id**，对外标识用不可猜的 `TEXT` | `05-storage.md:38-39` |
+| 1.58 | 主键 `TEXT NOT NULL PRIMARY KEY`（UUID v4，2026-10-26 改）；**对外 id 与库内主键同一串**，不可枚举 | `05-storage.md` §2/§3 |
 | 1.59 | 纯联结表一律 `WITHOUT ROWID`；外键显式声明 + `PRAGMA foreign_keys=ON`；布尔用 `INTEGER 0/1` | `05-storage.md:40-42` |
 | 1.60 | `sessions.token_hash` / `api_keys.key_hash` 用 **BLOB** 而非十六进制 TEXT | `05-storage.md:95-111` |
 | 1.61 | 默认组用**部分唯一索引** `ON groups(is_default) WHERE is_default = 1` | `05-storage.md:117-161` |
