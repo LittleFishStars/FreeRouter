@@ -681,6 +681,9 @@ export function ContributeOAuthPage({ def }: PageProps) {
   const [error, setError] = useState<unknown>(null)
   const [starting, setStarting] = useState(true)
   const [session, setSession] = useState<OAuthAuthorize | null>(null)
+  // 轮询进展文案：sidecar 侧 runner 通过 report 上报（已扫码/失败原因），
+  // pending 应答的 message 每帧都可能是新的——不能只看 start 时的 session.message。
+  const [pollMsg, setPollMsg] = useState('')
   const [smsCode, setSmsCode] = useState('')
   const [phone, setPhone] = useState('')
   const [result, setResult] = useState<{ ok: boolean; message: string; recoveryCode?: string } | null>(null)
@@ -788,6 +791,7 @@ export function ContributeOAuthPage({ def }: PageProps) {
           setResult({ ok: false, message: d.message ?? '授权未完成' })
           return
         }
+        if (typeof d.message === 'string' && d.message) setPollMsg(d.message)
       } catch (e) {
         if (alive) setError(e)
       } finally {
@@ -916,7 +920,7 @@ export function ContributeOAuthPage({ def }: PageProps) {
             </Field>
           )}
           <p className="muted" aria-live="polite">
-            {session.message ??
+            {pollMsg || session.message ||
               (session.flow === 'qr'
                 ? '等待扫码…'
                 : session.authorize_url

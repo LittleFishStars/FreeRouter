@@ -102,7 +102,17 @@ export async function pollRaccoonQrLogin(product, code, fetcher = fetch) {
     catch {
         return { status: 'pending' };
     }
-    if (envelope.code !== 0 || envelope.data === undefined)
+    // 业务错误**不再吞成 pending**（2026-10-27 用户实测「手机提示二维码已过期
+    // 或已被使用，电脑一直等待扫码」）：服务端对过期/已用 code 会返回非 0
+    // envelope + 原因文本，吞掉它电脑就永远「等待扫码」，用户两端都看不到
+    // 真实原因。透传为 failed（message 原文上抛）。
+    if (envelope.code !== 0) {
+        return {
+            status: 'failed',
+            message: envelope.message || `raccoon: 业务错误 code=${envelope.code}`,
+        };
+    }
+    if (envelope.data === undefined)
         return { status: 'pending' };
     const raw = envelope.data.status;
     const status = typeof raw === 'string' ? raw : '';

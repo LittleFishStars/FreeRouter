@@ -431,19 +431,29 @@ register('raccoon', {
       'raccoon',
       'qr',
       {
-        // 二维码承载的是「微信内打开的登录页」；没有图片 URL，前端渲染
-        // 这个链接 + 文本码让用户自己扫。
+        // 二维码承载的是「微信内打开的登录页」（login/mp）；没有图片端点，
+        // 前端本地画码（qrcode.react）。**用微信扫**——login/mp 是微信内
+        // 页面，不是商汤 App 扫的码（App 扫会报「二维码已过期或已被使用」，
+        // 2026-10-27 用户实测）。
         authorize_url: raccoon.buildQrImageUrl(product, code),
         qr_code: code,
+        message: '请用微信扫码，并在微信内完成登录',
       },
-      async ({ signal }) => {
+      async ({ signal, report }) => {
         for (;;) {
           if (signal?.aborted) throw new Error('登录已取消')
           const r = await raccoon.pollRaccoonQrLogin(product, code)
           if (r.status === 'success') {
             return { access_token: r.accessToken, refresh_token: r.refreshToken, expires_at: r.expiresAt ?? '' }
           }
+          // 业务错误（二维码过期/已用等）必须终止并透出原文——吞掉它电脑
+          // 永远「等待扫码」，用户两端都看不到真实原因（2026-10-27 实测）。
+          if (r.status === 'failed') throw new Error(r.message ?? '二维码已失效')
           if (r.status === 'canceled') throw new Error('用户取消了扫码')
+          if (r.status === 'logging') {
+            // 已扫码、待确认：把进展透给前端（report 更新 session.message）。
+            report({ message: '已扫码，请在手机上确认' })
+          }
           await sleep(raccoonLib.RACCOON_QR_POLL_INTERVAL_MS ?? 2000)
         }
       },
