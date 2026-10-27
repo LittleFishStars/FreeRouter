@@ -567,7 +567,10 @@ register('trae', {
     // 回调由主进程的路由收下后再调 exchange。
     const machineId = generateMachineId()
     const deviceId = generateDeviceId()
-    const callbackUrl = `http://127.0.0.1:${port}${CALLBACK_PATH}`
+    // callbackUrl 的路径必须是 /authorize（TRAE_CALLBACK_PATH，上游 IDE 插件
+    // 的形态）：TRAE 对该形态有校验，换成 /oauth/callback 会让授权页报
+    // 「网络错误」（2026-10-27 用户实测）。
+    const callbackUrl = `http://127.0.0.1:${port}${trae.TRAE_CALLBACK_PATH}`
     return Promise.resolve({
       authorize_url: trae.buildTraeLoginURL(TRAE, machineId, deviceId, callbackUrl),
       state: JSON.stringify({
@@ -577,10 +580,14 @@ register('trae', {
       }),
     })
   },
-  async exchange({ code, state }) {
-    // code 是主进程从回调 query 里取的；parseTraeCallback 吃**完整回调 URL**。
+  async exchange({ code, state, raw_query }) {
+    // parseTraeCallbackDetailed 吃**完整回调 URL**：TRAE 的 query 里没有标准
+    // code，而是 userInfo/userJwt/authCodeInfo 等自有字段——必须用主进程
+    // 原样透传的 raw_query（标准 OAuth 的 code 单值拼法解析不出这些）。
     const st = JSON.parse(state)
-    const raw = `http://127.0.0.1${CALLBACK_PATH}?${code}`
+    const raw = raw_query
+      ? `http://127.0.0.1${trae.TRAE_CALLBACK_PATH}?${raw_query}`
+      : `http://127.0.0.1${trae.TRAE_CALLBACK_PATH}?${code}`
     const parsed = trae.parseTraeCallbackDetailed(raw)
     if (!parsed.ok) throw new Error(parsed.reason ?? '回调解析失败')
     const cred = await trae.exchangeTraeCallback(parsed.info, st.session, TRAE)

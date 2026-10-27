@@ -42,7 +42,10 @@ type ProviderOAuth interface {
 	// Authorize 发起授权。phone 仅 sms 形态需要。
 	Authorize(ctx context.Context, in AuthorizeInput) (*AuthorizeResult, error)
 	// Callback 用回调参数换取凭据并落库（redirect 形态）。
-	Callback(ctx context.Context, provider, code, state, sessionToken string) (*OAuthOutcome, error)
+	// rawQuery 是回调的原始查询串：TRAE 的回调不带标准 code 参数，
+	// 而是带 userInfo/userJwt/authCodeInfo 等自有字段——provider 侧
+	// 按需解析（标准 OAuth provider 忽略它）。
+	Callback(ctx context.Context, provider, code, state, sessionToken, rawQuery string) (*OAuthOutcome, error)
 	// Poll 查一次后台会话状态（session 形态）；完成时落库并返回结果。
 	Poll(ctx context.Context, in PollInput) (*PollResult, error)
 }
@@ -236,17 +239,21 @@ func (s *Server) HandleOAuthCallback(deps *OAuthDeps) http.HandlerFunc {
 			// portal 不带宽 supplier 段：只有 codearts 一家时按它的回调形状兜底。
 			provider = "codearts"
 		}
-		if code == "" {
+		cookieToken := ""
+		if c, err := r.Cookie(SessionCookieName); err == nil {
+			cookieToken = c.Value
+		}
+		// TRAE 的回调 query 里没有 code（带的是 userInfo/userJwt 等自有字段），
+		// 所以「没有 code」不再直接判失败——交给 provider 侧按原始 query 解析；
+		// 两者都空才是真的没参数。
+		rawQuery := r.URL.RawQuery
+		if code == "" && rawQuery == "" {
 			// 旧 ticket 流程回退（portal 判定 OAuth 不可用时会带 secret+redirect）：
 			// 这条回退路径需要轮询 ticket 端点，本期不接——如实告诉用户重试。
 			s.oauthFail(w, r, deps, "供应商没有返回授权码（可能回退到了不支持的旧登录流程）")
 			return
 		}
-		cookieToken := ""
-		if c, err := r.Cookie(SessionCookieName); err == nil {
-			cookieToken = c.Value
-		}
-		out, err := deps.OAuth.Callback(r.Context(), provider, code, state, cookieToken)
+		out, err := deps.OAuth.Callback(r.Context(), provider, code, state, cookieToken, rawQuery)
 		if err != nil {
 			s.oauthFail(w, r, deps, err.Error())
 			return

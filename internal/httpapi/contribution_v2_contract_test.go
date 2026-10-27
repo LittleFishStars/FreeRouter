@@ -34,7 +34,7 @@ func (f fakeProviderOAuth) Authorize(context.Context, AuthorizeInput) (*Authoriz
 	return nil, errors.New("本用例不应发起授权")
 }
 
-func (f fakeProviderOAuth) Callback(context.Context, string, string, string, string) (*OAuthOutcome, error) {
+func (f fakeProviderOAuth) Callback(context.Context, string, string, string, string, string) (*OAuthOutcome, error) {
 	return nil, errors.New("本用例不应处理回调")
 }
 

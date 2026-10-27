@@ -307,7 +307,7 @@ func hasQuery(u string) bool {
 }
 
 // Callback 处理 redirect 形态的供应商回调。
-func (b *oauthBridge) Callback(ctx context.Context, provider, code, nonce, sessionToken string) (*httpapi.OAuthOutcome, error) {
+func (b *oauthBridge) Callback(ctx context.Context, provider, code, nonce, sessionToken, rawQuery string) (*httpapi.OAuthOutcome, error) {
 	st, ok := b.states.take(nonce)
 	if !ok {
 		// 三种触发场景都要点到（用户只能看到这行字）：超时（登录供应商账号
@@ -322,11 +322,17 @@ func (b *oauthBridge) Callback(ctx context.Context, provider, code, nonce, sessi
 	if ok, reason := b.availability(); !ok {
 		return nil, fmt.Errorf("%s", reason)
 	}
-	raw, err := b.sidecar.Call(ctx, "oauth.exchange", map[string]any{
+	params := map[string]any{
 		"provider": provider,
 		"code":     code,
 		"state":    st.sidecarState,
-	})
+	}
+	// rawQuery 原样透传：TRAE 的回调 query 不含 code（userInfo/userJwt/…），
+	// 由 provider 侧自行解析；标准 OAuth provider 忽略它。
+	if rawQuery != "" {
+		params["raw_query"] = rawQuery
+	}
+	raw, err := b.sidecar.Call(ctx, "oauth.exchange", params)
 	if err != nil {
 		return nil, fmt.Errorf("换取失败：%s", sidecarMessage(err))
 	}

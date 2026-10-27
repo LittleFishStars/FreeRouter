@@ -394,6 +394,9 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	r.Post("/api/contributions/oauth/{provider}/poll", a.server.HandleOAuthPoll(oauthDeps))
 	r.Post("/api/contributions/oauth/{provider}/cancel", a.server.HandleOAuthCancel(oauthDeps))
 	r.Get("/oauth/callback", a.server.HandleOAuthCallback(oauthDeps))
+	// TRAE 的 auth_callback_url 用上游 IDE 插件的形态 /authorize（路径校验，
+	// 见 registry.mjs 的 trae.authorize 注释）——同一个 handler 收。
+	r.Get("/authorize", a.server.HandleOAuthCallback(oauthDeps))
 	// OPTIONS 是供应商 portal 的跨源可达性预检（不答它确认按钮就点不动，
 	// 见 HandleOAuthCallbackPreflight 注释）；HEAD 供轻量探测，与 GET 同 handler
 	//（net/http 自动丢弃 HEAD 的 body，302 Location 照常返回）。
