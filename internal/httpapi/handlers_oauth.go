@@ -75,6 +75,10 @@ type AuthorizeResult struct {
 	Flow        string `json:"flow,omitempty"`
 	Interval    int    `json:"interval,omitempty"`
 	Message     string `json:"message,omitempty"`
+	// QRCode 是二维码承载的**原始文本**（如 Raccoon 的登录页 URL）：
+	// sidecar 没有现成图片端点、也没有 QR 编码依赖时，由前端本地画码。
+	// 与 QRImageData 互斥使用：有图用图，有文本画码。
+	QRCode      string `json:"qr_code,omitempty"`
 }
 
 // PollInput 是查询后台授权会话的入参。

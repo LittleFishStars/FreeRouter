@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { QRCodeSVG } from 'qrcode.react'
 import {
   Accordion,
   AccordionDetails,
@@ -889,6 +890,21 @@ export function ContributeOAuthPage({ def }: PageProps) {
                 alt="登录二维码"
                 width={220}
                 height={220}
+                style={{ borderRadius: 8, background: '#fff', padding: 8 }}
+              />
+              <span className="block-meta">用手机 App 扫码授权</span>
+            </p>
+          )}
+          {session.flow === 'qr' && !session.qr_image_data && !session.qr_image_url && session.authorize_url && (
+            <p>
+              {/* Raccoon 这类供应商没有图片端点：material 只有登录页 URL，
+                  由前端本地画码（qrcode.react，MIT）。内容是 authorize_url
+                  ——扫出来的就是「手机内打开的登录页」。CSP 无碍：SVG 是
+                  内联元素不是外部资源。 */}
+              <QRCodeSVG
+                value={session.authorize_url}
+                size={220}
+                marginSize={1}
                 style={{ borderRadius: 8, background: '#fff', padding: 8 }}
               />
               <span className="block-meta">用手机 App 扫码授权</span>

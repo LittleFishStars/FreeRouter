@@ -17,6 +17,7 @@
     "@emotion/styled": "^11.14.1",
     "@mui/material": "^9.5.0",
     "@tabler/icons-react": "^3.49.0",
+    "qrcode.react": "^4.2.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "react-router-dom": "7.18.4"

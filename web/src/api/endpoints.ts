@@ -146,6 +146,8 @@ export interface OAuthAuthorize {
   qr_image_url?: string
   /** 服务端内联的二维码（data URL）。CSP 只允许 'self' 与 data:，外链图会被拦。 */
   qr_image_data?: string
+  /** 二维码承载的原始文本（sidecar 无图片端点时下发，前端本地画码，如 Raccoon） */
+  qr_code?: string
   interval?: number
   message?: string
 }
