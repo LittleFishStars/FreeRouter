@@ -106,7 +106,11 @@ function assertState(state) {
 }
 
 function randomTicket() {
-  return randomId(16)
+  // 64 hex 字符（randomId(32)）：对齐 hub login.js 的
+  // randomBytes(32).toString('hex')——portal 侧可能按长度/字符集校验
+  // ticket_id，格式不符时确认接口静默失败，表现是「确认授权点不动」
+  //（2026-10-27 用户实测；16 字符版与真实插件形状不一致）。
+  return randomId(32)
 }
 
 function randomId(bytes) {

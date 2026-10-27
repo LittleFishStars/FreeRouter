@@ -261,6 +261,16 @@ func (s *Server) HandleOAuthCallback(deps *OAuthDeps) http.HandlerFunc {
 		if out.Message != "" {
 			params.Set("message", out.Message)
 		}
+		// 两种消费模式分流（Sec-Fetch-Mode，现代浏览器都发）：
+		// - cors（portal 确认弹窗里 fetch 本地回调验证在线）→ 答 200 空体，
+		//   对齐 hub login.js 的 writeHead(200).end()。若答 302，fetch 会跟随
+		//   到 SPA 页，应答体是整页 HTML，portal 校验不过时确认流程静默失败。
+		// - navigate / 无头（老浏览器顶层 302）→ 302 落前端结果页（原行为）。
+		switch r.Header.Get("Sec-Fetch-Mode") {
+		case "cors", "no-cors":
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		http.Redirect(w, r, target+withHashQuery(target, params), http.StatusFound)
 	}
 }
@@ -275,6 +285,15 @@ func (s *Server) oauthFail(w http.ResponseWriter, r *http.Request, deps *OAuthDe
 	params := url.Values{}
 	params.Set("accepted", "0")
 	params.Set("message", message)
+	// fetch 模式（portal 确认弹窗）答 400 + 错误文本 + CORS，对齐 hub 的兜底
+	//（writeHead(400).end('Missing token or secret')）；302 会让 fetch 跟随
+	// 到 SPA 页，portal 校验不过时错误被吞、弹窗无反馈。顶层导航仍 302。
+	switch r.Header.Get("Sec-Fetch-Mode") {
+	case "cors", "no-cors":
+		oauthCallbackCORS(w)
+		http.Error(w, message, http.StatusBadRequest)
+		return
+	}
 	http.Redirect(w, r, target+withHashQuery(target, params), http.StatusFound)
 }
 
