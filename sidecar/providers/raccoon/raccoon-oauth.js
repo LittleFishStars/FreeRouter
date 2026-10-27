@@ -23,7 +23,7 @@
  * 也不做凭据持久化（那是 `raccoon-auth.ts` 的职责）。全部函数可离线单测。
  */
 import { randomBytes } from 'node:crypto';
-import { RACCOON_QR_STATUS, RACCOON_REQUEST_TIMEOUT_MS, decodeJwtExpMs, raccoonHeaders, } from './raccoon.js';
+import { RACCOON_QR_STATUS, RACCOON_REQUEST_TIMEOUT_MS, decodeJwtExpMs, encryptRaccoonPhone, raccoonHeaders, } from './raccoon.js';
 /** 解析业务信封。`code === 0` 为成功。 */
 function parseEnvelope(payload, status) {
     const record = typeof payload === 'object' && payload !== null && !Array.isArray(payload)
@@ -281,7 +281,9 @@ export async function pollRaccoonQrLogin(product, code, fetcher = fetch) {
 export async function sendSmsVerification(product, phone, captchaToken, fetcher = fetch) {
     const { envelope } = await postJson(`${RACCOON_IAM_BASE}/sms/send`, {
         nation_code: '86',
-        phone,
+        // phone 与旧协议同样走 AES-128-CFB 加密（官网 SSR 下发的 publicKey
+        // 就是 'senseraccoon2023'，与旧密钥同值；明文会被判 phone invalid）
+        phone: encryptRaccoonPhone(phone.trim()),
         captcha_token: captchaToken,
         scene: 'login',
     }, fetcher);
@@ -305,7 +307,7 @@ export async function sendSmsVerification(product, phone, captchaToken, fetcher 
 export async function smsLogin(product, phone, verificationId, verificationCode, fetcher = fetch) {
     const { envelope } = await postJson(`${RACCOON_IAM_BASE}/auth/login/sms`, {
         nation_code: '86',
-        phone,
+        phone: encryptRaccoonPhone(phone.trim()),
         verification_id: verificationId,
         verification_code: verificationCode,
     }, fetcher);
