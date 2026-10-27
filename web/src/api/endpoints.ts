@@ -152,9 +152,16 @@ export interface OAuthAuthorize {
   message?: string
 }
 
-export function startOAuthContribution(provider: string, phone?: string) {
-  const q = phone ? `?phone=${encodeURIComponent(phone)}` : ''
-  return postWrite<OAuthAuthorize>(`${PATHS.contributions}/oauth/${seg(provider)}${q}`)
+export function startOAuthContribution(
+  provider: string,
+  opts?: { phone?: string; captchaParam?: string },
+) {
+  const q = new URLSearchParams()
+  if (opts?.phone) q.set('phone', opts.phone)
+  // 阿里云滑块产物（Raccoon 短信登录必需；其他 provider 忽略）
+  if (opts?.captchaParam) q.set('captcha_param', opts.captchaParam)
+  const qs = q.toString()
+  return postWrite<OAuthAuthorize>(`${PATHS.contributions}/oauth/${seg(provider)}${qs ? `?${qs}` : ''}`)
 }
 
 export interface OAuthPollResult {

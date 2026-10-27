@@ -55,6 +55,9 @@ type AuthorizeInput struct {
 	Provider string
 	Port     int
 	Phone    string
+	// CaptchaParam 是阿里云滑块验证码的产物（Raccoon 短信登录必需，
+	// 其他 provider 忽略）。从 start 的 query 传入（滑块完成即发起）。
+	CaptchaParam string
 	// SessionToken 是浏览器可能带的会话 Cookie（贡献归属用；可为空）。
 	SessionToken string
 }
@@ -185,6 +188,7 @@ func (s *Server) HandleContributeOAuthStart(deps *OAuthDeps) http.HandlerFunc {
 			Provider:     provider,
 			Port:         deps.Port,
 			Phone:        strings.TrimSpace(r.URL.Query().Get("phone")),
+			CaptchaParam: strings.TrimSpace(r.URL.Query().Get("captcha_param")),
 			SessionToken: cookieValue(r),
 		})
 		if err != nil {

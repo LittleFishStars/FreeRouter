@@ -418,55 +418,37 @@ register('loomy', {
 
 register('raccoon', {
   name: 'Raccoon（商汤小浣熊）',
-  flow: 'qr',
-  async start() {
-    // 现行协议（2026-10-27 从官网登录页逆向）：服务端主导的扫码会话——
-    // create /auth/mp/qrcode 下发 qrcode_code + scan_path，前端把
-    // qrOrigin+scan_path?code=…&appname=…&source=platform 画成码，
-    // 微信扫后在微信内完成登录，服务端把会话置 success，轮询拿 token。
-    // 旧协议（客户端造 code + login_with_qrcode_code）已失效：login/mp
-    // 网页 404、App 扫报「内容无效」。
+  // 2026-10-27：扫码协议（微信路径 login/mp 已 404、App 报「内容无效」）
+  // 双双失效，切回**短信验证码**登录——hub 的登录页实测这条路是活的。
+  // captcha_param 来自阿里云滑块（前端贡献页嵌官方 AliyunCaptcha.js，
+  // SceneId/prefix 是客户端逆向常量）。
+  flow: 'sms',
+  needs: ['phone'],
+  async start({ phone, captchaParam }) {
+    if (!phone) throw new Error('E_BAD_REQUEST: Raccoon 登录需要手机号')
+    if (!captchaParam) throw new Error('E_BAD_REQUEST: 请先完成滑块验证')
     const product = {
       apiBase: raccoonLib.RACCOON_API_BASE,
       authApiPrefix: raccoonLib.RACCOON_AUTH_PREFIX,
     }
-    const session = await raccoon.createQrSession(product)
-    const content = raccoon.buildQrContent(
-      raccoon.RACCOON_QR_ORIGIN, session.scanPath, session.qrcodeCode, '商汤小浣熊官网')
+    // 先发验证码（滑块产物在这步消费），再把「等用户填码」丢后台。
+    await raccoon.sendRaccoonSmsCode(product, phone, captchaParam)
     return background(
       'raccoon',
-      'qr',
-      {
-        authorize_url: content,
-        qr_code: session.qrcodeCode,
-        message: '请用微信扫码，并在微信内完成登录',
-        interval: Math.max(1, session.pollIntervalSec),
-      },
-      async ({ signal, report }) => {
-        // 会话寿命由服务端下发（expires_in，上限 3600s）；超时即终止，
-        // 前端提示重新发起——而不是无限 pending。
-        const deadline = Date.now() + session.expiresInSec * 1000
-        for (;;) {
-          if (signal?.aborted) throw new Error('登录已取消')
-          if (Date.now() >= deadline) throw new Error('二维码已过期，请重新发起授权')
-          const r = await raccoon.pollQrSession(product, session.qrcodeCode)
-          if (r.status === 'success') {
-            return { access_token: r.accessToken, refresh_token: r.refreshToken, expires_at: r.expiresAt ?? '' }
-          }
-          if (r.status === 'canceled') throw new Error('用户取消了扫码')
-          if (r.status === 'logging') {
-            report({ message: '已扫码，请在手机上确认' })
-          }
-          await sleep(Math.max(1000, session.pollIntervalSec * 1000))
-        }
-      },
+      'sms',
+      { authorize_url: '', phone, message: '验证码已发送，请查收短信' },
+      null,
     )
   },
-  async refresh({ credential }) {
-    const product = { apiBase: raccoonLib.RACCOON_API_BASE, authApiPrefix: raccoonLib.RACCOON_AUTH_PREFIX }
-    const cred = typeof credential === 'string' ? JSON.parse(credential) : credential
-    const next = await raccoon.refreshRaccoonCredential(product, cred)
-    return { credential: JSON.stringify(next), expires_at: String(next.expires_at ?? '') }
+  // 用户回填验证码后，oauth.poll 携 code 进来（sessions.attachRunner）。
+  async submit({ code, state }) {
+    const st = JSON.parse(state)
+    const product = {
+      apiBase: raccoonLib.RACCOON_API_BASE,
+      authApiPrefix: raccoonLib.RACCOON_AUTH_PREFIX,
+    }
+    const cred = await raccoon.loginRaccoonWithSmsCode(product, st.phone, code)
+    return cred
   },
 })
 

@@ -689,11 +689,51 @@ export function ContributeOAuthPage({ def }: PageProps) {
   const [result, setResult] = useState<{ ok: boolean; message: string; recoveryCode?: string } | null>(null)
   const navigate = useNavigate()
 
+  // ── 阿里云滑块（Raccoon 短信登录的 captcha_param 来源）──
+  // 官方脚本按需注入：只有走滑块流程的 provider 才加载（CSP 只对
+  // /contribute/ 与 /api/contributions/oauth/ 路径放行 alicdn/aliyuncs）。
+  // SceneId/prefix 是商汤客户端的逆向常量（hub raccoon-product.js 同值）。
+  const captchaReadyRef = useRef(false)
+  function launchRaccoonCaptcha(phone: string) {
+    const el = document.getElementById('captcha-element')
+    if (!el) { setError(new Error('滑块容器缺失，请刷新页面')); return }
+    const begin = (captchaParam: string) => {
+      captchaReadyRef.current = true
+      start(phone, captchaParam)
+    }
+    const w = window as unknown as {
+      initAliyunCaptcha?: (o: Record<string, unknown>) => void
+    }
+    if (typeof w.initAliyunCaptcha === 'function') {
+      w.initAliyunCaptcha({
+        SceneId: '1pkmy0x3', prefix: 'hk1r5l', mode: 'popup',
+        element: '#captcha-element', button: '#send-code-btn',
+        captchaVerifyCallback: (cp: string) => { begin(cp); return { captchaResult: true, bizResult: true } },
+        getInstance: () => null, slideStyle: { width: 320, height: 40 }, language: 'cn',
+      })
+      return
+    }
+    const sc = document.createElement('script')
+    sc.src = 'https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js'
+    sc.onload = () => {
+      if (typeof w.initAliyunCaptcha === 'function') {
+        w.initAliyunCaptcha({
+          SceneId: '1pkmy0x3', prefix: 'hk1r5l', mode: 'popup',
+          element: '#captcha-element', button: '#send-code-btn',
+          captchaVerifyCallback: (cp: string) => { begin(cp); return { captchaResult: true, bizResult: true } },
+          getInstance: () => null, slideStyle: { width: 320, height: 40 }, language: 'cn',
+        })
+      } else { setError(new Error('滑块脚本加载失败，请检查网络后重试')) }
+    }
+    sc.onerror = () => setError(new Error('滑块脚本加载失败，请检查网络后重试'))
+    document.head.appendChild(sc)
+  }
+
   // 发起（短信形态由页内表单再调一次，故抽成函数）。
-  function start(phone?: string) {
+  function start(phone?: string, captchaParam?: string) {
     setStarting(true)
     setError(null)
-    startOAuthContribution(provider, phone)
+    startOAuthContribution(provider, { phone, captchaParam })
       .then((r) => {
         const d = r.data
         // **先判断"要不要用户去供应商那边操作"，再判断"我们怎么收结果"。**
@@ -843,14 +883,18 @@ export function ContributeOAuthPage({ def }: PageProps) {
           className="form-card"
           onSubmit={(e: FormEvent) => {
             e.preventDefault()
+            // Raccoon 的 send_sms 必须携带阿里云滑块产物（captcha_param）：
+            // 提交时先弹滑块，滑过再真正发起；其他 provider 直发。
+            if (provider === 'raccoon') { launchRaccoonCaptcha(phone.trim()); return }
             start(phone.trim())
           }}
         >
           <Field label="手机号" required hint="供应商将向该号码发送验证码。">
             <input value={phone} onChange={(e) => setPhone(e.target.value)} required autoComplete="tel" inputMode="tel" />
           </Field>
+          {provider === 'raccoon' && <div id="captcha-element" />}
           <FormError error={error} />
-          <button type="submit" className="btn-primary">发送验证码</button>
+          <button id="send-code-btn" type="submit" className="btn-primary">发送验证码</button>
         </form>
       ) : session ? (
         <Section

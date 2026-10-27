@@ -83,7 +83,17 @@ func (s *Server) mwSecurityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'")
+		// 贡献授权路径需要加载阿里云滑块验证码（Raccoon 短信登录的
+		// captcha_param 由它产出）：放行 alicdn 脚本/样式与 aliyuncs 验证接口。
+		// 只对这条路径放宽，其余页面维持只允许同源脚本的严 CSP。
+		csp := "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
+		if strings.HasPrefix(r.URL.Path, "/api/contributions/oauth/") ||
+			strings.HasPrefix(r.URL.Path, "/contribute/") {
+			csp = "default-src 'self'; img-src 'self' data: https://*.aliyuncs.com; " +
+				"style-src 'self' 'unsafe-inline'; script-src 'self' https://o.alicdn.com https://g.alicdn.com; " +
+				"connect-src 'self' https://*.aliyuncs.com https://*.alicdn.com; frame-ancestors 'none'"
+		}
+		h.Set("Content-Security-Policy", csp)
 		// 本服务承载 API 与自带前端，不申请任何浏览器能力。
 		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 		if strings.EqualFold(s.cfg.TLS.Mode, "files") {

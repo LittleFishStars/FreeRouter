@@ -341,7 +341,7 @@ const METHODS = {
 
   // 发起授权。redirect 形态返回 {authorize_url, state}；session 形态（设备码/
   // 二维码/短信）返回 {session_id, authorize_url, user_code, ...} 并已在后台轮询。
-  'oauth.authorize': async ({ provider, port, phone }) => {
+  'oauth.authorize': async ({ provider, port, phone, captcha_param }) => {
     const entry = registry.get(provider)
     if (!entry) {
       throw new SidecarError('E_NOT_IMPLEMENTED',
@@ -353,7 +353,8 @@ const METHODS = {
     }
     try {
       if (typeof entry.start === 'function') {
-        const s = await entry.start({ port, phone })
+        // captcha_param 是阿里云滑块的产物（Raccoon 短信登录必需），原样透传。
+        const s = await entry.start({ port, phone, captchaParam: captcha_param })
         return { ...s, mode: 'session' }
       }
       const r = await entry.authorize({ port, phone })

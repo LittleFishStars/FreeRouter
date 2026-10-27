@@ -252,6 +252,9 @@ func (b *oauthBridge) Authorize(ctx context.Context, in httpapi.AuthorizeInput) 
 	if in.Phone != "" {
 		params["phone"] = in.Phone
 	}
+	if in.CaptchaParam != "" {
+		params["captcha_param"] = in.CaptchaParam
+	}
 	raw, err := b.sidecar.Call(ctx, "oauth.authorize", params)
 	if err != nil {
 		return nil, err
