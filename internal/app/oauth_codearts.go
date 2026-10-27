@@ -38,8 +38,15 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/upstream/dshprovider"
 )
 
-// oauthStateTTL 是一次授权会话的寿命（与 sidecar 侧 sessions 的 10 分钟同源）。
-const oauthStateTTL = 10 * time.Minute
+// oauthStateTTL 是 redirect 形态授权会话的寿命。
+//
+// 为什么是 30 分钟而不是 sidecar sessions 的 10 分钟：这条 TTL 罩的是
+// 「用户去供应商 portal 登录账号」的慢流程——输账号密码、短信/MFA、
+// 找控制台入口，10 分钟经常不够（2026-10-27 用户 CodeArts 实测超时）。
+// 安全上可接受：nonce 是一次性 CSRF 令牌（take 即删），放宽窗口只是
+// 拉长「未消费令牌」的有效期，不扩大重放面。session 形态（扫码）不受
+// 影响：二维码自己几分钟就过期（微信侧返 402），由供应商时限兜底。
+const oauthStateTTL = 30 * time.Minute
 
 // oauthStateStore 是 redirect 形态待完成授权的进程内一次性表。
 type oauthStateStore struct {
@@ -293,7 +300,11 @@ func hasQuery(u string) bool {
 func (b *oauthBridge) Callback(ctx context.Context, provider, code, nonce, sessionToken string) (*httpapi.OAuthOutcome, error) {
 	st, ok := b.states.take(nonce)
 	if !ok {
-		return nil, fmt.Errorf("授权会话不存在或已过期，请重新发起授权")
+		// 三种触发场景都要点到（用户只能看到这行字）：超时（登录供应商账号
+		// 超过 30 分钟）、服务重启（内存表丢失，旧标签页/旧链接作废）、
+		// 链接已被用（一次性令牌，刷新结果页会重放回调）。
+		return nil, fmt.Errorf("授权会话不存在或已过期：可能是从发起授权到完成登录超过了 30 分钟、" +
+			"授权期间服务重启过（旧标签页作废）、或该链接已被使用。请回到贡献入口重新发起一次")
 	}
 	if st.provider != provider {
 		return nil, fmt.Errorf("state 与 provider 不匹配")
