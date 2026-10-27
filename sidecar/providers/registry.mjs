@@ -390,7 +390,16 @@ register('loomy', {
             if (bound.bind === 1) {
               // 该微信已绑手机号 → 直接换会话（skip 跳过的是"绑定手机号"步骤）
               const out = await loomy.bindLoomySkip(bound.rcode, LOOMY)
-              return { session: out.session, userid: out.userid }
+              // 凭据形状对齐 hub 的 buildCredential（loomy-auth.js）：转发
+              // adapter 只读 credential.access_token（loomy-adapter.js 的
+              // send(access_token)），"session" 字段名它不认识——旧写法落库的
+              // 凭据即使扫码成功也完全不可用。expires_at 是毫秒字符串，
+              // TTL 14 天（LOOMY_SESSION_TTL_SECONDS = 1_209_600）。
+              return {
+                access_token: out.session,
+                userid: out.userid,
+                expires_at: String(Date.now() + loomy.LOOMY_SESSION_TTL_SECONDS * 1000),
+              }
             }
             // 未绑手机号：上游这套接口拿不到会话，只能请用户先绑一次。
             // 不假装成功，也不循环重试（同一个号再扫还是同样的结果）。
