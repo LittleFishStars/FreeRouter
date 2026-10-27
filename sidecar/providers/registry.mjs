@@ -431,13 +431,14 @@ register('raccoon', {
       'raccoon',
       'qr',
       {
-        // 二维码承载的是「微信内打开的登录页」（login/mp）；没有图片端点，
-        // 前端本地画码（qrcode.react）。**用微信扫**——login/mp 是微信内
-        // 页面，不是商汤 App 扫的码（App 扫会报「二维码已过期或已被使用」，
-        // 2026-10-27 用户实测）。
+        // 二维码承载的是登录页 URL（login/mp）；没有图片端点，前端本地画码。
+        // 2026-10-27 实测：login/mp 网页已 404（上游下线了微信内路径），
+        // 主路径是**商汤小浣熊 App 扫码确认**——App 解析出 code 后在服务端
+        // 把会话置 success，我们轮询拿 token。App 报「二维码已过期或已被
+        // 使用」通常是发起后拖太久（服务端会话 TTL 短），重新发起即可。
         authorize_url: raccoon.buildQrImageUrl(product, code),
         qr_code: code,
-        message: '请用微信扫码，并在微信内完成登录',
+        message: '请用商汤小浣熊 App 扫码；发起后请尽快扫码，超时需重新发起',
       },
       async ({ signal, report }) => {
         for (;;) {

@@ -117,6 +117,16 @@ export async function pollRaccoonQrLogin(product, code, fetcher = fetch) {
     const raw = envelope.data.status;
     const status = typeof raw === 'string' ? raw : '';
     const expiredAt = typeof envelope.data.expired_at === 'string' ? envelope.data.expired_at : undefined;
+    // 会话过期**主动判定**（2026-10-27 用户实测：手机提示二维码已过期，电脑
+    // 永远「等待扫码」）：服务端的 status 枚举里没有 expired（过期后返回的
+    // 可能仍是 pending 或未知值），但 expired_at 每帧都在应答里——按它判定，
+    // 过期即 failed，前端立刻提示重新发起，而不是两端干等。
+    if (expiredAt !== undefined) {
+        const expMs = Date.parse(expiredAt);
+        if (!Number.isNaN(expMs) && Date.now() > expMs) {
+            return { status: 'failed', message: '二维码已过期，请重新发起授权' };
+        }
+    }
     if (status === RACCOON_QR_STATUS.canceled)
         return { status: 'canceled' };
     if (status === RACCOON_QR_STATUS.logging) {
