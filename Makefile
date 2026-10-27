@@ -34,10 +34,10 @@ build:
 	@echo "已构建 $(BINARY)：$(VERSION) ($(COMMIT))——不含前端，完整版用 make release"
 
 ## release: 构建内嵌前端的完整单二进制（日常运行用这个；先跑 make web）
-release:
-	@if [ ! -f internal/webui/dist/index.html ]; then \
-		echo "internal/webui/dist 不存在：先跑 make web 构建前端" >&2; exit 1; \
-	fi
+release: web
+	@# web 是前置依赖：前端改动必须随 release 一起重建——否则会把上一次的
+	@# dist 原样嵌进新二进制（2026-10-27 实测踩坑：改了前端没跑 web，页脚
+	@# 「前端构建」还停在旧版本，用户怎么重启都看不到修复）。
 	@mkdir -p bin
 	$(GO) build -trimpath -tags webui_dist -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/freerouter
 	@echo "已构建 $(BINARY)：$(VERSION) ($(COMMIT))，内嵌前端"
@@ -79,9 +79,13 @@ check-config: build
 	./$(BINARY) --config testdata/config.yaml --check-config
 
 ## web: 构建前端并嵌入（M9；在此之前是可选的）
+# 不再每次 install：依赖已在 node_modules 时重复 install 会碰 pnpm 的 store
+# 操作锁（make 环境下 store-dir 只读报 ERR_PNPM_STORE_DIR_OPEN_OPERATION_LOCK，
+# 2026-10-27 实测），且 frozen-lockfile 对增量构建没有额外价值。全新检出
+# （无 node_modules）请先手动 pnpm install。
 web:
 	@if [ -d web ] && [ -f web/package.json ]; then \
-		cd web && (pnpm install --frozen-lockfile && pnpm build); \
+		cd web && (pnpm build); \
 	else \
 		echo "web/ 尚未就绪，跳过"; \
 	fi
