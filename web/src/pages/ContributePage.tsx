@@ -10,7 +10,7 @@
 //   3. 未登录贡献后的恢复路径按类型分叉：OAuth 型说明「用任意用过的账号
 //      登录」，纯 Key 型一次性展示恢复码。
 
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   Accordion,
@@ -681,7 +681,6 @@ export function ContributeOAuthPage({ def }: PageProps) {
   const [starting, setStarting] = useState(true)
   const [session, setSession] = useState<OAuthAuthorize | null>(null)
   const [smsCode, setSmsCode] = useState('')
-  const [polling, setPolling] = useState(false)
   const [phone, setPhone] = useState('')
   const [result, setResult] = useState<{ ok: boolean; message: string; recoveryCode?: string } | null>(null)
   const navigate = useNavigate()
@@ -748,12 +747,21 @@ export function ContributeOAuthPage({ def }: PageProps) {
   }, [provider])
 
   // session 形态：轮询进度。
+  // 在飞标记为什么用 ref 而不是 state：之前用 useState(true/false) 时，
+  // setPolling(true) 会把 polling 塞进依赖数组触发 effect 重跑——旧 effect 的
+  // alive 翻 false，在飞应答被 `if (!alive) return` 丢弃，而 finally 里的
+  // setPolling(false) 又被同一个 alive 挡住不再执行，polling 永久卡在 true，
+  // 后续 tick 全部 no-op——轮询整体死锁。实测表现就是「手机上已确认扫码，
+  // 页面永远等在『等待扫码…』」（2026-10-27 用户报告 Loomy 扫码无反应的根因）。
+  // ref 不参与渲染，翻转它不会触发重跑；alive 语义保持「effect 还挂着」，
+  // 组件卸载前应答总能被处理。
+  const pollingRef = useRef(false)
   useEffect(() => {
     if (!session?.session_id) return
     let alive = true
     const tick = async () => {
-      if (polling) return
-      setPolling(true)
+      if (pollingRef.current) return
+      pollingRef.current = true
       try {
         const r = await pollOAuthContribution(provider, {
           session_id: session.session_id!,
@@ -776,16 +784,19 @@ export function ContributeOAuthPage({ def }: PageProps) {
       } catch (e) {
         if (alive) setError(e)
       } finally {
-        if (alive) setPolling(false)
+        // 必须无条件复位：alive 翻 false 只说明组件卸载，ref 复位与否已无所谓；
+        // 但只要 effect 还挂着（alive=true），下一次 tick 必须能进。
+        pollingRef.current = false
       }
     }
-    const timer = window.setInterval(tick, Math.max(2, session.interval ?? 3) * 1000)
+    // interval 为 0 是合法形状（sidecar 未下发时 Go 侧零值），用 || 而不是 ?? 才能落回 3 秒默认。
+    const timer = window.setInterval(tick, Math.max(2, session.interval || 3) * 1000)
     void tick()
     return () => {
       alive = false
       window.clearInterval(timer)
     }
-  }, [session, provider, smsCode, polling])
+  }, [session, provider, smsCode])
 
   // 完成：有恢复码走一次性展示（回跳贡献页），否则直接回贡献页带 query。
   if (result?.ok && result.recoveryCode) {

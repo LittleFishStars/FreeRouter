@@ -372,10 +372,18 @@ register('loomy', {
         let lastErrcode = ''
         for (;;) {
           if (signal?.aborted) throw new Error('登录已取消')
-          // pollLoomyWechatOnce 自己是长轮询（微信侧 ~25 秒才返回），
-          // 所以这里不再额外 sleep。
+          // pollLoomyWechatOnce 自己是长轮询（微信侧 ~25 秒才返回），正常帧
+          // 不再额外 sleep。error 帧除外：网络故障往往立刻失败，不退避就是
+          // 热旋（2026-10-27 排查「扫码无反应」时补的）。
           const r = await loomyWechat.pollLoomyWechatOnce(uuid, lastErrcode)
-          lastErrcode = r.errcode ?? ''
+          if (r.status === ST.error) {
+            await new Promise((ok) => setTimeout(ok, 3_000))
+            continue
+          }
+          // last 只接受数字 errcode：pollLoomyWechatOnce 的 error 帧把错误
+          // 文本（如 "TimeoutError"）放进了 errcode 字段，原样回传给微信
+          // （last=TimeoutError）是协议外参数，行为不可预期。
+          if (/^\d+$/.test(r.errcode ?? '')) lastErrcode = r.errcode
           if (r.status === ST.confirmed) {
             if (!r.code) continue // 405 却没带 code：异常帧，继续轮询，绝不拿空 code 去换
             const bound = await loomy.bindLoomyThirdAccount(r.code, LOOMY)

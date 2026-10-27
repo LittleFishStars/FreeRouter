@@ -13,6 +13,17 @@
 
 ### 变更
 
+- **session 形态授权（扫码/设备码/短信）的轮询死锁修复**（2026-10-27 用户报告：
+  Loomy 扫码手机已确认、页面永远停在「等待扫码…」）：根因在前端轮询 effect——
+  在飞标记用 useState 且被放进依赖数组：`setPolling(true)` 触发 effect 重跑 →
+  旧 effect 的 alive 翻 false → 在飞应答被 `if (!alive) return` 丢弃，而 finally
+  里的 `setPolling(false)` 又被同一个 alive 挡住不再执行 → polling 永久卡在 true →
+  后续 tick 全部 no-op，轮询整体死亡。**服务端 session 已完成也永远到不了界面**。
+  修复：在飞标记改用 useRef（翻转不触发渲染、不进依赖），应答处理不再被自身
+  状态机吞掉；interval 兜底从 `?? 3` 改 `|| 3`（0 是 Go 侧零值，不是「未下发」）。
+- **Loomy 扫码 runner 的两处健壮性**：① error 帧加 3 秒退避（网络故障往往立刻
+  失败，不退避就是热旋）；② `last` 参数只回传数字 errcode——error 帧把错误文本
+  （如 "TimeoutError"）放进 errcode 字段，原样回传给微信是协议外参数。
 - **反代供应商授权完成后的「无反应」修复**（2026-10-27 用户报告）：在供应商侧
   显示「授权成功」后，授权标签页悬停不动、原页面也没有任何反馈。
   - **实测排查**：服务端整条链路是通的——发起授权返回的 authorize_url 正确携带
