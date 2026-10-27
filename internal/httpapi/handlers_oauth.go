@@ -194,8 +194,32 @@ func (s *Server) HandleContributeOAuthStart(deps *OAuthDeps) http.HandlerFunc {
 // 而"是哪个贡献者"由 state 里的授权会话决定（未登录则自动建 contributor）。
 // 若浏览器恰好带着本站会话 Cookie（同一浏览器发起的授权），这里仍会用它，
 // 让贡献落在当前账户下。
+//
+// CORS 与 OPTIONS：供应商 portal（https 源）在确认授权前会用 fetch 探测
+// 回环回调的可达性——跨源探测先发 CORS 预检 OPTIONS。参照 hub 的
+// login.js（OPTIONS → 204 + CORS，GET 应答也带 CORS）：不答预检，portal
+// 判定「本地客户端未就绪」，确认按钮点了无反应（2026-10-27 用户实测）。
+// Allow-Origin 用 * 安全：这条路由只消费 URL 参数、不读 Cookie 做鉴权，
+// 回应体是重定向地址而非敏感数据。
+func (s *Server) HandleOAuthCallbackPreflight() http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		oauthCallbackCORS(w)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// oauthCallbackCORS 写回环回调所需的跨源头（与 hub login.js 的 CORS_HEADERS 同形）。
+func oauthCallbackCORS(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Access-Control-Allow-Origin", "*")
+	h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+	h.Set("Access-Control-Max-Age", "86400")
+}
+
 func (s *Server) HandleOAuthCallback(deps *OAuthDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		oauthCallbackCORS(w)
 		if deps == nil || deps.OAuth == nil {
 			s.oauthFail(w, r, deps, "供应商授权未装配")
 			return

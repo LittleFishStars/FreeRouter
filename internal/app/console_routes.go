@@ -394,6 +394,11 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	r.Post("/api/contributions/oauth/{provider}/poll", a.server.HandleOAuthPoll(oauthDeps))
 	r.Post("/api/contributions/oauth/{provider}/cancel", a.server.HandleOAuthCancel(oauthDeps))
 	r.Get("/oauth/callback", a.server.HandleOAuthCallback(oauthDeps))
+	// OPTIONS 是供应商 portal 的跨源可达性预检（不答它确认按钮就点不动，
+	// 见 HandleOAuthCallbackPreflight 注释）；HEAD 供轻量探测，与 GET 同 handler
+	//（net/http 自动丢弃 HEAD 的 body，302 Location 照常返回）。
+	r.Options("/oauth/callback", a.server.HandleOAuthCallbackPreflight())
+	r.Head("/oauth/callback", a.server.HandleOAuthCallback(oauthDeps))
 
 	r.Get("/api/contributions/providers", a.server.HandleContributeProviders(contribDeps))
 	r.Post("/api/contributions", a.server.HandleContributeSubmit(contribDeps))
