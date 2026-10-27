@@ -36,3 +36,4 @@ tmp/
 # 本地主密钥（默认落在工作目录根）
 master.key
 .pnpm-store/
+web/node_modules/
