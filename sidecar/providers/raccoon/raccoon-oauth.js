@@ -43,12 +43,12 @@ function envelopeError(envelope, fallback) {
     const text = parts.length > 0 ? parts.join(': ') : fallback;
     return new Error(`raccoon: ${text}`);
 }
-/** 发一次 JSON 请求并解析信封。 */
-async function postJson(url, body, fetcher, headers = {}) {
+/** 发一次 JSON 请求并解析信封。method 默认 POST（取消会话用 PUT）。 */
+async function postJson(url, body, fetcher, headers = {}, method = 'POST') {
     let response;
     try {
         response = await fetcher(url, {
-            method: 'POST',
+            method,
             headers: { 'Content-Type': 'application/json', ...headers },
             body: JSON.stringify(body),
             signal: AbortSignal.timeout(RACCOON_REQUEST_TIMEOUT_MS),
@@ -66,10 +66,120 @@ async function postJson(url, body, fetcher, headers = {}) {
     }
     return { envelope: parseEnvelope(parsed, response.status), status: response.status };
 }
+// ── 现行扫码协议（2026-10-27 从官网登录页逆向，x-raccoon-website chunks）──
+//
+// 旧协议（客户端本地造 code + `login_with_qrcode_code` 轮询）已失效：
+// ① 二维码指向的 `login/mp` 网页 404（上游下线了微信内路径）；② App 扫码
+// 报「二维码内容无效」——现行协议是**服务端主导**的会话：
+//   POST /auth/mp/qrcode        → { qrcode_code, scan_path, expires_in, poll_interval }
+//   二维码内容                   = qrOrigin + scan_path?code=…&appname=…&source=platform
+//   POST /auth/mp/qrcode/login  → { status: pending|logging|canceled|success, access_token? }
+//   PUT  /auth/mp/qrcode        → { qrcode_code, status: "canceled" }（取消）
+
+/** 二维码的 origin（官网登录页服务端注入的 qrOrigin，配置化以便上游迁移）。 */
+export const RACCOON_QR_ORIGIN = 'https://xiaohuanxiong.com/';
+/** 现行扫码协议的 API 前缀（官网前端 baseUrl 默认 /api/iam/v1，同源）。 */
+export const RACCOON_IAM_BASE = 'https://xiaohuanxiong.com/api/iam/v1';
+
 /**
- * 生成一个扫码用的 `qrcode_code`（32 位小写 hex = 16 字节随机）。
+ * 创建一次扫码会话。
  *
- * 依据客户端：`CryptoJS.lib.WordArray.random(16)`（渲染层模块 68284 的 `yl()`）。
+ * @returns { qrcode_code, scan_path, expires_in(秒), poll_interval(秒) }
+ * productCodes 可空——官网允许不带（对应 token 的产品授权范围）。
+ */
+export async function createQrSession(product, productCodes, fetcher = fetch) {
+    const body = Array.isArray(productCodes) && productCodes.length > 0
+        ? { product_codes: productCodes }
+        : {};
+    const { envelope } = await postJson(`${RACCOON_IAM_BASE}/auth/mp/qrcode`, body, fetcher);
+    if (envelope.code !== 0 || typeof envelope.data !== 'object' || envelope.data === null) {
+        throw new Error(`raccoon: 创建扫码会话失败（${envelope.message || envelope.code || '未知错误'}）`);
+    }
+    const d = envelope.data;
+    // 形状校验对齐官网（scan_path 必须是站内相对路径）。
+    if (typeof d.qrcode_code !== 'string' || !d.qrcode_code
+        || typeof d.scan_path !== 'string' || !d.scan_path.startsWith('/')
+        || d.scan_path.startsWith('//') || /[\\\s]/.test(d.scan_path)
+        || !Number.isFinite(d.expires_in) || d.expires_in <= 0) {
+        throw new Error('raccoon: 扫码会话应答形状非法');
+    }
+    return {
+        qrcodeCode: d.qrcode_code,
+        scanPath: d.scan_path,
+        expiresInSec: d.expires_in,
+        pollIntervalSec: Number.isFinite(d.poll_interval) && d.poll_interval > 0 ? d.poll_interval : 2,
+    };
+}
+
+/**
+ * 构造二维码承载的 URL（对齐官网 buildQr 的严格校验）：
+ * qrOrigin + scan_path，search 清空后设 code/appname/source=platform。
+ *
+ * 为什么校验这么严：scan_path 来自服务端应答，官网拒绝一切「换源/带凭据/
+ * 开放重定向」形态（协议式校验防钓鱼）——照抄，行为一致才扫得出来。
+ */
+export function buildQrContent(qrOrigin, scanPath, code, brand) {
+    const base = new URL(qrOrigin);
+    if (base.protocol !== 'https:' || base.username || base.password
+        || !scanPath.startsWith('/') || scanPath.startsWith('//')
+        || /[\\\s#]/.test(scanPath)) {
+        throw new Error('raccoon: QR origin/scan_path 形态非法');
+    }
+    const decoded = decodeURIComponent(scanPath);
+    if (/[\\\s#]/.test(decoded) || decoded.startsWith('//') || /%[0-9a-f]{2}/i.test(decoded)) {
+        throw new Error('raccoon: QR scan_path 含非法编码');
+    }
+    const u = new URL(scanPath, base);
+    if (u.origin !== base.origin || u.hash) {
+        throw new Error('raccoon: QR scan_path 跨源或带 hash');
+    }
+    u.search = '';
+    u.searchParams.set('code', code);
+    u.searchParams.set('appname', brand);
+    u.searchParams.set('source', 'platform');
+    return u.href;
+}
+
+/** 轮询一次扫码会话状态。status: pending | logging | canceled | success。 */
+export async function pollQrSession(product, qrcodeCode, fetcher = fetch) {
+    const { envelope } = await postJson(
+        `${RACCOON_IAM_BASE}/auth/mp/qrcode/login`,
+        { qrcode_code: qrcodeCode }, fetcher);
+    if (envelope.code !== 0 || typeof envelope.data !== 'object' || envelope.data === null) {
+        throw new Error(`raccoon: 查询扫码状态失败（${envelope.message || envelope.code || '未知错误'}）`);
+    }
+    const d = envelope.data;
+    const status = typeof d.status === 'string' ? d.status : '';
+    if (!['pending', 'logging', 'canceled', 'success'].includes(status)) {
+        throw new Error(`raccoon: 扫码状态未知（${status || '空'}）`);
+    }
+    const accessToken = typeof d.access_token === 'string' ? d.access_token : '';
+    if (status === 'success' && !accessToken) {
+        throw new Error('raccoon: 会话 success 但未返回 token');
+    }
+    const refreshToken = typeof d.refresh_token === 'string' ? d.refresh_token : '';
+    const expMs = accessToken ? decodeJwtExpMs(accessToken) : undefined;
+    return {
+        status,
+        accessToken,
+        refreshToken,
+        ...expMs !== undefined ? { expiresAt: String(expMs) } : {},
+    };
+}
+
+/** 取消一次扫码会话（用户点「放弃」时调用，服务端把会话置 canceled）。 */
+export async function cancelQrSession(product, qrcodeCode, fetcher = fetch) {
+    try {
+        await postJson(`${RACCOON_IAM_BASE}/auth/mp/qrcode`,
+            { qrcode_code: qrcodeCode, status: 'canceled' }, fetcher, {}, 'PUT');
+    } catch {
+        // 取消失败无所谓：会话自己会过期。
+    }
+}
+
+/**
+ * （已废弃）生成一个扫码用的 `qrcode_code`——旧协议客户端本地造 code，
+ * 现行协议由服务端在 createQrSession 里下发。保留导出仅为兼容引用检查。
  */
 export function generateQrCode() {
     return randomBytes(16).toString('hex');

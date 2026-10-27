@@ -420,42 +420,44 @@ register('raccoon', {
   name: 'Raccoon（商汤小浣熊）',
   flow: 'qr',
   async start() {
-    // 上游没有 product 对象（只有 RACCOON_API_BASE 等常量），这里就地拼出
-    // pollRaccoonQrLogin / buildQrImageUrl 需要的最小形状——字段名照上游。
+    // 现行协议（2026-10-27 从官网登录页逆向）：服务端主导的扫码会话——
+    // create /auth/mp/qrcode 下发 qrcode_code + scan_path，前端把
+    // qrOrigin+scan_path?code=…&appname=…&source=platform 画成码，
+    // 微信扫后在微信内完成登录，服务端把会话置 success，轮询拿 token。
+    // 旧协议（客户端造 code + login_with_qrcode_code）已失效：login/mp
+    // 网页 404、App 扫报「内容无效」。
     const product = {
       apiBase: raccoonLib.RACCOON_API_BASE,
       authApiPrefix: raccoonLib.RACCOON_AUTH_PREFIX,
     }
-    const code = raccoon.generateQrCode()
+    const session = await raccoon.createQrSession(product)
+    const content = raccoon.buildQrContent(
+      raccoon.RACCOON_QR_ORIGIN, session.scanPath, session.qrcodeCode, '商汤小浣熊官网')
     return background(
       'raccoon',
       'qr',
       {
-        // 二维码承载的是登录页 URL（login/mp）；没有图片端点，前端本地画码。
-        // 2026-10-27 实测：login/mp 网页已 404（上游下线了微信内路径），
-        // 主路径是**商汤小浣熊 App 扫码确认**——App 解析出 code 后在服务端
-        // 把会话置 success，我们轮询拿 token。App 报「二维码已过期或已被
-        // 使用」通常是发起后拖太久（服务端会话 TTL 短），重新发起即可。
-        authorize_url: raccoon.buildQrImageUrl(product, code),
-        qr_code: code,
-        message: '请用商汤小浣熊 App 扫码；发起后请尽快扫码，超时需重新发起',
+        authorize_url: content,
+        qr_code: session.qrcodeCode,
+        message: '请用微信扫码，并在微信内完成登录',
+        interval: Math.max(1, session.pollIntervalSec),
       },
       async ({ signal, report }) => {
+        // 会话寿命由服务端下发（expires_in，上限 3600s）；超时即终止，
+        // 前端提示重新发起——而不是无限 pending。
+        const deadline = Date.now() + session.expiresInSec * 1000
         for (;;) {
           if (signal?.aborted) throw new Error('登录已取消')
-          const r = await raccoon.pollRaccoonQrLogin(product, code)
+          if (Date.now() >= deadline) throw new Error('二维码已过期，请重新发起授权')
+          const r = await raccoon.pollQrSession(product, session.qrcodeCode)
           if (r.status === 'success') {
             return { access_token: r.accessToken, refresh_token: r.refreshToken, expires_at: r.expiresAt ?? '' }
           }
-          // 业务错误（二维码过期/已用等）必须终止并透出原文——吞掉它电脑
-          // 永远「等待扫码」，用户两端都看不到真实原因（2026-10-27 实测）。
-          if (r.status === 'failed') throw new Error(r.message ?? '二维码已失效')
           if (r.status === 'canceled') throw new Error('用户取消了扫码')
           if (r.status === 'logging') {
-            // 已扫码、待确认：把进展透给前端（report 更新 session.message）。
             report({ message: '已扫码，请在手机上确认' })
           }
-          await sleep(raccoonLib.RACCOON_QR_POLL_INTERVAL_MS ?? 2000)
+          await sleep(Math.max(1000, session.pollIntervalSec * 1000))
         }
       },
     )
@@ -465,95 +467,6 @@ register('raccoon', {
     const cred = typeof credential === 'string' ? JSON.parse(credential) : credential
     const next = await raccoon.refreshRaccoonCredential(product, cred)
     return { credential: JSON.stringify(next), expires_at: String(next.expires_at ?? '') }
-  },
-})
-
-register('astudio', {
-  name: 'AStudio（讯飞星辰）',
-  flow: 'qr',
-  /*
-   * AStudio 的登录**不是** OAuth2（没有 authorize_url + code 回调），而是
-   * 讯飞 SSO 的微信扫码三件套：
-   *   ① GET  /SSOService/wx/scanlogin/qrcode?fd=<fd>   取二维码 URL
-   *   ② GET  /SSOService/wx/scanlogin/uids?fd=<fd>     轮询扫码状态
-   *   ③ POST /SSOService/wx/scanlogin/bind             绑定会话
-   * 之后 completeAstudioLogin 用会话 cookie 换出推理凭据（modelBearerToken）。
-   *
-   * 全程 HTTP，**不需要本机监听**——符合 sidecar 红线③。上游另有一条
-   * 「起本机 HTTP 服务展示二维码页」的路径（loomy-wechat-login 同款），
-   * 这里刻意不用：二维码 URL 直接交给浏览器渲染就够了。
-   */
-  async start() {
-    const { fd, qrUrl } = await astudioOAuth.createAstudioWechatQrCode()
-    return background(
-      'astudio',
-      'qr',
-      {
-        // qrUrl 是微信二维码图片地址，前端直接 <img src>。实测该地址可匿名访问
-        //（不需要 cookie/UA 伪装），与 raccoon 的登录页链接不同。
-        authorize_url: qrUrl,
-        qr_image_url: qrUrl,
-        // 转成 data URL：CSP 只允许 'self' 与 data:，外链图会被浏览器拦掉。
-        qr_image_data: await qrAsDataUrl(qrUrl),
-        message: '请用微信扫码；扫码后需在手机上确认',
-      },
-      async ({ signal }) => {
-        for (;;) {
-          await sleep(2000, signal)
-          const r = await astudioOAuth.pollAstudioWechatScan(fd)
-          if (r.status === 'scanned' && r.account) {
-            const bound = await astudioOAuth.bindAstudioWechatSession(fd, r.account)
-            if (!bound.ok) throw new Error(bound.message ?? '绑定微信登录会话失败')
-            const cred = await astudioOAuth.completeAstudioLogin({ ...r.account, loginMethod: 'wechat' })
-            if (!cred?.access_token) throw new Error('AStudio 未返回推理凭据（modelBearerToken）')
-            return {
-              access_token: cred.access_token,
-              refresh_token: JSON.stringify(cred), // 无独立 refresh；整包留作重登材料
-              expires_at: '',
-            }
-          }
-          // unbound = 该微信号还没开通 AStudio 账号。上游明确：开通要去
-          // AStudio 客户端绑手机号，重扫无用，所以直接终止而不是继续轮询。
-          if (r.status === 'unbound') throw new Error(r.message)
-          if (r.status === 'error') throw new Error(r.message ?? '轮询扫码状态失败')
-        }
-      },
-      300_000, // 二维码有效期 5 分钟（上游 createAstudioWechatQrCode 的 expiresInMs）
-    )
-  },
-  async refresh({ credential }) {
-    // AStudio 没有 refresh 端点（会话 ssoSessionId 一年有效、不滑动），
-    // 唯一的硬终点是 code=80000「登录异常，请重新登录」。这里如实返回原值，
-    // 由上层按「不可刷新」处理，而不是假装刷成功。
-    return { credential, expires_at: '' }
-  },
-})
-
-register('lobsterai', {
-  name: 'LobsterAI',
-  flow: 'browser',
-  needs: ['port'],
-  authorize({ port }) {
-    // 上游是「portal 登录页 + 回环回调」：session 只有 uuid/firstKeyfrom，
-    // URL 由 buildLobsteraiLoginUrl(port, state, product) 构造。
-    const session = lobsterai.createLobsteraiLoginSession()
-    const authorize_url = lobsterai.buildLobsteraiLoginUrl(port, session.uuid, LOBSTERAI)
-    return Promise.resolve({
-      authorize_url,
-      state: JSON.stringify({
-        provider: 'lobsterai',
-        session,
-        port,
-        clientVersion: LOBSTERAI.fallbackClientVersion ?? '',
-        created_at: Date.now(),
-      }),
-    })
-  },
-  async exchange({ code, state }) {
-    const st = JSON.parse(state)
-    const cred = await lobsterai.exchangeLobsteraiAuthCode(
-      code, st.session, st.clientVersion, LOBSTERAI)
-    return { credential: JSON.stringify(cred), expires_at: String(cred.expires_at ?? cred.expiresAt ?? '') }
   },
 })
 
