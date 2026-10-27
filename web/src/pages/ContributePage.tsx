@@ -756,11 +756,15 @@ export function ContributeOAuthPage({ def }: PageProps) {
   // ref 不参与渲染，翻转它不会触发重跑；alive 语义保持「effect 还挂着」，
   // 组件卸载前应答总能被处理。
   const pollingRef = useRef(false)
+  // 终态标记：到 ok/failed/expired 就停轮询。为什么要单独一个 ref：服务端
+  // 对已完成 session 的每次 poll 都返回同一凭据，终端态后继续轮询会让
+  // Go 侧重复 settle（服务端已幂等，但客户端仍不该无意义地打）。
+  const doneRef = useRef(false)
   useEffect(() => {
     if (!session?.session_id) return
     let alive = true
     const tick = async () => {
-      if (pollingRef.current) return
+      if (pollingRef.current || doneRef.current) return
       pollingRef.current = true
       try {
         const r = await pollOAuthContribution(provider, {
@@ -770,6 +774,7 @@ export function ContributeOAuthPage({ def }: PageProps) {
         if (!alive) return
         const d = r.data
         if (d.status === 'ok' && d.outcome) {
+          doneRef.current = true
           setResult({
             ok: true,
             message: d.outcome.message,
@@ -778,6 +783,7 @@ export function ContributeOAuthPage({ def }: PageProps) {
           return
         }
         if (d.status === 'failed' || d.status === 'expired') {
+          doneRef.current = true
           setResult({ ok: false, message: d.message ?? '授权未完成' })
           return
         }

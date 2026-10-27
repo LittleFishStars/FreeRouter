@@ -115,6 +115,14 @@ type oauthBridge struct {
 	st      *store.Store
 	sess    *auth.SessionManager
 	contrib *contributionBridge
+	// settled 是「已完成落库的 session」缓存：session 形态下 sidecar 对已
+	// 完成 session 的每次 poll 都会原样返回 credential（无消费一次即清的
+	// 语义），而前端每 3 秒轮询一次——没有这层幂等，同一凭据会被反复
+	// settle 落库（MiniMax 实测第二次起撞 (provider, external_id) 唯一
+	// 索引报 UNIQUE constraint failed）。key=sessionId，value=落库结果。
+	// 与 states 同生命周期（进程内存，重启即清，重新授权走新 session）。
+	settledMu sync.Mutex
+	settled   map[string]*httpapi.OAuthOutcome
 }
 
 var _ httpapi.ProviderOAuth = (*oauthBridge)(nil)
@@ -334,6 +342,15 @@ func (b *oauthBridge) Callback(ctx context.Context, provider, code, nonce, sessi
 
 // Poll 查一次 session 形态的后台会话；完成时落库。
 func (b *oauthBridge) Poll(ctx context.Context, in httpapi.PollInput) (*httpapi.PollResult, error) {
+	// 已落库的 session 直接回放缓存结果：后续 poll 不再触碰落库路径。
+	if in.SessionID != "" {
+		b.settledMu.Lock()
+		cached := b.settled[in.SessionID]
+		b.settledMu.Unlock()
+		if cached != nil {
+			return &httpapi.PollResult{Status: "ok", Outcome: cached}, nil
+		}
+	}
 	if ok, reason := b.availability(); !ok {
 		return nil, fmt.Errorf("%s", reason)
 	}
@@ -367,6 +384,14 @@ func (b *oauthBridge) Poll(ctx context.Context, in httpapi.PollInput) (*httpapi.
 	o, err := b.settle(ctx, in.Provider, res.Credential, in.SessionToken)
 	if err != nil {
 		return &httpapi.PollResult{Status: "failed", Message: err.Error()}, nil
+	}
+	if in.SessionID != "" {
+		b.settledMu.Lock()
+		if b.settled == nil {
+			b.settled = map[string]*httpapi.OAuthOutcome{}
+		}
+		b.settled[in.SessionID] = o
+		b.settledMu.Unlock()
 	}
 	out.Outcome = o
 	return out, nil
@@ -456,6 +481,17 @@ func (b *oauthBridge) persist(ctx context.Context, owner string, provider, crede
 		}
 		cid, err := tx.Models.CreateCredential(ctx, owner, provider, fingerprint,
 			provider+" OAuth", fmt.Sprintf("%s", sid))
+		if isDuplicateRow(err) {
+			// 同一外部身份重新授权（供应商可能重发相同 token，MiniMax 实测）：
+			// 语义是「换新凭据」而非错误——替换已有行的密文/归属/label，
+			// 状态重置回 pending 重新鉴定；废弃的旧密文同步删除。
+			var oldRef string
+			cid, oldRef, err = tx.Models.ReplaceCredential(ctx, owner, provider, fingerprint,
+				provider+" OAuth", fmt.Sprintf("%s", sid))
+			if err == nil && oldRef != "" && oldRef != fmt.Sprintf("%s", sid) {
+				_ = tx.Secrets.DeleteSecret(ctx, oldRef)
+			}
+		}
 		if err != nil {
 			// 建行失败要把刚写的密文收回去，避免留下无主的密钥材料。
 			_ = tx.Secrets.DeleteSecret(ctx, sid)

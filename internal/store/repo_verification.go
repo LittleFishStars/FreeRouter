@@ -297,6 +297,38 @@ func (r *ModelRepo) CreateCredential(ctx context.Context, ownerAccountID string,
 	return id, nil
 }
 
+// ReplaceCredential 把同一外部身份（provider + external_id）的已有凭据行替换成
+// 新密文与新归属，返回 (行 id, 旧密文引用)；行不存在返回 ("", "")（调用方回退到
+// CreateCredential）。旧密文引用供调用方删除废弃密文，避免无主密钥残留。
+//
+// 为什么需要它：OAuth 型重新授权同一账号时，供应商发的 access_token 可能与
+// 旧凭据完全相同（MiniMax 实测：device_code 对同一账号重发未过期 token），
+// fingerprint 相同 → 撞 (provider, external_id) 唯一索引。语义上这不是错误
+// 而是「同一身份换新凭据」：密文、归属、label 都应更新为本次授权的结果，
+// 状态重置回 pending 重新走鉴定（旧凭据的鉴定结论对新密文不成立）。
+func (r *ModelRepo) ReplaceCredential(ctx context.Context, ownerAccountID string, provider, externalID, label, secretRef string) (string, string, error) {
+	var id, oldRef string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT id, secret_ref FROM upstream_credentials WHERE provider = ? AND external_id = ?`,
+		provider, externalID).Scan(&id, &oldRef)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("store: 回查待替换凭据失败: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE upstream_credentials
+		    SET owner_account_id = ?, external_label = ?, secret_ref = ?,
+		        status = 'pending', verify_status = 'unverified', verify_detail = NULL,
+		        created_at = ?, last_used_at = NULL
+		  WHERE id = ?`,
+		ownerAccountID, label, secretRef, now(), id); err != nil {
+		return "", "", fmt.Errorf("store: 替换凭据失败: %w", err)
+	}
+	return id, oldRef, nil
+}
+
 // ================================================================ 凭据读筛选与状态写入（管理面）
 
 // CredentialStatus 是凭据的可调用状态。
