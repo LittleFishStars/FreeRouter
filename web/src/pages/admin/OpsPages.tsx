@@ -220,12 +220,14 @@ export function CredentialsPage({ def }: PageProps) {
   const [emExcluded, setEmExcluded] = useState(false)
 
   const sources = useMemo(() => sourcesQ.data?.sources ?? [], [sourcesQ.data])
-  // 分组（2026-10-27 用户决定）：反代供应商（relay，账号池在 sidecar 侧）与
-  // API 供应商（vendor/selfhosted/custom 端点直连）是两个不同的接入形态。
-  // 旧分组「贡献凭据/平台渠道」按贡献与否切，与接入形态无关，且平台渠道
-  // 在来源合并后已归入 API 供应商。
-  const relaySources = sources.filter((s) => s.kind === 'relay')
-  const apiSources = sources.filter((s) => s.kind !== 'relay')
+  // 分组（2026-10-27 用户决定）：反代供应商（账号授权，凭据由 sidecar 换出）与
+  // API 供应商（用户粘 Key 直连端点）是两个不同的接入形态。
+  // 判据用 oauth 标记而不是 kind：OAuth 反代的 upstream 也是 vendor
+  // （凭据走 OpenAI 兼容端点），按 kind 分组会把 Loomy 这类错归进 API 组
+  //（2026-10-27 用户报告）。旧分组「贡献凭据/平台渠道」按贡献与否切，
+  // 与接入形态无关，已废弃。
+  const relaySources = sources.filter((s) => s.oauth)
+  const apiSources = sources.filter((s) => !s.oauth)
   const active = sources.find((s) => s.id === activeId) ?? sources[0] ?? null
 
   function visibleSources(list: AdminModelSource[]): AdminModelSource[] {
@@ -284,7 +286,7 @@ export function CredentialsPage({ def }: PageProps) {
     try {
       await patchUpstream(editing.id, {
         name: editName,
-        ...(editing.kind === 'relay' ? {} : { base_url: editBase })
+        ...(editing.kind === 'relay' || editing.oauth ? {} : { base_url: editBase })
       })
       setEditing(null)
       setNotice('已保存')
@@ -454,7 +456,7 @@ export function CredentialsPage({ def }: PageProps) {
                         className="btn-ghost"
                         onClick={() => {
                           setEditName(active.name)
-                          setEditBase(active.kind === 'relay' ? '' : active.base_url)
+                          setEditBase(active.kind === 'relay' || active.oauth ? '' : active.base_url)
                           setEditing(active)
                         }}
                         disabled={busy}

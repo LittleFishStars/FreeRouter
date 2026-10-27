@@ -1004,14 +1004,18 @@ func modelSourceOf(u store.Upstream, cred store.UpstreamCredentialSummary, model
 	protocols := httpapi.AdminModelSourceProtocols(u.Kind, pid)
 
 	src := httpapi.AdminModelSource{
-		ID:                 u.ID,
-		Kind:               u.Kind,
-		Name:               u.Name, // 目录未命中时用上游行名；命中了在下面换掉
-		UpstreamName:       u.Name,
-		ProviderID:         pid,
-		BaseURL:            u.BaseURL,
-		Enabled:            u.Enabled,
-		Contributed:        cred.Total > 0,
+		ID:           u.ID,
+		Kind:         u.Kind,
+		Name:         u.Name, // 目录未命中时用上游行名；命中了在下面换掉
+		UpstreamName: u.Name,
+		ProviderID:   pid,
+		BaseURL:      u.BaseURL,
+		Enabled:      u.Enabled,
+		Contributed:  cred.Total > 0,
+		// OAuth 型判定：凭据 Provider 列是裸 provider id（如 'loomy'）。
+		// api: 前缀是目录型贡献（用户粘 Key），custom 是自定义端点——
+		// 三者里的前一种才走 sidecar 账号会话。详见 AdminModelSource.OAuth。
+		OAuth:              cred.Provider != "" && cred.Provider != "custom" && !strings.HasPrefix(cred.Provider, "api:"),
 		CredentialCount:    cred.Active,
 		Protocols:          protocols,
 		AvailableInstances: httpapi.AdminModelSourceInstances(u.Kind, u.Enabled, cred.Active),

@@ -638,17 +638,24 @@ type AdminModelRefresher interface {
 //     决定（relay 的账号池在 sidecar），0 = 确实一个也展不开。压成 int 会让界面
 //     把「池内可展开」显示成「无凭据」，正是这次要修的静默故障。
 type AdminModelSource struct {
-	ID                 string   `json:"id"`
-	Kind               string   `json:"kind"` // relay / vendor / selfhosted
-	Name               string   `json:"name"`
-	UpstreamName       string   `json:"upstream_name"`
-	ProviderID         string   `json:"provider_id"`
-	Region             string   `json:"region"`
-	Website            string   `json:"website"`
-	APIDoc             string   `json:"api_doc"`
-	BaseURL            string   `json:"base_url"`
-	Enabled            bool     `json:"enabled"`
-	Contributed        bool     `json:"contributed"`
+	ID           string `json:"id"`
+	Kind         string `json:"kind"` // relay / vendor / selfhosted
+	Name         string `json:"name"`
+	UpstreamName string `json:"upstream_name"`
+	ProviderID   string `json:"provider_id"`
+	Region       string `json:"region"`
+	Website      string `json:"website"`
+	APIDoc       string `json:"api_doc"`
+	BaseURL      string `json:"base_url"`
+	Enabled      bool   `json:"enabled"`
+	Contributed  bool   `json:"contributed"`
+	// OAuth 标记「这是账号授权型（反代）来源」：凭据由 sidecar 从供应商账号
+	// 会话换出，不是用户粘贴的 Key。分组判据必须是它而不是 Kind——Kind 是
+	// 转发协议形态，OAuth 反代的 upstream 同样是 vendor（凭据走 OpenAI 兼容
+	// 端点），按 Kind 分组会把 Loomy 这类反代供应商错归进「API 供应商」
+	//（2026-10-27 用户报告）。判据在 modelSourceOf：凭据 Provider 列既非
+	// api: 前缀（目录型贡献）也非 custom（自定义端点）的就是 OAuth 型。
+	OAuth              bool     `json:"oauth"`
 	CredentialCount    int      `json:"credential_count"`
 	ModelCount         int      `json:"model_count"`
 	Protocols          []string `json:"protocols"`

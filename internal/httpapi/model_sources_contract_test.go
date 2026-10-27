@@ -121,7 +121,8 @@ func sourceKeys() []string {
 		"model_count", "protocols", "available_instances", "last_seen_at", "models",
 		// credentials（凭据池改版 2026-10-26）：每个来源内嵌凭据行，右栏凭据列直接用。
 		"credentials",
-		// upstream_ids（来源合并 2026-10-27）：聚合成员上游行 id，批量操作用。
+		// oauth（2026-10-27）：账号授权型（反代）标记，凭据池左栏分组按它。
+		"oauth",
 		"upstream_ids",
 	}
 }
@@ -228,6 +229,11 @@ func TestContractModelSourcesWireShape(t *testing.T) {
 	}
 	if got := asStrings(t, "source.protocols", deepseek["protocols"]); strings.Join(got, ",") != "openai,anthropic" {
 		t.Fatalf("protocols 应恒 openai 在前，得 %v", got)
+	}
+	// oauth（2026-10-27）：目录型贡献（api: 前缀）必须是 false——true 会把
+	// 粘 Key 的供应商错进「反代供应商」组。
+	if deepseek["oauth"] != false {
+		t.Fatalf("目录型来源的 oauth 应为 false，得 %v", deepseek["oauth"])
 	}
 	if got := deepseek["model_count"]; got != float64(1) {
 		t.Fatalf("model_count 应等于 models 长度，得 %v", got)

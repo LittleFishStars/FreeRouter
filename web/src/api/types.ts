@@ -249,6 +249,8 @@ export interface AdminModelSource {
   enabled: boolean
   /** 该上游下存在凭据行 */
   contributed: boolean
+  /** 账号授权型（反代）来源：凭据由 sidecar 从供应商账号会话换出。左栏分组按它，不按 kind（OAuth 反代的 upstream 也是 vendor） */
+  oauth: boolean
   credential_count: number
   model_count: number
   /** 端点协议事实，只允许 "openai" / "anthropic"，openai 恒在前 */
