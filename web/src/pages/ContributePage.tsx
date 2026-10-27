@@ -920,7 +920,12 @@ export function ContributeCallbackPage({ def }: PageProps) {
   const accountCreated = params.get('account_created') === '1'
   const recoveryCode = params.get('recovery_code')
   const message = params.get('message')
-
+  // 自动关闭尝试：本页可能是授权标签页到达的终点。window.close() 只对脚本
+  // 打开的标签有效——对用户手动打开的标签是静默 no-op，失败也不打扰。
+  // 为什么不提示「正在关闭」：脚本关不掉时那句提示是谎言，用户会以为卡死。
+  useEffect(() => {
+    window.close()
+  }, [])
   if (recoveryCode) {
     return (
       <OneTimeSecret
@@ -946,7 +951,19 @@ export function ContributeCallbackPage({ def }: PageProps) {
           {message && <span className="block-meta">{message}</span>}
         </Banner>
       )}
+      {/* 关闭引导（用户报的「授权标签页不会自动关闭且无反应」）：
+          部分供应商（如 CodeArts portal）在授权成功后不自动回跳，用户会停在
+          供应商的成功页等待。本页能被渲染说明回跳已发生——此时本标签的历史使命
+          已结束，明确告诉用户可以关闭，并给出在**原窗口**继续操作的入口。
+          为什么不用 window.close 的结果做条件：脚本能否关标签由浏览器决定
+          （只对脚本打开的标签有效），无法预知，UI 不该承诺。 */}
       <Section title="下一步">
+        {/* 先说关闭，再说后续：用户报的卡点就是「授权成功后标签页悬着无反应」——
+            本页渲染出来即代表回跳已完成，必须第一时间解除等待状态。 */}
+        <p className="muted" aria-live="polite">
+          授权流程已结束：本标签页可以关闭了。请回到发起授权的那个窗口继续操作；
+          若供应商页面没有自动跳回，直接关闭它即可，不影响本次贡献结果。
+        </p>
         <ul className="plain-list">
           <li>已登录：去「我的贡献」查看鉴定进度。</li>
           <li>未登录且是 OAuth 型：用任意一个你贡献过的账号登录即可回来。</li>
