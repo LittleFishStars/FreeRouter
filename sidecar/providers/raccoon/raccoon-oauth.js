@@ -23,7 +23,7 @@
  * 也不做凭据持久化（那是 `raccoon-auth.ts` 的职责）。全部函数可离线单测。
  */
 import { randomBytes } from 'node:crypto';
-import { RACCOON_QR_STATUS, RACCOON_REQUEST_TIMEOUT_MS, decodeJwtExpMs, encryptRaccoonPhone, raccoonHeaders, } from './raccoon.js';
+import { RACCOON_QR_STATUS, RACCOON_REQUEST_TIMEOUT_MS, decodeJwtExpMs, raccoonHeaders, } from './raccoon.js';
 /** 解析业务信封。`code === 0` 为成功。 */
 function parseEnvelope(payload, status) {
     const record = typeof payload === 'object' && payload !== null && !Array.isArray(payload)
@@ -258,42 +258,71 @@ export async function pollRaccoonQrLogin(product, code, fetcher = fetch) {
     }
     return { status: 'pending' };
 }
+// ── 现行短信协议（2026-10-27 从官网登录页逆向，x-raccoon-website chunks）──
+//
+// 旧协议（/api/web/auth/v1 的 send_sms/login_with_sms + RSA 加密手机号）整组
+// 废弃：现行协议在 /api/iam/v1 下，会话键是服务端下发的 verification_id
+//（手机号明文直传），滑块产物字段名也改叫 captcha_token。
+//
+//   发码  POST /api/iam/v1/sms/send
+//         { nation_code, phone, captcha_token, scene: "login" }
+//       → { verification_id, expires_in, retry_after }
+//   登录  POST /api/iam/v1/auth/login/sms
+//         { nation_code, phone, verification_id, verification_code }
+//       → { access_token, token_type: "bearer" }（无 refresh_token，按 JWT exp 过期）
+
 /**
  * 下发短信验证码。
  *
- * ⚠️ 手机号必须 AES-128-CFB 加密（否则 `100003 params_encryted_error`）。
- * ⚠️ `captcha_param` 是阿里云滑块验证码的产物，**必需**（否则
- * `100006 captcha_verify_error`）。
+ * @param captchaToken 阿里云滑块产物（官网字段名 captcha_token；缺省时服务端
+ *   拒绝发送）。
+ * @returns verificationId —— 登录时必须原样带回的会话键。
  */
-export async function sendRaccoonSmsCode(product, phone, captchaParam, fetcher = fetch) {
-    const { envelope } = await postJson(`${product.apiBase}${product.authApiPrefix}/send_sms`, {
-        captcha_param: captchaParam,
+export async function sendSmsVerification(product, phone, captchaToken, fetcher = fetch) {
+    const { envelope } = await postJson(`${RACCOON_IAM_BASE}/sms/send`, {
         nation_code: '86',
-        phone: encryptRaccoonPhone(phone),
+        phone,
+        captcha_token: captchaToken,
+        scene: 'login',
     }, fetcher);
-    if (envelope.code !== 0) {
-        if (envelope.code === 100006) {
-            throw new Error('raccoon: 图形验证码校验失败，请重新完成滑块验证');
-        }
-        throw envelopeError(envelope, '下发短信验证码失败');
+    if (envelope.code !== 0 && envelope.code !== 'OK') {
+        throw new Error(`raccoon: 下发验证码失败（${envelope.message || envelope.code || '未知错误'}）`);
     }
+    const d = envelope.data ?? {};
+    if (typeof d.verification_id !== 'string' || !d.verification_id) {
+        throw new Error('raccoon: 发码应答缺 verification_id（形状非法）');
+    }
+    return d.verification_id;
 }
+
 /**
- * 用短信验证码登录。
+ * 短信验证码登录。
  *
- * @returns 完整凭据（`expires_at` 由 JWT 的 exp 推算）。
- * @throws 验证码错误/过期、手机号非法、网络失败。
+ * @param verificationId 发码应答里拿到的会话键（原样带回）。
+ * @returns 凭据 { access_token, refresh_token, expires_at? }——现行应答不含
+ *   refresh_token（无静默续期），过期时间从 access_token 的 JWT exp 推。
  */
-export async function loginRaccoonWithSmsCode(product, phone, smsCode, fetcher = fetch) {
-    const { envelope } = await postJson(`${product.apiBase}${product.authApiPrefix}/login_with_sms`, {
+export async function smsLogin(product, phone, verificationId, verificationCode, fetcher = fetch) {
+    const { envelope } = await postJson(`${RACCOON_IAM_BASE}/auth/login/sms`, {
         nation_code: '86',
-        phone: encryptRaccoonPhone(phone),
-        sms_code: smsCode,
+        phone,
+        verification_id: verificationId,
+        verification_code: verificationCode,
     }, fetcher);
-    if (envelope.code !== 0)
-        throw envelopeError(envelope, '短信登录失败');
-    return credentialFromEnvelope(envelope);
+    if (envelope.code !== 0 && envelope.code !== 'OK') {
+        throw new Error(`raccoon: 短信登录失败（${envelope.message || envelope.code || '未知错误'}）`);
+    }
+    const d = envelope.data ?? {};
+    const accessToken = typeof d.access_token === 'string' ? d.access_token : '';
+    if (!accessToken) throw new Error('raccoon: 短信登录应答缺 access_token');
+    const expMs = decodeJwtExpMs(accessToken);
+    return {
+        access_token: accessToken,
+        refresh_token: '',
+        ...expMs !== undefined ? { expires_at: String(expMs) } : {},
+    };
 }
+
 /** 从成功信封里取出凭据；缺 `access_token` 时抛错（不产出半截凭据）。 */
 function credentialFromEnvelope(envelope) {
     const data = envelope.data ?? {};

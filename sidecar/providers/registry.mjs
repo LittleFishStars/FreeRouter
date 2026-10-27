@@ -427,27 +427,24 @@ register('raccoon', {
   async start({ phone, captchaParam }) {
     if (!phone) throw new Error('E_BAD_REQUEST: Raccoon 登录需要手机号')
     if (!captchaParam) throw new Error('E_BAD_REQUEST: 请先完成滑块验证')
-    const product = {
-      apiBase: raccoonLib.RACCOON_API_BASE,
-      authApiPrefix: raccoonLib.RACCOON_AUTH_PREFIX,
-    }
-    // 先发验证码（滑块产物在这步消费），再把「等用户填码」丢后台。
-    await raccoon.sendRaccoonSmsCode(product, phone, captchaParam)
+    // 现行协议：滑块产物字段名 captcha_token，发码应答下发 verification_id
+    //（登录的会话键，存进 material 让 submit 带回）。
+    const verificationId = await raccoon.sendSmsVerification(
+      { apiBase: raccoonLib.RACCOON_API_BASE, authApiPrefix: raccoonLib.RACCOON_AUTH_PREFIX },
+      phone, captchaParam)
     return background(
       'raccoon',
       'sms',
-      { authorize_url: '', phone, message: '验证码已发送，请查收短信' },
+      { authorize_url: '', phone, verification_id: verificationId, message: '验证码已发送，请查收短信' },
       null,
     )
   },
   // 用户回填验证码后，oauth.poll 携 code 进来（sessions.attachRunner）。
   async submit({ code, state }) {
     const st = JSON.parse(state)
-    const product = {
-      apiBase: raccoonLib.RACCOON_API_BASE,
-      authApiPrefix: raccoonLib.RACCOON_AUTH_PREFIX,
-    }
-    const cred = await raccoon.loginRaccoonWithSmsCode(product, st.phone, code)
+    const cred = await raccoon.smsLogin(
+      { apiBase: raccoonLib.RACCOON_API_BASE, authApiPrefix: raccoonLib.RACCOON_AUTH_PREFIX },
+      st.phone, st.verification_id, code)
     return cred
   },
 })
