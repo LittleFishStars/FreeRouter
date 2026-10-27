@@ -89,12 +89,17 @@ func (s *Server) mwSecurityHeaders(next http.Handler) http.Handler {
 		// URL 是根路径，hash 跳到贡献页不会重新加载文档，路径分流永不生效
 		//（2026-10-27 playwright 实测 CSP 仍拦滑块脚本）。放宽域限定为阿里
 		// 官方 CDN；本服务自带前端、无第三方脚本注入点，风险面可控。
+		// 三轮 playwright 实测补全：font-src 的 data: woff2（滑块内联字体）、
+		// style-src 的 g.alicdn.com 动态样式、connect-src 的 data: 图形请求
+		// 都是滑块 SDK 实际会用到的形态——逐类放行，域仍限定阿里官方 CDN。
 		h.Set("Content-Security-Policy",
 			"default-src 'self'; "+
 				"script-src 'self' https://o.alicdn.com https://g.alicdn.com; "+
-				"connect-src 'self' https://*.aliyuncs.com https://*.alicdn.com; "+
+				"connect-src 'self' data: https://*.aliyuncs.com https://*.alicdn.com; "+
 				"img-src 'self' data: https://*.aliyuncs.com https://*.alicdn.com; "+
-				"style-src 'self' 'unsafe-inline'; frame-ancestors 'none'")
+				"font-src 'self' data: https://*.alicdn.com; "+
+				"style-src 'self' 'unsafe-inline' https://g.alicdn.com; "+
+				"frame-ancestors 'none'")
 		// 本服务承载 API 与自带前端，不申请任何浏览器能力。
 		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 		if strings.EqualFold(s.cfg.TLS.Mode, "files") {
