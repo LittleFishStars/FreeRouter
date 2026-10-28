@@ -685,6 +685,13 @@ export function ContributeOAuthPage({ def }: PageProps) {
   // pending 应答的 message 每帧都可能是新的——不能只看 start 时的 session.message。
   const [pollMsg, setPollMsg] = useState('')
   const [smsCode, setSmsCode] = useState('')
+  // 确认标记：验证码**输完点确认**后 poll 才携 code。为什么必须显式确认：
+  // poll 每帧都发，若 code 一有值就随帧上行，用户输入到一半（4 位码输到 2 位）
+  // 就会被 submit 一次——服务端判 invalid，正确的码还没输完流程已终结
+  //（2026-10-28 用户实测「验证码还没输完呢」）。ref 承载判定（不触发渲染，
+  // 规避轮询 effect 的重跑陷阱），state 只驱动按钮禁用态。
+  const [smsConfirmed, setSmsConfirmed] = useState(false)
+  const smsConfirmedRef = useRef(false)
   const [phone, setPhone] = useState('')
   const [result, setResult] = useState<{ ok: boolean; message: string; recoveryCode?: string } | null>(null)
   const navigate = useNavigate()
@@ -813,7 +820,7 @@ export function ContributeOAuthPage({ def }: PageProps) {
       try {
         const r = await pollOAuthContribution(provider, {
           session_id: session.session_id!,
-          ...(smsCode && session.flow === 'sms' ? { code: smsCode } : {})
+          ...(smsConfirmedRef.current && smsCode && session.flow === 'sms' ? { code: smsCode } : {})
         })
         if (!alive) return
         const d = r.data
@@ -959,9 +966,33 @@ export function ContributeOAuthPage({ def }: PageProps) {
             </p>
           )}
           {session.flow === 'sms' && (
-            <Field label="短信验证码" required hint="收到验证码后填入，本页会自动提交并继续检测。">
-              <input value={smsCode} onChange={(e) => setSmsCode(e.target.value)} autoComplete="one-time-code" inputMode="numeric" />
-            </Field>
+            <>
+              <Field
+                label="短信验证码"
+                required
+                hint="收到验证码后填入，点「确认登录」开始验证——输完再点，避免半截码被提交。"
+              >
+                <input
+                  value={smsCode}
+                  onChange={(e) => setSmsCode(e.target.value)}
+                  autoComplete="one-time-code"
+                  inputMode="numeric"
+                />
+              </Field>
+              <p>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={smsConfirmed || smsCode.length === 0}
+                  onClick={() => {
+                    smsConfirmedRef.current = true
+                    setSmsConfirmed(true)
+                  }}
+                >
+                  {smsConfirmed ? '验证中…' : '确认登录'}
+                </button>
+              </p>
+            </>
           )}
           <p className="muted" aria-live="polite">
             {pollMsg || session.message ||
