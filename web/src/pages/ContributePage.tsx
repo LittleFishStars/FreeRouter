@@ -700,41 +700,58 @@ export function ContributeOAuthPage({ def }: PageProps) {
   // 官方脚本按需注入：只有走滑块流程的 provider 才加载（CSP 只对
   // /contribute/ 与 /api/contributions/oauth/ 路径放行 alicdn/aliyuncs）。
   // SceneId/prefix 是商汤客户端的逆向常量（hub raccoon-product.js 同值）。
-  const captchaReadyRef = useRef(false)
-  function launchRaccoonCaptcha(phone: string) {
+  const captchaInitedRef = useRef(false)
+  const beginRef = useRef<(captchaParam: string) => void>(() => {})
+  // 初始化阿里云滑块：**只 init 一次**（进表单时）。「发送验证码」按钮交给
+  // SDK 接管（button 参数）——用户滑过后 captchaVerifyCallback 把验证参数
+  // 交给 beginRef（由表单分支写入，绑定当时的手机号）。
+  //
+  // 为什么不能每次点击都 init：重复初始化会注册两份 callback——滑块通过
+  // 后 begin 被调两次，第二次用**已消费的** captchaParam 再发一次码，
+  // 商汤判 captcha_token invalid，报错覆盖第一次的成功（2026-10-28 实测：
+  // 用户收到验证码却看到 invalid——就是这个双触发）。
+  function initRaccoonCaptcha() {
+    if (captchaInitedRef.current) return
     const el = document.getElementById('captcha-element')
-    if (!el) { setError(new Error('滑块容器缺失，请刷新页面')); return }
-    const begin = (captchaParam: string) => {
-      captchaReadyRef.current = true
-      start(phone, captchaParam)
-    }
+    if (!el) return
     const w = window as unknown as {
       initAliyunCaptcha?: (o: Record<string, unknown>) => void
     }
-    if (typeof w.initAliyunCaptcha === 'function') {
+    const doInit = () => {
+      if (typeof w.initAliyunCaptcha !== 'function') {
+        setError(new Error('滑块脚本加载失败，请检查网络后重试'))
+        return
+      }
       w.initAliyunCaptcha({
         SceneId: '1pkmy0x3', prefix: 'hk1r5l', mode: 'popup',
         element: '#captcha-element', button: '#send-code-btn',
-        captchaVerifyCallback: (cp: string) => { begin(cp); return { captchaResult: true, bizResult: true } },
-        getInstance: () => null, slideStyle: { width: 320, height: 40 }, language: 'cn',
+        captchaVerifyCallback: (cp: string) => {
+          beginRef.current(cp)
+          return { captchaResult: true, bizResult: true }
+        },
+        getInstance: () => null,
+        slideStyle: { width: 320, height: 40 }, language: 'cn',
       })
-      return
+      captchaInitedRef.current = true
     }
+    if (typeof w.initAliyunCaptcha === 'function') { doInit(); return }
     const sc = document.createElement('script')
     sc.src = 'https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js'
-    sc.onload = () => {
-      if (typeof w.initAliyunCaptcha === 'function') {
-        w.initAliyunCaptcha({
-          SceneId: '1pkmy0x3', prefix: 'hk1r5l', mode: 'popup',
-          element: '#captcha-element', button: '#send-code-btn',
-          captchaVerifyCallback: (cp: string) => { begin(cp); return { captchaResult: true, bizResult: true } },
-          getInstance: () => null, slideStyle: { width: 320, height: 40 }, language: 'cn',
-        })
-      } else { setError(new Error('滑块脚本加载失败，请检查网络后重试')) }
-    }
+    sc.onload = doInit
     sc.onerror = () => setError(new Error('滑块脚本加载失败，请检查网络后重试'))
     document.head.appendChild(sc)
   }
+  // 手机号表单渲染时初始化滑块（一次）。
+  useEffect(() => {
+    if (provider === 'raccoon' && !session && params.get('needs') === 'phone') {
+      initRaccoonCaptcha()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider, session])
+  // beginRef 绑定当前手机号（滑块 callback 无参，发起时取输入框的最新值）。
+  useEffect(() => {
+    beginRef.current = (captchaParam: string) => { start(phone.trim(), captchaParam) }
+  })
 
   // 发起（短信形态由页内表单再调一次，故抽成函数）。
   function start(phone?: string, captchaParam?: string) {
@@ -889,11 +906,10 @@ export function ContributeOAuthPage({ def }: PageProps) {
         <form
           className="form-card"
           onSubmit={(e: FormEvent) => {
+            // 只阻止原生提交：Raccoon 的「发送验证码」按钮已由滑块 SDK 接管
+            //（点击弹滑块→滑过→callback 里发起），其他 provider 直发。
             e.preventDefault()
-            // Raccoon 的 send_sms 必须携带阿里云滑块产物（captcha_param）：
-            // 提交时先弹滑块，滑过再真正发起；其他 provider 直发。
-            if (provider === 'raccoon') { launchRaccoonCaptcha(phone.trim()); return }
-            start(phone.trim())
+            if (provider !== 'raccoon') start(phone.trim())
           }}
         >
           <Field label="手机号" required hint="供应商将向该号码发送验证码。">
