@@ -713,7 +713,7 @@ export function ContributeOAuthPage({ def }: PageProps) {
   function initRaccoonCaptcha() {
     if (captchaInitedRef.current) return
     const el = document.getElementById('captcha-element')
-    if (!el) return
+    if (!el) { console.log('[captcha] 容器不存在，跳过'); return }
     const w = window as unknown as {
       initAliyunCaptcha?: (o: Record<string, unknown>) => void
     }
@@ -743,11 +743,14 @@ export function ContributeOAuthPage({ def }: PageProps) {
   }
   // 手机号表单渲染时初始化滑块（一次）。
   useEffect(() => {
-    if (provider === 'raccoon' && !session && params.get('needs') === 'phone') {
+    // deps 必须含 starting：首次 mount 时 starting=true 渲染的是 LoadingBlock
+    // 分支，滑块容器（随手机号表单出现）不在 DOM，init 会静默跳过（playwright
+    // 打点实测）；starting 落 false 后表单才出现，effect 需在那一刻重跑。
+    if (provider === 'raccoon' && !session && !starting && params.get('needs') === 'phone') {
       initRaccoonCaptcha()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [provider, session])
+  }, [provider, session, starting, params])
   // beginRef 绑定当前手机号（滑块 callback 无参，发起时取输入框的最新值）。
   useEffect(() => {
     beginRef.current = (captchaParam: string) => { start(phone.trim(), captchaParam) }
