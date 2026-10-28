@@ -492,10 +492,28 @@ register('autoclaw', {
   name: 'AutoClaw',
   flow: 'sms',
   needs: ['phone'],
+  // 直接走纯函数面（sendAutoclawVerificationCode / loginAutoclawWithCode，
+  // 带签名头的 /sms-code 与 /agent-login）——上游的
+  // startAutoclawSmsLoginFlow 是「本地登录页」流程（自起 HTTP 服务器渲染
+  // 页面，发码在页面里），在我们的无端口形态下调它等于什么都没发生：
+  // phone 参数被忽略、发码从未执行（2026-10-28 用户实测收不到短信）。
   async start({ phone }) {
     if (!phone) throw new Error('E_BAD_REQUEST: AutoClaw 登录需要手机号')
-    const s = await autoclaw.startAutoclawSmsLoginFlow({ phone })
-    return background('autoclaw', 'sms', { authorize_url: '', phone, ...s }, null)
+    const r = await autoclaw.sendAutoclawVerificationCode(phone)
+    if (!r.ok) throw new Error(r.error)
+    return background(
+      'autoclaw',
+      'sms',
+      { authorize_url: '', phone, message: '验证码已发送，请查收短信' },
+      null,
+    )
+  },
+  // 用户回填验证码后，oauth.poll 携 code 进来（sessions.attachRunner）。
+  async submit({ code, state }) {
+    const st = JSON.parse(state)
+    const r = await autoclaw.loginAutoclawWithCode(st.phone, code)
+    if (!r.ok) throw new Error(r.error)
+    return r.credential
   },
 })
 
