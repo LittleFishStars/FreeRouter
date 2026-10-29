@@ -498,6 +498,9 @@ func (a *App) buildAdminDeps() *httpapi.AdminDeps {
 
 		// M10 补齐的四个触发型依赖：刷新/连通性测试/设置读/设置写与 IP 自检。
 		Refresh:       a.buildRefreshBridge(),
+		// 余额刷新（2026-10-28）：需要 sidecar（余额在上游侧）——与
+		// UpstreamTest 同一注入理由；漏装时 need() 会回 404（接口不存在）。
+		BalanceRefresh: &balanceRefreshBridge{b: b, sidecar: a.sidecar},
 		UpstreamTest:  &upstreamTesterBridge{store: a.store, sidecar: a.sidecar, cfg: a.cfg, httpc: &http.Client{Timeout: 3 * time.Second}},
 		SettingsView:  &settingsBridge{b: b, cfg: a.cfg},
 		SettingsPatch: &settingsBridge{b: b, cfg: a.cfg},
