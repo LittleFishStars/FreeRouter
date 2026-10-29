@@ -133,7 +133,7 @@ export function Banner({
       variant={tone === 'muted' ? 'outlined' : 'standard'}
       // 与 Section/Card 的 mb:2 同一口径：提示条与后续内容之间保持标准区块距，
       // 不然 Banner 会贴着下一块（2026-10-30 用户实测概览页贴边）。
-      sx={{ mb: 2 }}
+      sx={{ mb: 2, alignItems: 'center' }}
       // 不给 icon 的话 MUI 会塞它自带的实心图标（与全站线性图标两套画法）
       icon={<AlertGlyph severity={TONE_SEVERITY[tone]} />}
     >
