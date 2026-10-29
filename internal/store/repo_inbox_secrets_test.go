@@ -987,3 +987,70 @@ func TestContractMigration0003Repeatable(t *testing.T) {
 		t.Errorf("schema_migrations = %d 行，期望 %d", applied, want)
 	}
 }
+
+// TestContractCredentialExcludeRelay：鉴定队列的 ExcludeRelay 过滤——
+// relay 上游的凭据由账号体系背书、鉴定永不发生，不以“待办”身份出现在
+// 队列里（2026-10-30 用户决定：无须鉴定的不出现在鉴定列表）。判定走
+// secret_ref → upstream_secrets.upstream_id → upstreams.kind 的全库唯一边；
+// secret_ref 悬空的行不受影响（子查询空 → NOT EXISTS 成立）。
+func TestContractCredentialExcludeRelay(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	models := s.Repos().Models
+	owner := addTenantAccount(t, s)
+
+	upRelay, err := models.UpsertUpstream(ctx, "relay", "fake_relay", "sidecar://fake_relay", nil, true)
+	if err != nil {
+		t.Fatalf("建 relay 上游失败: %v", err)
+	}
+	upVendor, err := models.UpsertUpstream(ctx, "vendor", "api_vendor", "https://api.example.invalid/v1", nil, true)
+	if err != nil {
+		t.Fatalf("建 vendor 上游失败: %v", err)
+	}
+	secRelay, err := s.Repos().Secrets.PutSecret(ctx, upRelay, []byte("sk-relay-SECRET"))
+	if err != nil {
+		t.Fatalf("建 relay 密钥失败: %v", err)
+	}
+	secVendor, err := s.Repos().Secrets.PutSecret(ctx, upVendor, []byte("sk-vendor-SECRET"))
+	if err != nil {
+		t.Fatalf("建 vendor 密钥失败: %v", err)
+	}
+	cRelay, err := models.CreateCredential(ctx, owner, "relaypool", "ext-r", "反代凭据", secRelay)
+	if err != nil {
+		t.Fatalf("建 relay 凭据失败: %v", err)
+	}
+	cVendor, err := models.CreateCredential(ctx, owner, "api:vendor", "ext-v", "API 凭据", secVendor)
+	if err != nil {
+		t.Fatalf("建 vendor 凭据失败: %v", err)
+	}
+	cOrphan, err := models.CreateCredential(ctx, owner, "prov_orphan", "ext-o", "无上游凭据", "ref://orphan")
+	if err != nil {
+		t.Fatalf("建悬空凭据失败: %v", err)
+	}
+
+	all, err := models.ListCredentials(ctx, CredentialFilter{})
+	if err != nil || len(all) != 3 {
+		t.Fatalf("全量 = %d 条, %v，期望 3", len(all), err)
+	}
+	queue, err := models.ListCredentials(ctx, CredentialFilter{ExcludeRelay: true})
+	if err != nil {
+		t.Fatalf("ExcludeRelay 查询失败: %v", err)
+	}
+	if len(queue) != 2 {
+		t.Fatalf("ExcludeRelay = %d 条，期望 2（relay 上游那条被排除）", len(queue))
+	}
+	got := map[string]bool{}
+	for _, c := range queue {
+		got[c.ID] = true
+	}
+	if got[cRelay] {
+		t.Errorf("relay 上游的凭据 %s 不应出现在鉴定队列", cRelay)
+	}
+	if !got[cVendor] || !got[cOrphan] {
+		t.Errorf("vendor/悬空凭据应保留：vendor=%v orphan=%v", got[cVendor], got[cOrphan])
+	}
+	// 详情读取（GetVerification 的输入）不受影响：单条仍可读，只是不进队列。
+	if _, err := models.LookupCredential(ctx, cRelay); err != nil {
+		t.Errorf("relay 凭据单读应可用: %v", err)
+	}
+}

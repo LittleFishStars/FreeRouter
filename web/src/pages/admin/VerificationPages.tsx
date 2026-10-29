@@ -60,7 +60,8 @@ export function VerificationsPage({ def }: PageProps) {
     <PageFrame def={def}>
       <Banner tone="muted">
         unverified 是默认放行（没有参考指纹），不是异常；suspect 才是拒绝并给证据。
-        「人工改判」必须填写理由并进审计。
+        「人工改判」必须填写理由并进审计。反代（relay）供应商的凭据由账号体系背书、
+        无须鉴定，不出现在本队列；要看它们去凭据池。
       </Banner>
       <div className="toolbar">
         <label className="toolbar-field">

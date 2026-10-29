@@ -433,7 +433,9 @@ func credentialToVerification(c *store.Credential) *httpapi.AdminVerification {
 }
 
 func (vb *verificationsBridge) ListVerifications(ctx context.Context, f httpapi.AdminVerificationFilter) ([]httpapi.AdminVerification, int64, error) {
-	sf := store.CredentialFilter{Provider: f.Provider, Limit: f.Limit, Offset: f.Offset}
+	// ExcludeRelay：relay（OAuth 反代）凭据由账号体系背书，鉴定永不发生，
+	// 不把它们列成队列里的假待办（2026-10-30 用户决定）。
+	sf := store.CredentialFilter{Provider: f.Provider, Limit: f.Limit, Offset: f.Offset, ExcludeRelay: true}
 	if f.Verdict != "" {
 		sf.VerifyStatus = store.VerifyStatus(f.Verdict)
 	}

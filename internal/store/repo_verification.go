@@ -415,6 +415,12 @@ type CredentialFilter struct {
 	Provider       string
 	Status         CredentialStatus
 	VerifyStatus   VerifyStatus
+	// ExcludeRelay 排除挂在 relay 上游上的凭据（鉴定队列专用）：relay 凭据由
+	// 账号体系背书（OAuth settle 直接入池，见 02-credentials 的来源口径），
+	// 鉴定流水线对它们永不发生——verify_status 恒为 unverified。把它们列进
+	// 鉴定队列等于一批永久占位的假待办（2026-10-30 用户实测：14 条里 9 条
+	// 是永远不动的反代行）。
+	ExcludeRelay bool
 	// Limit <=0 取 100，硬上限 500（管理面列表不应当拉全表）。
 	Limit  int
 	Offset int
@@ -460,6 +466,15 @@ func (r *ModelRepo) ListCredentials(ctx context.Context, f CredentialFilter) ([]
 		}
 		q.WriteString(" AND verify_status = ?")
 		args = append(args, string(f.VerifyStatus))
+	}
+	if f.ExcludeRelay {
+		// 经 secret_ref → upstream_secrets.upstream_id → upstreams.kind 的全库
+		// 唯一关联边判定（与凭据池左栏的分组同一条边）。secret_ref 悬空（无
+		// 上游指向）的行不受影响：子查询空 → NOT EXISTS 成立 → 照常列出。
+		q.WriteString(` AND NOT EXISTS (
+			SELECT 1 FROM upstream_secrets s
+			JOIN upstreams u ON u.id = s.upstream_id
+			WHERE s.id = upstream_credentials.secret_ref AND u.kind = 'relay')`)
 	}
 	// 最新在前：created_at 倒序；id 只作并列时的确定 tiebreak（UUID 无时间序）。
 	q.WriteString(" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?")
