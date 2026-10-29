@@ -878,8 +878,9 @@ a.metric-link:hover {
 /* 不可用项现在是两行：名称+标签 / 原因。原因比名称小一档，避免抢注意力 */
 .provider-name {
   display: flex;
-  align-items: center;
-  gap: 0.45rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
   font-weight: 600;
 }
 
