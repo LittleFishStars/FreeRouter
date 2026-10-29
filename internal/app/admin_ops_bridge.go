@@ -211,6 +211,10 @@ func (b balanceRefreshBridge) RefreshCredentialBalance(ctx context.Context, id s
 	}
 	now := time.Now().UTC().Unix()
 	text := ""
+	// 徽标只显示「剩余总数 + 单位」——分项明细（如 MiniMax 按发放日期的
+	// 积分包，可能十几条且多为 0）会把徽标撑成一大段。非零分项压缩进
+	// Detail（前端 hover 可见），0 值包直接丢弃（毫无信息量）。
+	detail := ""
 	if !out.OK {
 		text = "查询失败：" + out.Error
 	} else if out.Total == nil {
@@ -218,13 +222,15 @@ func (b balanceRefreshBridge) RefreshCredentialBalance(ctx context.Context, id s
 	} else {
 		total := strconv.FormatFloat(*out.Total, 'f', -1, 64)
 		text = fmt.Sprintf("%s %s", groupThousands(total), out.Unit)
-		// 分项（多池）随余额一起给：面板 hover/展开能对上「哪一笔」。
-		if len(out.Packages) > 1 {
-			var parts []string
-			for _, p := range out.Packages {
-				parts = append(parts, fmt.Sprintf("%s %s", strconv.FormatFloat(p.Amount, 'f', -1, 64), p.Name))
+		var parts []string
+		for _, p := range out.Packages {
+			if p.Amount == 0 {
+				continue
 			}
-			text += fmt.Sprintf("（%s）", strings.Join(parts, "，"))
+			parts = append(parts, fmt.Sprintf("%s %s", strconv.FormatFloat(p.Amount, 'f', -1, 64), p.Name))
+		}
+		if len(parts) > 0 {
+			detail = strings.Join(parts, "，")
 		}
 	}
 	if err := b.b.repos.Models.UpdateCredentialBalance(ctx, id, text, now); err != nil {
@@ -239,7 +245,7 @@ func (b balanceRefreshBridge) RefreshCredentialBalance(ctx context.Context, id s
 			}
 		}
 	}
-	res := &httpapi.CredentialBalanceResult{OK: out.OK, Unit: out.Unit, Reason: out.Error, BalanceText: text}
+	res := &httpapi.CredentialBalanceResult{OK: out.OK, Unit: out.Unit, Reason: out.Error, BalanceText: text, BalanceDetail: detail}
 	if out.Total != nil {
 		res.Total = out.Total
 	}

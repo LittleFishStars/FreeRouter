@@ -282,6 +282,8 @@ export interface AdminSourceCredential {
   balance_text?: string
   /** 该串的落库时刻（epoch 秒） */
   balance_checked_at?: number
+  /** 非零分项的压缩串（hover 明细） */
+  balance_detail?: string
 }
 
 /** GET /api/admin/model-sources 的响应体（不是 ListEnvelope：没有 data 信封）。 */

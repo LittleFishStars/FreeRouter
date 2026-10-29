@@ -949,6 +949,8 @@ type CredentialBalanceResult struct {
 	Unit        string   `json:"unit,omitempty"`
 	Reason      string   `json:"reason,omitempty"`
 	BalanceText string   `json:"balance_text,omitempty"`
+	// BalanceDetail 是非零分项的压缩串（hover 详情）；徽标正文永远是短文本。
+	BalanceDetail string `json:"balance_detail,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

@@ -519,7 +519,7 @@ export function CredentialsPage({ def }: PageProps) {
                                   {/* 余额徽标（2026-10-28）：text 非空才显示——「从未查询」
                                       与「查询失败」不冒充余额（失败文案在刷新动作的结果里） */}
                                   {c.balance_text && (
-                                    <span className="am-chip-tag" data-tone="ok" title={`查询于 ${fmtTime(c.balance_checked_at)}`}>
+                                    <span className="am-chip-tag" data-tone="ok" title={c.balance_detail ? `明细：${c.balance_detail}\n查询于 ${fmtTime(c.balance_checked_at)}` : `查询于 ${fmtTime(c.balance_checked_at)}`}>
                                       {c.balance_text}
                                     </span>
                                   )}
