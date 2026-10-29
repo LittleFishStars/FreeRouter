@@ -53,13 +53,135 @@ function normalize(out) {
   return { ok: false, error: '余额应答形状不符合预期' }
 }
 
+// ── API 型（用户粘 Key）的余额查询 ──
+//
+// API 型凭据的明文是裸 key 字符串（贡献提交时 PutSecret 存的就是 key 本身，
+// 不是 JSON 对象）——与反代型的「凭据对象」不同源，走独立分发。各家端点与
+// 应答形状逐家实测（无效 key 的应答形态已验证；「找到 balance 字段才报数，
+// 找不到如实报」的原则与反代侧一致）。
+
+const REQUEST_TIMEOUT_MS = 30_000
+
+function bearerKey(credential) {
+  if (typeof credential === 'string') return credential.trim()
+  return String(credential?.api_key ?? credential?.access_token ?? '').trim()
+}
+
+async function getJson(url, key) {
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json', Authorization: `Bearer ${key}` },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  })
+  const body = await response.text()
+  try { return { http: response.status, body: JSON.parse(body) } }
+  catch { return { http: response.status, body: body.slice(0, 200) } }
+}
+
+function readNumLoose(v) {
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  if (typeof v === 'string' && v !== '' && Number.isFinite(Number(v))) return Number(v)
+  return undefined
+}
+
+async function balanceDeepSeek(key, baseUrl) {
+  const r = await getJson(`${baseUrl}/user/balance`, key)
+  if (r.http === 401) return { ok: false, error: '凭据失效（401）' }
+  const bal = readNumLoose(r.body?.balance)
+  if (bal === undefined) return { ok: false, error: '余额应答形状不符合预期' }
+  return { ok: true, total: bal, unit: r.body?.currency === 'CNY' ? '元' : (r.body?.currency ?? '') }
+}
+
+async function balanceBigModel(key, baseUrl) {
+  const r = await getJson(`${baseUrl}/finance/balance`, key)
+  if (r.http === 401) return { ok: false, error: '凭据失效（401）' }
+  const d = r.body?.data ?? {}
+  const total = readNumLoose(d.total_balance)
+  if (total === undefined) return { ok: false, error: '余额应答形状不符合预期' }
+  const gift = readNumLoose(d.gift_balance)
+  const purchase = readNumLoose(d.purchased_balance)
+  const packages = []
+  if (purchase !== undefined) packages.push({ name: '充值余额', amount: purchase })
+  if (gift !== undefined) packages.push({ name: '赠送余额', amount: gift })
+  return { ok: true, total, unit: '元', packages: packages.length > 0 ? packages : undefined }
+}
+
+async function balanceSiliconFlow(key, baseUrl) {
+  const r = await getJson(`${baseUrl}/user/info`, key)
+  if (r.http === 401 || r.body?.code === 30014) return { ok: false, error: '凭据失效（401）' }
+  const bal = readNumLoose(r.body?.data?.totalBalance)
+  if (bal === undefined) return { ok: false, error: '余额应答形状不符合预期' }
+  const charge = readNumLoose(r.body?.data?.chargeBalance)
+  return {
+    ok: true, total: bal, unit: '元',
+    packages: charge !== undefined ? [{ name: '充值余额', amount: charge }] : undefined,
+  }
+}
+
+async function balanceMoonshot(key, baseUrl) {
+  const r = await getJson(`${baseUrl}/users/me/balance`, key)
+  if (r.http === 401) return { ok: false, error: '凭据失效（401）' }
+  const avail = readNumLoose(r.body?.data?.available_balance)
+  if (avail === undefined) return { ok: false, error: '余额应答形状不符合预期' }
+  const vip = readNumLoose(r.body?.data?.vip_lease_balance)
+  return {
+    ok: true, total: avail, unit: '元',
+    packages: vip !== undefined && vip > 0 ? [{ name: '会员租赁', amount: vip }] : undefined,
+  }
+}
+
+async function balanceOpenRouter(key, baseUrl) {
+  const r = await getJson(`${baseUrl}/credits`, key)
+  if (r.http === 401) return { ok: false, error: '凭据失效（401）' }
+  const d = r.body?.data ?? {}
+  const total = readNumLoose(d.total_credits)
+  const used = readNumLoose(d.total_usage)
+  if (total === undefined) return { ok: false, error: '余额应答形状不符合预期' }
+  return {
+    ok: true,
+    total: used !== undefined ? total - used : total,
+    unit: 'USD',
+    packages: used !== undefined ? [{ name: '已用', amount: used }] : undefined,
+  }
+}
+
+// 目录 id → 余额查询（同厂商多部署共用同一查询形状）。
+const API_BALANCE_BY_PROVIDER = {
+  'deepseek-com': { fn: balanceDeepSeek, base: 'https://api.deepseek.com' },
+  'bigmodel-cn': { fn: balanceBigModel, base: 'https://open.bigmodel.cn/api/paas/v4' },
+  'bigmodel-cn-coding': { fn: balanceBigModel, base: 'https://open.bigmodel.cn/api/paas/v4' },
+  'siliconflow-cn': { fn: balanceSiliconFlow, base: 'https://api.siliconflow.cn/v1' },
+  'siliconflow-com': { fn: balanceSiliconFlow, base: 'https://api.siliconflow.com/v1' },
+  'moonshot-ai': { fn: balanceMoonshot, base: 'https://api.moonshot.ai/v1' },
+  'moonshot-cn': { fn: balanceMoonshot, base: 'https://api.moonshot.cn/v1' },
+  'openrouter-ai': { fn: balanceOpenRouter, base: 'https://openrouter.ai/api/v1' },
+}
+
+async function queryApiBalance(provider, key) {
+  // upstream 行的 provider 形如 "api:deepseek-com"（目录 id 前缀）——剥掉再查表
+  const bare = provider.startsWith('api:') ? provider.slice(4) : provider
+  const entry = API_BALANCE_BY_PROVIDER[bare]
+  if (!entry) return { ok: false, error: `${bare} 暂不支持余额查询` }
+  if (!key) return { ok: false, error: '凭据缺少 API Key，无法查询余额' }
+  try {
+    return await entry.fn(key, entry.base)
+  } catch (error) {
+    return { ok: false, error: `${bare}: ${error instanceof Error ? error.message : String(error)}` }
+  }
+}
+
 /**
  * 查一个凭据的余额/积分。
  *
- * @param credential 已解密的凭据对象（JSON.parse 后的明文形状——与
- *   oauth.exchange 的产出同源，各家字段天然匹配）。
+ * @param credential 已解密的凭据明文：反代型是 JSON 对象（与
+ *   oauth.exchange 的产出同源，各家字段天然匹配）；API 型（目录 id 或
+ *   custom）是裸 key 字符串（PutSecret 存的就是 key 本身）。
  */
 export async function queryCreditBalance(provider, credential) {
+  // API 型先分（api:/custom 不在 hub 分发器里，且凭据是裸 key 不是对象）
+  if (API_BALANCE_BY_PROVIDER[provider] || provider === 'custom' || provider.startsWith('api:')) {
+    return queryApiBalance(provider, bearerKey(credential))
+  }
   let pc
   try {
     pc = await distributor()

@@ -169,9 +169,18 @@ func (b balanceRefreshBridge) RefreshCredentialBalance(ctx context.Context, id s
 		}
 		return nil, mapStoreErr(err)
 	}
-	var credential map[string]any
-	if err := json.Unmarshal(plain, &credential); err != nil {
-		return &httpapi.CredentialBalanceResult{OK: false, Reason: "凭据明文不是 JSON 对象（形状异常）"}, nil
+	// 凭据明文的双形态：反代型是 JSON 对象（oauth.exchange 的产出）；
+	// API 型（api:<目录id> / custom）是裸 key 字符串（PutSecret 存的就是
+	// key 本身）——credits.query 按同样的二分接收（sidecar 侧各走各的分发）。
+	var credential any
+	if strings.HasPrefix(c.Provider, "api:") || c.Provider == "custom" {
+		credential = strings.TrimSpace(string(plain))
+	} else {
+		var obj map[string]any
+		if err := json.Unmarshal(plain, &obj); err != nil {
+			return &httpapi.CredentialBalanceResult{OK: false, Reason: "凭据明文不是 JSON 对象（形状异常）"}, nil
+		}
+		credential = obj
 	}
 	if b.sidecar == nil {
 		return nil, httpapi.ErrAdminNotWired
