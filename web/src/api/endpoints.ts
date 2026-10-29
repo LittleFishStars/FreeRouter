@@ -549,6 +549,19 @@ export function getCredential(id: string) {
   return getOne<AdminCredential>(`${PATHS.adminCredentials}/${seg(id)}`)
 }
 
+/** POST /api/admin/credentials/{id}/balance-refresh —— 刷新一条凭据的余额（2026-10-28）。 */
+export function refreshCredentialBalance(id: string) {
+  return postWrite<CredentialBalanceResult>(`${PATHS.adminCredentials}/${seg(id)}/balance-refresh`)
+}
+
+export interface CredentialBalanceResult {
+  ok: boolean
+  total?: number | null
+  unit?: string
+  reason?: string
+  balance_text?: string
+}
+
 export function suspendCredential(id: string) {
   return postWrite<AdminCredential>(`${PATHS.adminCredentials}/${seg(id)}/suspend`)
 }

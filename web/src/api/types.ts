@@ -278,6 +278,10 @@ export interface AdminSourceCredential {
   verify_status: string
   created_at: number | null
   last_used_at: number | null
+  /** 余额展示串（如 "1,234 积分"）；空 = 从未查询或查询失败 */
+  balance_text?: string
+  /** 该串的落库时刻（epoch 秒） */
+  balance_checked_at?: number
 }
 
 /** GET /api/admin/model-sources 的响应体（不是 ListEnvelope：没有 data 信封）。 */

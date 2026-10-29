@@ -19,6 +19,7 @@ import {
   notifyCredential,
   patchRealModel,
   patchUpstream,
+  refreshCredentialBalance,
   refreshRealModels,
   suspendCredential
 } from '../../api/endpoints'
@@ -220,6 +221,25 @@ export function CredentialsPage({ def }: PageProps) {
   const [emExcluded, setEmExcluded] = useState(false)
 
   const sources = useMemo(() => sourcesQ.data?.sources ?? [], [sourcesQ.data])
+  // 余额刷新的按行 busy 标记（2026-10-28）：一条凭据一次上游查询，行级互不阻塞
+  const [balBusy, setBalBusy] = useState<Record<string, boolean>>({})
+  const [balNote, setBalNote] = useState<{ id: string; text: string; ok: boolean } | null>(null)
+
+  async function refreshBalance(id: string) {
+    setBalBusy((m) => ({ ...m, [id]: true }))
+    setBalNote(null)
+    try {
+      const r = await refreshCredentialBalance(id)
+      const d = r.data
+      // 成功/失败都落到行内提示；列表数据（balance_text）由 reload 拉新
+      setBalNote({ id, text: d.ok ? `已更新：${d.balance_text ?? ''}` : `查询失败：${d.reason ?? '未知原因'}`, ok: d.ok })
+      sourcesQ.reload()
+    } catch (e) {
+      setBalNote({ id, text: e instanceof Error ? e.message : '刷新失败', ok: false })
+    } finally {
+      setBalBusy((m) => ({ ...m, [id]: false }))
+    }
+  }
   // 分组（2026-10-27 用户决定）：反代供应商（账号授权，凭据由 sidecar 换出）与
   // API 供应商（用户粘 Key 直连端点）是两个不同的接入形态。
   // 判据用 oauth 标记而不是 kind：OAuth 反代的 upstream 也是 vendor
@@ -476,6 +496,12 @@ export function CredentialsPage({ def }: PageProps) {
                           添加凭据
                         </Link>
                       </div>
+                      {balNote && active.credentials.some((c) => c.id === balNote.id) && (
+                        <p className="muted" aria-live="polite" style={{ marginBottom: 8 }}>
+                          {balNote.ok ? '✓ ' : '⚠ '}
+                          {balNote.text}
+                        </p>
+                      )}
                       {active.credentials.length === 0 ? (
                         <p className="muted pool-empty">还没有凭据，去贡献入口添加。</p>
                       ) : (
@@ -490,9 +516,28 @@ export function CredentialsPage({ def }: PageProps) {
                                 <span className="pool-cred-badges">
                                   <StatusBadge status={c.status} label={statusLabel(c.status)} />
                                   <StatusBadge status={c.verify_status} label={statusLabel(c.verify_status)} />
+                                  {/* 余额徽标（2026-10-28）：text 非空才显示——「从未查询」
+                                      与「查询失败」不冒充余额（失败文案在刷新动作的结果里） */}
+                                  {c.balance_text && (
+                                    <span className="am-chip-tag" data-tone="ok" title={`查询于 ${fmtTime(c.balance_checked_at)}`}>
+                                      {c.balance_text}
+                                    </span>
+                                  )}
                                 </span>
                                 <span className="pool-cred-time">{fmtTime(c.created_at)}</span>
                               </Link>
+                              {/* 刷新余额：按行独立（一条凭据一次上游查询），busy 期间禁用 */}
+                              <div className="pool-cred-actions">
+                                <button
+                                  type="button"
+                                  className="btn-ghost"
+                                  disabled={busy || balBusy[c.id]}
+                                  onClick={() => void refreshBalance(c.id)}
+                                >
+                                  <IconRefresh size="xs" />
+                                  {balBusy[c.id] ? '查询中…' : '刷新余额'}
+                                </button>
+                              </div>
                             </li>
                           ))}
                         </ul>
