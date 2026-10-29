@@ -80,6 +80,12 @@ const PROVIDERS = [
   { provider: 'raccoon',      displayName: 'Raccoon（扫码/短信）', loginKind: 'qr_scan',        loginImplemented: true },
   { provider: 'trae',         displayName: 'Trae',             loginKind: 'browser_callback', loginImplemented: true },
   { provider: 'zcode',        displayName: 'ZCode',            loginKind: 'browser_callback', loginImplemented: true },
+  { provider: 'codely',       displayName: 'Codely',           loginKind: 'device_code',      loginImplemented: true },
+  { provider: 'officeace',    displayName: 'OfficeAce',        loginKind: 'browser_callback', loginImplemented: true },
+  // astudio：讯飞 AStudio 的登录是 Electron 客户端内的微信扫码（bundle 只有
+  // SSOService/wx/scanlogin/*，授权页与回调都握在客户端手里）——hub 2.7 官方
+  // 刻意不臆造 loginUrl，程序化登录不存在，故入口不暴露。
+  // modelscope / opencode：契约 v2 §7 已删（无 OAuth，仅目录/LLM 注册）。
 ];
 
 // —— 3. hub 装载与 B 层依赖探测 ————————————————————————————————

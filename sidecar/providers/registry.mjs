@@ -517,6 +517,80 @@ register('autoclaw', {
   },
 })
 
+
+// —— 腾讯 CodeBuddy / WorkBuddy（external-link-v2 轮询式，hub buddy-oauth）——
+// 流程：POST auth/state 拿 authUrl → 用户浏览器授权 → 轮询 token → 轮询
+// account。我们的无端口形态用 device_code 骨架：start 只发 state 请求（把
+// authUrl 给前端），轮询（loopGetToken + getAccount）进后台 runner。
+// 两家同实现不同 product（CODEBUDDY/WORKBUDDY，hub product.js）——身份头
+// （User-Agent 等）必须跟产品走，否则 WorkBuddy 登录会以 CodeBuddy 身份。
+async function buddyRegister(productId, productExport, displayName) {
+  register(productId, {
+    name: displayName,
+    flow: 'device_code',
+    async start() {
+      const mod = await import('dsh-providers-hub/lib/buddy-oauth.js')
+      const { [productExport]: product } = await import('dsh-providers-hub/lib/product.js')
+      const { state, authUrl } = await mod.fetchAuthState(fetch, undefined, product)
+      return background(productId, 'device_code', { authorize_url: authUrl }, async ({ signal }) => {
+        const token = await mod.loopGetToken(state, { signal, product })
+        const account = await mod.getAccount(state, token, { signal, product })
+        return mod.buildCredential(token, account)
+      })
+    },
+    async refresh({ credential }) {
+      const cred = typeof credential === 'string' ? JSON.parse(credential) : credential
+      const mod = await import('dsh-providers-hub/lib/buddy-oauth.js')
+      const { [productExport]: product } = await import('dsh-providers-hub/lib/product.js')
+      const next = await mod.refreshToken(cred, fetch, undefined, product)
+      return { credential: JSON.stringify(next), expires_at: String(next.expires_at ?? '') }
+    },
+  })
+}
+buddyRegister('buddy', 'CODEBUDDY', 'CodeBuddy（腾讯）')
+buddyRegister('workbuddy', 'WORKBUDDY', 'WorkBuddy（国际版）')
+
+// —— Codely（团结引擎，device 流，hub codely-auth）——
+// initiate → 浏览器授权 → poll 授权码 → exchange 换 token。凭据是
+// {access_token, refresh_token, ...}；官方插件的 /auth/refresh 续期。
+register('codely', {
+  name: 'Codely',
+  flow: 'device_code',
+  async start() {
+    const mod = await import('dsh-providers-hub/lib/codely-auth.js')
+    const auth = await mod.requestCodelyDeviceAuthorization({})
+    return background('codely', 'device_code',
+      { authorize_url: auth.verificationUriComplete ?? auth.verificationUri, interval: auth.intervalMs },
+      async ({ signal }) => {
+        const code = await mod.pollCodelyAuthorizationCode(
+          auth.authRequestToken, auth.intervalMs ?? 2_000, auth.expiresMs ?? 300_000, { signal })
+        const tokens = await mod.exchangeCodelyAuthorizationCode(code, { signal })
+        const nickname = await mod.fetchCodelyNickname(tokens.accessToken, { signal }).catch(() => undefined)
+        return {
+          access_token: tokens.accessToken,
+          refresh_token: tokens.refreshToken,
+          ...(nickname?.username ? { nickname: nickname.username } : {}),
+        }
+      })
+  },
+  async refresh({ credential }) {
+    const cred = typeof credential === 'string' ? JSON.parse(credential) : credential
+    if (!cred.refresh_token) throw new Error('codely: 无 refresh_token，无法续期')
+    const response = await fetch('https://codely.tuanjie.cn/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ refresh_token: cred.refresh_token }),
+      signal: AbortSignal.timeout(30_000),
+    })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok || !body.access_token) {
+      throw new Error(`codely: 续期失败（HTTP ${response.status}）${body.message ? '：' + body.message : ''}`)
+    }
+    const next = { ...cred, access_token: body.access_token, refresh_token: body.refresh_token ?? cred.refresh_token }
+    return { credential: JSON.stringify(next), expires_at: String(next.expires_at ?? '') }
+  },
+})
+
 register('officeace', {
   name: 'OfficeAce（华为云）',
   flow: 'browser',

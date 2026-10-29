@@ -230,6 +230,7 @@ var fallbackNames = [][2]string{
 	{"loomy", "Loomy"}, {"raccoon", "Raccoon"}, {"lobsterai", "LobsterAI"},
 	{"trae", "TRAE"}, {"autoclaw", "AutoClaw"},
 	{"officeace", "OfficeAce（华为云）"}, {"zcode", "ZCode"},
+	{"buddy", "CodeBuddy（腾讯）"}, {"workbuddy", "WorkBuddy（国际版）"}, {"codely", "Codely"},
 }
 
 func fallbackProviders(avail bool, reason string) []httpapi.ProviderChoice {
