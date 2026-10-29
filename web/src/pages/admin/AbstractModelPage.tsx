@@ -287,7 +287,8 @@ function ModelRow({
         </span>
         <span className="am-row-chain">{(m.strategy ?? []).join(' → ') || '—'}</span>
         <span className="am-row-ops" onClick={(e) => e.stopPropagation()}>
-          <button type="button" className="am-op-link" onClick={() => setOpen(true)}>候选集</button>
+          {/* 行头不放「候选集」按钮：展开区的「+ 添加模型」与候选芯片都打开
+              同一个编辑弹窗，行头只留低频的「弃用」入口。 */}
           <Link to={`${editTo}/deprecation`}>弃用</Link>
           <button type="button" className="am-expand" data-open={expanded} onClick={onToggle} aria-expanded={expanded} aria-label={expanded ? '收起候选' : '展开候选'}>
             <IconChevronDown size="sm" />
