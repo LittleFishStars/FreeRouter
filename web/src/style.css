@@ -850,6 +850,9 @@ a.metric-link:hover {
 }
 
 .provider-grid {
+  max-height: 620px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   list-style: none;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));

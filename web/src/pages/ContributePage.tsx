@@ -457,129 +457,140 @@ export default function ContributePage({ def }: PageProps) {
 
               return (
                 <Box>
-                  <Field label="搜索供应商" hint={`按名称或端点过滤，共 ${items.length} 家`}>
-                    <input
-                      value={apiSearch}
-                      onChange={(e) => setApiSearch(e.target.value)}
-                      placeholder="例如 deepseek 或 https://"
-                    />
-                  </Field>
-                  {/* 按 Tingly Box 的分组：custom 置顶 + 国内（CN）+ 国际（Global）。
-                      intl 归入 Global 组（同一国际市场），组头带数量徽标。 */}
-                  {[
-                    {
-                      key: 'custom',
-                      label: '自定义',
-                      items: [
-                        {
-                          id: CUSTOM_PROVIDER_ID,
-                          name: '自定义供应商',
-                          base_url: '任意 OpenAI 兼容端点，手填 base URL',
-                          region: '',
-                          protocol: ''
-                        }
-                      ]
-                    },
-                    {
-                      key: 'cn',
-                      label: '国内',
-                      items: filtered.filter((p) => p.region === 'cn')
-                    },
-                    {
-                      key: 'global',
-                      label: '国际',
-                      items: filtered.filter((p) => p.region !== 'cn')
-                    }
-                  ].map((group) =>
-                    group.items.length === 0 ? null : (
-                      <Box key={group.key}>
-                        {group.key !== 'custom' && (
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 1, mb: 0.75 }}>
-                            <Typography variant="caption" sx={{ fontWeight: 700 }}>
-                              {group.label}
-                            </Typography>
-                            <Box
-                              component="span"
-                              sx={{
-                                fontSize: '0.62rem',
-                                px: 0.6,
-                                py: 0.1,
-                                borderRadius: 1,
-                                bgcolor: 'var(--fr-inset)',
-                                color: 'text.secondary'
-                              }}
-                            >
-                              {group.items.length} 家
-                            </Box>
-                            <Box sx={{ flex: 1, height: 1, bgcolor: 'divider' }} />
-                          </Box>
-                        )}
-                        <Box
-                          sx={{
-                            display: 'grid',
-                            gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-                            gap: 1
-                          }}
-                        >
-                          {group.items.map((p) => {
-                            const selected = p.id === selectedId
-                            return (
+                  <Box
+                    sx={{
+                      maxHeight: 620,
+                      overflowY: 'auto',
+                      overscrollBehavior: 'contain',
+                      pr: 0.5
+                    }}
+                  >
+                    <Box sx={{ position: 'sticky', top: 0, zIndex: 1, bgcolor: 'var(--fr-block)', pb: 0.5 }}>
+                      <Field label="搜索供应商" hint={`按名称或端点过滤，共 ${items.length} 家`}>
+                        <input
+                          value={apiSearch}
+                          onChange={(e) => setApiSearch(e.target.value)}
+                          placeholder="例如 deepseek 或 https://"
+                        />
+                      </Field>
+                    </Box>
+                    {/* 按 Tingly Box 的分组：custom 置顶 + 国内（CN）+ 国际（Global）。
+                        intl 归入 Global 组（同一国际市场），组头带数量徽标。 */}
+                    {[
+                      {
+                        key: 'custom',
+                        label: '自定义',
+                        items: [
+                          {
+                            id: CUSTOM_PROVIDER_ID,
+                            name: '自定义供应商',
+                            base_url: '任意 OpenAI 兼容端点，手填 base URL',
+                            region: '',
+                            protocol: ''
+                          }
+                        ]
+                      },
+                      {
+                        key: 'cn',
+                        label: '国内',
+                        items: filtered.filter((p) => p.region === 'cn')
+                      },
+                      {
+                        key: 'global',
+                        label: '国际',
+                        items: filtered.filter((p) => p.region !== 'cn')
+                      }
+                    ].map((group) =>
+                      group.items.length === 0 ? null : (
+                        <Box key={group.key}>
+                          {group.key !== 'custom' && (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 1, mb: 0.75 }}>
+                              <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                                {group.label}
+                              </Typography>
                               <Box
-                                key={p.id}
-                                onClick={() => setSelectedId(p.id)}
+                                component="span"
                                 sx={{
-                                  cursor: 'pointer',
-                                  p: 1.25,
-                                  borderRadius: 2.5,
-                                  bgcolor: selected ? 'var(--fr-inset)' : 'var(--fr-block)',
-                                  outline: selected ? '2px solid' : 'none',
-                                  outlineColor: 'primary.main',
-                                  outlineOffset: -1,
-                                  display: 'flex',
-                                  alignItems: 'flex-start',
-                                  gap: 1,
-                                  '&:hover': { bgcolor: 'var(--fr-inset)' }
+                                  fontSize: '0.62rem',
+                                  px: 0.6,
+                                  py: 0.1,
+                                  borderRadius: 1,
+                                  bgcolor: 'var(--fr-inset)',
+                                  color: 'text.secondary'
                                 }}
                               >
-                                <img
-                                  src={apiIconFor(p.id, p.name)}
-                                  alt=""
-                                  width={30}
-                                  height={30}
-                                  style={{ borderRadius: 8, flex: 'none', marginTop: 2 }}
-                                />
-                                <Box sx={{ minWidth: 0, flex: '1 1 auto' }}>
-                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                                    <Typography variant="body2" sx={{ fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                      {p.name}
+                                {group.items.length} 家
+                              </Box>
+                              <Box sx={{ flex: 1, height: 1, bgcolor: 'divider' }} />
+                            </Box>
+                          )}
+                          <Box
+                            sx={{
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+                              gap: 1
+                            }}
+                          >
+                            {group.items.map((p) => {
+                              const selected = p.id === selectedId
+                              return (
+                                <Box
+                                  key={p.id}
+                                  onClick={() => setSelectedId(p.id)}
+                                  sx={{
+                                    cursor: 'pointer',
+                                    p: 1.25,
+                                    borderRadius: 2.5,
+                                    bgcolor: selected ? 'var(--fr-inset)' : 'var(--fr-block)',
+                                    outline: selected ? '2px solid' : 'none',
+                                    outlineColor: 'primary.main',
+                                    outlineOffset: -1,
+                                    display: 'flex',
+                                    alignItems: 'flex-start',
+                                    gap: 1,
+                                    '&:hover': { bgcolor: 'var(--fr-inset)' }
+                                  }}
+                                >
+                                  <img
+                                    src={apiIconFor(p.id, p.name)}
+                                    alt=""
+                                    width={30}
+                                    height={30}
+                                    style={{ borderRadius: 8, flex: 'none', marginTop: 2 }}
+                                  />
+                                  <Box sx={{ minWidth: 0, flex: '1 1 auto' }}>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                                      <Typography variant="body2" sx={{ fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {p.name}
+                                      </Typography>
+                                      {p.region === 'cn' && (
+                                        <Box component="span" sx={{ fontSize: '0.62rem', px: 0.5, py: 0.1, borderRadius: 1, bgcolor: 'rgba(239,68,68,.16)', color: '#f87171', flex: 'none' }}>
+                                          CN
+                                        </Box>
+                                      )}
+                                    </Box>
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                      component="p"
+                                      sx={{ wordBreak: 'break-all', mt: 0.1 }}
+                                    >
+                                      {p.base_url}
                                     </Typography>
-                                    {p.region === 'cn' && (
-                                      <Box component="span" sx={{ fontSize: '0.62rem', px: 0.5, py: 0.1, borderRadius: 1, bgcolor: 'rgba(239,68,68,.16)', color: '#f87171', flex: 'none' }}>
-                                        CN
-                                      </Box>
+                                    {p.protocol && (
+                                      <Typography variant="caption" color="text.disabled" component="p" sx={{ mt: 0.25 }}>
+                                        {p.protocol}
+                                      </Typography>
                                     )}
                                   </Box>
-                                  <Typography
-                                    variant="caption"
-                                    color="text.secondary"
-                                    component="p"
-                                    sx={{ wordBreak: 'break-all', mt: 0.1 }}
-                                  >
-                                    {p.base_url}
-                                  </Typography>
-                                  {p.protocol && (
-                                    <Typography variant="caption" color="text.disabled" component="p" sx={{ mt: 0.25 }}>
-                                      {p.protocol}
-                                    </Typography>
-                                  )}
                                 </Box>
-                              </Box>
-                            )
-                          })}
+                              )
+                            })}
+                          </Box>
                         </Box>
-                      </Box>
-                    )
-                  )}
+                      )
+                    )}
+                  </Box>
                   {filtered.length === 0 && (
                     <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
                       没有匹配的供应商：换个关键词，或选「自定义供应商」手填端点。
