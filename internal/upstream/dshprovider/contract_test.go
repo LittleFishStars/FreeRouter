@@ -521,8 +521,12 @@ func TestContractRealSidecar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("providers.list：%v", err)
 	}
-	if len(ps) != 15 {
-		t.Fatalf("provider 目录应为 15 家（17 - modelscope/opencode），得 %d", len(ps))
+	// 2026-10-29 对照 gitee deepseek-harness-codearts 补齐 hub 面板 23 家：
+	// 15 + buddy/workbuddy/codely/astudio/autoclawintl = 20（gemini 本就在
+	// 实现里只是表漏暴露；modelscope/opencode 维持契约 v2 §7 的删除状态；
+	// codearts 留表但 loginImplemented=false——hub 亦无其登录实现）。
+	if len(ps) != 20 {
+		t.Fatalf("provider 目录应为 20 家（15 + buddy/workbuddy/codely/astudio/autoclawintl），得 %d", len(ps))
 	}
 
 	// credentials.resolve 现在走 $DSH_HOME/.credentials.yaml 的**只读**解析（与 hub 无关），
@@ -544,12 +548,24 @@ func TestContractRealSidecar(t *testing.T) {
 		t.Error("credentials.resolve 命中时值不得为空串（空值应表达为 null）")
 	}
 
-	// 「业务错误不影响通道健康」的活体断言：credits.query 恒为 E_NOT_IMPLEMENTED
-	// （余额端点要的是 DSH 账号对象，sidecar 无账号池替身）。它必须是**结构化错误**
-	// 而不是超时/断连——这正是「缺能力不崩」的核心。
-	_, err = c.Call(ctx, "credits.query", map[string]any{"provider": "demo-provider", "credentialRef": "x"})
-	if CodeOf(err) != CodeNotImplemented {
-		t.Errorf("credits.query 应回 E_NOT_IMPLEMENTED，得 %v", err)
+	// 「业务错误不影响通道健康」的活体断言：credits.query 对未知 provider 回
+	// **应用层结构化应答** {ok:false, error}（2026-10-29 起余额查询已实装——
+	// hub 分发器 18 家 + API 型 8 部署位；「暂不支持」是可重试的业务状态，
+	// hub 升级即跟上，不走通道错误）。参数缺失才是通道错误（E_BAD_REQUEST）。
+	unknownRes, err := c.Call(ctx, "credits.query", map[string]any{"provider": "demo-provider", "credential": map[string]any{"access_token": "x"}})
+	if err != nil {
+		t.Errorf("credits.query 未知 provider 应正常应答，得 %v", err)
+	} else {
+		var ur struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(unknownRes, &ur) != nil || ur.OK || ur.Error == "" {
+			t.Errorf("credits.query 未知 provider 应回 {ok:false, error:…}，得 %s", string(unknownRes))
+		}
+	}
+	if _, err = c.Call(ctx, "credits.query", map[string]any{"provider": "demo-provider"}); CodeOf(err) != CodeBadRequest {
+		t.Errorf("credits.query 缺 credential 应回 E_BAD_REQUEST，得 %v", err)
 	}
 	if !c.Available() {
 		t.Fatal("业务错误不得影响通道健康——「缺能力不崩」是本用例的核心断言")
