@@ -18,8 +18,6 @@ import {
   AccordionDetails,
   AccordionSummary,
   Box,
-  Checkbox,
-  FormControlLabel,
   List,
   ListItemButton,
   Typography
@@ -104,18 +102,6 @@ function splitModels(v: string): string[] {
     .filter(Boolean)
 }
 
-/** 无偿阻断式确认：三个入口共用一份，未勾选时授权链接与提交按钮都不可用。 */
-function FreeConfirm({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <FormControlLabel
-      className="checkbox-line free-confirm"
-      sx={{ m: 0 }}
-      control={<Checkbox size="small" checked={checked} onChange={(e) => onChange(e.target.checked)} />}
-      label="我明白：贡献是无偿的，不提供额度、优先使用权或升级凭据作为回报"
-    />
-  )
-}
-
 /**
  * 贡献入口（公共区）：左栏反代供应商（供应商账号登录，凭据由 sidecar 换出），
  * 右栏 API 供应商（内置目录 + 粘 Key），自定义端点是右栏列表的置顶项。
@@ -133,7 +119,6 @@ function FreeConfirm({ checked, onChange }: { checked: boolean; onChange: (v: bo
  * 分开展示等于给用户两条不同的回站路径。
  */
 export default function ContributePage({ def }: PageProps) {
-  const [freeConfirmed, setFreeConfirmed] = useState(false)
   const [result, setResult] = useState<ContributeResult | null>(null)
   const providers = useApi(() => getContributeProviders(), [])
 
@@ -159,10 +144,6 @@ export default function ContributePage({ def }: PageProps) {
   async function onSubmitCustom(e: FormEvent) {
     e.preventDefault()
     // 按钮虽然已置灰，但表单回车仍可能触发 onSubmit：阻断确认在这里再拦一次
-    if (!freeConfirmed) {
-      setCustomError(new Error('请先勾选上方的无偿确认'))
-      return
-    }
     setCustomError(null)
     setCustomSubmitting(true)
     try {
@@ -185,10 +166,6 @@ export default function ContributePage({ def }: PageProps) {
   async function onSubmitApi(e: FormEvent) {
     e.preventDefault()
     // 同上：disabled 只是提示，真正的阻断点必须在这里
-    if (!freeConfirmed) {
-      setApiError(new Error('请先勾选上方的无偿确认'))
-      return
-    }
     if (!selectedId || isCustom) {
       setApiError(new Error('请先在上方列表选择一家 API 供应商'))
       return
@@ -280,23 +257,6 @@ export default function ContributePage({ def }: PageProps) {
 
       {/* 两栏共用一份确认：左栏点的是授权链接、右栏点的是提交按钮，
           阻断点不同但语义相同——只放一份，避免「这边勾了那边没勾」。 */}
-      {/* 无偿确认条：它是一条「阻断点」，所以允许有强调——未勾选时用警告容器色，
-          勾上后回落成中性填充。整站的边框都改成了填充，这里也一致。 */}
-      <Box
-        sx={{
-          mb: 2,
-          p: 1.5,
-          borderRadius: 3,
-          bgcolor: freeConfirmed ? 'var(--fr-success-container)' : 'var(--fr-warning-container)',
-          color: freeConfirmed ? 'var(--fr-on-success-container)' : 'var(--fr-on-warning-container)',
-          transition: 'background-color .15s ease'
-        }}
-      >
-        <FreeConfirm checked={freeConfirmed} onChange={setFreeConfirmed} />
-        <Typography variant="caption" color="text.secondary" component="p" sx={{ m: 0, mt: 0.25 }}>
-          未勾选时：左栏的授权链接不可点，右栏的提交按钮不可用。
-        </Typography>
-      </Box>
 
       {/* 左右双栏（lg 起并排；窄屏纵向堆叠，反代在上）：两类入口是并列的选择，
           同屏可见而不是藏在 Tab 之后。 */}
@@ -342,11 +302,7 @@ export default function ContributePage({ def }: PageProps) {
                                 p.needs?.includes('phone') ? '?needs=phone' : ''
                               }`}
                               className="provider-link"
-                              title={freeConfirmed ? `授权 ${p.name}` : '请先勾选上方的无偿确认'}
-                              aria-disabled={!freeConfirmed}
-                              onClick={(e) => {
-                                if (!freeConfirmed) e.preventDefault()
-                              }}
+                              title={`授权 ${p.name}`}
                             >
                               {p.name}
                             </Link>
@@ -579,7 +535,7 @@ export default function ContributePage({ def }: PageProps) {
                           />
                         </Field>
                         <FormError error={customError} />
-                        <button type="submit" className="btn-primary" disabled={!freeConfirmed || customSubmitting}>
+                        <button type="submit" className="btn-primary" disabled={customSubmitting}>
                           {customSubmitting ? '正在提交…' : '提交贡献'}
                         </button>
                       </form>
@@ -637,7 +593,7 @@ export default function ContributePage({ def }: PageProps) {
                         </Field>
 
                         <FormError error={apiError} />
-                        <button type="submit" className="btn-primary" disabled={!freeConfirmed || apiSubmitting}>
+                        <button type="submit" className="btn-primary" disabled={apiSubmitting}>
                           {apiSubmitting ? '正在提交…' : `提交到 ${selected.name}`}
                         </button>
                       </form>
