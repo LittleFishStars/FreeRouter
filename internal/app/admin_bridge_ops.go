@@ -404,7 +404,17 @@ func credentialToVerification(c *store.Credential) *httpapi.AdminVerification {
 		Verdict:      string(c.VerifyStatus),
 	}
 	if c.VerifyDetail != "" {
-		v.Evidence = json.RawMessage(c.VerifyDetail)
+		// RawMessage 语义是「已是合法 JSON」——编码时对整个数组做校验，
+		// 一行非法就炸掉**全部条目**的应答体（json.Encode 中途失败，200 已
+		// 写、body 为空，前端表现为永久骨架——2026-10-28 用户实测：OAuth
+		// 落库的 detail 是纯中文文本，反代供应商的行全数命中）。非 JSON 的
+		// 历史文本包成字符串字段，保证应答体永远合法。
+		if json.Valid([]byte(c.VerifyDetail)) {
+			v.Evidence = json.RawMessage(c.VerifyDetail)
+		} else {
+			v.Evidence = json.RawMessage(fmt.Sprintf(`{"detail":%s}`,
+				mustJSONString(c.VerifyDetail)))
+		}
 	}
 	return v
 }
@@ -898,4 +908,15 @@ func (ub *upstreamsBridge) SetUpstreamSecret(ctx context.Context, id, plaintext 
 		return aerr
 	})
 	return auditID, err
+}
+
+// mustJSONString 把任意文本编码成 JSON 字符串字面量（含中文与控制字符）。
+// Encode 失败即 panic 的场景不存在——文本来自库内 detail 列，UTF-8 由
+// SQLite 保证；这里的 panic 分支只防御未来的编码器行为变更。
+func mustJSONString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return `"unencodable detail"`
+	}
+	return string(b)
 }

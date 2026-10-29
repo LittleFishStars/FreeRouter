@@ -514,8 +514,11 @@ func (b *oauthBridge) persist(ctx context.Context, owner string, provider, crede
 	if err != nil {
 		return "", err
 	}
+	// detail 的形状契约是 JSON（verify_detail 会被鉴定队列当 RawMessage
+	// 内联进应答）——纯文本会让整份列表的编码失败（2026-10-28 实测）。
 	if err := b.st.Repos().Models.MarkVerified(ctx, credID,
-		store.VerifyUnverified, "oauth: 已获取凭据，等待目录探测"); err != nil {
+		store.VerifyUnverified,
+		`{"stage":"oauth","message":"已获取凭据，等待目录探测"}`); err != nil {
 		return credID, err
 	}
 	return credID, nil
