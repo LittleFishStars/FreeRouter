@@ -626,7 +626,17 @@ register('lobsterai', {
   needs: [],
   async start() {
     const mod = await import('dsh-providers-hub/lib/lobsterai-oauth.js')
-    const { LOBSTERAI } = await import('./lobsterai/lobsterai.js')
+    const { LOBSTERAI_PORTAL_BASE, LOBSTERAI_API_BASE, LOBSTERAI_FALLBACK_CLIENT_VERSION, LOBSTERAI_USER_AGENT, LOBSTERAI_CLIENT_CAPABILITIES, LOBSTERAI_CLIENT_VERSION_API } = await import('./lobsterai/lobsterai-product.js')
+    // sidecar 的 lobsterai-product.js 是零散常量（hub 是聚合对象）——按 hub
+    // LobsteraiProduct 的字段形状内联构造（buildLobsteraiLoginUrl 只读
+    // portalBase；exchange 读 clientVersion/capabilities）。
+    const LOBSTERAI = {
+      id: 'lobsterai', displayName: 'LobsterAI (有道)',
+      portalBase: LOBSTERAI_PORTAL_BASE, apiBase: LOBSTERAI_API_BASE,
+      clientVersionApi: LOBSTERAI_CLIENT_VERSION_API,
+      fallbackClientVersion: LOBSTERAI_FALLBACK_CLIENT_VERSION,
+      userAgent: LOBSTERAI_USER_AGENT, clientCapabilities: LOBSTERAI_CLIENT_CAPABILITIES,
+    }
     const session = mod.createLobsteraiLoginSession()
     const authorizeUrl = mod.buildLobsteraiLoginUrl(0, session.uuid, LOBSTERAI)
     // 会话要素走 state 字符串（与 raccoon 的 phone 同法）：submit 时由
@@ -656,7 +666,14 @@ register('lobsterai', {
       throw new Error('LobsterAI: state 不匹配，请重新发起授权')
     }
     const mod = await import('dsh-providers-hub/lib/lobsterai-oauth.js')
-    const { LOBSTERAI } = await import('./lobsterai/lobsterai.js')
+    const { LOBSTERAI_PORTAL_BASE, LOBSTERAI_API_BASE, LOBSTERAI_FALLBACK_CLIENT_VERSION, LOBSTERAI_USER_AGENT, LOBSTERAI_CLIENT_CAPABILITIES, LOBSTERAI_CLIENT_VERSION_API } = await import('./lobsterai/lobsterai-product.js')
+    const LOBSTERAI = {
+      id: 'lobsterai', displayName: 'LobsterAI (有道)',
+      portalBase: LOBSTERAI_PORTAL_BASE, apiBase: LOBSTERAI_API_BASE,
+      clientVersionApi: LOBSTERAI_CLIENT_VERSION_API,
+      fallbackClientVersion: LOBSTERAI_FALLBACK_CLIENT_VERSION,
+      userAgent: LOBSTERAI_USER_AGENT, clientCapabilities: LOBSTERAI_CLIENT_CAPABILITIES,
+    }
     const credential = await mod.exchangeLobsteraiAuthCode(
       code,
       { uuid: session.uuid, firstKeyfrom: session.firstKeyfrom },

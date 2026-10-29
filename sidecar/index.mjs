@@ -84,6 +84,7 @@ const PROVIDERS = [
   { provider: 'officeace',    displayName: 'OfficeAce',        loginKind: 'browser_callback', loginImplemented: true },
   { provider: 'astudio',      displayName: 'AStudio',          loginKind: 'qr_scan',          loginImplemented: true },
   { provider: 'autoclawintl', displayName: 'AutoClaw (国际版)', loginKind: 'browser_callback', loginImplemented: true },
+  { provider: 'gemini',       displayName: 'Gemini Code Assist', loginKind: 'browser_callback', loginImplemented: true },
   // astudio：hub 的「网页三合一快捷登录」（手机短信/账号密码/微信扫码，不
   // 依赖桌面端）——微信扫码支已接（sso.xfyun.cn 的 fd 流程纯函数面）。
   // modelscope / opencode：契约 v2 §7 已删（无 OAuth，仅目录/LLM 注册）。
