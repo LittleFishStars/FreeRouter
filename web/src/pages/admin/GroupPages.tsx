@@ -11,7 +11,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { IconBack } from '../../icons'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
 import {
   addGroupMembers,
   createGroup,
@@ -30,7 +30,7 @@ import type { AdminGroup, GroupPool, GroupPolicyQuota, GroupPolicies } from '../
 import { useApi } from '../../hooks/useApi'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import { ACTION_ICON, TableAction, TableActions, ToolButton } from '../../components/IconButtons'
-import { IconChevronDown, IconCopy, IconDelete, IconMembers, IconPlus, IconView } from '../../icons'
+import { IconChevronDown, IconCopy, IconDelete, IconMembers, IconPlus, IconUserPlus, IconView } from '../../icons'
 import {
   AsyncView,
   Badge,
@@ -132,8 +132,10 @@ function GroupRow({
                   </span>
                 ))
               )}
-              <Link to={detailTo} className="am-add-chip">
-                <IconView size="xs" /> 组详情里授权
+              {/* 快捷动作指到组详情的成员区（#members 锚点 + 详情页自动滚动）：
+                  名字说的是「添加用户」，落点就该是添加成员的表单，而不是页顶。 */}
+              <Link to={`${detailTo}#members`} className="am-add-chip" title="去组详情添加成员">
+                <IconUserPlus size="xs" /> 添加用户
               </Link>
             </div>
           )}
@@ -352,6 +354,16 @@ export function GroupDetailPage({ def }: PageProps) {
   const [notice, setNotice] = useState<string | null>(null)
 
   const group = q.data
+  // 「添加用户」快捷入口从组列表带着 #members 进来：成员区渲染好后滚过去，
+  // 落点直接是添加成员的表单。（HashRouter 下第二个 # 会进 location.hash。）
+  const location = useLocation()
+  useEffect(() => {
+    if (location.hash !== '#members' || !group) return
+    const t = window.setTimeout(() => {
+      document.getElementById('members')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 50)
+    return () => window.clearTimeout(t)
+  }, [location.hash, group])
   useEffect(() => {
     if (!group) return
     setName(group.name)
@@ -486,7 +498,7 @@ export function GroupDetailPage({ def }: PageProps) {
         )}
       </Section>
 
-      <Section title={`成员（${group.members.length}）`} hint="成员必须是带「调用者」能力的账户；成员之间互不可见。">
+      <Section id="members" title={`成员（${group.members.length}）`} hint="成员必须是带「调用者」能力的账户；成员之间互不可见。">
         <ul className="member-list">
           {group.members.map((m) => (
             <li key={m}>

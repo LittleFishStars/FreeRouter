@@ -341,18 +341,21 @@ export function Section({
   title,
   actions,
   children,
-  hint
+  hint,
+  id
 }: {
   title: string
   actions?: ReactNode
   children: ReactNode
   hint?: ReactNode
+  /** DOM 锚点：跨页快捷入口用 #hash 直达某个分区（如组详情的成员区）。 */
+  id?: string
 }) {
   return (
     // 卡片的分区头不再用 CardHeader（它自带一套 20px 上下内距，与正文
     // 自己的间距叠在一起显得头重脚轻）。改成显式 padding 后，标题到正文的
     // 间距全站一致，且 hint 位置可以精确到 4px 网格。
-    <Card sx={{ mb: 2 }}>
+    <Card sx={{ mb: 2 }} id={id}>
       <Box
         sx={{
           display: 'flex',

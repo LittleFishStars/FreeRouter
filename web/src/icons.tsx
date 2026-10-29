@@ -85,6 +85,7 @@ export const IconNavHome = glyph(TB.IconHome)
 export const IconNavContribute = glyph(TB.IconPlug)
 export const IconNavAccount = glyph(TB.IconUser)
 export const IconUser = IconNavAccount
+export const IconUserPlus = glyph(TB.IconUserPlus)
 export const IconNavAdminReview = glyph(TB.IconClipboardCheck)
 export const IconNavInbox = glyph(TB.IconInbox)
 export const IconNavAccounts = glyph(TB.IconUsers)
