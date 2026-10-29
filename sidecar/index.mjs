@@ -35,6 +35,7 @@ import * as dshCredentials from './credentials.mjs';
 import { redactLine } from './redact.mjs';
 import * as registry from './providers/registry.mjs';
 import * as credits from './providers/credits.mjs';
+import * as modelCatalog from './providers/models-catalog.mjs';
 import * as oauthSessions from './providers/sessions.mjs';
 
 const SIDECAR_VERSION = '0.1.0';
@@ -320,6 +321,13 @@ const METHODS = {
     if (!sessionId) throw new SidecarError('E_BAD_REQUEST', 'sessionId 不能为空');
     sessions.delete(sessionId); // 不关心会话是否存在：取消语义就是「确保它不在」。
     return {};
+  },
+
+  // 反代供应商的静态模型目录（hub 各家 product 的 fallbackModels，零拷贝）。
+  // 贡献 settle 后与目录刷新都调这里——反代型没有 OpenAI 兼容 /models 可探测。
+  'models.catalog': async ({ provider }) => {
+    if (!provider) throw new SidecarError('E_BAD_REQUEST', 'provider 不能为空')
+    return { models: await modelCatalog.modelCatalog(provider) }
   },
 
   // 凭据余额/积分查询（只读）：管理面凭据池的「刷新余额」按钮调这里。

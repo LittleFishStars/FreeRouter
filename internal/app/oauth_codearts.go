@@ -481,33 +481,35 @@ func (b *oauthBridge) persist(ctx context.Context, owner string, provider, crede
 	kind, baseURL := b.endpointFor(ctx, provider)
 
 	var credID string
+	var uid string
 	err := b.st.WithTx(ctx, func(tx *store.Repos) error {
 		// 上游行先建且 enabled=false：未通过判定的凭据绝不能可调用。
-		uid, err := tx.Models.UpsertUpstream(ctx, kind, upstreamName, baseURL, &owner, false)
-		if err != nil {
-			return err
+		var uerr error
+		uid, uerr = tx.Models.UpsertUpstream(ctx, kind, upstreamName, baseURL, &owner, false)
+		if uerr != nil {
+			return uerr
 		}
-		sid, err := tx.Secrets.PutSecret(ctx, uid, []byte(credential))
-		if err != nil {
-			return err
+		sid, serr := tx.Secrets.PutSecret(ctx, uid, []byte(credential))
+		if serr != nil {
+			return serr
 		}
-		cid, err := tx.Models.CreateCredential(ctx, owner, provider, fingerprint,
+		cid, cerr := tx.Models.CreateCredential(ctx, owner, provider, fingerprint,
 			provider+" OAuth", fmt.Sprintf("%s", sid))
-		if isDuplicateRow(err) {
+		if isDuplicateRow(cerr) {
 			// 同一外部身份重新授权（供应商可能重发相同 token，MiniMax 实测）：
 			// 语义是「换新凭据」而非错误——替换已有行的密文/归属/label，
 			// 状态重置回 pending 重新鉴定；废弃的旧密文同步删除。
 			var oldRef string
-			cid, oldRef, err = tx.Models.ReplaceCredential(ctx, owner, provider, fingerprint,
+			cid, oldRef, cerr = tx.Models.ReplaceCredential(ctx, owner, provider, fingerprint,
 				provider+" OAuth", fmt.Sprintf("%s", sid))
-			if err == nil && oldRef != "" && oldRef != fmt.Sprintf("%s", sid) {
+			if cerr == nil && oldRef != "" && oldRef != fmt.Sprintf("%s", sid) {
 				_ = tx.Secrets.DeleteSecret(ctx, oldRef)
 			}
 		}
-		if err != nil {
+		if cerr != nil {
 			// 建行失败要把刚写的密文收回去，避免留下无主的密钥材料。
 			_ = tx.Secrets.DeleteSecret(ctx, sid)
-			return err
+			return cerr
 		}
 		credID = cid
 		return nil
@@ -522,7 +524,49 @@ func (b *oauthBridge) persist(ctx context.Context, owner string, provider, crede
 		`{"stage":"oauth","message":"已获取凭据，等待目录探测"}`); err != nil {
 		return credID, err
 	}
+	// 静态模型目录种子（2026-10-29）：反代型没有 OpenAI 兼容 /models 可探测，
+	// 模型卡的数据源是 hub 各家 product 的 fallbackModels（逐字段对齐上游
+	// 客户端实测）。失败不阻断凭据落库（目录可自愈，下次刷新/续期再补）。
+	b.seedModelCatalog(ctx, provider, uid)
 	return credID, nil
+}
+
+// seedModelCatalog 把 sidecar models.catalog 的静态目录富写入 real_models
+// （DisplayName=展示名、ContextWindow=官方档位最大值——比 SeedCatalog 的
+// 纯 id 种子信息量大）。上游行 enabled=false 也不影响：模型行随入池点亮。
+func (b *oauthBridge) seedModelCatalog(ctx context.Context, provider, upstreamID string) {
+	raw, err := b.sidecar.Call(ctx, "models.catalog", map[string]any{"provider": provider})
+	if err != nil {
+		return // 目录是可自愈的补充信息，不阻断
+	}
+	var res struct {
+		Models []struct {
+			ID            string `json:"id"`
+			DisplayName   string `json:"display_name"`
+			ContextWindow int64  `json:"context_window"`
+		} `json:"models"`
+	}
+	if json.Unmarshal(raw, &res) != nil {
+		return
+	}
+	now := time.Now().UTC().Unix()
+	for _, m := range res.Models {
+		rm := store.RealModel{
+			UpstreamID:      upstreamID,
+			UpstreamModelID: m.ID,
+			DisplayName:     m.DisplayName,
+			Status:          store.RealModelActive,
+			Source:          "auto",
+			LastSeenAt:      &now,
+		}
+		if m.ContextWindow > 0 {
+			cw := m.ContextWindow
+			rm.ContextWindow = &cw
+		}
+		if _, err := b.st.Repos().Models.UpsertRealModel(ctx, rm); err != nil {
+			return // 单条失败即整批停（同一目录连续失败的语义相同）
+		}
+	}
 }
 
 // endpointFor 取该 provider 的（kind, base_url）。
