@@ -491,10 +491,8 @@ export function CredentialsPage({ def }: PageProps) {
                     <div className="pool-block">
                       <div className="pool-block-head">
                         <span className="pool-block-title">凭据（{active.credentials.length}）</span>
-                        <Link to="/contribute" className="am-add-chip">
-                          <IconPlus size="xs" />
-                          添加凭据
-                        </Link>
+                        {/* 凭据只能通过贡献得来，头部不放「添加凭据」入口——
+                            空态里的贡献链接才是唯一的引导。 */}
                       </div>
                       {balNote && active.credentials.some((c) => c.id === balNote.id) && (
                         <p className="muted" aria-live="polite" style={{ marginBottom: 8 }}>
@@ -503,7 +501,10 @@ export function CredentialsPage({ def }: PageProps) {
                         </p>
                       )}
                       {active.credentials.length === 0 ? (
-                        <p className="muted pool-empty">还没有凭据，去贡献入口添加。</p>
+                        <p className="muted pool-empty">
+                          还没有凭据；凭据只能通过贡献得来，
+                          <Link to="/contribute">去贡献入口提交</Link>。
+                        </p>
                       ) : (
                         <ul className="pool-cred-list">
                           {active.credentials.map((c) => (
