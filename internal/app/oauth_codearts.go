@@ -483,9 +483,11 @@ func (b *oauthBridge) persist(ctx context.Context, owner string, provider, crede
 	var credID string
 	var uid string
 	err := b.st.WithTx(ctx, func(tx *store.Repos) error {
-		// 上游行先建且 enabled=false：未通过判定的凭据绝不能可调用。
+		// 上游行直接启用（2026-10-30）：OAuth 反代凭据由供应商账号体系背书
+		// （换出凭据的链路不含人工粘贴），无需人工审核——需要审核的是
+		// API/custom 型的贡献（粘 Key 无法自证，走 contribution.go 的审核流）。
 		var uerr error
-		uid, uerr = tx.Models.UpsertUpstream(ctx, kind, upstreamName, baseURL, &owner, false)
+		uid, uerr = tx.Models.UpsertUpstream(ctx, kind, upstreamName, baseURL, &owner, true)
 		if uerr != nil {
 			return uerr
 		}
@@ -511,6 +513,10 @@ func (b *oauthBridge) persist(ctx context.Context, owner string, provider, crede
 			_ = tx.Secrets.DeleteSecret(ctx, sid)
 			return cerr
 		}
+		// OAuth 凭据直接入池：active（不进人工审核流，理由见上游行的注释）。
+		if err := tx.Models.SetCredentialStatus(ctx, cid, store.CredActive); err != nil {
+			return err
+		}
 		credID = cid
 		return nil
 	})
@@ -521,7 +527,7 @@ func (b *oauthBridge) persist(ctx context.Context, owner string, provider, crede
 	// 内联进应答）——纯文本会让整份列表的编码失败（2026-10-28 实测）。
 	if err := b.st.Repos().Models.MarkVerified(ctx, credID,
 		store.VerifyUnverified,
-		`{"stage":"oauth","message":"已获取凭据，等待目录探测"}`); err != nil {
+		`{"stage":"oauth","message":"已获取凭据并直接入池（OAuth 由账号体系背书，免人工审核）"}`); err != nil {
 		return credID, err
 	}
 	// 静态模型目录种子（2026-10-29）：反代型没有 OpenAI 兼容 /models 可探测，
