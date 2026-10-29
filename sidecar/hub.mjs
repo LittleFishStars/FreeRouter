@@ -104,7 +104,8 @@ const adapterCache = new Map(); // provider + key 指纹 → adapter 实例
 export async function getDeps() {
   if (depsTried) return deps;
   depsTried = true;
-  deps = await loadDeps(process.env.FR_DSH_DEPS_ROOT);
+  // hubRoot 传给 shim：hub lib 实体复制进 shim 后，credits 分发器（17 家）才能被解析。
+  deps = await loadDeps(process.env.FR_DSH_DEPS_ROOT, hubPath());
   return deps;
 }
 

@@ -1,182 +1,93 @@
-// 凭据余额/积分查询（统一入口）。
+// 凭据余额/积分查询（统一入口）——**直接复用 dsh-providers-hub 的分发器**。
 //
-// 来源：dsh-providers-hub 的 *-credits.js 各家实现（逐函数移植，行为对齐）。
-// 只做**只读查询**——签到/领取类写操作不在本文件（贡献面不代用户消费）。
+// 为什么不再逐家移植（2026-10-28 架构调整）：hub 的 provider-credits.js 是
+// **17 家的统一分发器**（含各家 product/请求头/分项归一的正确实现），逐家
+// 抄进 sidecar 等于维护两份必然漂移的实现。改为 sidecar 启动时把 hub lib
+// 实体复制进依赖 shim（deps.mjs 的 buildShim，hubRoot 参数），运行期动态
+// import 分发器——**17 家全部支持**，hub 升级即跟上。
 //
 // 形状契约（queryCreditBalance 的返回）：
-//   { ok: true,  total: number, unit: string, packages?: [{name, amount}] }
+//   { ok: true,  total: number|null, unit: string, packages?: [{name, amount}] }
 //   { ok: false, error: string }
-// 「查不到」与「失败」分开：上游没给余额字段 → ok:true + total:null（卡片显示
-// 「上游未报余额」），网络/鉴权失败 → ok:false + error（可重试）。
+// 「查不到」与「失败」分开：上游没报余额 → ok:true + total:null；网络/鉴权
+// 失败 → ok:false + error（可重试）。
+//
+// ⚠️ 动态 import 的时机：shim 就绪（loadDeps）之后才解析得了——credits.query
+// 都在 OAuth 装配完成后才会被调（管理面按钮），时序天然满足；缓存首次结果。
 
-import * as raccoonLib from './raccoon/raccoon.js';
-import { parseEnvelope } from './raccoon/raccoon-oauth.js';
-import { LOOMY_API_BASE } from './loomy/loomy.js';
-import { MINIMAX, MINIMAX_CREDIT_DETAILS_PATH } from './minimax/minimax-product.js';
-import { minimaxFetch, minimaxHeadersFor } from './minimax/minimax.js';
+let providerCredits = null
+let loadAttempted = false
 
-const REQUEST_TIMEOUT_MS = 30_000;
-// minimax 用自己模块的超时常量（MINIMAX_REQUEST_TIMEOUT_MS 未随我们的快照移植）
-
-/** 把数字字段读出来（缺失/非数 → undefined，不编造 0）。 */
-function readNumber(v) {
-    return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+async function distributor() {
+  if (providerCredits) return providerCredits
+  if (loadAttempted) throw new Error('hub 分发器加载失败（已尝试过）')
+  loadAttempted = true
+  const mod = await import('dsh-providers-hub/lib/provider-credits.js')
+  providerCredits = mod.createProviderCredits()
+  return providerCredits
 }
 
-// ── Raccoon：GET /api/web/points/v1/balance（积分，多池分项）──
-
-function raccoonHeaders(credential) {
-    const headers = {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${credential.access_token}`,
-        // 个人账号为空串；客户端总是发送该头
-        'X-Org-Code': credential.office_identity ?? '',
-        'X-Raccoon-Language': 'zh',
-    };
-    if (credential.device_id !== undefined && credential.device_id.length > 0) {
-        headers['X-Device-Id'] = credential.device_id;
+/** 归一 hub 分发器的返回：fetchBalance → balance 对象；fetchBalanceDetailed → {ok, balance, error}。 */
+function normalize(out) {
+  // Detailed 形态：{ ok, balance: {total, unit, packages} | null, error }
+  if (out && typeof out === 'object' && 'balance' in out) {
+    if (out.balance && typeof out.balance.total === 'number') {
+      return {
+        ok: true, total: out.balance.total, unit: out.balance.unit ?? '',
+        packages: Array.isArray(out.balance.packages)
+          ? out.balance.packages.map((p) => ({ name: p.name ?? '余额', amount: p.amount ?? 0 }))
+          : undefined,
+      }
     }
-    return headers;
-}
-
-async function queryRaccoon(credential) {
-    const product = { apiBase: 'https://xiaohuanxiong.com', clientPlatform: 'desktop-windows' };
-    const url = `${product.apiBase}${raccoonLib.RACCOON_POINTS_PREFIX}/balance`;
-    let envelope;
-    try {
-        const response = await fetch(url, {
-            method: 'GET',
-            headers: raccoonHeaders(credential),
-            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        });
-        envelope = parseEnvelope(await response.json(), response.status);
-    } catch (error) {
-        return { ok: false, error: `raccoon: 请求失败（${error instanceof Error ? error.message : String(error)}）` };
-    }
-    if (!envelope.ok || envelope.data === undefined) {
-        return { ok: false, error: `raccoon: ${envelope.message || '余额查询被拒'}` };
-    }
-    const available = readNumber(envelope.data.available_points);
-    if (available === undefined) {
-        // 上游没给核心字段：如实报「未报余额」，不编造 0
-        return { ok: true, total: null, unit: '积分' };
-    }
-    const packages = [];
-    for (const [name, key] of [['奖励积分', 'reward_points'], ['每日积分', 'daily_points'], ['会员积分', 'monthly_points'], ['充值积分', 'topup_points']]) {
-        const n = readNumber(envelope.data[key]);
-        if (n !== undefined && (name !== '会员积分' || n > 0)) packages.push({ name, amount: n });
-    }
+    return { ok: false, error: out.error ?? '上游未报余额' }
+  }
+  // fetchBalance 形态：balance 对象直返（total/ unit/ packages）
+  if (out && typeof out === 'object' && typeof out.total === 'number') {
     return {
-        ok: true,
-        total: available,
-        unit: '积分',
-        packages: packages.length > 0 ? packages : [{ name: '可用积分', amount: available }],
-    };
-}
-
-// ── Loomy：GET /points/records（balance=永久池、dailyBalance=每日池）──
-
-async function queryLoomy(credential) {
-    const headers = { Accept: 'application/json', token: credential.access_token };
-    let response;
-    try {
-        response = await fetch(`${LOOMY_API_BASE}/points/records?pageNo=1&pageSize=1&recordType=all`, {
-            method: 'GET', headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        });
-    } catch (error) {
-        return { ok: false, error: `loomy: 请求失败（${error instanceof Error ? error.message : String(error)}）` };
+      ok: true, total: out.total, unit: out.unit ?? '',
+      packages: Array.isArray(out.packages)
+        ? out.packages.map((p) => ({ name: p.name ?? '余额', amount: p.amount ?? 0 }))
+        : undefined,
     }
-    let payload;
-    try { payload = await response.json(); } catch {
-        return { ok: false, error: `loomy: 响应不是 JSON（HTTP ${response.status}）` };
-    }
-    if (payload.code !== 0) {
-        return { ok: false, error: `loomy: ${payload.message || `错误码 ${payload.code}`}` };
-    }
-    const read = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
-    const permanent = read(payload.data?.balance);
-    const daily = read(payload.data?.dailyBalance) ?? 0;
-    if (permanent === undefined) {
-        return { ok: true, total: null, unit: '积分' };
-    }
-    return {
-        ok: true,
-        total: permanent + daily,
-        unit: '积分',
-        packages: [
-            { name: '永久积分', amount: permanent },
-            { name: '每日赠送', amount: daily },
-        ],
-    };
-}
-
-// ── MiniMax：GET /minimax-cloud/api/v1/credit/details（credit 包列表，求和）──
-
-async function queryMinimax(credential) {
-    const url = `${MINIMAX.apiHost}${MINIMAX_CREDIT_DETAILS_PATH}`;
-    let response;
-    try {
-        // minimaxFetch：带传输重试 + 保凭据跟随 307（agent.minimax.io→minimaxi.com），
-        // 与推理/目录路径共用同一份实现（hub 同因注释：跨 origin 跟随剥 Authorization）。
-        response = await minimaxFetch(url, () => {
-            const headers = minimaxHeadersFor(credential, undefined, MINIMAX.id);
-            headers.set('Accept', 'application/json');
-            return { method: 'GET', headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) };
-        }, { fetcher: fetch });
-    } catch (error) {
-        return { ok: false, error: `minimax: 请求失败（${error instanceof Error ? error.message : String(error)}）` };
-    }
-    let payload;
-    try { payload = await response.json(); } catch {
-        return { ok: false, error: `minimax: 响应不是 JSON（HTTP ${response.status}）` };
-    }
-    // 余额响应是平铺的（details/total_count 与 base_resp 同级，无 data）
-    const details = Array.isArray(payload.details) ? payload.details : undefined;
-    if (details === undefined && (typeof payload.total_count !== 'number' || !Number.isFinite(payload.total_count))) {
-        return { ok: false, error: 'minimax: 余额响应形状不符合预期（服务端可能改版）' };
-    }
-    let total = 0;
-    const packages = [];
-    for (const entry of details ?? []) {
-        if (typeof entry !== 'object' || entry === null) continue;
-        const remaining = typeof entry.remaining_amount === 'number' && Number.isFinite(entry.remaining_amount)
-            ? entry.remaining_amount : undefined;
-        if (remaining === undefined) continue;
-        total += remaining;
-        // 包名用发放日期（credit_type 语义未实测，不编造业务含义）
-        const granted = typeof entry.granted_at_ms === 'number' ? new Date(entry.granted_at_ms).toISOString().slice(0, 10) : '未知';
-        packages.push({ name: `${granted} 发放`, amount: remaining });
-    }
-    if (details === undefined && typeof payload.total_count === 'number') {
-        total = payload.total_count; // 只有总数没有分项：直接用总数
-    }
-    return { ok: true, total, unit: 'credit', packages: packages.length > 0 ? packages : undefined };
-}
-
-const QUERY_BY_PROVIDER = {
-    raccoon: queryRaccoon,
-    loomy: queryLoomy,
-    minimax: queryMinimax,
-};
-
-/** 支持余额查询的 provider 清单（贡献入口/管理面据此显示「查余额」能力）。 */
-export function balanceSupportedProviders() {
-    return Object.keys(QUERY_BY_PROVIDER);
+  }
+  return { ok: false, error: '余额应答形状不符合预期' }
 }
 
 /**
  * 查一个凭据的余额/积分。
  *
- * @param credential 已解密的凭据对象（JSON.parse 后的明文形状）
+ * @param credential 已解密的凭据对象（JSON.parse 后的明文形状——与
+ *   oauth.exchange 的产出同源，各家字段天然匹配）。
  */
 export async function queryCreditBalance(provider, credential) {
-    const fn = QUERY_BY_PROVIDER[provider];
-    if (!fn) {
-        return { ok: false, error: `${provider} 暂不支持余额查询` };
+  let pc
+  try {
+    pc = await distributor()
+  } catch (error) {
+    return { ok: false, error: `余额查询不可用：${error instanceof Error ? error.message : String(error)}` }
+  }
+  const entry = pc[provider]
+  if (!entry) {
+    return { ok: false, error: `${provider} 暂不支持余额查询` }
+  }
+  try {
+    if (typeof entry.fetchBalanceDetailed === 'function') {
+      return normalize(await entry.fetchBalanceDetailed(credential))
     }
-    if (typeof credential?.access_token !== 'string' || credential.access_token.length === 0) {
-        return { ok: false, error: '凭据缺少 access_token，无法查询余额' };
+    if (typeof entry.fetchBalance === 'function') {
+      return normalize(await entry.fetchBalance(credential))
     }
-    return fn(credential);
+    return { ok: false, error: `${provider} 未实现余额查询` }
+  } catch (error) {
+    return { ok: false, error: `${provider}: ${error instanceof Error ? error.message : String(error)}` }
+  }
+}
+
+/** 支持余额查询的 provider 清单（管理面据此显示「刷新余额」能力）。 */
+export async function balanceSupportedProviders() {
+  try {
+    return Object.keys(await distributor())
+  } catch {
+    return []
+  }
 }

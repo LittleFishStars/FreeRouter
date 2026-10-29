@@ -89,7 +89,7 @@ function shimDir() {
 
 // buildShim 建（或刷新）shim 目录：node_modules/@deepseek-ai/<pkg> → 真实包目录。
 // 幂等：已存在且指向同一目标的链接跳过；目标变了（DSH 升级换了路径）就重建。
-export function buildShim(depsRoot) {
+export function buildShim(depsRoot, hubRoot = '') {
   const dir = shimDir();
   const pkgRoot = path.join(dir, 'node_modules', '@deepseek-ai');
   fs.mkdirSync(pkgRoot, { recursive: true, mode: 0o700 });
@@ -110,6 +110,45 @@ export function buildShim(depsRoot) {
   // 解析起点：一个空的 .mjs，Node 从它所在的 node_modules 往上找包。
   const entry = path.join(dir, '__entry.mjs');
   if (!fs.existsSync(entry)) fs.writeFileSync(entry, '// FreeRouter sidecar 依赖 shim 的解析起点（内容无意义）\n');
+
+  // ── hub lib 实体复制（凭据余额查询的依赖，2026-10-28）──
+  // hubRoot 的 lib/ 整体复制进 shim（dsh-providers-hub/lib/…），它依赖的
+  // 平铺 npm 包从 hub 的上级 node_modules 逐个链。为什么实体复制而不是
+  // symlink：hub lib 装在 profile 的 node_modules 下，symlink 解析后 Node
+  // 从真实路径向上找包，找不到 shim 里链的 dsh-llm（实测 ERR_MODULE_NOT_FOUND）。
+  if (hubRoot) {
+    const hubLibSrc = path.join(hubRoot, 'lib');
+    const hubDest = path.join(dir, 'node_modules', 'dsh-providers-hub');
+    if (fs.existsSync(path.join(hubLibSrc, 'provider-credits.js'))) {
+      fs.mkdirSync(hubDest, { recursive: true });
+      // 版本没变就跳过（幂等）：用 lib 目录的文件数近似判同
+      const marker = path.join(hubDest, '.copied-marker');
+      const srcCount = fs.readdirSync(hubLibSrc).length;
+      let skip = false;
+      try {
+        if (fs.readFileSync(marker, 'utf8') === String(srcCount)) skip = true;
+      } catch { /* 首次复制 */ }
+      if (!skip) {
+        fs.rmSync(path.join(hubDest, 'lib'), { recursive: true, force: true });
+        fs.cpSync(hubLibSrc, path.join(hubDest, 'lib'), { recursive: true });
+        // hub 的平铺 npm 依赖（cosmokit/schemastery/…）逐个链（存在才链）
+        // hubRoot 是 hub 包目录（…/node_modules/dsh-providers-hub）——平铺依赖在它
+        // 的上级 node_modules（上级的上级再上一级：profiles/web/node_modules）。
+        const hubNm = path.dirname(path.dirname(hubRoot));
+        if (fs.existsSync(hubNm)) {
+          for (const name of fs.readdirSync(hubNm)) {
+            if (name === 'dsh-providers-hub' || name.startsWith('.')) continue;
+            const target = path.join(hubNm, name);
+            const link = path.join(dir, 'node_modules', name);
+            if (fs.existsSync(link)) continue; // 已有（@deepseek-ai 循环或别的源）不覆盖
+            try { fs.symlinkSync(target, link, 'dir'); } catch { /* 已存在 */ }
+          }
+        }
+        fs.writeFileSync(marker, String(srcCount));
+      }
+    }
+  }
+
   return { dir, entry, linked };
 }
 
@@ -126,7 +165,9 @@ export async function installResolver(entryPath) {
     mod.registerHooks({
       // 只改 @deepseek-ai/* 的解析起点；其余原样透传（副作用最小化）。
       resolve(specifier, context, nextResolve) {
-        if (specifier.startsWith('@deepseek-ai/')) {
+        // dsh-providers-hub 的深路径（credits 分发器）也走 shim 解析起点：
+        // hub lib 是实体复制进 shim 的，它的裸包依赖从 shim 的 node_modules 找。
+        if (specifier.startsWith('@deepseek-ai/') || specifier.startsWith('dsh-providers-hub/')) {
           return nextResolve(specifier, { ...context, parentURL: pathToFileURL(entryPath).href });
         }
         return nextResolve(specifier, context);
@@ -142,14 +183,14 @@ export async function installResolver(entryPath) {
 
 // loadDeps 是给 hub.mjs 的唯一入口：解析根 → 建 shim → 装钩子。
 // 返回结构化结果而不是抛错：health 要把「依赖缺了」当成一条可展示的状态（04-sidecar §2.4）。
-export async function loadDeps(hint) {
+export async function loadDeps(hint, hubRoot = '') {
   const root = resolveDepsRoot(hint);
   if (!root) {
     return { ok: false, detail: '找不到 DSH 的 @deepseek-ai 依赖根（可用 FR_DSH_DEPS_ROOT 指定）', root: '' };
   }
   let shim;
   try {
-    shim = buildShim(root);
+    shim = buildShim(root, hubRoot);
   } catch (e) {
     return { ok: false, detail: `建依赖 shim 失败: ${String(e.message || e).split('\n')[0]}`, root };
   }
