@@ -308,6 +308,19 @@ func (cb *credentialsBridge) SetCredentialStatus(ctx context.Context, id, status
 		if err := tx.Models.SetCredentialStatus(ctx, cid, store.CredentialStatus(status)); err != nil {
 			return err
 		}
+		// 凭据激活 = 入池（2026-10-29）：联动启用所属上游——否则审核通过后
+		// upstream 仍停在 settle 写下的 enabled=false，凭据池显示「已停用」，
+		// 管理员必须再手动点一次启用（两步操作没有信息增量）。降级/禁用
+		// （invalid/expired/disabled）不联动——上游可能还有别的 active 凭据。
+		if store.CredentialStatus(status) == store.CredActive {
+			if uid, uerr := tx.Models.UpstreamIDByCredential(ctx, cid); uerr == nil {
+				if cur, gerr := tx.Models.GetUpstreamByID(ctx, uid); gerr == nil && cur != nil && !cur.Enabled {
+					if err := tx.Models.UpdateUpstream(ctx, uid, cur.Name, cur.BaseURL, true); err != nil {
+						return err
+					}
+				}
+			}
+		}
 		aid, aerr := appendAudit(ctx, tx.Logs, audit)
 		if aerr != nil {
 			return aerr

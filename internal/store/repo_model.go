@@ -860,6 +860,20 @@ type UpstreamCredentialRow struct {
 	BalanceCheckedAt int64
 }
 
+// UpstreamIDByCredential 凭据行 → 所属上游 id（经 secret_ref →
+// upstream_secrets.upstream_id 的全库唯一关联边）。无关联返回 ErrNotFound。
+func (r *ModelRepo) UpstreamIDByCredential(ctx context.Context, credentialID string) (string, error) {
+	var upstreamID string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT s.upstream_id FROM upstream_credentials c
+		   JOIN upstream_secrets s ON s.id = c.secret_ref
+		  WHERE c.id = ?`, credentialID).Scan(&upstreamID)
+	if err != nil {
+		return "", fmt.Errorf("store: 按凭据反查上游失败: %w", err)
+	}
+	return upstreamID, nil
+}
+
 // ListUpstreamCredentialRows 按上游列出全部凭据行（不筛状态——管理页
 // 要看全貌）。键是 upstreams.id，值按 created_at 升序、id 升序决胜。
 //

@@ -942,7 +942,10 @@ func mergedSourceOf(key string, members []store.Upstream, credRows map[string][]
 	src.Credentials = credList
 	src.Enabled = anyEnabled
 	src.Contributed = anyContributed
-	src.CredentialCount = int(activeSum)
+	// 头部「凭据 N」= 凭据**总条数**（与右栏列表一致）——2026-10-29 前只数
+	// active，pending 凭据（待审核）让头部显示 0，与「凭据（1）」自相矛盾。
+	src.CredentialCount = totalCreds
+	_ = activeSum
 	if lastSeen > 0 {
 		src.LastSeenAt = &lastSeen
 	}
