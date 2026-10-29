@@ -50,7 +50,7 @@ function normalize(out) {
         : undefined,
     }
   }
-  return { ok: false, error: '余额应答形状不符合预期' }
+  return shapeErr('该渠道', r)
 }
 
 // ── API 型（用户粘 Key）的余额查询 ──
@@ -78,6 +78,14 @@ async function getJson(url, key) {
   catch { return { http: response.status, body: body.slice(0, 200) } }
 }
 
+// 形状不符的自诊文案：HTTP 状态 + body 摘要（截 100 字节）——上游改版时
+// 用户截图就能定位，不用再猜「形状不符」是哪个字段没对上。余额应答不含
+// 敏感信息，摘要安全。
+function shapeErr(provider, r) {
+  const bodyStr = typeof r.body === 'string' ? r.body : JSON.stringify(r.body)
+  return { ok: false, error: `${provider} 余额应答形状不符（HTTP ${r.http}，body: ${String(bodyStr).slice(0, 100)}）` }
+}
+
 function readNumLoose(v) {
   if (typeof v === 'number' && Number.isFinite(v)) return v
   if (typeof v === 'string' && v !== '' && Number.isFinite(Number(v))) return Number(v)
@@ -87,8 +95,26 @@ function readNumLoose(v) {
 async function balanceDeepSeek(key, baseUrl) {
   const r = await getJson(`${baseUrl}/user/balance`, key)
   if (r.http === 401) return { ok: false, error: '凭据失效（401）' }
+  // 官方文档（api-docs.deepseek.com/api/get-user-balance）：响应是
+  // { is_available, balance_infos: [{currency, total_balance, granted_balance, topped_up_balance}] }
+  const infos = Array.isArray(r.body?.balance_infos) ? r.body.balance_infos : undefined
+  if (infos !== undefined && infos.length > 0) {
+    const info = infos.find((i) => i.currency === 'CNY') ?? infos[0]
+    const total = readNumLoose(info.total_balance)
+    if (total === undefined) return shapeErr('deepseek', r)
+    const granted = readNumLoose(info.granted_balance)
+    const topped = readNumLoose(info.topped_up_balance)
+    const packages = []
+    if (granted) packages.push({ name: '赠送余额', amount: granted })
+    if (topped) packages.push({ name: '充值余额', amount: topped })
+    return {
+      ok: true, total, unit: info.currency === 'CNY' ? '元' : (info.currency ?? ''),
+      packages: packages.length > 0 ? packages : undefined,
+    }
+  }
+  // 兼容旧版单值字段
   const bal = readNumLoose(r.body?.balance)
-  if (bal === undefined) return { ok: false, error: '余额应答形状不符合预期' }
+  if (bal === undefined) return shapeErr('deepseek', r)
   return { ok: true, total: bal, unit: r.body?.currency === 'CNY' ? '元' : (r.body?.currency ?? '') }
 }
 
@@ -97,7 +123,7 @@ async function balanceBigModel(key, baseUrl) {
   if (r.http === 401) return { ok: false, error: '凭据失效（401）' }
   const d = r.body?.data ?? {}
   const total = readNumLoose(d.total_balance)
-  if (total === undefined) return { ok: false, error: '余额应答形状不符合预期' }
+  if (total === undefined) return shapeErr('该渠道', r)
   const gift = readNumLoose(d.gift_balance)
   const purchase = readNumLoose(d.purchased_balance)
   const packages = []
@@ -110,7 +136,7 @@ async function balanceSiliconFlow(key, baseUrl) {
   const r = await getJson(`${baseUrl}/user/info`, key)
   if (r.http === 401 || r.body?.code === 30014) return { ok: false, error: '凭据失效（401）' }
   const bal = readNumLoose(r.body?.data?.totalBalance)
-  if (bal === undefined) return { ok: false, error: '余额应答形状不符合预期' }
+  if (bal === undefined) return shapeErr('该渠道', r)
   const charge = readNumLoose(r.body?.data?.chargeBalance)
   return {
     ok: true, total: bal, unit: '元',
@@ -122,7 +148,7 @@ async function balanceMoonshot(key, baseUrl) {
   const r = await getJson(`${baseUrl}/users/me/balance`, key)
   if (r.http === 401) return { ok: false, error: '凭据失效（401）' }
   const avail = readNumLoose(r.body?.data?.available_balance)
-  if (avail === undefined) return { ok: false, error: '余额应答形状不符合预期' }
+  if (avail === undefined) return shapeErr('该渠道', r)
   const vip = readNumLoose(r.body?.data?.vip_lease_balance)
   return {
     ok: true, total: avail, unit: '元',
@@ -136,7 +162,7 @@ async function balanceOpenRouter(key, baseUrl) {
   const d = r.body?.data ?? {}
   const total = readNumLoose(d.total_credits)
   const used = readNumLoose(d.total_usage)
-  if (total === undefined) return { ok: false, error: '余额应答形状不符合预期' }
+  if (total === undefined) return shapeErr('该渠道', r)
   return {
     ok: true,
     total: used !== undefined ? total - used : total,
@@ -177,10 +203,40 @@ async function queryApiBalance(provider, key) {
  *   oauth.exchange 的产出同源，各家字段天然匹配）；API 型（目录 id 或
  *   custom）是裸 key 字符串（PutSecret 存的就是 key 本身）。
  */
+/** cline 存量凭据自愈：早期落库存的是原始响应包 {success, data:{…}} 而非
+ * 凭据对象——账号 id（余额查询必需）都嵌在 data 里。用 hub 自己的解包 +
+ * 构造函数转成标准凭据形状（与 oauth.exchange 的正确产出逐字段一致）。 */
+async function unwrapClineEnvelope(credential) {
+  if (
+    provider_cline_envelope(credential)
+  ) {
+    try {
+      const mod = await import('dsh-providers-hub/lib/cline.js')
+      const { CLINE } = await import('./cline/cline-product.js')
+      const payload = mod.parseClineTokenPayload(credential)
+      return mod.buildClineCredential(payload, CLINE)
+    } catch {
+      return credential // 自愈失败按原样试（hub 会报出真正的缺字段）
+    }
+  }
+  return credential
+}
+
+function provider_cline_envelope(credential) {
+  return (
+    credential !== null && typeof credential === 'object' &&
+    !Array.isArray(credential) &&
+    'data' in credential && 'success' in credential
+  )
+}
+
 export async function queryCreditBalance(provider, credential) {
   // API 型先分（api:/custom 不在 hub 分发器里，且凭据是裸 key 不是对象）
   if (API_BALANCE_BY_PROVIDER[provider] || provider === 'custom' || provider.startsWith('api:')) {
     return queryApiBalance(provider, bearerKey(credential))
+  }
+  if (provider === 'cline') {
+    credential = await unwrapClineEnvelope(credential)
   }
   let pc
   try {
