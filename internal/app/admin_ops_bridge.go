@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -145,3 +147,103 @@ func (a *App) buildRefreshBridge() httpapi.AdminModelRefresher {
 }
 
 var _ = json.Marshal // 保留 json 导入供后续扩展（响应里可能出现嵌套结构）
+
+
+// balanceRefreshBridge 实现 httpapi.AdminCredentialBalanceRefresher。
+// 解密凭据 → sidecar 查上游余额 → 落库；凭据明文只过 sidecar 的 stdio
+// 边界（与 oauth.exchange 同一条线），不进任何日志或 API 应答。
+type balanceRefreshBridge struct {
+	b       *adminBridge
+	sidecar *dshprovider.Client
+}
+
+func (b balanceRefreshBridge) RefreshCredentialBalance(ctx context.Context, id string) (*httpapi.CredentialBalanceResult, error) {
+	c, err := b.b.repos.Models.LookupCredential(ctx, id)
+	if err != nil {
+		return nil, mapStoreErr(err)
+	}
+	plain, err := b.b.repos.Secrets.GetPlaintextByCredentialID(ctx, id)
+	if err != nil {
+		if errors.Is(err, store.ErrSecretNotFound) {
+			return &httpapi.CredentialBalanceResult{OK: false, Reason: "凭据没有可用的密文（来源异常）"}, nil
+		}
+		return nil, mapStoreErr(err)
+	}
+	var credential map[string]any
+	if err := json.Unmarshal(plain, &credential); err != nil {
+		return &httpapi.CredentialBalanceResult{OK: false, Reason: "凭据明文不是 JSON 对象（形状异常）"}, nil
+	}
+	if b.sidecar == nil {
+		return nil, httpapi.ErrAdminNotWired
+	}
+	raw, err := b.sidecar.Call(ctx, "credits.query", map[string]any{
+		"provider":   c.Provider,
+		"credential": credential,
+	})
+	if err != nil {
+		return &httpapi.CredentialBalanceResult{OK: false, Reason: sidecarMessage(err)}, nil
+	}
+	var out struct {
+		OK       bool     `json:"ok"`
+		Total    *float64 `json:"total"`
+		Unit     string   `json:"unit"`
+		Packages []struct {
+			Name   string  `json:"name"`
+			Amount float64 `json:"amount"`
+		} `json:"packages"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return &httpapi.CredentialBalanceResult{OK: false, Reason: "sidecar 应答解析失败"}, nil
+	}
+	now := time.Now().UTC().Unix()
+	text := ""
+	if !out.OK {
+		text = "查询失败：" + out.Error
+	} else if out.Total == nil {
+		text = "上游未报余额"
+	} else {
+		total := strconv.FormatFloat(*out.Total, 'f', -1, 64)
+		text = fmt.Sprintf("%s %s", groupThousands(total), out.Unit)
+		// 分项（多池）随余额一起给：面板 hover/展开能对上「哪一笔」。
+		if len(out.Packages) > 1 {
+			var parts []string
+			for _, p := range out.Packages {
+				parts = append(parts, fmt.Sprintf("%s %s", strconv.FormatFloat(p.Amount, 'f', -1, 64), p.Name))
+			}
+			text += fmt.Sprintf("（%s）", strings.Join(parts, "，"))
+		}
+	}
+	if err := b.b.repos.Models.UpdateCredentialBalance(ctx, id, text, now); err != nil {
+		return nil, mapStoreErr(err)
+	}
+	res := &httpapi.CredentialBalanceResult{OK: out.OK, Unit: out.Unit, Reason: out.Error}
+	if out.Total != nil {
+		res.Total = out.Total
+	}
+	return res, nil
+}
+
+// groupThousands 给整数部分加千分位逗号（"1234567" → "1,234,567"；小数部分原样）。
+func groupThousands(s string) string {
+	neg := strings.HasPrefix(s, "-")
+	if neg {
+		s = strings.TrimPrefix(s, "-")
+	}
+	intPart, frac := s, ""
+	if i := strings.IndexByte(s, '.'); i >= 0 {
+		intPart, frac = s[:i], s[i:]
+	}
+	var out []byte
+	for i, digit := range []byte(intPart) {
+		if i > 0 && (len(intPart)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, digit)
+	}
+	res := string(out) + frac
+	if neg {
+		res = "-" + res
+	}
+	return res
+}

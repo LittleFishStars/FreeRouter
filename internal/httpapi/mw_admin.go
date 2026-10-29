@@ -82,6 +82,9 @@ type AdminDeps struct {
 
 	// Refresh 是真实模型目录刷新触发器（POST /real-models/refresh）。
 	Refresh AdminModelRefresher
+	// BalanceRefresh 是凭据余额刷新触发器（POST /credentials/{id}/balance-refresh）。
+	// 可空：nil = 未装配（sidecar 不在/不支持），端点按惯例 404 not_found。
+	BalanceRefresh AdminCredentialBalanceRefresher
 	// ModelCreate 是手工登记真实模型（POST /real-models，凭据池改版 2026-10-26
 	// 的「添加模型」）。可空：nil = 该能力未装配，端点按既有惯例 404 not_found。
 	ModelCreate AdminRealModelCreator
@@ -690,6 +693,10 @@ type AdminSourceCredential struct {
 	VerifyStatus  string `json:"verify_status"`
 	CreatedAt     *int64 `json:"created_at"`
 	LastUsedAt    *int64 `json:"last_used_at"`
+	// 余额（2026-10-28「刷新余额」）：text 是格式化好的展示串（如 "1,234 积分"
+	// 或错误说明），空 = 从未查询；checkedAt 是该串的落库时刻（epoch 秒）。
+	BalanceText  string `json:"balance_text,omitempty"`
+	BalanceCheck *int64 `json:"balance_checked_at,omitempty"`
 }
 
 // AdminModelSourceModel 是右栏的一张模型卡。
@@ -917,6 +924,26 @@ type AdminCredentialStore interface {
 	// MVP 至少写审计——通知文本可能含用户内容，桥只存摘要/长度由实现
 	// 定案（06-audit §4 脱敏线）；已列入回报）。
 	NotifyCredential(ctx context.Context, id, message string, audit AdminAuditEntry) (string, error)
+}
+
+// AdminCredentialBalanceRefresher 是凭据余额刷新的窄边界（2026-10-28）。
+// 独立小接口而非挂进 AdminCredentialStore：实现需要 sidecar 访问（余额
+// 在上游侧），与凭据 CRUD 的存储依赖不同源——分开才能只给需要的装配。
+type AdminCredentialBalanceRefresher interface {
+	// RefreshCredentialBalance 解密凭据 → 查上游余额 → 落库并返回展示串。
+	// 上游拒绝/网络失败**不是错误**：返回 ok=false + reason（前端显示原因，
+	// 可重试）；只有凭据不存在/未装配才是 error。
+	RefreshCredentialBalance(ctx context.Context, id string) (*CredentialBalanceResult, error)
+}
+
+// CredentialBalanceResult 是一次余额刷新的结果。
+type CredentialBalanceResult struct {
+	// OK = 上游成功返回了余额（total/unit 有效）。false 时 Reason 说明原因
+	// （凭据失效/网络失败/上游未报），此时 Total 为 nil。
+	OK     bool
+	Total  *float64
+	Unit   string
+	Reason string
 }
 
 // ---------------------------------------------------------------------------

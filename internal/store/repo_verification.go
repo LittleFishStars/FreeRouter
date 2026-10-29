@@ -116,6 +116,11 @@ type Credential struct {
 	VerifyDetail   string
 	CreatedAt      int64
 	LastUsedAt     int64 // 0 = 从未用过
+	// 余额（2026-10-28 凭据池「刷新余额」）：balanceText 由 Go 侧把上游应答
+	// 格式化成展示串（如 "1,234 积分"）；空串 = 从未查询过或查询失败。
+	// checkedAt 是该串的落库时刻（UTC 秒，0 = 同上）。
+	BalanceText    string
+	BalanceCheckedAt int64
 }
 
 // LookupCredential 按 id 读一条凭据（鉴定流水线的输入定位）。
@@ -128,7 +133,8 @@ func (r *ModelRepo) LookupCredential(ctx context.Context, id string) (*Credentia
 }
 
 const credentialColumns = `SELECT id, owner_account_id, provider, external_id, external_label,
-       status, login_enabled, verify_status, verify_detail, created_at, last_used_at
+       status, login_enabled, verify_status, verify_detail, created_at, last_used_at,
+       COALESCE(balance_text, ''), COALESCE(balance_checked_at, 0)
   FROM upstream_credentials`
 
 // ListUnverified 列出待鉴定凭据（verify_status = 'unverified'）。
@@ -188,8 +194,11 @@ func scanCredential(sc interface{ Scan(dest ...any) error }) (*Credential, error
 	var detail sql.NullString
 	var label sql.NullString
 	var lastUsed sql.NullInt64
+	var balance sql.NullString
+	var balanceAt sql.NullInt64
 	err := sc.Scan(&c.ID, &c.OwnerAccountID, &c.Provider, &c.ExternalID, &label,
-		&c.Status, &login, &c.VerifyStatus, &detail, &c.CreatedAt, &lastUsed)
+		&c.Status, &login, &c.VerifyStatus, &detail, &c.CreatedAt, &lastUsed,
+		&balance, &balanceAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err // 语义区分交给上层（scanCredentialRow → ErrCredentialNotFound）
@@ -327,6 +336,22 @@ func (r *ModelRepo) ReplaceCredential(ctx context.Context, ownerAccountID string
 		return "", "", fmt.Errorf("store: 替换凭据失败: %w", err)
 	}
 	return id, oldRef, nil
+}
+
+// UpdateCredentialBalance 落库一次余额查询的结果（凭据池「刷新余额」）。
+// text 为空串表示「查询失败/上游未报」——也落库（checkedAt 有值而 text 空 =
+// 查过但没拿到，前端显示「未报余额」而不是「从未查询」）。
+func (r *ModelRepo) UpdateCredentialBalance(ctx context.Context, id, text string, checkedAt int64) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE upstream_credentials SET balance_text = ?, balance_checked_at = ? WHERE id = ?`,
+		text, checkedAt, id)
+	if err != nil {
+		return fmt.Errorf("store: 写凭据余额失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrCredentialNotFound
+	}
+	return nil
 }
 
 // ================================================================ 凭据读筛选与状态写入（管理面）

@@ -979,6 +979,7 @@ func sourceCredentialsOf(upstreamID string, rows []store.UpstreamCredentialRow) 
 			ExternalLabel: r.ExternalLabel,
 			Status:        r.Status,
 			VerifyStatus:  r.VerifyStatus,
+			BalanceText:   r.BalanceText,
 		}
 		if r.CreatedAt > 0 {
 			ts := r.CreatedAt
@@ -987,6 +988,10 @@ func sourceCredentialsOf(upstreamID string, rows []store.UpstreamCredentialRow) 
 		if r.LastUsedAt > 0 {
 			ts := r.LastUsedAt
 			item.LastUsedAt = &ts
+		}
+		if r.BalanceCheckedAt > 0 {
+			ts := r.BalanceCheckedAt
+			item.BalanceCheck = &ts
 		}
 		out = append(out, item)
 	}

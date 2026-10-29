@@ -217,6 +217,32 @@ func (r *SecretRepo) GetSecretByUpstream(ctx context.Context, upstreamID string)
 	return r.GetSecret(ctx, id)
 }
 
+// GetPlaintextByCredentialID 按凭据行 id 取明文凭据（凭据池「刷新余额」的
+// 解密入口：凭据行 → secret_ref → 密文 → 明文）。
+//
+// 与 GetSecret 同级的安全面：明文只返回给服务端内部的调用方（sidecar stdio
+// 边界），从不进 API 应答、不落日志。
+func (r *SecretRepo) GetPlaintextByCredentialID(ctx context.Context, credentialID string) ([]byte, error) {
+	var ciphertext, nonce []byte
+	err := r.db.QueryRowContext(ctx,
+		`SELECT s.ciphertext, s.nonce
+		   FROM upstream_credentials c
+		   JOIN upstream_secrets s ON s.id = c.secret_ref
+		  WHERE c.id = ?`, credentialID).
+		Scan(&ciphertext, &nonce)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSecretNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: 按凭据查密文失败: %w", err)
+	}
+	key := r.s.MasterKey()
+	if len(key) == 0 {
+		return nil, errors.New("store: 主密钥不可用（Store 未初始化或已关闭）")
+	}
+	return OpenSecret(key, ciphertext, nonce)
+}
+
 // DeleteSecret 删除密文行，并把上游的 secret_id 置空。
 //
 // 为什么要一起清引用：upstreams.secret_id 是指向密文的外键，留着会指向

@@ -23,7 +23,7 @@
 //     （modelscope / opencode 已按契约 v2 §7 移除），OAuth 型需要 DSH 账号池，
 //     两条路都返回结构化 E_NOT_IMPLEMENTED；apiKey 那种「粘贴 Key」的贡献形态
 //     由主进程的内置目录 + 直连出站承担，不再经过 sidecar。
-//   * credits.query：余额端点在各自 credits 模块里，尚未接（E_NOT_IMPLEMENTED）。
+//   * credits.query：各家余额/积分查询（providers/credits.mjs，raccoon/loomy/minimax）。
 // 任何路径的失败都归一成结构化错误，进程不崩（5.1「挂横幅继续」依赖这点）。
 
 import process from 'node:process';
@@ -34,6 +34,7 @@ import * as hub from './hub.mjs';
 import * as dshCredentials from './credentials.mjs';
 import { redactLine } from './redact.mjs';
 import * as registry from './providers/registry.mjs';
+import * as credits from './providers/credits.mjs';
 import * as oauthSessions from './providers/sessions.mjs';
 
 const SIDECAR_VERSION = '0.1.0';
@@ -313,15 +314,19 @@ const METHODS = {
     return {};
   },
 
-  'credits.query': async ({ provider, credentialRef }) => {
+  // 凭据余额/积分查询（只读）：管理面凭据池的「刷新余额」按钮调这里。
+  // credential 是已解密的明文凭据对象（与 oauth.exchange 的产出同形——
+  // 授权时 credential 本就以明文 JSON 过这条 stdio 边界，红线一致）。
+  // 支持面见 providers/credits.mjs 的 QUERY_BY_PROVIDER（raccoon/loomy/minimax）。
+  'credits.query': async ({ provider, credential }) => {
     if (!provider) throw new SidecarError('E_BAD_REQUEST', 'provider 不能为空');
-    if (!credentialRef) throw new SidecarError('E_BAD_REQUEST', 'credentialRef 不能为空');
-    // 余额端点在各家的 `<provider>-credits.js` 里，入参是「账号凭据对象」而不是明文 key
-    // （例：codearts-credits.js 收 access_token + 账号元数据）。它们与账号池同源，属于
-    // 「需要 DSH 运行态」的那一类，与 infer.stream 的 OAuth 分支同因。
-    // 如实报未实现，而不是发一个不带鉴权的请求再让上游回 401（那会把配置问题伪装成上游故障）。
-    throw new SidecarError('E_NOT_IMPLEMENTED',
-      `credits.query 的余额端点需要 ${provider} 的账号对象（DSH 账号池），sidecar 暂无账号池替身`);
+    if (!credential) throw new SidecarError('E_BAD_REQUEST', 'credential 不能为空');
+    try {
+      return await credits.queryCreditBalance(provider, credential);
+    } catch (e) {
+      if (e instanceof SidecarError) throw e;
+      throw new SidecarError('E_INTERNAL', `余额查询失败：${String(e && e.message ? e.message : e)}`, false);
+    }
   },
 
   // —— 供应商 OAuth 贡献（docs/contributions/01-flow.md）————————————

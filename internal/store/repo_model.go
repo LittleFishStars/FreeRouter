@@ -855,6 +855,9 @@ type UpstreamCredentialRow struct {
 	VerifyStatus   string
 	CreatedAt      int64
 	LastUsedAt     int64 // 0 = 从未用过
+	// 余额（2026-10-28「刷新余额」）：text 为空 = 从未查询/查询失败。
+	BalanceText      string
+	BalanceCheckedAt int64
 }
 
 // ListUpstreamCredentialRows 按上游列出全部凭据行（不筛状态——管理页
@@ -868,7 +871,8 @@ type UpstreamCredentialRow struct {
 func (r *ModelRepo) ListUpstreamCredentialRows(ctx context.Context) (map[string][]UpstreamCredentialRow, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT s.upstream_id, c.id, c.owner_account_id, c.provider, COALESCE(c.external_label, ''),
-		        c.status, c.verify_status, c.created_at, COALESCE(c.last_used_at, 0)
+		        c.status, c.verify_status, c.created_at, COALESCE(c.last_used_at, 0),
+		        COALESCE(c.balance_text, ''), COALESCE(c.balance_checked_at, 0)
 		   FROM upstream_credentials c
 		   JOIN upstream_secrets s ON s.id = c.secret_ref
 		  ORDER BY c.created_at, c.id`)
@@ -882,7 +886,8 @@ func (r *ModelRepo) ListUpstreamCredentialRows(ctx context.Context) (map[string]
 		var row UpstreamCredentialRow
 		var upstreamID string
 		if err := rows.Scan(&upstreamID, &row.ID, &row.OwnerAccountID, &row.Provider, &row.ExternalLabel,
-			&row.Status, &row.VerifyStatus, &row.CreatedAt, &row.LastUsedAt); err != nil {
+			&row.Status, &row.VerifyStatus, &row.CreatedAt, &row.LastUsedAt,
+			&row.BalanceText, &row.BalanceCheckedAt); err != nil {
 			return nil, fmt.Errorf("store: 扫描上游凭据行失败: %w", err)
 		}
 		out[upstreamID] = append(out[upstreamID], row)

@@ -25,7 +25,7 @@
 import { randomBytes } from 'node:crypto';
 import { RACCOON_QR_STATUS, RACCOON_REQUEST_TIMEOUT_MS, decodeJwtExpMs, encryptRaccoonPhone, raccoonHeaders, } from './raccoon.js';
 /** 解析业务信封。`code === 0` 为成功。 */
-function parseEnvelope(payload, status) {
+export function parseEnvelope(payload, status) {  // 导出供 credits.mjs 复用（同一信封语义）
     const record = typeof payload === 'object' && payload !== null && !Array.isArray(payload)
         ? payload
         : {};

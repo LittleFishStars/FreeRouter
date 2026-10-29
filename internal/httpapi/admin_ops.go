@@ -69,6 +69,7 @@ func (s *Server) mountAdminOps(r chi.Router, deps *AdminDeps) {
 	r.Post("/credentials/{id}/suspend", s.handleAdminCredentialSuspend(deps))
 	r.Post("/credentials/{id}/ban", s.handleAdminCredentialBan(deps))
 	r.Post("/credentials/{id}/notify", s.handleAdminCredentialNotify(deps))
+	r.Post("/credentials/{id}/balance-refresh", s.handleAdminCredentialBalanceRefresh(deps))
 
 	// 鉴定
 	r.Get("/verifications", s.handleAdminVerificationsList(deps))
@@ -485,6 +486,28 @@ func (s *Server) handleAdminCredentialStatus(deps *AdminDeps, status, action str
 			return
 		}
 		adminWriteOK(w, http.StatusOK, renderAdminCredential(row), auditID)
+	}
+}
+
+// handleAdminCredentialBalanceRefresh POST /api/admin/credentials/{id}/balance-refresh。
+//
+// 解密凭据 → sidecar 查上游余额 → 落库并返回展示串。上游拒绝/网络失败
+// **不是 5xx**（可重试的运行时条件）：200 + ok=false + reason，前端显示原因。
+func (s *Server) handleAdminCredentialBalanceRefresh(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "余额刷新", deps.BalanceRefresh != nil) {
+			return
+		}
+		id, ok := adminVerificationID(w, r)
+		if !ok {
+			return
+		}
+		res, err := deps.BalanceRefresh.RefreshCredentialBalance(r.Context(), id)
+		if err != nil {
+			mapAdminError(w, err, "余额刷新")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": res})
 	}
 }
 
