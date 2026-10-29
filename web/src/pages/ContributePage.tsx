@@ -301,9 +301,27 @@ export default function ContributePage({ def }: PageProps) {
                               to={`/contribute/oauth/${encodeURIComponent(p.id)}${
                                 p.needs?.includes('phone') ? '?needs=phone' : ''
                               }`}
-                              className="provider-link"
+                              className="provider-link provider-cred-link"
                               title={`授权 ${p.name}`}
                             >
+                              <img
+                                src={`/logos/${p.id}.svg`}
+                                alt=""
+                                width={22}
+                                height={22}
+                                className="provider-logo"
+                                onError={(ev) => {
+                                  // png 变体兜底（qoder/qodercn/cline 等是位图）；
+                                  // 都没有就隐藏图标位（onerror 只触发一次）
+                                  const img = ev.currentTarget
+                                  if (!img.dataset.fallback) {
+                                    img.dataset.fallback = '1'
+                                    img.src = `/logos/${p.id}.png`
+                                  } else {
+                                    img.style.display = 'none'
+                                  }
+                                }}
+                              />
                               {p.name}
                             </Link>
                             {/* flow 决定去哪儿完成授权；这里只标注形态，交互仍由

@@ -884,6 +884,18 @@ a.metric-link:hover {
   font-weight: 600;
 }
 
+/* 图标 + 名称一行；标签在下一行（纵向结构不变）。 */
+.provider-cred-link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.provider-logo {
+  border-radius: 5px;
+  flex: none;
+}
+
 .provider-reason {
   display: block;
   margin-top: 0.2rem;
