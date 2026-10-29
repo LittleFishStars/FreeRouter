@@ -196,6 +196,48 @@ async function queryApiBalance(provider, key) {
   }
 }
 
+/** minimax 静默续期：401 时用 refresh_token 换新 token。返回合并后的新凭据
+ * （旧 uid/scope 等元数据保留；上游没回新 refresh_token 就沿用旧的），
+ * 供 Go 桥写回密文。失败抛错——refresh_token 也过期时只能重新授权。 */
+async function refreshMinimaxCredential(credential) {
+  if (typeof credential?.refresh_token !== 'string' || credential.refresh_token.length === 0) {
+    throw new Error('无 refresh_token，无法续期')
+  }
+  const { refreshMinimaxCredential } = await import('./minimax/minimax-oauth.js')
+  const grant = await refreshMinimaxCredential(credential.refresh_token)
+  const merged = { ...credential, ...grant }
+  if (!merged.refresh_token) merged.refresh_token = credential.refresh_token
+  return merged
+}
+
+/** qoder 余额：hub 的 qoder-credits 没接进分发器（官方口径 QoderCredential
+ * 泛型不匹配 collectCreditBalances），但函数本体可用——直调。国际版失败
+ * （401/形状）再试中国版：凭据可能来自任一部署。 */
+async function queryQoder(credential) {
+  const mod = await import('dsh-providers-hub/lib/qoder-credits.js')
+  const products = await import('dsh-providers-hub/lib/qoder-product.js')
+  let lastErr = '未知原因'
+  for (const product of [products.QODER, products.QODER_CN]) {
+    try {
+      const detailed = await mod.fetchQoderBalanceDetailed(credential, product)
+      if (detailed.balance && typeof detailed.balance.total === 'number') {
+        return {
+          ok: true, total: detailed.balance.total, unit: detailed.balance.unit ?? '积分',
+          packages: Array.isArray(detailed.balance.packages)
+            ? detailed.balance.packages.map((p) => ({ name: p.name ?? '余额', amount: p.amount ?? 0 }))
+            : undefined,
+        }
+      }
+      lastErr = detailed.error ?? '上游未报余额'
+      if (/401|失效|invalid/i.test(lastErr)) continue // 换另一部署再试
+      return { ok: false, error: lastErr }
+    } catch (error) {
+      lastErr = error instanceof Error ? error.message : String(error)
+    }
+  }
+  return { ok: false, error: `qoder: ${lastErr}` }
+}
+
 /**
  * 查一个凭据的余额/积分。
  *
@@ -238,6 +280,10 @@ export async function queryCreditBalance(provider, credential) {
   if (provider === 'cline') {
     credential = await unwrapClineEnvelope(credential)
   }
+  // qoder 不在分发器里（官方刻意缺席）但函数可用——直调，双部署都试
+  if (provider === 'qoder' || provider === 'qodercn') {
+    return queryQoder(credential)
+  }
   let pc
   try {
     pc = await distributor()
@@ -248,14 +294,33 @@ export async function queryCreditBalance(provider, credential) {
   if (!entry) {
     return { ok: false, error: `${provider} 暂不支持余额查询` }
   }
-  try {
+  async function callDistributor(cred) {
     if (typeof entry.fetchBalanceDetailed === 'function') {
-      return normalize(await entry.fetchBalanceDetailed(credential))
+      return normalize(await entry.fetchBalanceDetailed(cred))
     }
     if (typeof entry.fetchBalance === 'function') {
-      return normalize(await entry.fetchBalance(credential))
+      return normalize(await entry.fetchBalance(cred))
     }
     return { ok: false, error: `${provider} 未实现余额查询` }
+  }
+  try {
+    const first = await callDistributor(credential)
+    // minimax 静默续期：401（token 过期）时用 refresh_token 换新后重查一次。
+    // 新凭据随应答上行（refreshed_credential），Go 桥原地写回密文。
+    if (
+      provider === 'minimax' && !first.ok &&
+      /401|凭据失效|invalid/i.test(first.error ?? '')
+    ) {
+      try {
+        const fresh = await refreshMinimaxCredential(credential)
+        const second = await callDistributor(fresh)
+        if (second.ok) return { ...second, refreshed_credential: fresh }
+        return { ok: false, error: `续期后仍失败：${second.error ?? '未知'}`, refreshed_credential: fresh }
+      } catch (e) {
+        return { ok: false, error: `续期失败（${e instanceof Error ? e.message : String(e)}），请重新授权` }
+      }
+    }
+    return first
   } catch (error) {
     return { ok: false, error: `${provider}: ${error instanceof Error ? error.message : String(error)}` }
   }

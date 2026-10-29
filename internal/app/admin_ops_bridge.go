@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"log/slog"
 	"errors"
 	"encoding/json"
 	"fmt"
@@ -201,6 +202,9 @@ func (b balanceRefreshBridge) RefreshCredentialBalance(ctx context.Context, id s
 			Amount float64 `json:"amount"`
 		} `json:"packages"`
 		Error string `json:"error"`
+		// RefreshedCredential 非空 = sidecar 做了静默续期（minimax 401 →
+		// refresh_token 换新）——新凭据原地写回密文，下次查询/推理直接用新 token。
+		RefreshedCredential map[string]any `json:"refreshed_credential,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return &httpapi.CredentialBalanceResult{OK: false, Reason: "sidecar 应答解析失败"}, nil
@@ -225,6 +229,15 @@ func (b balanceRefreshBridge) RefreshCredentialBalance(ctx context.Context, id s
 	}
 	if err := b.b.repos.Models.UpdateCredentialBalance(ctx, id, text, now); err != nil {
 		return nil, mapStoreErr(err)
+	}
+	if out.RefreshedCredential != nil {
+		fresh, err := json.Marshal(out.RefreshedCredential)
+		if err == nil {
+			if err := b.b.repos.Secrets.UpdatePlaintextByCredentialID(ctx, id, fresh); err != nil {
+				// 写回失败不阻断余额展示（新 token 已在手，下次重刷再写）
+				slog.WarnContext(ctx, "续期凭据写回失败", "credential", id, "err", err)
+			}
+		}
 	}
 	res := &httpapi.CredentialBalanceResult{OK: out.OK, Unit: out.Unit, Reason: out.Error, BalanceText: text}
 	if out.Total != nil {

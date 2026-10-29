@@ -243,6 +243,38 @@ func (r *SecretRepo) GetPlaintextByCredentialID(ctx context.Context, credentialI
 	return OpenSecret(key, ciphertext, nonce)
 }
 
+// UpdatePlaintextByCredentialID 按凭据行更新密文（静默续期写回：新 token
+// 替换旧密文，secret_ref 与凭据行都不动——与 ReplaceCredential 的「换行」
+// 不同，续期是「原地换密文」）。
+func (r *SecretRepo) UpdatePlaintextByCredentialID(ctx context.Context, credentialID string, plaintext []byte) error {
+	var secretID string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT s.id FROM upstream_credentials c
+		   JOIN upstream_secrets s ON s.id = c.secret_ref
+		  WHERE c.id = ?`, credentialID).Scan(&secretID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrSecretNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("store: 按凭据查密文失败: %w", err)
+	}
+	key := r.s.MasterKey()
+	if len(key) == 0 {
+		return errors.New("store: 主密钥不可用（Store 未初始化或已关闭）")
+	}
+	ciphertext, nonce, err := SealSecret(key, plaintext)
+	if err != nil {
+		return fmt.Errorf("store: 重封密文失败: %w", err)
+	}
+	_, err = r.db.ExecContext(ctx,
+		`UPDATE upstream_secrets SET ciphertext = ?, nonce = ? WHERE id = ?`,
+		ciphertext, nonce, secretID)
+	if err != nil {
+		return fmt.Errorf("store: 更新密文失败: %w", err)
+	}
+	return nil
+}
+
 // DeleteSecret 删除密文行，并把上游的 secret_id 置空。
 //
 // 为什么要一起清引用：upstreams.secret_id 是指向密文的外键，留着会指向
