@@ -1,0 +1,29 @@
+
+
+
+<a id="a-link" href="https://dev.g.alicdn.com/sd/punish/waf_block_deny.html?wh_ttid=pc&qrcode=XNVtYxhaUF-ewZZkmq6vOw|aql3tA|X0K5Yw_0|AAAAZQ|0&uuid=5cd56d63185a505f9ec196649aaeaf3b&origin=https%3A%2F%2Fwebsite.alibabacloud.com%3A443%2Fapi%2Fmirror%2Fwww.alibabacloud.com%2Fen%2Ffavicon.ico%2Fquery%253A%25253F_p_lc%25253D1"></a>
+<script type="application/json" id="gateway-diagnostic">
+  {
+    "block_phase": "pre-inspection",
+    "pipeline_reached": false,
+    "payload_evaluated": false,
+    "explanation": "Request rejected at client classification gate. WAF content inspection was not reached. Payload modifications will not affect this decision.",
+    "classification_gate": {
+      "method": "header_presence_check",
+      "checks": "X-Request-Context",
+      "expected": "rctx_a3f90b7e2d41c8f6",
+      "found": null,
+      "result": "unclassified",
+      "policy": "unclassified → reject"
+    },
+    "scope": "all endpoints, per-request, stateless"
+  }
+</script>
+<script>
+  document.getElementById("a-link").click();
+
+  window._config_ = {
+    "url": "https://g.alicdn.com/sd/punish/block_h5.html?wh_ttid=pc&qrcode=XNVtYxhaUF-ewZZkmq6vOw|aql3tA|X0K5Yw_0|AAAAZQ|0&uuid=5cd56d63185a505f9ec196649aaeaf3b&origin=https%3A%2F%2Fwebsite.alibabacloud.com%3A443%2Fapi%2Fmirror%2Fwww.alibabacloud.com%2Fen%2Ffavicon.ico%2Fquery%253A%25253F_p_lc%25253D1"
+  };
+</script>
+<!--rgv587_flag:sm-->

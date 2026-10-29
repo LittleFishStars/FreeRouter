@@ -91,10 +91,26 @@ function logoFor(id: string): string {
 /** API 型供应商的字母图标（首字母 + 按 id hash 的底色）——内联 SVG data
  * URL，CSP data: 允许。样式与反代卡片的字母占位一致（圆角块 + 白字）。 */
 const API_ICON_HUES = [212, 262, 330, 18, 42, 96, 152, 190]
+
+// vendored 官方 favicon（web/public/logos/api/<id>.ico，构建期内嵌）——
+// import.meta.glob 让 vite 静态枚举，缺的 id 不在清单 → 字母兜底。
+const API_VENDORED = import.meta.glob('/public/logos/api/*.ico', {
+  eager: true,
+  query: '?url',
+  import: 'default'
+}) as Record<string, string>
+const API_VENDORED_BY_ID: Record<string, string> = {}
+for (const [file, url] of Object.entries(API_VENDORED)) {
+  const m = file.match(/api\/([a-z0-9-]+)\.ico$/)
+  if (m) API_VENDORED_BY_ID[m[1]] = url
+}
+
 function apiIconFor(id: string, name: string): string {
   let hash = 0
   for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
   const hue = API_ICON_HUES[hash % API_ICON_HUES.length]
+  const vendored = API_VENDORED_BY_ID[id]
+  if (vendored) return vendored
   const letter = (name.trim()[0] ?? '?').toUpperCase()
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect width="48" height="48" rx="10" fill="hsl(${hue} 62% 46%)"/><text x="24" y="33" font-family="system-ui,sans-serif" font-size="26" font-weight="700" fill="#fff" text-anchor="middle">${letter}</text></svg>`
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
