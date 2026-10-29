@@ -80,6 +80,16 @@ function findCategory<K extends ContributionCategoryId>(
 }
 
 /** flow → 「用户在供应商侧要做什么」的措辞。未知 flow 原样显示，不猜。 */
+/** 国际版变体复用主品牌的图标（hub 只给主品牌一份 logo）。 */
+const LOGO_ALIAS: Record<string, string> = {
+  minimaxintl: 'minimax',
+  autoclawintl: 'autoclaw',
+}
+
+function logoFor(id: string): string {
+  return `/logos/${LOGO_ALIAS[id] ?? id}.svg`
+}
+
 const FLOW_LABELS: Record<string, string> = {
   browser: '网页授权',
   browser_callback: '网页授权',
@@ -305,14 +315,14 @@ export default function ContributePage({ def }: PageProps) {
                               title={`授权 ${p.name}`}
                             >
                               <img
-                                src={`/logos/${p.id}.svg`}
+                                src={logoFor(p.id)}
                                 alt=""
                                 width={22}
                                 height={22}
                                 className="provider-logo"
                                 onError={(ev) => {
-                                  // png 变体兜底（qoder/qodercn/cline 等是位图）；
-                                  // 都没有就隐藏图标位（onerror 只触发一次）
+                                  // svg 缺失时 png 变体兜底（qoder/qodercn/cline 等
+                                  // 是位图）；都没有就隐藏图标位（onerror 只触发一次）
                                   const img = ev.currentTarget
                                   if (!img.dataset.fallback) {
                                     img.dataset.fallback = '1'
