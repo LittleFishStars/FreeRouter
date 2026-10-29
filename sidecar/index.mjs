@@ -82,9 +82,10 @@ const PROVIDERS = [
   { provider: 'zcode',        displayName: 'ZCode',            loginKind: 'browser_callback', loginImplemented: true },
   { provider: 'codely',       displayName: 'Codely',           loginKind: 'device_code',      loginImplemented: true },
   { provider: 'officeace',    displayName: 'OfficeAce',        loginKind: 'browser_callback', loginImplemented: true },
-  // astudio：讯飞 AStudio 的登录是 Electron 客户端内的微信扫码（bundle 只有
-  // SSOService/wx/scanlogin/*，授权页与回调都握在客户端手里）——hub 2.7 官方
-  // 刻意不臆造 loginUrl，程序化登录不存在，故入口不暴露。
+  { provider: 'astudio',      displayName: 'AStudio',          loginKind: 'qr_scan',          loginImplemented: true },
+  { provider: 'autoclawintl', displayName: 'AutoClaw (国际版)', loginKind: 'browser_callback', loginImplemented: true },
+  // astudio：hub 的「网页三合一快捷登录」（手机短信/账号密码/微信扫码，不
+  // 依赖桌面端）——微信扫码支已接（sso.xfyun.cn 的 fd 流程纯函数面）。
   // modelscope / opencode：契约 v2 §7 已删（无 OAuth，仅目录/LLM 注册）。
 ];
 

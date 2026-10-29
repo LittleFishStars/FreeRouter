@@ -37,6 +37,7 @@ import * as trae from './trae/trae-oauth.js'
 import { TRAE } from './trae/trae-product.js'
 import { generateDeviceId, generateMachineId } from './trae/trae.js'
 import * as autoclaw from './autoclaw/autoclaw-oauth.js'
+import * as autoclawProduct from './autoclaw/autoclaw-product.js'
 import * as officeace from './officeace/officeace-auth.js'
 import * as astudioOAuth from './astudio/astudio-oauth.js'
 import * as codearts from './codearts/codearts.mjs'
@@ -503,34 +504,39 @@ register('trae', {
   },
 })
 
-register('autoclaw', {
-  name: 'AutoClaw',
-  flow: 'sms',
-  needs: ['phone'],
-  // 直接走纯函数面（sendAutoclawVerificationCode / loginAutoclawWithCode，
-  // 带签名头的 /sms-code 与 /agent-login）——上游的
-  // startAutoclawSmsLoginFlow 是「本地登录页」流程（自起 HTTP 服务器渲染
-  // 页面，发码在页面里），在我们的无端口形态下调它等于什么都没发生：
-  // phone 参数被忽略、发码从未执行（2026-10-28 用户实测收不到短信）。
-  async start({ phone }) {
-    if (!phone) throw new Error('E_BAD_REQUEST: AutoClaw 登录需要手机号')
-    const r = await autoclaw.sendAutoclawVerificationCode(phone)
-    if (!r.ok) throw new Error(r.error)
-    return background(
-      'autoclaw',
-      'sms',
-      { authorize_url: '', phone, message: '验证码已发送，请查收短信' },
-      null,
-    )
-  },
-  // 用户回填验证码后，oauth.poll 携 code 进来（sessions.attachRunner）。
-  async submit({ code, state }) {
-    const st = JSON.parse(state)
-    const r = await autoclaw.loginAutoclawWithCode(st.phone, code)
-    if (!r.ok) throw new Error(r.error)
-    return r.credential
-  },
-})
+// AutoClaw 国内/国际同实现不同 product（AUTOCLAW/AUTOCLAW_INTL）——工厂避免
+// 两份漂移（发码/登录的签名头逐字段一致，只差 appId/appKey 与域名）。
+function autoclawRegister(productId, productExport, displayName) {
+  register(productId, {
+    name: displayName,
+    flow: 'sms',
+    needs: ['phone'],
+    // 直接走纯函数面（sendAutoclawVerificationCode / loginAutoclawWithCode，
+    // 带签名头的 /sms-code 与 /agent-login）——上游的
+    // startAutoclawSmsLoginFlow 是「本地登录页」流程（自起 HTTP 服务器渲染
+    // 页面，发码在页面里），在我们的无端口形态下调它等于什么都没发生：
+    // phone 参数被忽略、发码从未执行（2026-10-28 用户实测收不到短信）。
+    async start({ phone }) {
+      if (!phone) throw new Error('E_BAD_REQUEST: AutoClaw 登录需要手机号')
+      const r = await autoclaw.sendAutoclawVerificationCode(phone, { product: autoclawProduct[productExport] })
+      if (!r.ok) throw new Error(r.error)
+      return background(
+        productId,
+        'sms',
+        { authorize_url: '', phone, message: '验证码已发送，请查收短信' },
+        null,
+      )
+    },
+    async submit({ code, state }) {
+      const st = JSON.parse(state)
+      const r = await autoclaw.loginAutoclawWithCode(st.phone, code, { product: autoclawProduct[productExport] })
+      if (!r.ok) throw new Error(r.error)
+      return r.credential
+    },
+  })
+}
+autoclawRegister('autoclaw', 'AUTOCLAW', 'AutoClaw')
+autoclawRegister('autoclawintl', 'AUTOCLAW_INTL', 'AutoClaw (国际版)')
 
 
 // —— 腾讯 CodeBuddy / WorkBuddy（external-link-v2 轮询式，hub buddy-oauth）——
@@ -657,6 +663,43 @@ register('lobsterai', {
       LOBSTERAI.fallbackClientVersion, LOBSTERAI,
     )
     return credential
+  },
+})
+
+
+// —— AStudio（讯飞星火 Studio）——微信扫码（hub astudio-oauth 的网页三合一之一）——
+// 链路：generateFd → GET /SSOService/wx/scanlogin/qrcode 拿二维码 → 轮询
+// /uids（-1 未扫 / 0 已扫带账号）→ POST /bind 绑定 → completeAstudioLogin
+// （init-app + userInfo + bot/configs 换推理 modelBearerToken）。hub 官方
+// 注记「三合一快捷登录」（手机短信/账号密码/微信扫码）不依赖桌面端——
+// 我们先接微信扫码这一支（纯函数面完整可复用）。
+register('astudio', {
+  name: 'AStudio（讯飞）',
+  flow: 'qr',
+  needs: [],
+  async start() {
+    const mod = await import('dsh-providers-hub/lib/astudio-oauth.js')
+    const qr = await mod.createAstudioWechatQrCode({})
+    const fd = qr.fd
+    return background('astudio', 'qr', { qr_image_url: qr.qrUrl, authorize_url: qr.qrUrl }, async ({ signal }) => {
+      // 轮询扫码状态：pending 继续等；scanned → bind → 换凭据；其余终态抛错
+      const deadline = Date.now() + 5 * 60_000
+      for (;;) {
+        if (signal?.aborted) throw new Error('已取消')
+        if (Date.now() > deadline) throw new Error('二维码已超时，请重新发起授权')
+        const res = await mod.pollAstudioWechatScan(fd, { signal })
+        if (res.status === 'pending') {
+          await new Promise((r) => setTimeout(r, 2_500))
+          continue
+        }
+        if (res.status === 'scanned') {
+          await mod.bindAstudioWechatSession(fd, res.account, {}).catch(() => {})
+          return mod.completeAstudioLogin(res.account, {})
+        }
+        if (res.status === 'unbound') throw new Error(res.message ?? '微信未绑定 AStudio 账号，请先在客户端绑定')
+        throw new Error(res.message ?? `扫码状态异常（${res.status}）`)
+      }
+    })
   },
 })
 
