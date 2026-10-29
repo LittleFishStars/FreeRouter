@@ -18,8 +18,6 @@ import {
   AccordionDetails,
   AccordionSummary,
   Box,
-  List,
-  ListItemButton,
   Typography
 } from '@mui/material'
 import {
@@ -88,6 +86,18 @@ const LOGO_ALIAS: Record<string, string> = {
 
 function logoFor(id: string): string {
   return `/logos/${LOGO_ALIAS[id] ?? id}.svg`
+}
+
+/** API 型供应商的字母图标（首字母 + 按 id hash 的底色）——内联 SVG data
+ * URL，CSP data: 允许。样式与反代卡片的字母占位一致（圆角块 + 白字）。 */
+const API_ICON_HUES = [212, 262, 330, 18, 42, 96, 152, 190]
+function apiIconFor(id: string, name: string): string {
+  let hash = 0
+  for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
+  const hue = API_ICON_HUES[hash % API_ICON_HUES.length]
+  const letter = (name.trim()[0] ?? '?').toUpperCase()
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect width="48" height="48" rx="10" fill="hsl(${hue} 62% 46%)"/><text x="24" y="33" font-family="system-ui,sans-serif" font-size="26" font-weight="700" fill="#fff" text-anchor="middle">${letter}</text></svg>`
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
 }
 
 const FLOW_LABELS: Record<string, string> = {
@@ -438,74 +448,86 @@ export default function ContributePage({ def }: PageProps) {
                       placeholder="例如 deepseek 或 https://"
                     />
                   </Field>
-                  {/* 列表容器用「比卡片深一档的填充」圈定范围，而不是描边：
-                      整站在用填充画层级，一根 1px 线在这里会显得是新来的。 */}
-                  <List
-                    dense
+                  {/* 卡片网格（对照 Tingly Box 的 Connect AI：图标/名称/端点/
+                      区域·协议标签）。自定义项固定置顶、不参与过滤：搜索落空
+                      时它是兜底路径，被过滤掉用户就进了死胡同。选中态用填充
+                      深一档 + 主色描边替代左竖条（网格卡片没有「行」可以插条）。 */}
+                  <Box
                     sx={{
                       mt: 1,
-                      maxHeight: 360,
+                      maxHeight: 420,
                       overflowY: 'auto',
-                      bgcolor: 'var(--fr-block)',
-                      borderRadius: 2.5,
-                      py: 0.5,
-                      '& .MuiListItemButton-root': { borderRadius: 2, mx: 0.5 }
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+                      gap: 1,
+                      pr: 0.5
                     }}
                   >
-                    {/* 自定义项固定置顶、不参与过滤：搜索落空时它是兜底路径，
-                        被过滤掉用户就进了死胡同。 */}
-                    <ListItemButton
-                      selected={isCustom}
-                      onClick={() => setSelectedId(CUSTOM_PROVIDER_ID)}
-                      sx={{ flexDirection: 'column', alignItems: 'flex-start', gap: 0.25 }}
-                    >
-                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        自定义供应商
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary" component="p">
-                        任意 OpenAI 兼容端点，手填 base URL
-                      </Typography>
-                    </ListItemButton>
-                    {filtered.map((p) => (
-                      <ListItemButton
-                        key={p.id}
-                        selected={p.id === selectedId}
-                        onClick={() => setSelectedId(p.id)}
-                        sx={{
-                          flexDirection: 'column',
-                          alignItems: 'flex-start',
-                          gap: 0.25,
-                          position: 'relative',
-                          '&.Mui-selected': {
-                            bgcolor: 'var(--fr-inset)',
-                            '&::before': {
-                              content: '""',
-                              position: 'absolute',
-                              left: 0,
-                              top: '50%',
-                              transform: 'translateY(-50%)',
-                              width: 3,
-                              height: 16,
-                              borderRadius: 2,
-                              bgcolor: 'primary.main'
-                            }
-                          }
-                        }}
-                      >
-                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                          {p.name}
-                        </Typography>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          component="p"
-                          sx={{ wordBreak: 'break-all' }}
+                    {[
+                      {
+                        id: CUSTOM_PROVIDER_ID,
+                        name: '自定义供应商',
+                        base_url: '任意 OpenAI 兼容端点，手填 base URL',
+                        region: '',
+                        protocol: ''
+                      },
+                      ...filtered
+                    ].map((p) => {
+                      const selected = p.id === selectedId
+                      return (
+                        <Box
+                          key={p.id}
+                          onClick={() => setSelectedId(p.id)}
+                          sx={{
+                            cursor: 'pointer',
+                            p: 1.25,
+                            borderRadius: 2.5,
+                            bgcolor: selected ? 'var(--fr-inset)' : 'var(--fr-block)',
+                            outline: selected ? '2px solid' : 'none',
+                            outlineColor: 'primary.main',
+                            outlineOffset: -1,
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: 1,
+                            '&:hover': { bgcolor: 'var(--fr-inset)' }
+                          }}
                         >
-                          {p.base_url}
-                        </Typography>
-                      </ListItemButton>
-                    ))}
-                  </List>
+                          <img
+                            src={apiIconFor(p.id, p.name)}
+                            alt=""
+                            width={30}
+                            height={30}
+                            style={{ borderRadius: 8, flex: 'none', marginTop: 2 }}
+                          />
+                          <Box sx={{ minWidth: 0, flex: '1 1 auto' }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                              <Typography variant="body2" sx={{ fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {p.name}
+                              </Typography>
+                              {p.region === 'cn' && (
+                                <Box component="span" sx={{ fontSize: '0.62rem', px: 0.5, py: 0.1, borderRadius: 1, bgcolor: 'rgba(239,68,68,.16)', color: '#f87171', flex: 'none' }}>
+                                  CN
+                                </Box>
+                              )}
+                            </Box>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              component="p"
+                              sx={{ wordBreak: 'break-all', mt: 0.1 }}
+                            >
+                              {p.base_url}
+                            </Typography>
+                            {p.protocol && (
+                              <Typography variant="caption" color="text.disabled" component="p" sx={{ mt: 0.25 }}>
+                                {p.protocol}
+                              </Typography>
+                            )}
+                          </Box>
+                        </Box>
+                      )
+                    })}
+                  </Box>
                   {filtered.length === 0 && (
                     <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
                       没有匹配的供应商：换个关键词，或选「自定义供应商」手填端点。
