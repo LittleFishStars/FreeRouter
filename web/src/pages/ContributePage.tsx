@@ -86,6 +86,7 @@ const FLOW_LABELS: Record<string, string> = {
   browser: '网页授权',
   browser_callback: '网页授权',
   device_code: '设备码',
+  manual_code: '授权后粘贴回调地址',
   qr_scan: '扫码',
   sms: '短信验证码'
 }
@@ -983,6 +984,36 @@ export function ContributeOAuthPage({ def }: PageProps) {
               />
               <span className="block-meta">用手机 App 扫码授权</span>
             </p>
+          )}
+          {session.flow === 'manual_code' && (
+            <>
+              <Field
+                label="回调地址"
+                required
+                hint="在授权页完成登录后，浏览器会跳到一个打不开的 127.0.0.1 页面——把地址栏完整地址复制粘贴到这里。"
+              >
+                <input
+                  value={smsCode}
+                  onChange={(e) => setSmsCode(e.target.value)}
+                  placeholder="http://127.0.0.1/auth/callback?code=…&state=…"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </Field>
+              <p>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={smsConfirmed || smsCode.trim().length === 0}
+                  onClick={() => {
+                    smsConfirmedRef.current = true
+                    setSmsConfirmed(true)
+                  }}
+                >
+                  {smsConfirmed ? '验证中…' : '提交回调地址'}
+                </button>
+              </p>
+            </>
           )}
           {session.flow === 'sms' && (
             <>

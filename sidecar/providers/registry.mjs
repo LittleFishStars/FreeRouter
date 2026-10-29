@@ -47,6 +47,7 @@ import { LOBSTERAI } from './lobsterai/lobsterai-product.js'
 import * as zcode from './zcode/zcode-auth.js'
 import { createMemoryContext } from './_shims/ctx-shim.mjs'
 import { QODER } from './qoder/qoder-product.js'
+import * as qoderProduct from './qoder/qoder-product.js'
 import { LOOMY } from './loomy/loomy-product.js'
 import { randomBytes } from 'node:crypto'
 
@@ -260,31 +261,40 @@ register('accio', {
 //    授权请求本身是网络调用（快），轮询必须后台化。
 // ===========================================================================
 
-register('minimax', {
-  name: 'MiniMax',
-  flow: 'device_code',
-  async start() {
-    const auth = await minimax.startMinimaxDeviceAuthorization(fetch, MINIMAX)
-    // 先把授权拿到手（一次 POST），再把**轮询**丢后台。
-    return background(
-      'minimax',
-      'device_code',
-      {
-        authorize_url: auth.verificationUriComplete ?? auth.verificationUri,
-        user_code: auth.userCode,
-        verification_uri: auth.verificationUri,
-        interval: auth.intervalSec,
-      },
-      async ({ signal }) => minimax.pollMinimaxDeviceToken(auth, { signal, product: MINIMAX }),
-    )
-  },
-  async refresh({ credential }) {
-    const cred = typeof credential === 'string' ? JSON.parse(credential) : credential
-    const next = await minimax.refreshMinimaxCredential(cred)
-    return { credential: JSON.stringify(next), expires_at: String(next.expires_at ?? '') }
-  },
-})
-
+// MiniMax 国内/国际同实现不同 product（MINIMAX/MINIMAX_INTL）——工厂避免
+// 两份漂移（device 流的授权/轮询逐字段一致，只差 product 身份与域名）。
+function minimaxRegister(productId, productExport, displayName) {
+  register(productId, {
+    name: displayName,
+    flow: 'device_code',
+    async start() {
+      const mod = await import('./minimax/minimax-oauth.js')
+      const { [productExport]: product } = await import('./minimax/minimax-product.js')
+      const auth = await mod.startMinimaxDeviceAuthorization(fetch, product)
+      // 先把授权拿到手（一次 POST），再把**轮询**丢后台。
+      return background(
+        productId,
+        'device_code',
+        {
+          authorize_url: auth.verificationUriComplete ?? auth.verificationUri,
+          user_code: auth.userCode,
+          verification_uri: auth.verificationUri,
+          interval: auth.intervalSec,
+        },
+        async ({ signal }) => mod.pollMinimaxDeviceToken(auth, { signal, product }),
+      )
+    },
+    async refresh({ credential }) {
+      const cred = typeof credential === 'string' ? JSON.parse(credential) : credential
+      const mod = await import('./minimax/minimax-oauth.js')
+      const { [productExport]: product } = await import('./minimax/minimax-product.js')
+      const next = await mod.refreshMinimaxCredential(cred, fetch, product)
+      return { credential: JSON.stringify(next), expires_at: String(next.expires_at ?? '') }
+    },
+  })
+}
+minimaxRegister('minimax', 'MINIMAX', 'MiniMax')
+minimaxRegister('minimaxintl', 'MINIMAX_INTL', 'MiniMax 国际版')
 register('cline', {
   name: 'Cline',
   flow: 'device_code',
@@ -310,25 +320,30 @@ register('cline', {
   },
 })
 
-register('qoder', {
-  name: 'Qoder',
-  flow: 'device_code',
-  async start() {
-    // startQoderLoginFlow 立即返回 {loginUrl, result, close}——result 就是阻塞轮询的
-    // Promise。这里把 result 交给后台会话，close 绑到 abort 上。
-    const started = await qoder.startQoderLoginFlow({ product: QODER })
-    return background(
-      'qoder',
-      'device_code',
-      { authorize_url: started.loginUrl },
-      async ({ signal }) => {
-        signal.addEventListener('abort', () => { void started.close() }, { once: true })
-        const out = await started.result
-        return out.access ?? out.credential ?? out
-      },
-    )
-  },
-})
+// Qoder 国际/中国版同实现不同 product（QODER/QODER_CN）——工厂避免两份漂移。
+function qoderRegister(productId, productExport, displayName) {
+  register(productId, {
+    name: displayName,
+    flow: 'device_code',
+    async start() {
+      // startQoderLoginFlow 立即返回 {loginUrl, result, close}——result 就是阻塞轮询的
+      // Promise。这里把 result 交给后台会话，close 绑到 abort 上。
+      const started = await qoder.startQoderLoginFlow({ product: qoderProduct[productExport] })
+      return background(
+        productId,
+        'device_code',
+        { authorize_url: started.loginUrl },
+        async ({ signal }) => {
+          signal.addEventListener('abort', () => { void started.close() }, { once: true })
+          const out = await started.result
+          return out.access ?? out.credential ?? out
+        },
+      )
+    },
+  })
+}
+qoderRegister('qoder', 'QODER', 'Qoder')
+qoderRegister('qodercn', 'QODER_CN', 'Qoder（中国版）')
 
 // ===========================================================================
 // 3. 短信 / 二维码（sms / qr）：loomy / raccoon / autoclaw
@@ -588,6 +603,60 @@ register('codely', {
     }
     const next = { ...cred, access_token: body.access_token, refresh_token: body.refresh_token ?? cred.refresh_token }
     return { credential: JSON.stringify(next), expires_at: String(next.expires_at ?? '') }
+  },
+})
+
+
+// —— LobsterAI（有道）——「粘贴回调地址」形态 ——
+// 上游约束：portal 登录页强制 redirect_uri = http://127.0.0.1:{port}/auth/callback
+// （服务端校验），无端口形态收不到回调。解法：仍按标准形态生成授权 URL
+// （port 用哨兵 0——登录页只校验 127.0.0.1 形态），用户授权后浏览器跳到
+// 一个打不开的 127.0.0.1 地址——**地址栏里带着 code 与 state**，把它整段
+// 粘回 FreeRouter（前端 manual_code 输入框）→ 这里解析 code 并 exchange。
+// code 只能用一次（state 校验 + 一次性），粘贴的是死链接无害。
+register('lobsterai', {
+  name: 'LobsterAI（有道）',
+  flow: 'manual_code',
+  needs: [],
+  async start() {
+    const mod = await import('dsh-providers-hub/lib/lobsterai-oauth.js')
+    const { LOBSTERAI } = await import('./lobsterai/lobsterai.js')
+    const session = mod.createLobsteraiLoginSession()
+    const authorizeUrl = mod.buildLobsteraiLoginUrl(0, session.uuid, LOBSTERAI)
+    // 会话要素走 state 字符串（与 raccoon 的 phone 同法）：submit 时由
+    // 会话存储原样回传，不依赖任何进程内可变状态。
+    return background('lobsterai', 'manual_code', {
+      authorize_url: authorizeUrl,
+      state: JSON.stringify({ uuid: session.uuid, first_keyfrom: session.firstKeyfrom }),
+      message: '在浏览器完成授权后，浏览器会跳到一个打不开的 127.0.0.1 页面——把地址栏完整地址复制粘贴回来',
+    }, null)
+  },
+  async submit({ callbackUrl, state }) {
+    const url = new URL(String(callbackUrl ?? '').trim())
+    if (url.hostname !== '127.0.0.1' || !url.pathname.startsWith('/auth/callback')) {
+      throw new Error('LobsterAI: 请粘贴授权后浏览器地址栏的完整地址（以 http://127.0.0.1/… 开头）')
+    }
+    const code = url.searchParams.get('code')
+    const gotState = url.searchParams.get('state')
+    if (!code) throw new Error('LobsterAI: 回调地址里没有 code（授权可能未完成）')
+    let session = { uuid: '', firstKeyfrom: String(Date.now()) }
+    try {
+      // oauth.poll 传来的 state 是整个 material 的 JSON——会话要素在它的
+      // .state 字段里（start 存的是字符串化的 {uuid, first_keyfrom}），双层解析
+      const st = JSON.parse(JSON.parse(state ?? '{}').state ?? '{}')
+      if (st.uuid) session = { uuid: st.uuid, firstKeyfrom: st.first_keyfrom ?? String(Date.now()) }
+    } catch { /* state 缺失时按新会话处理 */ }
+    if (gotState && session.uuid && gotState !== session.uuid) {
+      throw new Error('LobsterAI: state 不匹配，请重新发起授权')
+    }
+    const mod = await import('dsh-providers-hub/lib/lobsterai-oauth.js')
+    const { LOBSTERAI } = await import('./lobsterai/lobsterai.js')
+    const credential = await mod.exchangeLobsteraiAuthCode(
+      code,
+      { uuid: session.uuid, firstKeyfrom: session.firstKeyfrom },
+      LOBSTERAI.fallbackClientVersion, LOBSTERAI,
+    )
+    return credential
   },
 })
 
