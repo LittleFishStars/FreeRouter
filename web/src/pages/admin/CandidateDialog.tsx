@@ -229,8 +229,12 @@ export function CandidateDialog({
       ),
     [sources, vq]
   )
-  const contributed = visibleSources.filter((s) => s.contributed)
-  const platformSources = visibleSources.filter((s) => !s.contributed)
+  // 分组口径与凭据池左栏一致（2026-10-30 用户决定）：反代供应商（oauth，
+  // 账号授权，凭据由 sidecar 换出）与 API 供应商（粘 Key 直连端点）。旧的
+  // 「贡献凭据 / 平台渠道」按来源归属切，与接入形态是两个维度——两处两种
+  // 切法只会让人来回翻译。
+  const relaySources = visibleSources.filter((s) => s.oauth)
+  const apiSources = visibleSources.filter((s) => !s.oauth)
   const active = activeId ? (sources.find((s) => s.id === activeId) ?? null) : null
   const visibleModels = useMemo(() => {
     if (!active) return []
@@ -504,9 +508,9 @@ export function CandidateDialog({
         {/* 中部：左栏供应商 / 右栏模型卡网格 */}
         <div className="amd-split">
           <div className="amd-rail">
-            {railGroup('贡献凭据', contributed)}
-            {railGroup('平台渠道', platformSources)}
-            {vendorQuery && contributed.length === 0 && platformSources.length === 0 && (
+            {railGroup('反代供应商', relaySources)}
+            {railGroup('API 供应商', apiSources)}
+            {vendorQuery && relaySources.length === 0 && apiSources.length === 0 && (
               <p className="muted">没有匹配的供应商。</p>
             )}
           </div>
@@ -515,7 +519,7 @@ export function CandidateDialog({
             {!active ? (
               <EmptyState
                 title="先从左侧选一个供应商"
-                hint="左栏按「贡献凭据 / 平台渠道」分组；选中后这里显示它的模型卡片，点卡片即加入或移出候选集。"
+                hint="左栏按「反代供应商 / API 供应商」分组；选中后这里显示它的模型卡片，点卡片即加入或移出候选集。"
               />
             ) : (
               <>
