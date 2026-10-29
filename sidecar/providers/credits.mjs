@@ -16,12 +16,11 @@
 // 都在 OAuth 装配完成后才会被调（管理面按钮），时序天然满足；缓存首次结果。
 
 let providerCredits = null
-let loadAttempted = false
 
 async function distributor() {
+  // 只缓存成功；失败可重试——首次查询可能早于 shim 就绪（loadDeps 懒加载），
+  // 永久缓存失败会让之后每一次都挂。
   if (providerCredits) return providerCredits
-  if (loadAttempted) throw new Error('hub 分发器加载失败（已尝试过）')
-  loadAttempted = true
   const mod = await import('dsh-providers-hub/lib/provider-credits.js')
   providerCredits = mod.createProviderCredits()
   return providerCredits
@@ -118,14 +117,21 @@ async function balanceDeepSeek(key, baseUrl) {
   return { ok: true, total: bal, unit: r.body?.currency === 'CNY' ? '元' : (r.body?.currency ?? '') }
 }
 
+// BigModel 用控制台侧的账户报告接口（用户实测提供；open.bigmodel 的
+// /v4/finance/balance 对贡献 key 回形状不符）。注意该接口 HTTP 恒 200，
+// 业务成败看 body.code/success。
 async function balanceBigModel(key, baseUrl) {
-  const r = await getJson(`${baseUrl}/finance/balance`, key)
-  if (r.http === 401) return { ok: false, error: '凭据失效（401）' }
-  const d = r.body?.data ?? {}
-  const total = readNumLoose(d.total_balance)
-  if (total === undefined) return shapeErr('该渠道', r)
-  const gift = readNumLoose(d.gift_balance)
-  const purchase = readNumLoose(d.purchased_balance)
+  const r = await getJson('https://www.bigmodel.cn/api/biz/account/query-customer-account-report', key)
+  if (r.body?.code === 401) return { ok: false, error: '凭据失效（401：令牌过期或验证不正确）' }
+  if (r.body?.success === false) return { ok: false, error: `bigmodel: ${r.body?.msg ?? '查询失败'}` }
+  const d = r.body?.data ?? r.body
+  // 字段名逐层尝试：报告接口的字段名未在文档公开，按常见命名探测，
+  // 都没中就带 body 摘要自诊（用户截图即可定位真实字段）。
+  const total = readNumLoose(d?.total_balance) ?? readNumLoose(d?.balance) ?? readNumLoose(d?.totalBalance)
+    ?? readNumLoose(d?.quota_total) ?? readNumLoose(d?.remaining_quota)
+  if (total === undefined) return shapeErr('bigmodel', r)
+  const gift = readNumLoose(d?.gift_balance)
+  const purchase = readNumLoose(d?.purchased_balance) ?? readNumLoose(d?.charge_balance)
   const packages = []
   if (purchase !== undefined) packages.push({ name: '充值余额', amount: purchase })
   if (gift !== undefined) packages.push({ name: '赠送余额', amount: gift })
@@ -194,6 +200,58 @@ async function queryApiBalance(provider, key) {
   } catch (error) {
     return { ok: false, error: `${bare}: ${error instanceof Error ? error.message : String(error)}` }
   }
+}
+
+/** 按家分发续期：都返回「合并后的完整新凭据对象」供写回。 */
+async function selfRefresh(provider, credential) {
+  if (provider === 'minimax') return refreshMinimaxCredential(credential)
+  if (provider === 'raccoon') return refreshRaccoonCred(credential)
+  if (provider === 'cline') return refreshClineCred(credential)
+  throw new Error(`${provider} 不支持续期`)
+}
+
+/** raccoon 续期：refreshRaccoonCredential 返回 token grant（含轮换的
+ * refresh_token）——合并回旧凭据（保留 user_id 等元数据）。 */
+async function refreshRaccoonCred(credential) {
+  if (typeof credential?.refresh_token !== 'string' || credential.refresh_token.length === 0) {
+    throw new Error('无 refresh_token，无法续期')
+  }
+  const { refreshRaccoonCredential } = await import('./raccoon/raccoon-oauth.js')
+  const { RACCOON_API_BASE, RACCOON_AUTH_PREFIX } = await import('./raccoon/raccoon.js')
+  // raccoon 没有 product 常量（函数吃 {apiBase, authApiPrefix} 形状）——内联构造
+  const product = { apiBase: RACCOON_API_BASE, authApiPrefix: RACCOON_AUTH_PREFIX }
+  const grant = await refreshRaccoonCredential(product, credential)
+  const merged = { ...credential, ...grant }
+  if (!merged.refresh_token) merged.refresh_token = credential.refresh_token
+  return merged
+}
+
+/** cline 续期：POST /api/v1/auth/refresh（字段是驼峰 refreshToken/grantType
+ * ——写错字段名服务端只回泛化认证失败，见 cline.js 的源码注记）。响应过
+ * parseClineTokenPayload 解包，applyClineRefresh 合并回旧凭据（account_id/
+ * email/nickname 不在续期响应里，丢了余额查询就废）。 */
+async function refreshClineCred(credential) {
+  if (typeof credential?.refresh_token !== 'string' || credential.refresh_token.length === 0) {
+    throw new Error('无 refresh_token，无法续期')
+  }
+  const { CLINE } = await import('./cline/cline-product.js')
+  const { parseClineTokenPayload, applyClineRefresh, buildClineCredential } = await import('./cline/cline.js')
+  const response = await fetch(`${CLINE.apiBase ?? 'https://api.cline.bot'}/api/v1/auth/refresh`, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refreshToken: credential.refresh_token, grantType: 'refresh_token' }),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  })
+  const body = await response.json().catch(() => undefined)
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}：${typeof body === 'object' && body?.message ? body.message : '刷新被拒'}`)
+  }
+  const payload = parseClineTokenPayload(body)
+  if (!payload.accessToken || payload.accessToken.length === 0) {
+    throw new Error('续期响应里没有 accessToken')
+  }
+  const base = buildClineCredential(parseClineTokenPayload(credential), CLINE)
+  return applyClineRefresh(base, payload, CLINE)
 }
 
 /** minimax 静默续期：401 时用 refresh_token 换新 token。返回合并后的新凭据
@@ -284,6 +342,11 @@ export async function queryCreditBalance(provider, credential) {
   if (provider === 'qoder' || provider === 'qodercn') {
     return queryQoder(credential)
   }
+  // cline 与 raccoon：存量凭据可能是信封形态，先自愈再走续期判断
+  if (provider === 'cline') {
+    credential = await unwrapClineEnvelope(credential)
+  }
+  const canSelfRefresh = provider === 'minimax' || provider === 'cline' || provider === 'raccoon'
   let pc
   try {
     pc = await distributor()
@@ -305,14 +368,15 @@ export async function queryCreditBalance(provider, credential) {
   }
   try {
     const first = await callDistributor(credential)
-    // minimax 静默续期：401（token 过期）时用 refresh_token 换新后重查一次。
-    // 新凭据随应答上行（refreshed_credential），Go 桥原地写回密文。
+    // 静默续期（minimax/cline/raccoon）：401（token 过期）时用 refresh_token
+    // 换新后重查一次。新凭据随应答上行（refreshed_credential），Go 桥原地
+    // 写回密文——下次查询/推理直接用新 token。
     if (
-      provider === 'minimax' && !first.ok &&
-      /401|凭据失效|invalid/i.test(first.error ?? '')
+      canSelfRefresh && !first.ok &&
+      /401|凭据失效|登录态已过期|invalid|Unauthorized/i.test(first.error ?? '')
     ) {
       try {
-        const fresh = await refreshMinimaxCredential(credential)
+        const fresh = await selfRefresh(provider, credential)
         const second = await callDistributor(fresh)
         if (second.ok) return { ...second, refreshed_credential: fresh }
         return { ok: false, error: `续期后仍失败：${second.error ?? '未知'}`, refreshed_credential: fresh }
