@@ -27,6 +27,7 @@ import {
   Chip,
   Divider,
   Skeleton,
+  Snackbar,
   Stack,
   Table,
   TableBody,
@@ -143,6 +144,45 @@ export function Banner({
   )
 }
 
+/** 右下角自动消失的操作结果通知（浮层）。适合「刷新余额已更新」这类
+ *  不值得占正文一行的结果：弹出说明，几秒后自动退场，点空白处也能关。
+ *  与 Banner 同族的语义色，但走浮层而不是文档流。 */
+export function Toast({
+  open,
+  tone = 'info',
+  children,
+  onClose,
+  duration = 4000
+}: {
+  open: boolean
+  tone?: Tone
+  children: ReactNode
+  onClose: () => void
+  /** 自动关闭毫秒数；设 0 表示不自动关。 */
+  duration?: number
+}) {
+  return (
+    <Snackbar
+      open={open}
+      autoHideDuration={duration || undefined}
+      onClose={onClose}
+      anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+    >
+      {/* 不给 Alert onClose（它自带 MUI 实心 X 图标，与全站线性图标冲突）：
+          自动退场 + 点空白关闭已经够用。 */}
+      <Alert
+        severity={TONE_SEVERITY[tone]}
+        variant="standard"
+        icon={<AlertGlyph severity={TONE_SEVERITY[tone]} />}
+        sx={{ alignItems: 'center', minWidth: 260, boxShadow: 'var(--fr-e2)' }}
+      >
+        {children}
+      </Alert>
+    </Snackbar>
+  )
+}
+
+/** 加载态：骨架屏（不用全屏遮罩，避免等待期间无法离开页面）。 */
 /** 加载态：骨架屏（不用全屏遮罩，避免等待期间无法离开页面）。 */
 export function LoadingBlock({ rows = 3, label = '正在加载…' }: { rows?: number; label?: string }) {
   return (

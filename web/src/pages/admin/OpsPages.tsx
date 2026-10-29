@@ -51,7 +51,8 @@ import {
   JsonDetails,
   KeyValues,
   Section,
-  StatusBadge
+  StatusBadge,
+  Toast
 } from '../../components/ui'
 import { fmtNum, fmtTime, statusLabel } from '../../utils/format'
 import PageFrame from '../PageFrame'
@@ -231,8 +232,9 @@ export function CredentialsPage({ def }: PageProps) {
     try {
       const r = await refreshCredentialBalance(id)
       const d = r.data
-      // 成功/失败都落到行内提示；列表数据（balance_text）由 reload 拉新
-      setBalNote({ id, text: d.ok ? `已更新：${d.balance_text ?? ''}` : `查询失败：${d.reason ?? '未知原因'}`, ok: d.ok })
+      // 成功/失败都弹右下角 toast（2026-10-30 改定）：不占行内空间，几秒后自动退场；
+      // 列表数据（balance_text）由 reload 拉新
+      setBalNote({ id, text: d.ok ? `余额已更新：${d.balance_text ?? ''}` : `查询失败：${d.reason ?? '未知原因'}`, ok: d.ok })
       sourcesQ.reload()
     } catch (e) {
       setBalNote({ id, text: e instanceof Error ? e.message : '刷新失败', ok: false })
@@ -494,12 +496,6 @@ export function CredentialsPage({ def }: PageProps) {
                         {/* 凭据只能通过贡献得来，头部不放「添加凭据」入口——
                             空态里的贡献链接才是唯一的引导。 */}
                       </div>
-                      {balNote && active.credentials.some((c) => c.id === balNote.id) && (
-                        <p className="muted" aria-live="polite" style={{ marginBottom: 8 }}>
-                          {balNote.ok ? '✓ ' : '⚠ '}
-                          {balNote.text}
-                        </p>
-                      )}
                       {active.credentials.length === 0 ? (
                         <p className="muted pool-empty">
                           还没有凭据；凭据只能通过贡献得来，
@@ -750,6 +746,15 @@ export function CredentialsPage({ def }: PageProps) {
           }}
         />
       )}
+
+      {/* 余额刷新结果走右下角 toast：行内不再有「✓ 已更新」提示 */}
+      <Toast
+        open={balNote !== null}
+        tone={balNote?.ok ? 'ok' : 'err'}
+        onClose={() => setBalNote(null)}
+      >
+        {balNote?.text}
+      </Toast>
     </PageFrame>
   )
 }
