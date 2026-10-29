@@ -226,7 +226,7 @@ func (b balanceRefreshBridge) RefreshCredentialBalance(ctx context.Context, id s
 	if err := b.b.repos.Models.UpdateCredentialBalance(ctx, id, text, now); err != nil {
 		return nil, mapStoreErr(err)
 	}
-	res := &httpapi.CredentialBalanceResult{OK: out.OK, Unit: out.Unit, Reason: out.Error}
+	res := &httpapi.CredentialBalanceResult{OK: out.OK, Unit: out.Unit, Reason: out.Error, BalanceText: text}
 	if out.Total != nil {
 		res.Total = out.Total
 	}

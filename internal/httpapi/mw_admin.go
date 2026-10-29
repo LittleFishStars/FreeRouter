@@ -940,10 +940,15 @@ type AdminCredentialBalanceRefresher interface {
 type CredentialBalanceResult struct {
 	// OK = 上游成功返回了余额（total/unit 有效）。false 时 Reason 说明原因
 	// （凭据失效/网络失败/上游未报），此时 Total 为 nil。
-	OK     bool
-	Total  *float64
-	Unit   string
-	Reason string
+	//
+	// ⚠️ json tag 必须显式小写：Go 默认用导出名（OK/Reason），前端读
+	// ok/reason 全 undefined——2026-10-29 用户实测全部显示「查询失败：
+	// 未知原因」就是这个（失败判定靠 d.ok falsy，而 reason 也是空）。
+	OK          bool     `json:"ok"`
+	Total       *float64 `json:"total"`
+	Unit        string   `json:"unit,omitempty"`
+	Reason      string   `json:"reason,omitempty"`
+	BalanceText string   `json:"balance_text,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
