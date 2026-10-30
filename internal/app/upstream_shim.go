@@ -272,6 +272,17 @@ func (a *App) targetOf() func(upstream.CallCandidate) (upstream.Target, error) {
 				Kind:       upstream.Kind(u.Kind),
 				BaseURL:    u.BaseURL,
 				RealModel:  r.UpstreamModelID,
+				// SecretRef 必须随行带出：漏掉会让 Target.SecretRef 恒为空，
+				// transport 判空后**不带 Authorization 头**出站——上游 401，
+				// 故障现场漂到上游（2026-10-31 生产实测，凭据/上游/网络全部
+				// 正确却拿 401，解密比对才定位到这一行）。
+				SecretRef: func() string {
+					if u.SecretID != nil {
+						return *u.SecretID
+					}
+					return "" // 无凭据 selfhosted 的合法形态
+				}(),
+				CredentialID: r.UpstreamID, // 凭据作用域是上游路径（cooldown 同口径）
 			}
 			// relay 行的 RealModel 需要 provider 前缀（RelayTransport 拆分用）：
 			// relay 的 base_url 是 sidecar://<provider>，TargetOf 校验一致性。

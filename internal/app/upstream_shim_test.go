@@ -257,3 +257,56 @@ func TestContractTargetOfClosure(t *testing.T) {
 		t.Fatalf("selfhosted 应原样：%v %+v", err, tgt2)
 	}
 }
+
+// TestContractTargetOfCarriesSecretRef：vendor 上游的 secret_id 必须随
+// CandidateInfo 带进 Target——漏掉会让 Target.SecretRef 恒为空，transport
+// 判空后不带 Authorization 头出站，上游 401（2026-10-31 生产实测：凭据、
+// 上游、网络全部正确却拿 401，解密比对才定位到 targetOf 漏字段）。
+func TestContractTargetOfCarriesSecretRef(t *testing.T) {
+	a := newRoutingTestApp(t)
+	ctx := context.Background()
+	// 建上游 → PutSecret：它会在同一事务里把 upstreams.secret_id 指过去
+	//（secrets.go putSecretInner），不需要（也不能）用 UpsertUpstream 二次设——
+	// 它的第 5 参是 owner_account_id 不是 secret_id。
+	up, err := a.store.Repos().Models.UpsertUpstream(ctx, "vendor", "test-u-secret",
+		"https://example.com/v1", nil, true)
+	if err != nil {
+		t.Fatalf("建上游失败: %v", err)
+	}
+	realSecret, err := a.store.Repos().Secrets.PutSecret(ctx, up, []byte("test-plaintext"))
+	if err != nil {
+		t.Fatalf("建密文行失败: %v", err)
+	}
+	if _, err := a.store.Repos().Models.UpsertRealModel(ctx, store.RealModel{
+		UpstreamID: up, UpstreamModelID: "glm-5.3-flash",
+	}); err != nil {
+		t.Fatalf("建真实模型失败: %v", err)
+	}
+
+	tgt, err := a.targetOf()(upstream.CallCandidate{UpstreamModelID: "glm-5.3-flash"})
+	if err != nil {
+		t.Fatalf("targetOf 不应报错: %v", err)
+	}
+	if tgt.SecretRef != realSecret {
+		t.Fatalf("SecretRef 应随上游行带出（否则出站无鉴权）: %+v", tgt)
+	}
+	if tgt.CredentialID != up {
+		t.Fatalf("CredentialID 应为上游路径 id: %+v", tgt)
+	}
+
+	// 无凭据 selfhosted：SecretRef 空是合法形态（不带鉴权出站）。
+	up2, err := a.store.Repos().Models.UpsertUpstream(ctx, "selfhosted", "test-u-nosecret",
+		"http://127.0.0.1:11434", nil, true)
+	if err != nil {
+		t.Fatalf("建无凭据上游失败: %v", err)
+	}
+	if _, err := a.store.Repos().Models.UpsertRealModel(ctx, store.RealModel{
+		UpstreamID: up2, UpstreamModelID: "llama3",
+	}); err != nil {
+		t.Fatalf("建无凭据真实模型失败: %v", err)
+	}
+	tgt2, err := a.targetOf()(upstream.CallCandidate{UpstreamModelID: "llama3"})
+	if err != nil || tgt2.SecretRef != "" {
+		t.Fatalf("无凭据上游 SecretRef 应为空: %v %+v", err, tgt2)
+	}
+}
