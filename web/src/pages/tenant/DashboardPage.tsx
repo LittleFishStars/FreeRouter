@@ -132,9 +132,17 @@ function fillBuckets(
   const out: { t: number; inTok: number; outTok: number; requests: number }[] = []
   const fromSec = Math.floor(from.getTime() / 1000)
   const toSec = Math.floor(to.getTime() / 1000)
-  // 桶起点与服务端同法：当地偏移后的整除（服务端已把 tz 折进 start）。
   const step = bucketSeconds
-  const first = Math.floor((fromSec + 3600) / step) * step // hour 桶按整点对齐
+  // 桶刻度从 fromSec 直接起步：from 恒为当地零点（startOfDay 产出）。服务端
+  // 已把桶起点折回真实时刻（handler 减回 tz，2026-10-31 修复），因此当地
+  // 零点 / 整点的真实 epoch 就是两边的公共对齐点，逐 step 步进即可命中。
+  // ⚠️ 旧实现 `(fromSec + 3600) / step` 再 floor 在非 UTC 时区会把**按天**轴
+  // 刻度漂到每天 UTC 零点（北京 08:00）——加上服务端未折回 tz 的同因，
+  // 每一格 byStart.get 都落空或含数据的最后一桶被裁掉，图表平零而 KPI
+  // （不分桶）正常（2026-10-31 实测）。from 已对齐，任何再 floor 只会漂走。
+  // 中国无夏令时，恒定 step 步进在日界处不会错位；有夏令时的时区如需
+  // 精确，再按当地零点逐日生成刻度。
+  const first = fromSec
   for (let t = first; t <= toSec; t += step) {
     const row = byStart.get(t)
     out.push({

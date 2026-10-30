@@ -429,8 +429,14 @@ func (s *Server) HandleUsageStats(deps *TenantUsageDeps) http.HandlerFunc {
 		}
 		buckets := make([]map[string]any, 0, len(stats.Buckets))
 		for _, b := range stats.Buckets {
+			// ⚠️ Store 返回的 Start 是**平移尺度**的裸值（(ts+tz)/step*step，见
+			// repo_tenant.go 的注释）——它等于「当地桶起点 + tz」，直接格式化会把
+			// 每个桶起点推后 tz（北京用户拿到 08:00 而不是 00:00）。这里必须减回
+			// tz 折成真实时刻，前端铺轴才与服务端桶对得上（2026-10-31 图表平零
+			// 复盘的两处错之一：前端刻度错位 + 本处未折回，两边凑成了一个
+			// 「数值恰好命中、但含数据的最后一桶被 to 裁掉」的复合缺陷）。
 			buckets = append(buckets, map[string]any{
-				"start": unixRFC3339(b.Start), "requests": b.Requests,
+				"start": unixRFC3339(b.Start - tzOffset), "requests": b.Requests,
 				"failed": b.Failed, "input_tokens": b.InTokens, "output_tokens": b.OutTokens,
 			})
 		}
