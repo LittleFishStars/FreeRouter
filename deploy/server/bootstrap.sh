@@ -21,6 +21,7 @@ KIT="${1:?用法: bootstrap.sh /path/to/deploy-kit}"
 DEV_ROOT=/root/fr-deploy/fr-deploy/usr/lib/node_modules/@deepseek-ai/dsh
 HUB_SRC=/root/fr-deploy/fr-deploy/home/ylxc/.local/share/dsh/profiles/web/node_modules/dsh-providers-hub
 HUB_DST=/opt/freerouter/hub/dsh-providers-hub
+NIX_NODE=/nix/store/lfaydgacdyngci7p60s8wwvgdm74fjkx-nodejs-24.19.0/bin/node
 RUNNER_USER=ghrunner
 
 echo "== 0. 前置自检 =="
