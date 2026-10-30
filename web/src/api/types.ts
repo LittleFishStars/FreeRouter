@@ -284,6 +284,12 @@ export interface AdminSourceCredential {
   balance_checked_at?: number
   /** 非零分项的压缩串（hover 明细） */
   balance_detail?: string
+  /** 签到展示串（如 "+200 积分" / 失败原因）；空 = 从未尝试 */
+  checkin_text?: string
+  /** 最近一次能证明今天已处理的 UTC+8 日期（YYYY-MM-DD）；空 = 今天还没签上 */
+  checkin_date?: string
+  /** 最近一次尝试时刻（epoch 秒） */
+  checkin_at?: number
 }
 
 /** GET /api/admin/model-sources 的响应体（不是 ListEnvelope：没有 data 信封）。 */

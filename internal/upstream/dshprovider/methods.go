@@ -27,6 +27,8 @@ const (
 	methodLoginSubmit  = "login.submit"
 	methodLoginCancel  = "login.cancel"
 	methodCreditsQuery = "credits.query"
+	// methodCreditsClaim 是每日签到/领取（上游业务写，不写凭据存储；见 CreditsClaim）。
+	methodCreditsClaim = "credits.claim"
 	// methodShutdown 是关闭顺序里的那条特殊帧（04-sidecar.md 5.4 步骤 4）。
 	// 它不是普通业务方法，故不在 2.2 的清单里；sidecar 收到后应清理会话并自行退出。
 	methodShutdown = "shutdown"
@@ -42,7 +44,7 @@ func SupportedMethods() []string {
 		methodHealth, methodProviders, methodModels,
 		methodCredResolve, methodCredDescribe,
 		methodLoginStart, methodLoginPoll, methodLoginSubmit, methodLoginCancel,
-		methodCreditsQuery,
+		methodCreditsQuery, methodCreditsClaim,
 	}
 }
 
@@ -402,6 +404,60 @@ func (c *Client) CreditsQuery(ctx context.Context, provider, credentialRef strin
 	}
 	var out Credits
 	if err := c.do(ctx, methodCreditsQuery, creditsParams{Provider: provider, CredentialRef: credentialRef}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// —— 签到 ——
+//
+// 与余额查询同源不同向：credits.query 只读，credits.claim 是**上游业务写**
+//（签到领取积分）。它不碰凭据存储（红线①不变）：领取可能轮换出的新凭据
+// 由应答 refreshed_credential 带回，写回密文是调用方（app 桥）的责任。
+
+// claimParams 对应 credits.claim 的入参。credential 用 any：反代型是 JSON
+// 对象，API 型是裸 key 字符串——与 credits.query 的 sidecar 侧二分一致，
+// 只是 Go 侧这里拿到的是已解密的明文（与 oauth.exchange 同一条 stdio 边界）。
+type claimParams struct {
+	Provider   string `json:"provider"`
+	Credential any    `json:"credential"`
+}
+
+// ClaimOutcome 是一次领取的归一结果，形状对齐 hub 的 ClaimOutcome。
+// Kind ∈ claimed / already-claimed / inactive / failed；未知值 sidecar 已兜底成
+// failed，这里再保一道：归一逻辑在 sidecar（normalizeClaimOutcome），Go 侧
+// 只负责展示与记账。
+type ClaimOutcome struct {
+	Kind        string   `json:"kind"`
+	Credit      *float64 `json:"credit"`       // 仅 claimed：领取到的数额
+	Unit        string   `json:"unit"`         // "credit" / "token"，缺省按积分
+	Message     string   `json:"message"`      // already-claimed / inactive / failed 的原因
+	Code        *int     `json:"code"`         // 仅 failed：业务码（-1 = 本地归一）
+	CoversToday *bool    `json:"covers_today"` // false = 渠道自标「看到的是上一轮痕迹」
+}
+
+// CreditsClaimResult 对应 credits.claim 的返回。OK 恒 true（false 走 error 路径）；
+// Unsupported 表示「该渠道没有签到能力」（不发上游请求就判定的那些），
+// 调度器据此「记一次、当天不再试」，与失败（退避重试）区分。
+type CreditsClaimResult struct {
+	OK                  bool           `json:"ok"`
+	Outcome             *ClaimOutcome  `json:"outcome"`
+	Unsupported         bool           `json:"unsupported"`
+	RefreshedCredential map[string]any `json:"refreshed_credential"`
+}
+
+// CreditsClaim 对一个已解密凭据执行每日签到/领取。
+// 领取可能带预检 + 领取两趟公网请求（还可能撞抽奖/重试），超时给到 60s
+// （04-sidecar.md 5.3 的 credits 行按方法类单列）。
+func (c *Client) CreditsClaim(ctx context.Context, provider string, credential any) (*CreditsClaimResult, error) {
+	if provider == "" {
+		return nil, &Error{Code: CodeBadRequest, Method: methodCreditsClaim, Message: "provider 不能为空"}
+	}
+	if credential == nil {
+		return nil, &Error{Code: CodeBadRequest, Method: methodCreditsClaim, Message: "credential 不能为空"}
+	}
+	var out CreditsClaimResult
+	if err := c.do(ctx, methodCreditsClaim, claimParams{Provider: provider, Credential: credential}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

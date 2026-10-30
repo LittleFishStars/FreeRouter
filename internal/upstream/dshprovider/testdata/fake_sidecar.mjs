@@ -200,6 +200,16 @@ function handleLine(line) {
         }),
       );
 
+    case 'credits.claim':
+      // 签到桩：恒回「今天已签到」——契约只验形状（outcome 信封 + 轮换字段
+      // 可选），不验渠道语义；unsupported/failed 分支由 app 层单测覆盖。
+      return send(
+        okFrame(req, {
+          ok: true,
+          outcome: { kind: 'already-claimed', message: '今天已签到' },
+        }),
+      );
+
     case 'shutdown':
       // 回包后让事件循环自然排空再退出（直接 process.exit 会截断 stdout）。
       return send(okFrame(req, {}), () => setImmediate(() => process.exit(0)));

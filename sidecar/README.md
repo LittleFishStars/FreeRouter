@@ -60,7 +60,8 @@
 > `tmp/CONTRACT-contribution-v2.md` §7 从 sidecar 与注册表里删除——那种凭据形态改由主进程的
 > **内置 API 目录 + 直连出站**承担（少一层进程，也少一处明文 key 落点）。因此 sidecar 现在
 > 不再提供任何「粘贴 Key 就能跑」的能力，`models.list` / `infer.stream` 两条路都如实报码。
-| `credits.query` | **E_NOT_IMPLEMENTED** | 余额端点（如 `codearts-credits.js`）要的是账号对象，同属「需要 DSH 运行态」那一类 |
+| `credits.query` | **可用（2026-10-28 起）** | 直接复用 hub `provider-credits.js` 的 17 家分发器（deps shim 装 hub lib 实体）；凭据明文由主进程解密后经 stdio 传入，只读查询 |
+| `credits.claim` | **可用（2026-10-31 起）** | 每日签到/领取积分，同一份分发表（`claim`/`claimStatus`/`precheckStatus`/`claimUnavailableReason` 全在条目上）；**上游业务写，不写凭据存储**——轮换出的新凭据放 `refreshed_credential` 随应答上行，写回密文是 Go 桥的责任 |
 | `login.start` 的真实登录流 | **E_NOT_IMPLEMENTED**（保持原状） | 登录流是 cordis 插件 `apply(ctx)` 里注册的，走的是第 1.1 节被否掉的那条路；当前只提供会话簿记与 `expiresAt` 自清理 |
 
 > 能力缺失一律**显式报码**，不做「看起来能用」的降级——这是 code-review 对 `secretSource`

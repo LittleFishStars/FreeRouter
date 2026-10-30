@@ -502,10 +502,14 @@ func (a *App) buildAdminDeps() *httpapi.AdminDeps {
 		// 余额刷新（2026-10-28）：需要 sidecar（余额在上游侧）——与
 		// UpstreamTest 同一注入理由；漏装时 need() 会回 404（接口不存在）。
 		BalanceRefresh: &balanceRefreshBridge{b: b, sidecar: a.sidecar},
-		UpstreamTest:   &upstreamTesterBridge{store: a.store, sidecar: a.sidecar, cfg: a.cfg, httpc: &http.Client{Timeout: 3 * time.Second}},
-		SettingsView:   &settingsBridge{b: b, cfg: a.cfg},
-		SettingsPatch:  &settingsBridge{b: b, cfg: a.cfg},
-		IPCheck:        &settingsBridge{b: b, cfg: a.cfg},
+		// 签到（2026-10-31）：与余额刷新同源（解密凭据 → sidecar → 落库），
+		// 同一注入理由；调度器本体在 startCheckin，这里只接端点触发面。
+		CheckinRun:       &checkinBridge{b: b, sidecar: a.sidecar},
+		CheckinScheduler: &checkinBridge{b: b, sidecar: a.sidecar},
+		UpstreamTest:     &upstreamTesterBridge{store: a.store, sidecar: a.sidecar, cfg: a.cfg, httpc: &http.Client{Timeout: 3 * time.Second}},
+		SettingsView:     &settingsBridge{b: b, cfg: a.cfg},
+		SettingsPatch:    &settingsBridge{b: b, cfg: a.cfg},
+		IPCheck:          &settingsBridge{b: b, cfg: a.cfg},
 	}
 }
 

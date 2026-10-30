@@ -150,7 +150,10 @@ func Setup(ctx context.Context, opts Options) (*App, error) {
 	// 余额探测后台任务（balance 排序键数据源）。必须放在 startModelRefresh
 	// 之后：relay 上游由自举写入，先刷新才有 provider 可探测。
 	a.startBalanceProbe(bgCtx)
-
+	// 定时签到（2026-10-31）：放在余额探测之后——两者都依赖 sidecar，且
+	// 签到自身带 30s 启动延迟，不会抢装配窗口的资源。管理面端点在
+	// buildAdminDeps 里另建一个无状态的 checkinBridge（两者只共享落库）。
+	a.startCheckin(bgCtx)
 	// 第 6 步：HTTP（装配中间件链 + 路由 + v1 面板注入）。
 	a.server = a.buildServer()
 	return a, nil
@@ -166,6 +169,12 @@ func (a *App) sidecarOptions() dshprovider.Options {
 		HubPath:        a.cfg.Sidecar.HubPath,
 		StartupTimeout: a.cfg.Sidecar.StartupTimeout.Std(),
 		Logger:         a.log,
+		Timeouts: map[string]time.Duration{
+			// credits.claim：预检 + 领取两趟公网请求（内部还可能重试），
+			// 15s 默认值不够；与 app.checkin 的 CheckinCallTimeout 同值
+			//（04-sidecar.md 5.3 的 credits.claim 行）。
+			"credits.claim": CheckinCallTimeout,
+		},
 	}
 }
 

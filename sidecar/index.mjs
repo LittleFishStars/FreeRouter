@@ -23,7 +23,9 @@
 //     （modelscope / opencode 已按契约 v2 §7 移除），OAuth 型需要 DSH 账号池，
 //     两条路都返回结构化 E_NOT_IMPLEMENTED；apiKey 那种「粘贴 Key」的贡献形态
 //     由主进程的内置目录 + 直连出站承担，不再经过 sidecar。
-//   * credits.query：各家余额/积分查询（providers/credits.mjs，raccoon/loomy/minimax）。
+//   * credits.query：各家余额/积分查询（providers/credits.mjs，分发复用 hub）。
+//   * credits.claim：每日签到/领取积分（同上分发表；不写凭据存储——轮换新值经
+//     refreshed_credential 随应答上行，由 Go 桥写回密文，与静默续期同通道）。
 // 任何路径的失败都归一成结构化错误，进程不崩（5.1「挂横幅继续」依赖这点）。
 
 import process from 'node:process';
@@ -342,6 +344,22 @@ const METHODS = {
     } catch (e) {
       if (e instanceof SidecarError) throw e;
       throw new SidecarError('E_INTERNAL', `余额查询失败：${String(e && e.message ? e.message : e)}`, false);
+    }
+  },
+
+  // 每日签到/领取积分（写上游业务，**不写凭据存储**）：管理面「签到」按钮与
+  // 定时签到调度器调这里。credential 同 credits.query 的二分（反代型 JSON
+  // 对象 / API 型裸 key——后者直接报 unsupported，没有签到活动）。
+  // 轮换出的新凭据（autoclaw 领取可能换 refresh_token）放进 refreshed_credential
+  // 随应答上行，由 Go 桥原地写回密文 —— sidecar 自己不落盘（红线①）。
+  'credits.claim': async ({ provider, credential }) => {
+    if (!provider) throw new SidecarError('E_BAD_REQUEST', 'provider 不能为空');
+    if (!credential) throw new SidecarError('E_BAD_REQUEST', 'credential 不能为空');
+    try {
+      return await credits.claimCreditBalance(provider, credential);
+    } catch (e) {
+      if (e instanceof SidecarError) throw e;
+      throw new SidecarError('E_INTERNAL', `签到失败：${String(e && e.message ? e.message : e)}`, false);
     }
   },
 

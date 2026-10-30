@@ -85,6 +85,12 @@ type AdminDeps struct {
 	// BalanceRefresh 是凭据余额刷新触发器（POST /credentials/{id}/balance-refresh）。
 	// 可空：nil = 未装配（sidecar 不在/不支持），端点按惯例 404 not_found。
 	BalanceRefresh AdminCredentialBalanceRefresher
+	// CheckinRun 是单凭据手动签到触发器（POST /credentials/{id}/checkin）。
+	// 可空：nil = 未装配（sidecar 不在），端点按惯例 404 not_found。
+	CheckinRun AdminCredentialCheckinRunner
+	// CheckinScheduler 是整轮签到与自动签到控制（/checkin/run|status|enabled）。
+	// 可空：nil = 未装配，同上。
+	CheckinScheduler AdminCheckinScheduler
 	// ModelCreate 是手工登记真实模型（POST /real-models，凭据池改版 2026-10-26
 	// 的「添加模型」）。可空：nil = 该能力未装配，端点按既有惯例 404 not_found。
 	ModelCreate AdminRealModelCreator
@@ -697,6 +703,12 @@ type AdminSourceCredential struct {
 	// 或错误说明），空 = 从未查询；checkedAt 是该串的落库时刻（epoch 秒）。
 	BalanceText  string `json:"balance_text,omitempty"`
 	BalanceCheck *int64 `json:"balance_checked_at,omitempty"`
+	// 签到（2026-10-31 定时签到）：text 是格式化好的展示串（如 "+200 积分"/失败原因）；
+	// date 是最近一次能证明今天已处理的 UTC+8 日期（空 = 还没签上）；
+	// at 是最近一次尝试时刻（epoch 秒，前端不做退避推算，只展示）。
+	CheckinText string `json:"checkin_text,omitempty"`
+	CheckinDate string `json:"checkin_date,omitempty"`
+	CheckinAt   *int64 `json:"checkin_at,omitempty"`
 }
 
 // AdminModelSourceModel 是右栏的一张模型卡。
@@ -951,6 +963,69 @@ type CredentialBalanceResult struct {
 	BalanceText string   `json:"balance_text,omitempty"`
 	// BalanceDetail 是非零分项的压缩串（hover 详情）；徽标正文永远是短文本。
 	BalanceDetail string `json:"balance_detail,omitempty"`
+}
+
+// AdminCredentialCheckinRunner 是单凭据手动签到的窄边界（2026-10-31）。
+// 与 BalanceRefresh 同理：实现需要 sidecar（签到分发在上游侧），独立成接口。
+type AdminCredentialCheckinRunner interface {
+	// RunCredentialCheckin 对一条凭据执行签到并落库。上游拒绝/网络失败不是
+	// error：返回 Kind=failed 的结果（可重试）；凭据不存在/未装配才是 error。
+	// 手动签到不受开关与到期判定约束（显式操作永远放行，hub 同款语义）。
+	RunCredentialCheckin(ctx context.Context, id string) (*CheckinClaimResult, error)
+}
+
+// AdminCheckinScheduler 是整轮签到与自动签到控制的窄边界（2026-10-31）。
+type AdminCheckinScheduler interface {
+	// RunCheckinRound 立刻跑一轮（只签当前到期的凭据；单失败不中断）。
+	RunCheckinRound(ctx context.Context) (*CheckinRoundResult, error)
+	// CheckinState 读自动签到状态（开关 + 最近一轮 + 到期数）。
+	CheckinState(ctx context.Context) (*CheckinState, error)
+	// SetCheckinEnabled 写自动签到开关（业务写与审计写同事务在桥内）。
+	SetCheckinEnabled(ctx context.Context, enabled bool, audit AdminAuditEntry) error
+}
+
+// CheckinClaimResult 是一次签到的结果（与 CredentialBalanceResult 同款约定：
+// json tag 显式小写；上游拒绝不是 5xx，200 + ok=false + message）。
+type CheckinClaimResult struct {
+	OK bool `json:"ok"`
+	// Kind ∈ claimed / already-claimed / inactive / failed（hub ClaimOutcome 口径）。
+	Kind    string   `json:"kind"`
+	Credit  *float64 `json:"credit,omitempty"` // 仅 claimed：领取到的数额
+	Unit    string   `json:"unit,omitempty"`   // credit / token，缺省按积分
+	Message string   `json:"message,omitempty"`
+	// Text 是给徽标/状态行的展示串（Go 侧格式化，如 "+200 积分"）。
+	Text string `json:"text,omitempty"`
+	// Unsupported = 该渠道没有签到能力（不发上游请求就判定的那些），
+	// 调度器据此记上当天日期不再重试。
+	Unsupported bool `json:"unsupported,omitempty"`
+	// CoversToday = 这次结果能证明「今天已处理」（claimed/already-claimed 且
+	// 渠道未自标 covers_today=false）。仅内部记账与状态展示用。
+	CoversToday bool `json:"covers_today,omitempty"`
+}
+
+// CheckinRoundResult 是一轮签到的汇总（手动 /checkin/run 与调度器共用）。
+type CheckinRoundResult struct {
+	Attempted      int    `json:"attempted"`
+	Claimed        int    `json:"claimed"`
+	AlreadyClaimed int    `json:"already_claimed"`
+	Inactive       int    `json:"inactive"`
+	Failed         int    `json:"failed"`
+	Unsupported    int    `json:"unsupported"`
+	Summary        string `json:"summary"`
+}
+
+// CheckinState 是自动签到的状态视图（GET /checkin/status）。
+type CheckinState struct {
+	// Enabled 是自动签到开关（缺键 = 开，hub 口径）。
+	Enabled bool `json:"enabled"`
+	// LastRunDate 是最近一轮**完成**的 UTC+8 日期（完成 = 有结果能证明今天
+	// 已处理；全失败的一轮不写 → 下轮重试，这里也就看不到日期）。
+	LastRunDate string `json:"last_run_date,omitempty"`
+	LastRunAt   int64  `json:"last_run_at,omitempty"`
+	// LastRunResult 是最近一轮的中文摘要（含失败轮——排查用）。
+	LastRunResult string `json:"last_run_result,omitempty"`
+	// DueCount 是当前到期未签的凭据数（调度器下一轮会处理的量）。
+	DueCount int `json:"due_count"`
 }
 
 // ---------------------------------------------------------------------------

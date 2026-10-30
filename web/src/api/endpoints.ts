@@ -551,6 +551,62 @@ export function getCredential(id: string) {
   return getOne<AdminCredential>(`${PATHS.adminCredentials}/${seg(id)}`)
 }
 
+// ── 定时签到领积分（2026-10-31，参考 dsh-providers-hub auto-checkin） ──────
+
+/** 一次签到的结果（与 CredentialBalanceResult 同款：上游拒绝不是 5xx）。 */
+export interface CheckinClaimResult {
+  ok: boolean
+  /** claimed / already-claimed / inactive / failed */
+  kind: string
+  credit?: number
+  unit?: string
+  message?: string
+  /** 展示串（如 "+200 积分"） */
+  text?: string
+  /** 该渠道没有签到能力（记一次，当天不再试） */
+  unsupported?: boolean
+}
+
+/** 一轮签到的汇总。 */
+export interface CheckinRoundResult {
+  attempted: number
+  claimed: number
+  already_claimed: number
+  inactive: number
+  failed: number
+  unsupported: number
+  summary: string
+}
+
+/** 自动签到状态视图。 */
+export interface CheckinState {
+  enabled: boolean
+  last_run_date?: string
+  last_run_at?: number
+  last_run_result?: string
+  due_count: number
+}
+
+/** POST /api/admin/credentials/{id}/checkin —— 手动签到一条凭据（显式操作，不受开关/到期约束）。 */
+export function checkinCredential(id: string) {
+  return postWrite<CheckinClaimResult>(`${PATHS.adminCredentials}/${seg(id)}/checkin`)
+}
+
+/** POST /api/admin/checkin/run —— 手动跑一轮（只签当前到期的凭据）。 */
+export function runCheckinRound() {
+  return postWrite<CheckinRoundResult>(`${PATHS.adminCheckin}/run`)
+}
+
+/** GET /api/admin/checkin/status —— 自动签到状态。 */
+export function getCheckinStatus() {
+  return getOne<CheckinState>(`${PATHS.adminCheckin}/status`)
+}
+
+/** PUT /api/admin/checkin/enabled —— 自动签到开关。 */
+export function setCheckinEnabled(enabled: boolean) {
+  return putWrite<{ enabled: boolean }>(`${PATHS.adminCheckin}/enabled`, { enabled })
+}
+
 /** POST /api/admin/credentials/{id}/balance-refresh —— 刷新一条凭据的余额（2026-10-28）。 */
 export function refreshCredentialBalance(id: string) {
   return postWrite<CredentialBalanceResult>(`${PATHS.adminCredentials}/${seg(id)}/balance-refresh`)

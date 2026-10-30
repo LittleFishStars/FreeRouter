@@ -996,6 +996,12 @@ func sourceCredentialsOf(upstreamID string, rows []store.UpstreamCredentialRow) 
 			ts := r.BalanceCheckedAt
 			item.BalanceCheck = &ts
 		}
+		item.CheckinText = r.CheckinText
+		item.CheckinDate = r.CheckinDate
+		if r.CheckinAt > 0 {
+			ts := r.CheckinAt
+			item.CheckinAt = &ts
+		}
 		out = append(out, item)
 	}
 	return out

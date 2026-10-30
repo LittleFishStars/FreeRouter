@@ -198,6 +198,9 @@ func TestContractRedlineNoCredentialWriteMethods(t *testing.T) {
 		"credentials.resolve": true, "credentials.describe": true,
 		"login.start": true, "login.poll": true, "login.submit": true, "login.cancel": true,
 		"credits.query": true,
+		// credits.claim 是上游业务写（签到领取），不写凭据存储——红线判据是
+		// 「不碰 credentials.*/state.*」，业务端点不在禁区（2026-10-31）。
+		"credits.claim": true,
 	}
 	for _, m := range SupportedMethods() {
 		if !ok[m] {

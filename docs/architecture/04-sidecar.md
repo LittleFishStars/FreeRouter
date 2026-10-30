@@ -130,6 +130,23 @@ credits.query({ provider: string, credentialRef: string }) -> {
   unit?: string,
   raw?: unknown     // 上游原始响应的子集，仅供排障
 }
+
+// —— 签到（2026-10-31；上游业务写，不写凭据存储——红线①不变） ——
+// credential 是已解密明文（与 credits.query 的 Go 侧二分一致：反代型 JSON
+// 对象 / API 型裸 key——后者直接回 unsupported，没有签到活动）。
+credits.claim({ provider: string, credential: unknown }) -> {
+  ok: true,
+  outcome: {
+    kind: "claimed" | "already-claimed" | "inactive" | "failed",
+    credit?: number,      // 仅 claimed
+    unit?: string,        // "credit" | "token"，缺省按积分
+    message?: string,     // already-claimed / inactive / failed 的原因
+    code?: number,        // 仅 failed（-1 = 本地归一）
+    covers_today?: boolean // false = 渠道自标「看到的是上一轮痕迹」，不得记「今天已处理」
+  },
+  unsupported?: boolean,  // 渠道没有签到能力（不发上游请求就判定）
+  refreshed_credential?: object  // 领取轮换出的新凭据；写回密文是 Go 桥的责任
+}
 ```
 
 ### 2.3 方法集合的边界（重要）
@@ -281,6 +298,7 @@ credits.query({ provider: string, credentialRef: string }) -> {
 | `health` / `providers.list` | 3s | 纯内存操作 |
 | `credentials.resolve` / `describe` | 5s | 可能触发底层安全存储读取 |
 | `models.list` / `credits.query` | 15s | 可能走公网 |
+| `credits.claim` | 60s | 预检 + 领取两趟公网请求（内部还可能重试） |
 | `login.start` / `login.poll` / `login.submit` | 10s | 轮询会被高频调用，必须快；慢的一方是用户而不是我们 |
 | `login.cancel` | 3s | 只是清理本地会话 |
 

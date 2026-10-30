@@ -121,6 +121,14 @@ type Credential struct {
 	// checkedAt 是该串的落库时刻（UTC 秒，0 = 同上）。
 	BalanceText      string
 	BalanceCheckedAt int64
+	// 签到（2026-10-31 定时签到领积分）：text 由 Go 侧把领取结果格式化成展示串
+	// （如 "+200 积分"）；date 是最近一次**能证明今天已处理**的 UTC+8 日期
+	// （失败/活动未开启留空 ⇒ 调度器按退避重试）；at 是最近一次尝试时刻
+	// （UTC 秒，退避计时的基准）。口径对齐 dsh-providers-hub auto-checkin 的
+	// coversToday 语义，详见迁移 0011 注释。
+	CheckinText string
+	CheckinDate string
+	CheckinAt   int64
 }
 
 // LookupCredential 按 id 读一条凭据（鉴定流水线的输入定位）。
@@ -134,7 +142,8 @@ func (r *ModelRepo) LookupCredential(ctx context.Context, id string) (*Credentia
 
 const credentialColumns = `SELECT id, owner_account_id, provider, external_id, external_label,
        status, login_enabled, verify_status, verify_detail, created_at, last_used_at,
-       COALESCE(balance_text, ''), COALESCE(balance_checked_at, 0)
+       COALESCE(balance_text, ''), COALESCE(balance_checked_at, 0),
+       COALESCE(checkin_text, ''), COALESCE(checkin_date, ''), COALESCE(checkin_at, 0)
   FROM upstream_credentials`
 
 // ListUnverified 列出待鉴定凭据（verify_status = 'unverified'）。
@@ -196,9 +205,11 @@ func scanCredential(sc interface{ Scan(dest ...any) error }) (*Credential, error
 	var lastUsed sql.NullInt64
 	var balance sql.NullString
 	var balanceAt sql.NullInt64
+	var checkinDate sql.NullString
 	err := sc.Scan(&c.ID, &c.OwnerAccountID, &c.Provider, &c.ExternalID, &label,
 		&c.Status, &login, &c.VerifyStatus, &detail, &c.CreatedAt, &lastUsed,
-		&balance, &balanceAt)
+		&balance, &balanceAt,
+		&c.CheckinText, &checkinDate, &c.CheckinAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err // 语义区分交给上层（scanCredentialRow → ErrCredentialNotFound）
@@ -209,6 +220,9 @@ func scanCredential(sc interface{ Scan(dest ...any) error }) (*Credential, error
 	c.LoginEnabled = login == 1
 	c.VerifyDetail = detail.String
 	c.LastUsedAt = lastUsed.Int64
+	c.CheckinDate = checkinDate.String
+	c.BalanceText = balance.String
+	c.BalanceCheckedAt = balanceAt.Int64
 	return &c, nil
 }
 
@@ -352,6 +366,67 @@ func (r *ModelRepo) UpdateCredentialBalance(ctx context.Context, id, text string
 		return ErrCredentialNotFound
 	}
 	return nil
+}
+
+// UpdateCredentialCheckin 落一次签到结果（定时签到/手动签到共用）。
+//
+// date 的语义刻意不对称：空串 = 这次尝试**没能证明今天已处理**（失败、活动
+// 未开启）——保留既有日期不动，昨天的成功不会被今天的失败抹掉，调度器会
+// 继续把这条当「今天还没签」重试；非空（claimed / already-claimed / 不支持）
+// 才覆盖。口径与调度器的 coversToday 判定成对，见 app 包 checkin.go。
+func (r *ModelRepo) UpdateCredentialCheckin(ctx context.Context, id, text, date string, at int64) error {
+	var err error
+	if date == "" {
+		_, err = r.db.ExecContext(ctx,
+			`UPDATE upstream_credentials SET checkin_text = ?, checkin_at = ? WHERE id = ?`,
+			text, at, id)
+	} else {
+		_, err = r.db.ExecContext(ctx,
+			`UPDATE upstream_credentials SET checkin_text = ?, checkin_date = ?, checkin_at = ? WHERE id = ?`,
+			text, date, at, id)
+	}
+	if err != nil {
+		return fmt.Errorf("store: 写凭据签到结果失败: %w", err)
+	}
+	return nil
+}
+
+// CheckinDueRow 是调度器眼里的一条待签到凭据（窄视图：不做全列扫描）。
+type CheckinDueRow struct {
+	ID          string
+	Provider    string
+	Status      string
+	CheckinDate string
+	CheckinAt   int64
+}
+
+// ListCheckinCandidates 列出**全部**凭据的签到视图（调度器的取数面）。
+//
+// 为什么不筛「支持签到的 provider」：能力判定在 sidecar（调用即判定），
+// 这里再维护一份能力名单必然漂移——hub 的 auto-checkin 在同一问题上
+// 记过成训（「不建第二份能力名单」）。不支持的渠道会在第一次尝试后
+// 被记上当天日期，之后不再重试。
+// 为什么不筛状态：签到与「凭据是否可被路由调用」无关（hub 同款口径——
+// 停用的账号同样有当日积分可领）；失效凭据领不到会自然失败退避，
+// 由 checkin_text 向管理员展示原因。
+func (r *ModelRepo) ListCheckinCandidates(ctx context.Context) ([]CheckinDueRow, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, provider, status, COALESCE(checkin_date, ''), COALESCE(checkin_at, 0)
+		   FROM upstream_credentials
+		  ORDER BY id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列签到候选失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []CheckinDueRow
+	for rows.Next() {
+		var row CheckinDueRow
+		if err := rows.Scan(&row.ID, &row.Provider, &row.Status, &row.CheckinDate, &row.CheckinAt); err != nil {
+			return nil, fmt.Errorf("store: 扫描签到候选失败: %w", err)
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }
 
 // ================================================================ 凭据读筛选与状态写入（管理面）

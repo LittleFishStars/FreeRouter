@@ -70,7 +70,12 @@ func (s *Server) mountAdminOps(r chi.Router, deps *AdminDeps) {
 	r.Post("/credentials/{id}/ban", s.handleAdminCredentialBan(deps))
 	r.Post("/credentials/{id}/notify", s.handleAdminCredentialNotify(deps))
 	r.Post("/credentials/{id}/balance-refresh", s.handleAdminCredentialBalanceRefresh(deps))
+	r.Post("/credentials/{id}/checkin", s.handleAdminCredentialCheckin(deps))
 
+	// 签到：手动整轮 / 状态 / 开关（调度器本体在 app 包，这里只是触发器）
+	r.Post("/checkin/run", s.handleAdminCheckinRun(deps))
+	r.Get("/checkin/status", s.handleAdminCheckinStatus(deps))
+	r.Put("/checkin/enabled", s.handleAdminCheckinEnabled(deps))
 	// 鉴定
 	r.Get("/verifications", s.handleAdminVerificationsList(deps))
 	r.Get("/verifications/{id}", s.handleAdminVerificationDetail(deps))
@@ -508,6 +513,83 @@ func (s *Server) handleAdminCredentialBalanceRefresh(deps *AdminDeps) http.Handl
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": res})
+	}
+}
+
+// handleAdminCredentialCheckin POST /api/admin/credentials/{id}/checkin。
+//
+// 手动单签：显式操作永远放行（不受开关与到期判定约束，hub 同款语义）。
+// 上游拒绝/网络失败不是 5xx：200 + ok=false + kind/message（与余额刷新同口径）。
+func (s *Server) handleAdminCredentialCheckin(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "签到", deps.CheckinRun != nil) {
+			return
+		}
+		id, ok := adminVerificationID(w, r)
+		if !ok {
+			return
+		}
+		res, err := deps.CheckinRun.RunCredentialCheckin(r.Context(), id)
+		if err != nil {
+			mapAdminError(w, err, "签到")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": res})
+	}
+}
+
+// handleAdminCheckinRun POST /api/admin/checkin/run —— 手动跑一轮（只签当前到期的）。
+func (s *Server) handleAdminCheckinRun(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "签到", deps.CheckinScheduler != nil) {
+			return
+		}
+		res, err := deps.CheckinScheduler.RunCheckinRound(r.Context())
+		if err != nil {
+			mapAdminError(w, err, "签到")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": res})
+	}
+}
+
+// handleAdminCheckinStatus GET /api/admin/checkin/status —— 自动签到状态视图。
+func (s *Server) handleAdminCheckinStatus(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "签到", deps.CheckinScheduler != nil) {
+			return
+		}
+		st, err := deps.CheckinScheduler.CheckinState(r.Context())
+		if err != nil {
+			mapAdminError(w, err, "签到状态")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": st})
+	}
+}
+
+// handleAdminCheckinEnabled PUT /api/admin/checkin/enabled —— 自动签到开关。
+func (s *Server) handleAdminCheckinEnabled(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "签到", deps.CheckinScheduler != nil) {
+			return
+		}
+		p, ok := adminActor(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			Enabled bool `json:"enabled"`
+		}
+		if _, ok := adminDecodeBoth(w, r, &body); !ok {
+			return
+		}
+		audit := adminBaseAudit(p, r, "checkin.enabled", "checkin:auto", "ok")
+		if err := deps.CheckinScheduler.SetCheckinEnabled(r.Context(), body.Enabled, audit); err != nil {
+			mapAdminError(w, err, "签到开关")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"enabled": body.Enabled}})
 	}
 }
 

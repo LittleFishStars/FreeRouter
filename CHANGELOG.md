@@ -11,6 +11,26 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **定时签到领积分**（2026-10-31，参考 dsh-providers-hub 的 auto-checkin 与
+  `credits.claimAll` 骨架）：主进程内置调度器（启动延迟 30s + 每 10min 到期检查），
+  逐凭据经 sidecar 新方法 `credits.claim` 分发到 hub 各家的签到实现（claim /
+  claimStatus 预检 / claimUnavailableReason「调用即判定」），落库到凭据行新增的
+  `checkin_text / checkin_date / checkin_at` 三列（迁移 0011）。
+  - 记账口径照抄 hub：UTC+8 日界算术平移；**「能证明今天已处理」才记日期**
+    （失败/活动未开启留空按 30min 退避重试，渠道自标 `covers_today=false` 的不算）；
+    **不建第二份能力名单**（不支持的渠道首次尝试即记上当天日期，不再重试）。
+  - 与 hub 的差异：hub 是「每日首次启动跑一轮」，本服务常驻——改为周期 tick +
+    按凭据到期判定，日界一过全部重新到期，当天中途新贡献的凭据也能被覆盖。
+  - 自动签到开关默认**打开**（显式 false 才算关，hub 同款口径）；
+    管理端点 `POST /api/admin/credentials/{id}/checkin`（手动单签，显式操作
+    不受开关/到期约束）、`POST /api/admin/checkin/run`、`GET /api/admin/checkin/status`、
+    `PUT /api/admin/checkin/enabled`；凭据池页新增签到徽标/按钮与全池状态条。
+  - 领取可能轮换凭据（autoclaw 的 refresh_token）：新值经 `refreshed_credential`
+    随应答上行，由 Go 桥写回密文——与余额查询的静默续期同一条通道，sidecar
+    依旧不落盘（红线①）。
+
 ### 变更
 
 - **session 形态授权（扫码/设备码/短信）的轮询死锁修复**（2026-10-27 用户报告：

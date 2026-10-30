@@ -55,6 +55,7 @@ export const PATHS = {
   adminAbstractModels: '/api/admin/abstract-models',
   adminUpstreams: '/api/admin/upstreams',
   adminCredentials: '/api/admin/credentials',
+  adminCheckin: '/api/admin/checkin',
   adminVerifications: '/api/admin/verifications',
   adminAudit: '/api/admin/audit',
   adminSettings: '/api/admin/settings',

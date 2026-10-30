@@ -12,15 +12,20 @@
 // 「查不到」与「失败」分开：上游没报余额 → ok:true + total:null；网络/鉴权
 // 失败 → ok:false + error（可重试）。
 //
-// ⚠️ 动态 import 的时机：shim 就绪（loadDeps）之后才解析得了——credits.query
-// 都在 OAuth 装配完成后才会被调（管理面按钮），时序天然满足；缓存首次结果。
+// ⚠️ 动态 import 的时机：shim 就绪（loadDeps）之后才解析得了。旧注释说
+// 「credits.query 都在 OAuth 装配完成后才会被调，时序天然满足」——**credits.claim
+// 打破了这条**：定时签到在启动后 30 秒就跑，早于任何 OAuth 流程。故 distributor()
+// 里显式补装一次 getDeps()（幂等，已装过是零开销内存读），不再赌调用时序。
 
+import * as hub from '../hub.mjs'
 let providerCredits = null
 
 async function distributor() {
   // 只缓存成功；失败可重试——首次查询可能早于 shim 就绪（loadDeps 懒加载），
   // 永久缓存失败会让之后每一次都挂。
   if (providerCredits) return providerCredits
+  // 先把 B 层依赖的解析钩子装上（hub.mjs 同款约定：调用可能先于 health 到达）。
+  await hub.getDeps()
   const mod = await import('dsh-providers-hub/lib/provider-credits.js')
   providerCredits = mod.createProviderCredits()
   return providerCredits
@@ -396,5 +401,140 @@ export async function balanceSupportedProviders() {
     return Object.keys(await distributor())
   } catch {
     return []
+  }
+}
+
+// ── 每日签到/领取（写上游业务的积分活动） ────────────────────────────
+//
+// 参考实现：dsh-providers-hub 的 credits.claimAll（jet-hub-rpc.js 的
+// collectClaimResults 骨架）。分发仍走 createProviderCredits() 这一份表 ——
+// claim / claimStatus / precheckStatus / claimUnavailableReason 全登记在条目上，
+// 另抄一份能力名单必然漂移（hub 在 auto-checkin 里记过同一条成训）。
+//
+// 与 hub 骨架的三处差异（sidecar 没有账号池，逐条注明为什么安全）：
+// - entry.id：用「provider:凭据内容指纹」——只作 trae 设备指纹代次与
+//   minimaxintl 按账号 fetcher 的**内存键**；进程重启即失，trae 的代次回落 0
+//   后按 credential.uid 确定性重派生（trae-credits 的设备身份设计），不丢稳定性。
+// - call.accountPool：trae 需要的代次读写 —— 进程内 Map 桩（见上）。
+// - call.persistCredential：autoclaw 领取可能轮换 refresh_token —— sidecar
+//   **不落盘**（红线①：凭据续期只能由 Go 桥写回密文），新值放进应答的
+//   refreshed_credential，与 credits.query 静默续期走同一条写回通道。
+//
+// ⚠️ afterClaimNote / afterClaim（trae 打卡抽奖、buddy 成长中心）**刻意不接**：
+// 它们需要 entry/run 的账号池上下文（budgetMs、credentialRef 等），且属 UI 向
+// 行为；缺省不调用 —— hub 骨架对这两个钩子都是「deps 提供了才跑」。
+
+import { createHash } from 'node:crypto'
+
+/** trae 设备指纹代次的进程内桩（entryId → 代次）。 */
+const claimDeviceGenerations = new Map()
+
+/** 凭据内容指纹：仅作内存键，不进日志、不进应答。 */
+function credentialFingerprint(provider, credential) {
+  const raw = typeof credential === 'string' ? credential : JSON.stringify(credential)
+  return `${provider}:${createHash('sha256').update(String(raw)).digest('hex').slice(0, 16)}`
+}
+
+function traeAccountPoolStub() {
+  return {
+    traeCheckinDeviceGenerationFor: (id) => claimDeviceGenerations.get(id) ?? 0,
+    updateTraeCheckinDeviceGeneration: (id, next) => { claimDeviceGenerations.set(id, next) },
+  }
+}
+
+/** 归一 hub 的 ClaimOutcome：未知 kind 按 failed 计入（computeClaimSummary 同款兜底）。 */
+function normalizeClaimOutcome(outcome) {
+  const o = outcome && typeof outcome === 'object' ? outcome : {}
+  const known = ['claimed', 'already-claimed', 'inactive', 'failed']
+  const kind = known.includes(o.kind) ? o.kind : 'failed'
+  const res = { kind }
+  if (typeof o.credit === 'number') res.credit = o.credit
+  if (typeof o.unit === 'string') res.unit = o.unit
+  if (typeof o.message === 'string') res.message = o.message
+  if (typeof o.code === 'number') res.code = o.code
+  // coversToday=false 是渠道自己标的「看到的是上一轮的痕迹」（Qoder 刷新前那轮），
+  // 原样透传给 Go 侧，记账口径由那边决定。
+  if (o.coversToday === false) res.covers_today = false
+  if (res.kind === 'failed' && res.message === undefined) res.message = '未知失败原因'
+  return res
+}
+
+/**
+ * 对一个凭据执行每日签到/领取积分。
+ *
+ * @returns {{ ok: true, outcome, unsupported?: boolean, refreshed_credential?: object }}
+ *   outcome 形如 hub 的 ClaimOutcome：{kind, credit?, unit?, message?, code?, covers_today?}；
+ *   unsupported=true 表示该渠道没有签到能力（不发上游请求就判定的那些），
+ *   调度器据此「记一次、当天不再试」，与失败（网络/上游错，退避重试）区分开。
+ */
+export async function claimCreditBalance(provider, credential) {
+  // API 型（裸 key）没有签到活动：如实报，unsupported 而不是 error ——
+  // 它不是故障，天天重试只会制造噪音。
+  if (API_BALANCE_BY_PROVIDER[provider] || provider === 'custom' || provider.startsWith('api:')) {
+    return {
+      ok: true,
+      outcome: { kind: 'failed', code: -1, message: 'API 型凭据没有签到活动' },
+      unsupported: true,
+    }
+  }
+  let pc
+  try {
+    pc = await distributor()
+  } catch (error) {
+    return { ok: false, error: `签到不可用：${error instanceof Error ? error.message : String(error)}` }
+  }
+  const entry = pc[provider]
+  if (!entry) {
+    return { ok: true, outcome: { kind: 'failed', code: -1, message: `${provider} 暂不支持每日签到` }, unsupported: true }
+  }
+  // 「调用即判定」：claimUnavailableReason 是渠道显式登记的「不支持」，
+  // claim 缺席同理 —— 都不发上游请求，计为 unsupported 让调度器跳过。
+  if (typeof entry.claimUnavailableReason === 'string') {
+    return { ok: true, outcome: { kind: 'failed', code: -1, message: entry.claimUnavailableReason }, unsupported: true }
+  }
+  if (typeof entry.claim !== 'function') {
+    return { ok: true, outcome: { kind: 'failed', code: -1, message: `${provider} 不支持每日签到` }, unsupported: true }
+  }
+  const entryId = credentialFingerprint(provider, credential)
+  let persisted = null
+  const call = {
+    warn: (m) => console.warn(`[credits.claim] ${provider}: ${m}`),
+    persistCredential: async (_ref, value) => {
+      try { persisted = JSON.parse(value) } catch { persisted = value }
+    },
+    accountPool: traeAccountPoolStub(),
+  }
+  // 状态预检：precheckStatus 缺省 true（与 hub 骨架同语义）——先查状态，
+  // 未开启/已签到就不发领取请求；状态查询失败照常尝试领取（「无法确认
+  // 不代表不能领」，交给领取接口以响应体定夺）。
+  if (entry.precheckStatus !== false) {
+    const statusFn = typeof entry.claimStatus === 'function' ? entry.claimStatus : entry.fetchStatus
+    if (typeof statusFn === 'function') {
+      try {
+        const status = await statusFn(credential)
+        if (status && typeof status === 'object') {
+          if (status.active === false) {
+            return { ok: true, outcome: { kind: 'inactive', message: '签到活动未开启' } }
+          }
+          if (status.todayCheckedIn === true) {
+            return { ok: true, outcome: { kind: 'already-claimed', message: '今天已签到' } }
+          }
+        }
+      } catch {
+        // 预检失败不阻断领取 —— 与 hub claimAll 的判定逐字一致。
+      }
+    }
+  }
+  try {
+    const outcome = await entry.claim(credential, { id: entryId }, call)
+    const res = { ok: true, outcome: normalizeClaimOutcome(outcome) }
+    if (persisted && typeof persisted === 'object') res.refreshed_credential = persisted
+    return res
+  } catch (error) {
+    console.warn(`[credits.claim] ${provider} 领取异常: ${String(error)}`)
+    return {
+      ok: true,
+      outcome: { kind: 'failed', code: -1, message: error instanceof Error ? error.message : String(error) },
+    }
   }
 }

@@ -19,8 +19,12 @@ import {
   notifyCredential,
   patchRealModel,
   patchUpstream,
+  checkinCredential,
+  getCheckinStatus,
   refreshCredentialBalance,
   refreshRealModels,
+  runCheckinRound,
+  setCheckinEnabled,
   suspendCredential
 } from '../../api/endpoints'
 import type {
@@ -34,6 +38,7 @@ import ConfirmDialog from '../../components/ConfirmDialog'
 import { ACTION_ICON, ToolButton } from '../../components/IconButtons'
 import {
   IconBack,
+  IconCalendarCheck,
   IconCheck,
   IconEdit,
   IconExternal,
@@ -242,6 +247,57 @@ export function CredentialsPage({ def }: PageProps) {
       setBalBusy((m) => ({ ...m, [id]: false }))
     }
   }
+  // —— 定时签到（2026-10-31）——
+  // checkinQ 是全局自动签到状态（开关/最近一轮/到期数）；checkBusy 是按行 busy。
+  const checkinQ = useApi(() => getCheckinStatus(), [])
+  const [checkBusy, setCheckBusy] = useState<Record<string, boolean>>({})
+  const [checkRoundBusy, setCheckRoundBusy] = useState(false)
+  const [checkNote, setCheckNote] = useState<{ text: string; ok: boolean } | null>(null)
+
+  async function checkinOne(id: string) {
+    setCheckBusy((m) => ({ ...m, [id]: true }))
+    setCheckNote(null)
+    try {
+      const d = (await checkinCredential(id)).data
+      // 成功/失败都弹 toast：text 是 Go 侧格式化好的展示串（"+200 积分"/失败原因）
+      setCheckNote({ text: d.text || d.message || (d.ok ? '签到完成' : '签到失败'), ok: d.kind !== 'failed' })
+      sourcesQ.reload()
+      checkinQ.reload()
+    } catch (e) {
+      setCheckNote({ text: e instanceof Error ? e.message : '签到失败', ok: false })
+    } finally {
+      setCheckBusy((m) => ({ ...m, [id]: false }))
+    }
+  }
+
+  async function runCheckinNow() {
+    setCheckRoundBusy(true)
+    setCheckNote(null)
+    try {
+      const d = (await runCheckinRound()).data
+      setCheckNote({ text: `本轮签到：${d.summary}`, ok: d.failed === 0 })
+      sourcesQ.reload()
+      checkinQ.reload()
+    } catch (e) {
+      setCheckNote({ text: e instanceof Error ? e.message : '签到失败', ok: false })
+    } finally {
+      setCheckRoundBusy(false)
+    }
+  }
+
+  async function toggleCheckin(next: boolean) {
+    setCheckRoundBusy(true)
+    setCheckNote(null)
+    try {
+      await setCheckinEnabled(next)
+      checkinQ.reload()
+    } catch (e) {
+      setCheckNote({ text: e instanceof Error ? e.message : '开关保存失败', ok: false })
+    } finally {
+      setCheckRoundBusy(false)
+    }
+  }
+
   // 分组（2026-10-27 用户决定）：反代供应商（账号授权，凭据由 sidecar 换出）与
   // API 供应商（用户粘 Key 直连端点）是两个不同的接入形态。
   // 判据用 oauth 标记而不是 kind：OAuth 反代的 upstream 也是 vendor
@@ -406,6 +462,35 @@ export function CredentialsPage({ def }: PageProps) {
       </Banner>
       <FormError error={error} />
       {notice && <Banner tone="ok">{notice}</Banner>}
+      {checkNote && <Banner tone={checkNote.ok ? 'ok' : 'warn'}>{checkNote.text}</Banner>}
+
+      {/* 自动签到状态条（2026-10-31）：开关与最近一轮是全池级状态，不是单个
+          供应商的——放页面级而不是 pool 头部，避免逐源重复渲染。 */}
+      <AsyncView state={checkinQ} loadingRows={1}>
+        {(st) => (
+          <div className="checkin-strip">
+            <button
+              type="button"
+              className="btn-ghost"
+              disabled={checkRoundBusy}
+              onClick={() => void toggleCheckin(!st.enabled)}
+            >
+              <IconPower size="xs" />
+              自动签到{st.enabled ? '已开启' : '已关闭'}
+            </button>
+            <span className="checkin-strip-summary muted">
+              {st.last_run_result
+                ? `上次：${st.last_run_result}${st.last_run_date ? `（${st.last_run_date}）` : ''}`
+                : '尚未运行过；每天首次到期后自动执行'}
+              {st.due_count > 0 && ` · 待签 ${st.due_count}`}
+            </span>
+            <button type="button" className="btn-ghost" disabled={checkRoundBusy} onClick={() => void runCheckinNow()}>
+              <IconCalendarCheck size="xs" />
+              全部签到
+            </button>
+          </div>
+        )}
+      </AsyncView>
 
       <AsyncView state={sourcesQ} loadingRows={6}>
         {() => (
@@ -520,6 +605,11 @@ export function CredentialsPage({ def }: PageProps) {
                                       {c.balance_text}
                                     </span>
                                   )}
+                                  {c.checkin_text && (
+                                    <span className="am-chip-tag" data-tone={c.checkin_date ? 'ok' : 'warn'} title={c.checkin_date ? `签到于 ${c.checkin_date}` : '最近一次尝试没有签上（失败会按退避自动重试）'}>
+                                      {c.checkin_text}
+                                    </span>
+                                  )}
                                 </span>
                                 <span className="pool-cred-time">{fmtTime(c.created_at)}</span>
                               </Link>
@@ -533,6 +623,15 @@ export function CredentialsPage({ def }: PageProps) {
                                 >
                                   <IconRefresh size="xs" />
                                   {balBusy[c.id] ? '查询中…' : '刷新余额'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-ghost"
+                                  disabled={busy || checkBusy[c.id]}
+                                  onClick={() => void checkinOne(c.id)}
+                                >
+                                  <IconCalendarCheck size="xs" />
+                                  {checkBusy[c.id] ? '签到中…' : '签到'}
                                 </button>
                               </div>
                             </li>

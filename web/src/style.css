@@ -2270,3 +2270,24 @@ button.am-add-chip {
 .am-op-link:hover {
   text-decoration: underline;
 }
+
+/* ── 自动签到状态条（2026-10-31）────────────────────────────────
+   页面级一行：开关按钮 + 最近一轮摘要 + 手动整轮。用填充色阶不分框
+   （与 pool 头部同观感）；摘要 flex:1 吃掉剩余宽度，长文案不挤按钮。 */
+.checkin-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--fr-block);
+  margin-bottom: 12px;
+}
+.checkin-strip-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
