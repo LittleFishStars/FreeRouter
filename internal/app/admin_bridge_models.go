@@ -1037,7 +1037,18 @@ func modelSourceOf(u store.Upstream, cred store.UpstreamCredentialSummary, model
 		src.Website = p.Website
 		src.APIDoc = p.APIDoc
 	}
+	if src.OAuth && cred.Provider != "" {
+		// 反代来源的展示名 = 凭据 provider 列的裸 id（2026-10-30 用户决定）：
+		// 上游行名是 "<provider>-oauth-<指纹>" / DSH 凭据 ref（"-oauth-key_<短码>"）
+		// 的机器形态，后缀只服务于「确定性反查 upstream id」（见
+		// contributeUpstreamName 的注释），界面上是噪音——与 API 供应商的
+		// 目录展示名同待遇。api:/custom 不进这个分支：前者上面已被目录名
+		// 覆盖，后者的名字本来就是用户自己起的。悬空凭据（Provider 空）
+		// 不进：没有更可信的名字，保留上行原名。
+		src.Name = cred.Provider
+	}
 
+	src.Models = make([]httpapi.AdminModelSourceModel, 0, len(models))
 	src.Models = make([]httpapi.AdminModelSourceModel, 0, len(models))
 	for i := range models {
 		m := &models[i]

@@ -354,3 +354,52 @@ func mustAccount2(t *testing.T, a *App) string {
 	}
 	return id
 }
+
+// TestContractRelaySourceDisplayName 钉住反代来源的展示名（2026-10-30 用户
+// 决定）：上游行名是 "<provider>-oauth-<指纹>" 的机器形态，界面上只显示
+// 凭据 provider 列的裸 id——与 API 供应商的目录展示名同待遇。
+func TestContractRelaySourceDisplayName(t *testing.T) {
+	a := newCandidateInstanceTestApp(t)
+	ctx := context.Background()
+	owner := mustAccount2(t, a)
+
+	up, err := a.store.Repos().Models.UpsertUpstream(ctx, "relay", "qodercn-oauth-key_0a83",
+		"sidecar://qodercn", &owner, true)
+	if err != nil {
+		t.Fatalf("建 relay 上游失败: %v", err)
+	}
+	sec, err := a.store.Repos().Secrets.PutSecret(ctx, up, []byte("sk-relay-display-0123456789"))
+	if err != nil {
+		t.Fatalf("写密文失败: %v", err)
+	}
+	cid, err := a.store.Repos().Models.CreateCredential(ctx, owner, "qodercn", "fp-relay-display-1", "qodercn OAuth", sec)
+	if err != nil {
+		t.Fatalf("建凭据失败: %v", err)
+	}
+	if err := a.store.Repos().Models.SetCredentialStatus(ctx, cid, store.CredActive); err != nil {
+		t.Fatalf("置 active 失败: %v", err)
+	}
+
+	mb := &modelsBridge{b: newAdminBridge(a.store)}
+	srcs, _, err := mb.ListModelSources(ctx)
+	if err != nil {
+		t.Fatalf("列来源失败: %v", err)
+	}
+	var relay *httpapi.AdminModelSource
+	for i := range srcs {
+		if srcs[i].OAuth && srcs[i].UpstreamName == "qodercn-oauth-key_0a83" {
+			relay = &srcs[i]
+			break
+		}
+	}
+	if relay == nil {
+		t.Fatalf("应有一条 oauth 来源（上行 qodercn-oauth-key_0a83），实际：%+v", srcs)
+	}
+	if relay.Name != "qodercn" {
+		t.Errorf("反代来源展示名 = %q，期望裸 provider id \"qodercn\"（不带 -oauth-key 机器后缀）", relay.Name)
+	}
+	// 机器名仍保留在 UpstreamName 上：反查/编辑等需要真行名的地方不丢事实。
+	if relay.UpstreamName != "qodercn-oauth-key_0a83" {
+		t.Errorf("UpstreamName 应保留机器名，得 %q", relay.UpstreamName)
+	}
+}
