@@ -32,6 +32,8 @@ const CATALOG_BY_PROVIDER = {
   buddy: async () => pick(await import(`${HUB}/product.js`), 'CODEBUDDY'),
   workbuddy: async () => pick(await import(`${HUB}/product.js`), 'WORKBUDDY'),
   lobsterai: async () => pick(await import(`${HUB}/lobsterai-product.js`), 'LOBSTERAI'),
+  raccoon: async () => pick(await import(`${HUB}/raccoon-product.js`), 'RACCOON'),
+  zcode: async () => pick(await import(`${HUB}/zcode-product.js`), 'ZCODE'),
 }
 
 /** 支持静态目录的 provider 清单。 */

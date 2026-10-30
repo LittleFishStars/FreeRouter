@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/store"
@@ -73,6 +74,12 @@ type ModelRefresher struct {
 	// GET {base}/models 并带密钥。nil 时非 relay 上游明确报「不支持刷新」，
 	// 而不是拿 sidecar 去拉一个 HTTP 端点（那会得到误导性的 provider 未知错误）。
 	httpModels func(ctx context.Context, u store.Upstream) ([]dshprovider.ModelInfo, error)
+	// staticCatalog 是 OAuth 反代上游的目录拉取入口（可选注入，2026-10-30）。
+	// 这些上游的端点不是 OpenAI 兼容 /models（qodercn 甚至是故意不可解析的
+	// 占位域名），HTTP 拉取每轮必败；它们的目录来源与 settle 时的
+	// seedModelCatalog 同源——sidecar models.catalog 的静态表。nil 时回退
+	// httpModels（旧行为：每轮失败只记日志）。
+	staticCatalog func(ctx context.Context, provider string) ([]dshprovider.ModelInfo, error)
 }
 
 // NewModelRefresher 构造刷新器。interval<=0 时用 DefaultModelRefreshInterval；
@@ -122,6 +129,16 @@ func (r *ModelRefresher) RefreshOnce(ctx context.Context) (RefreshResult, error)
 		return res, fmt.Errorf("upstream: 列上游失败: %w", err)
 	}
 
+	// OAuth 反代上游（vendor kind + 裸 provider 凭据）的目录走 sidecar 静态表
+	// 而不是 HTTP /models：它们的端点不是 OpenAI 兼容 /models（qodercn 甚至是
+	// 故意不可解析的占位域名），HTTP 拉取每轮必败（2026-10-30 实测：raccoon
+	// /zcode 因此永远 0 模型）。provider id 从凭据 provider 列取——与凭据池、
+	// 鉴定队列同一条边（secret_ref → upstream）。
+	providerOf, perr := r.oauthProviderOf(ctx)
+	if perr != nil {
+		return res, fmt.Errorf("upstream: 建立凭据→provider 映射失败: %w", perr)
+	}
+
 	for _, u := range ups {
 		// relay 走 sidecar；vendor/selfhosted 走 HTTP（refreshUpstream 内分派）。
 		// 旧实现只刷新 relay，导致这两类上游永远进不了目录、抽象模型无候选可展开。
@@ -129,7 +146,7 @@ func (r *ModelRefresher) RefreshOnce(ctx context.Context) (RefreshResult, error)
 			continue
 		}
 		res.Upstreams++
-		n, err := r.refreshUpstream(ctx, u)
+		n, err := r.refreshUpstream(ctx, u, providerOf[u.ID])
 		if err != nil {
 			// 失败只记录（红线：sidecar 崩溃时刷新失败只记日志下轮重试），
 			// 绝不 MarkMissing——拉取失败≠模型真的没了，全标 missing 是自伤
@@ -146,10 +163,16 @@ func (r *ModelRefresher) RefreshOnce(ctx context.Context) (RefreshResult, error)
 
 // refreshUpstream 刷新单个上游：拉目录 → 逐条 upsert → 标记消失模型。
 // 返回落库的模型条数。
-func (r *ModelRefresher) refreshUpstream(ctx context.Context, u store.Upstream) (int, error) {
+func (r *ModelRefresher) refreshUpstream(ctx context.Context, u store.Upstream, credProvider string) (int, error) {
 	var models []dshprovider.ModelInfo
 	var err error
-	if u.Kind == "relay" {
+	if isOAuthProviderID(credProvider) {
+		if r.staticCatalog == nil {
+			err = fmt.Errorf("OAuth 反代上游的静态目录源未装配（不影响 vendor/selfhosted）")
+		} else {
+			models, err = r.staticCatalog(ctx, credProvider)
+		}
+	} else if u.Kind == "relay" {
 		if r.source == nil {
 			err = fmt.Errorf("sidecar 未运行：relay 上游的目录无法拉取（不影响 vendor/selfhosted）")
 		} else {
@@ -240,6 +263,30 @@ func (r *ModelRefresher) refreshUpstream(ctx context.Context, u store.Upstream) 
 	r.log.Info("upstream: 模型目录刷新完成",
 		"upstream", u.Name, "models", len(keepIDs), "marked_missing", marked)
 	return len(keepIDs), nil
+}
+
+// oauthProviderOf 建立上游 → 凭据 provider 的映射（取该上游首条凭据的
+// provider 列；同一上游的凭据同源——persist/ReplaceCredential 都以
+// (provider, external_id) 为键落在同一上游名下）。
+func (r *ModelRefresher) oauthProviderOf(ctx context.Context) (map[string]string, error) {
+	rows, err := r.store.Repos().Models.ListUpstreamCredentialRows(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for upstreamID, list := range rows {
+		if len(list) > 0 {
+			out[upstreamID] = list[0].Provider
+		}
+	}
+	return out, nil
+}
+
+// isOAuthProviderID 判定凭据 provider 列是否是 OAuth 反代 id。口径与
+// AdminModelSource.OAuth 一致（admin_bridge_models.go）：裸 id = 反代；
+// "api:<目录 id>" 与 "custom" 是粘 Key 型，目录走各自的路径。
+func isOAuthProviderID(provider string) bool {
+	return provider != "" && provider != "custom" && !strings.HasPrefix(provider, "api:")
 }
 
 // visibleModelIDs 抓某上游当前可见（status=active）的模型集合。
@@ -403,5 +450,14 @@ func ptr[T any](v T) *T { return &v }
 // 与回退路径依赖，加一个可选注入不破坏它们。
 func (r *ModelRefresher) WithHTTPModels(fn func(ctx context.Context, u store.Upstream) ([]dshprovider.ModelInfo, error)) *ModelRefresher {
 	r.httpModels = fn
+	return r
+	return r
+}
+
+// WithStaticCatalog 注入 OAuth 反代上游的静态目录拉取实现（2026-10-30）。
+// 注入方式同 WithHTTPModels：可选增强，旧调用零改动。nil 时这些上游回退
+// httpModels（旧行为：每轮失败只记日志，不阻塞其余上游）。
+func (r *ModelRefresher) WithStaticCatalog(fn func(ctx context.Context, provider string) ([]dshprovider.ModelInfo, error)) *ModelRefresher {
+	r.staticCatalog = fn
 	return r
 }

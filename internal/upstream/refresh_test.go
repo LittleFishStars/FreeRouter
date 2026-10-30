@@ -424,3 +424,90 @@ func TestContractRefreshStartStopsCleanly(t *testing.T) {
 		t.Fatal("周期循环未随 ctx 取消退出")
 	}
 }
+
+// TestContractRefreshStaticCatalogForOAuthUpstream 钉住 OAuth 反代上游的
+// 目录路由（2026-10-30）：裸 provider 凭据的上游走 staticCatalog（sidecar
+// models.catalog 静态表），api:/custom 凭据的上游仍走 httpModels——
+// 反代端点不是 OpenAI 兼容 /models，HTTP 拉取每轮必败（raccoon/zcode
+// 长期 0 模型的根因）。
+func TestContractRefreshStaticCatalogForOAuthUpstream(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(context.Background(), store.Options{
+		Path:          filepath.Join(dir, "freerouter.db"),
+		MasterKeyFile: filepath.Join(dir, "master.key"),
+		BusyTimeout:   2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+	owner, err := st.Repos().Accounts.CreateAccount(ctx, store.AccountAuth{
+		Account:      store.Account{DisplayName: "贡献者", Username: "oauth-refresh-test"},
+		PasswordHash: "!no-password",
+	}, []store.Class{store.ClassContributor})
+	if err != nil {
+		t.Fatalf("建账户失败: %v", err)
+	}
+
+	// 三条上游：oauth 反代（裸 provider 凭据）、目录型贡献（api: 前缀）、自定义。
+	upOAuth, err := st.Repos().Models.UpsertUpstream(ctx, "vendor", "raccoon-oauth-key_0ca1", "https://api.raccoon.ai", &owner, true)
+	if err != nil {
+		t.Fatalf("建 oauth 上游失败: %v", err)
+	}
+	upAPI, err := st.Repos().Models.UpsertUpstream(ctx, "vendor", "api:deepseek-com-contrib-key_de2c", "https://api.deepseek.com/v1", &owner, true)
+	if err != nil {
+		t.Fatalf("建 api 上游失败: %v", err)
+	}
+	upCustom, err := st.Repos().Models.UpsertUpstream(ctx, "vendor", "custom-contrib-key_2579", "https://relay.example.invalid/v1", &owner, true)
+	if err != nil {
+		t.Fatalf("建 custom 上游失败: %v", err)
+	}
+	for _, tc := range []struct {
+		up, provider string
+	}{{upOAuth, "raccoon"}, {upAPI, "api:deepseek-com"}, {upCustom, "custom"}} {
+		sec, err := st.Repos().Secrets.PutSecret(ctx, tc.up, []byte("sk-refresh-route-test"))
+		if err != nil {
+			t.Fatalf("写密文失败: %v", err)
+		}
+		if _, err := st.Repos().Models.CreateCredential(ctx, owner, tc.provider, "fp-"+tc.provider, "凭据", sec); err != nil {
+			t.Fatalf("建凭据失败: %v", err)
+		}
+	}
+
+	var staticCalls, httpCalls []string
+	r := NewModelRefresher(st, &fakeCatalog{catalog: map[string][]dshprovider.ModelInfo{}}, time.Minute, nil).
+		WithStaticCatalog(func(ctx context.Context, provider string) ([]dshprovider.ModelInfo, error) {
+			staticCalls = append(staticCalls, provider)
+			cw := 256000
+			return []dshprovider.ModelInfo{
+				{UpstreamModelID: "sn-glm-5-3", DisplayName: "GLM-5-3", ContextWindow: &cw},
+			}, nil
+		}).
+		WithHTTPModels(func(ctx context.Context, u store.Upstream) ([]dshprovider.ModelInfo, error) {
+			httpCalls = append(httpCalls, u.Name)
+			return nil, nil
+		})
+
+	res, err := r.RefreshOnce(ctx)
+	if err != nil {
+		t.Fatalf("刷新失败: %v", err)
+	}
+	if len(staticCalls) != 1 || staticCalls[0] != "raccoon" {
+		t.Fatalf("staticCatalog 应只被 raccoon 调用一次，得 %v", staticCalls)
+	}
+	if len(httpCalls) != 2 {
+		t.Fatalf("httpModels 应只服务 api:/custom 两条，得 %v", httpCalls)
+	}
+	// 静态目录落库：展示名与上下文窗口（*int → real_models *int64）都进列。
+	rows := realRows(t, st, upOAuth)
+	if len(rows) != 1 || rows[0].UpstreamModelID != "sn-glm-5-3" || rows[0].DisplayName != "GLM-5-3" {
+		t.Fatalf("oauth 上游的模型行 = %+v，期望 sn-glm-5-3/GLM-5-3", rows)
+	}
+	if rows[0].ContextWindow == nil || *rows[0].ContextWindow != 256000 {
+		t.Errorf("context_window = %v，期望 256000", rows[0].ContextWindow)
+	}
+	if res.Models != 1 {
+		t.Errorf("落库计数 = %d，期望 1", res.Models)
+	}
+}

@@ -189,7 +189,8 @@ func (a *App) startModelRefresh(ctx context.Context) {
 		a.store, a.sidecar,
 		a.cfg.Upstream.Relay.ModelRefreshInterval.Std(), a.log,
 		refreshHooksFor(a.store, a.log)).
-		WithHTTPModels(a.fetchHTTPModels)
+		WithHTTPModels(a.fetchHTTPModels).
+		WithStaticCatalog(a.fetchStaticModelCatalog)
 	// 存到 App 上：管理面「手动刷新」要复用同一个实例（两处刷新会争
 	// 同一条 sidecar 串行管道，各建一个会让并发刷新互相超时）。
 	a.modelRefresher = refresher

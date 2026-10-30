@@ -122,3 +122,39 @@ func readAllLimited(resp *http.Response, limit int64) ([]byte, error) {
 		}
 	}
 }
+
+// fetchStaticModelCatalog 拉 OAuth 反代供应商的静态模型目录（sidecar
+// models.catalog，数据源是 hub 各家 product 模块的 fallbackModels——与
+// settle 时的 seedModelCatalog 同一数据源）。OAuth 反代上游的端点不是
+// OpenAI 兼容 /models，这是它们唯一的目录来源；刷新器每轮调用，静态表
+// 更新后下一轮自动同步（模型条目 shape 与 models.list 对齐：带展示名与
+// 上下文窗口，无 modalities/efforts）。
+func (a *App) fetchStaticModelCatalog(ctx context.Context, provider string) ([]dshprovider.ModelInfo, error) {
+	if a.sidecar == nil {
+		return nil, fmt.Errorf("sidecar 未运行：OAuth 反代上游的静态目录无法拉取")
+	}
+	raw, err := a.sidecar.Call(ctx, "models.catalog", map[string]any{"provider": provider})
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		Models []struct {
+			ID            string `json:"id"`
+			DisplayName   string `json:"display_name"`
+			ContextWindow int64  `json:"context_window"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return nil, fmt.Errorf("解析 models.catalog 应答失败: %w", err)
+	}
+	out := make([]dshprovider.ModelInfo, 0, len(res.Models))
+	for _, m := range res.Models {
+		mi := dshprovider.ModelInfo{UpstreamModelID: m.ID, DisplayName: m.DisplayName}
+		if m.ContextWindow > 0 {
+			cw := int(m.ContextWindow)
+			mi.ContextWindow = &cw
+		}
+		out = append(out, mi)
+	}
+	return out, nil
+}
