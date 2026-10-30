@@ -257,8 +257,14 @@ func (c *routingCandidates) Candidates(ctx context.Context, model string, req ir
 	httpapi.FillV1Trace(ctx, routing.BuildTrace(resolved, kept, outs, ordered, chain))
 
 	if len(ordered) == 0 {
+		// 剔除原因逐条打出（2026-10-30 排查 no_candidate 时只能靠读源码——不能这样）。
+		details := make([]string, 0, len(outs))
+		for _, o := range outs {
+			details = append(details, fmt.Sprintf("%s: %s", o.PathID, o.Detail))
+		}
 		c.app.log.Info("routing: 候选全部被过滤",
-			"model", model, "declared", len(paths), "filtered_out", len(outs))
+			"model", model, "declared", len(paths), "filtered_out", len(outs),
+			"reasons", strings.Join(details, "; "))
 		return nil, nil
 	}
 

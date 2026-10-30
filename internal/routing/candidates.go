@@ -125,8 +125,13 @@ func FilterPaths(profile RequestProfile, paths []Path) ([]Path, []FilterOut) {
 				Detail: "候选不支持思考档位 " + profile.NeedEffort})
 			continue
 		}
-		// F2 上下文够长：估算输入 + 声明最大输出 ≤ 候选上下文；未知上下文
-		// 按不满足处理（保守下界——宁可 503 让客户端换小请求，不可中途截断）。
+		// F2 上下文够长：估算输入 + 声明最大输出 ≤ 候选上下文。
+		// 窗口已知时硬校验（请求超窗必被上游拒，提前失败省一次尝试窗口）；
+		// 窗口**未知**时放行——2026-10-30 生产实测：hub 目录只给裸模型 id（无任何能力字段，
+		// 见 internal/upstream/dshprovider/methods.go「ContextWindow 可空」），目录来源的
+		// 候选 context_window 恒为 NULL，按「未知=不满足」剔除等于整个目录池永远 503。
+		// 放行的最坏后果是上游报 context 超限（4xx，客户端可见可自愈）；
+		// 剔除的最坏后果是 no_candidate 无自愈路径——两者取其轻。
 		if p.Caps.ContextWindow != nil {
 			need := profile.EstInputTokens + profile.MaxOutputTokens
 			if need > *p.Caps.ContextWindow {
@@ -134,10 +139,6 @@ func FilterPaths(profile RequestProfile, paths []Path) ([]Path, []FilterOut) {
 					Detail: "请求估算超出候选上下文窗口"})
 				continue
 			}
-		} else {
-			outs = append(outs, FilterOut{PathID: p.RealModel.ID, Reason: "context",
-				Detail: "候选上下文窗口未知，按保守下界剔除"})
-			continue
 		}
 		kept = append(kept, p)
 	next:

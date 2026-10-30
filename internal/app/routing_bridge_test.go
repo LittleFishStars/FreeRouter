@@ -139,7 +139,7 @@ func TestContractRoutingEmptyCandidatesIsNoCandidate(t *testing.T) {
 
 //  5. 上下文窗口未知 → FilterPaths 保守剔除（宁可 503 不可截断），
 //     候选集变空但模型本身存在（仍是 503 而非 404）。
-func TestContractRoutingUnknownContextWindowFiltered(t *testing.T) {
+func TestContractRoutingUnknownContextWindowKept(t *testing.T) {
 	a := newRoutingTestApp(t)
 	seedModel(t, a, "narrow", "m-unknown", nil, "") // ContextWindow=nil
 	cs := newRoutingCandidates(a)
@@ -147,8 +147,8 @@ func TestContractRoutingUnknownContextWindowFiltered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("不应报错: %v", err)
 	}
-	if len(cands) != 0 {
-		t.Fatalf("上下文未知的候选应被剔除，得到 %d 条", len(cands))
+	if len(cands) != 1 {
+		t.Fatalf("上下文未知的候选应放行（2026-10-30 改策：目录来源窗口恒未知，未知即剔曾令目录池永远 503），得到 %d 条", len(cands))
 	}
 }
 

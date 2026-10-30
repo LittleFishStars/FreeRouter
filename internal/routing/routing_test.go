@@ -264,25 +264,25 @@ func TestContractFilterCapability(t *testing.T) {
 }
 
 // TestContractFilterContext 上下文过滤（03-strategy.md §2.1 F2：
-// 估算输入+声明最大输出 ≤ 候选上下文；窗口未知按保守下界剔除）。
+// 估算输入+声明最大输出 ≤ 候选上下文；窗口未知时**放行**（2026-10-30 生产实测改策：
+// hub 目录只给裸 id，目录来源候选窗口恒未知，「未知即剔」等于整个目录池永远 503；
+// 放行的最坏后果是上游报超限，可自愈）。
 func TestContractFilterContext(t *testing.T) {
 	small, big := int64(4096), int64(131072)
 	paths := []Path{
 		{RealModel: *mkReal("rm10", "a", "m1"), Caps: Capabilities{ContextWindow: &small}},
 		{RealModel: *mkReal("rm11", "b", "m2"), Caps: Capabilities{ContextWindow: &big}},
-		{RealModel: *mkReal("rm12", "c", "m3"), Caps: Capabilities{ContextWindow: nil}}, // 未知
+		{RealModel: *mkReal("rm12", "c", "m3"), Caps: Capabilities{ContextWindow: nil}}, // 未知 → 放行
 	}
 	profile := RequestProfile{EstInputTokens: 3000, MaxOutputTokens: 2000} // 需 5000
 
 	kept, outs := FilterPaths(profile, paths)
-	if len(kept) != 1 || kept[0].RealModel.ID != "rm11" {
-		t.Fatalf("只有 11 窗口够: %+v", kept)
+	if len(kept) != 2 || kept[0].RealModel.ID != "rm11" || kept[1].RealModel.ID != "rm12" {
+		t.Fatalf("11 窗口够、12 未知放行: kept=%+v", kept)
 	}
-	// 10 窗口不够（context）；12 未知（context 保守）。
-	for _, o := range outs {
-		if o.Reason != "context" {
-			t.Fatalf("剔除原因应为 context: %+v", o)
-		}
+	// 只有 10 窗口不够（context）。
+	if len(outs) != 1 || outs[0].Reason != "context" || outs[0].PathID != "rm10" {
+		t.Fatalf("应只剔 rm10 且原因为 context: %+v", outs)
 	}
 }
 
