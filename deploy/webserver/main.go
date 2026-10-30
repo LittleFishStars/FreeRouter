@@ -63,7 +63,12 @@ func main() {
 	spa := newSPAServer(*flagRoot)
 
 	mux := http.NewServeMux()
+	// API 域与后端口径完全一致（internal/httpapi/server.go 的 handleWebUIOrNotFound）：
+	//   /api/* —— 控制台/管理 API；/v1/* —— OpenAI(chat/responses/models) 与 Anthropic(messages)。
+	// 漏掉 /v1 会让模型调用拿到 SPA 的 index.html（2026-10-30 实测踩坑）。
 	mux.Handle("/api/", proxy)
+	mux.Handle("/v1", proxy)
+	mux.Handle("/v1/", proxy)
 	mux.HandleFunc("/healthz", handleHealthz(up))
 	mux.Handle("/", spa)
 
