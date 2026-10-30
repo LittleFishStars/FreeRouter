@@ -309,11 +309,13 @@ func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyR
 	if err != nil || call == nil {
 		return false
 	}
-	defer call.Body.Close()
-
+	// Err 检查必须先于 defer Close：上游失败（401/超时/连接错）时 shim 返回
+	// Body=nil + Err——先 defer 会对 nil 接口调 Close 直接 panic（2026-10-30
+	// 生产实测：候选切换路径第一次真实跑通就祏在这个顺序上）。
 	if call.Err != nil {
 		return false // 上游已判失败（连接层），换候选
 	}
+	defer call.Body.Close()
 	// 非流式：整读上游响应体→DecodeResponse→EncodeResponse（入站方言出站）。
 	raw, err := io.ReadAll(call.Body)
 	if err != nil {
@@ -371,10 +373,11 @@ func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxy
 	if err != nil || call == nil {
 		return false
 	}
-	defer call.Body.Close()
+	// 同 proxyOnce：Err 检查先于 defer Close（失败路径 Body 为 nil）。
 	if call.Err != nil {
 		return false
 	}
+	defer call.Body.Close()
 
 	// 上游事件流（候选方言）→ IR 事件 → 出站方言 StreamWriter。
 	reader := cand.Adapter.NewStreamReader(call.Body, ir.DecodeOptions{RequestID: reqID})
