@@ -59,6 +59,8 @@ import type {
   StrategyName,
   UpstreamKind,
   UsageLog,
+  UsageStats,
+  UsageStatsQuery,
   UsageOverview
 } from './types'
 
@@ -726,6 +728,15 @@ export interface UsageLogQuery {
 
 export function listUsageLogs(q: UsageLogQuery = {}) {
   return getList<UsageLog>(PATHS.usageLogs, { ...q })
+}
+
+/**
+ * GET /api/usage/stats：仪表盘聚合（总量 + 时间桶 + 按模型）。
+ * tz_offset 传「当地 - UTC」秒数（JS 的 getTimezoneOffset 是反号，这里由调用方翻好）；
+ * scope=all 仅 admin 类可用（后端 403 把关）。
+ */
+export function getUsageStats(q: UsageStatsQuery = {}) {
+  return getOne<UsageStats>(PATHS.usageStats, { ...q })
 }
 
 /** 可用抽象模型：可选按 Key 收窄（总纲 11.3 三层收敛）。 */

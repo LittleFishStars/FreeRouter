@@ -20,7 +20,8 @@
     "qrcode.react": "^4.2.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "react-router-dom": "7.18.4"
+    "react-router-dom": "7.18.4",
+    "recharts": "^3.10.1"
   },
   "devDependencies": {
     "@types/node": "^24.9.2",

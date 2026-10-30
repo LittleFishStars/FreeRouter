@@ -187,6 +187,150 @@ func (r *UsageRepo) CountKeysUsedSince(ctx context.Context, accountID string, si
 	return n, nil
 }
 
+// RequestStats 是仪表盘（GET /api/usage/stats）的一次聚合结果。
+//
+// 三块一起返回（总量 / 时间桶 / 按模型）而不是三个方法：它们共用同一个
+// WHERE 前缀，拆开会让调用方在三次请求里重复传同一组筛选，也容易漂。
+type RequestStats struct {
+	Totals RequestStatsTotals
+	// Buckets 按时间升序；空窗（没有任何请求的桶）**不会**出现在结果里，
+	// 补零是展示层的事（前端把 from..to 铺满再填 0，服务端不知道展示粒度）。
+	Buckets []RequestStatsBucket
+	// Models 按请求数降序；只含有请求的模型。
+	Models []RequestStatsModelRow
+}
+
+// RequestStatsTotals 是筛选范围内的合计。Token 列 COALESCE 为 0（空范围 = 0
+// 而不是 NULL）；平均延迟用「和 ÷ 个数」两列分开返回——NULL 与 0 在这里
+// 语义不同（没有样本 ≠ 平均 0ms），由调用方除。
+type RequestStatsTotals struct {
+	Requests    int64
+	Failed      int64
+	InTokens    int64
+	OutTokens   int64
+	ActiveKeys  int64
+	TTFTSum     int64 // ttft_ms 之和；TTFTN 是非空样本数
+	TTFTN       int64
+	DurationSum int64
+	DurationN   int64
+}
+
+// RequestStatsBucket 是一个时间桶。Start 是桶起点（Unix 秒）。
+type RequestStatsBucket struct {
+	Start     int64
+	Requests  int64
+	Failed    int64
+	InTokens  int64
+	OutTokens int64
+}
+
+// RequestStatsModelRow 是按抽象模型聚合的一行。
+type RequestStatsModelRow struct {
+	Model     string
+	Requests  int64
+	Failed    int64
+	InTokens  int64
+	OutTokens int64
+}
+
+// RequestStats 聚合请求日志（仪表盘）。
+//
+// accountID 为 nil = 全站（管理员的 scope=all）；非 nil = 只算该账户。
+// bucketSeconds 是时间桶宽度（3600 或 86400）；tzOffsetSeconds 是调用方
+// 时区相对 UTC 的偏移（东八区 = +28800）——按天分桶必须按「调用方的当地
+// 零点」切，否则中国用户的“天”会从 UTC 零点（北京 08:00）开始。小时桶
+// 偏移不影响对齐（3600 整除 86400 的位移），传了也无妨。
+// From/To 语义与 RequestLogFilter 相同（Unix 秒，0 = 不限）。
+func (r *UsageRepo) RequestStats(ctx context.Context, accountID *string, f RequestLogFilter, bucketSeconds, tzOffsetSeconds int64) (RequestStats, error) {
+	if bucketSeconds <= 0 {
+		bucketSeconds = 86400
+	}
+	where := " 1=1"
+	var args []any
+	if accountID != nil {
+		where += " AND r.account_id = ?"
+		args = append(args, *accountID)
+	}
+	if f.From > 0 {
+		where += " AND r.ts >= ?"
+		args = append(args, f.From)
+	}
+	if f.To > 0 {
+		where += " AND r.ts <= ?"
+		args = append(args, f.To)
+	}
+
+	var out RequestStats
+	// 总量：一次扫出全部合计列。status='ok' 计数用布尔表达式（SQLite 里
+	// 真=1），与 ListRequestLogsByAccount 的 status <> 'ok' 判失败同一口径。
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(1), COALESCE(SUM(r.status <> 'ok'),0),
+		       COALESCE(SUM(r.in_tokens),0), COALESCE(SUM(r.out_tokens),0),
+		       COUNT(DISTINCT r.key_id),
+		       COALESCE(SUM(r.ttft_ms),0), COUNT(r.ttft_ms),
+		       COALESCE(SUM(r.total_ms),0), COUNT(r.total_ms)
+		  FROM requests r WHERE`+where, args...).
+		Scan(&out.Totals.Requests, &out.Totals.Failed,
+			&out.Totals.InTokens, &out.Totals.OutTokens,
+			&out.Totals.ActiveKeys,
+			&out.Totals.TTFTSum, &out.Totals.TTFTN,
+			&out.Totals.DurationSum, &out.Totals.DurationN)
+	if err != nil {
+		return out, fmt.Errorf("store: 聚合请求总量失败: %w", err)
+	}
+
+	// 时间桶：本地化按天/按小时切桶。(ts+off)/bucket 是整除向下取整，
+	// 乘回 bucket 得到 UTC 标尺上的桶起点——展示层拿它格式化时间。
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT (r.ts + ?) / ? * ?, COUNT(1), COALESCE(SUM(r.status <> 'ok'),0),
+		       COALESCE(SUM(r.in_tokens),0), COALESCE(SUM(r.out_tokens),0)
+		  FROM requests r WHERE`+where+` GROUP BY 1 ORDER BY 1`,
+		append([]any{tzOffsetSeconds, bucketSeconds, bucketSeconds}, args...)...)
+	if err != nil {
+		return out, fmt.Errorf("store: 聚合请求时间桶失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out.Buckets = []RequestStatsBucket{}
+	for rows.Next() {
+		var b RequestStatsBucket
+		if err := rows.Scan(&b.Start, &b.Requests, &b.Failed, &b.InTokens, &b.OutTokens); err != nil {
+			return out, fmt.Errorf("store: 扫描请求时间桶失败: %w", err)
+		}
+		out.Buckets = append(out.Buckets, b)
+	}
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("store: 遍历请求时间桶失败: %w", err)
+	}
+
+	// 按模型：LEFT JOIN 保持与日志行同源——模型被删后历史行仍然算数。
+	mrows, err := r.db.QueryContext(ctx,
+		`SELECT COALESCE(m.name, ''), COUNT(1), COALESCE(SUM(r.status <> 'ok'),0),
+		       COALESCE(SUM(r.in_tokens),0), COALESCE(SUM(r.out_tokens),0)
+		  FROM requests r
+		  LEFT JOIN abstract_models m ON m.id = r.virtual_model_id
+		  WHERE`+where+`
+		  GROUP BY 1 ORDER BY 4 DESC, 3 DESC LIMIT 50`, args...)
+	if err != nil {
+		return out, fmt.Errorf("store: 聚合按模型用量失败: %w", err)
+	}
+	defer func() { _ = mrows.Close() }()
+	out.Models = []RequestStatsModelRow{}
+	for mrows.Next() {
+		var m RequestStatsModelRow
+		if err := mrows.Scan(&m.Model, &m.Requests, &m.Failed, &m.InTokens, &m.OutTokens); err != nil {
+			return out, fmt.Errorf("store: 扫描按模型用量失败: %w", err)
+		}
+		out.Models = append(out.Models, m)
+	}
+	if err := mrows.Err(); err != nil {
+		return out, fmt.Errorf("store: 遍历按模型用量失败: %w", err)
+	}
+	return out, nil
+}
+
+// ---------------------------------------------------------------------------
+// 贡献者面（我的凭据 / 贡献统计）
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // 贡献者面（我的凭据 / 贡献统计）
 // ---------------------------------------------------------------------------

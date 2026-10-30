@@ -352,6 +352,7 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	}
 	r.Get("/api/usage/overview", sessMW(a.server.HandleUsageOverview(tenantDeps)).(http.HandlerFunc))
 	r.Get("/api/usage/logs", sessMW(a.server.HandleUsageLogs(tenantDeps)).(http.HandlerFunc))
+	r.Get("/api/usage/stats", sessMW(a.server.HandleUsageStats(tenantDeps)).(http.HandlerFunc))
 	r.Get("/api/usage/models", sessMW(a.server.HandleUsageModels(tenantDeps)).(http.HandlerFunc))
 	r.Get("/api/account/sessions", sessMW(a.server.HandleAccountSessions(tenantDeps)).(http.HandlerFunc))
 	r.Post("/api/account/sessions/{id}/revoke", sessMW(a.server.HandleAccountSessionRevoke(tenantDeps)).(http.HandlerFunc))

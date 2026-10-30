@@ -558,6 +558,59 @@ export interface UsageLog {
   output_tokens: number | null
 }
 
+// ── 仪表盘（GET /api/usage/stats；形状对齐 internal/httpapi UsageStats）────
+
+export interface UsageStatsTotals {
+  requests: number
+  failed: number
+  input_tokens: number
+  output_tokens: number
+  /** 范围内用过的 Key 数（DISTINCT；scope=all 时是整站去重） */
+  active_keys: number
+  /** 平均首字延迟；范围内无样本 = null（没有样本 ≠ 0ms） */
+  avg_ttft_ms: number | null
+  avg_duration_ms: number | null
+}
+
+export interface UsageStatsBucket {
+  /** 桶起点（RFC3339）；服务端按调用方时区切桶 */
+  start: string
+  requests: number
+  failed: number
+  input_tokens: number
+  output_tokens: number
+}
+
+export interface UsageStatsModelRow {
+  /** 抽象模型名；模型被删后是空串（历史行仍算数） */
+  model: string
+  requests: number
+  failed: number
+  input_tokens: number
+  output_tokens: number
+}
+
+export interface UsageStats {
+  from: string
+  to: string
+  /** 实际桶宽（秒）：3600 或 86400 */
+  bucket_seconds: number
+  totals: UsageStatsTotals
+  /** 服务端只回有数据的桶；空窗由前端补零铺满 */
+  buckets: UsageStatsBucket[]
+  models: UsageStatsModelRow[]
+}
+
+export interface UsageStatsQuery {
+  from?: string
+  to?: string
+  bucket?: 'hour' | 'day'
+  /** 调用方时区相对 UTC 的秒数（东八区 = 28800），按天切桶用 */
+  tz_offset?: number
+  /** own（缺省）| all（仅 admin 类） */
+  scope?: 'own' | 'all'
+}
+
 export interface AvailableModel {
   name: string
   display_name: string

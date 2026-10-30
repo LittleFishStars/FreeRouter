@@ -19,6 +19,7 @@ import {
   IconNavContribute,
   IconNavContributions,
   IconNavCredentials,
+  IconNavDashboard,
   IconNavGroups,
   IconNavHome,
   IconNavInbox,
@@ -61,6 +62,7 @@ import { VerificationDetailPage, VerificationsPage } from './pages/admin/Verific
 import AuditPage from './pages/admin/AuditPage'
 import SettingsPage from './pages/admin/SettingsPage'
 import { KeyDetailPage, KeyNewPage, KeysPage } from './pages/tenant/KeyPages'
+import DashboardPage from './pages/tenant/DashboardPage'
 import { LogsPage, ModelsPage, UsagePage } from './pages/tenant/UsagePages'
 import {
   ContributionCredentialDetailPage,
@@ -156,6 +158,7 @@ export const PAGES: PageDef[] = [
   { path: '/admin/settings', title: '全局设置', summary: '启动期配置的只读展示；开放注册与代理相关项改动需二次确认。', nav: 'admin', requires: 'admin', icon: IconNavSettings, dangerous: true, element: SettingsPage },
 
   // ── 4.4 租户入口（tenant 类）────────────────────────────────
+  { path: '/usage/dashboard', title: '仪表盘', summary: '用量仪表盘：请求数、Token、错误率与延迟随时间的变化（Tingly Box 式）；admin 可切「全站」口径。', nav: 'usage', requires: 'tenant', icon: IconNavDashboard, element: DashboardPage },
   { path: '/usage', title: '用量与配额', summary: '账户级额度总览（不显示额度来自哪个组）。', nav: 'usage', requires: 'tenant', icon: IconNavUsage, element: UsagePage },
   { path: '/usage/keys', title: '我的 API Key', summary: 'Key 列表：名称、前缀、白名单、生命周期。', nav: 'usage', requires: 'tenant', icon: IconNavKeys, element: KeysPage },
   { path: '/usage/keys/new', title: '创建 Key', summary: '明文一次性展示，离开后不再可见。', nav: null, requires: 'tenant', dangerous: true, element: KeyNewPage },

@@ -168,6 +168,7 @@ export default function HomePage({ def }: PageProps) {
           <div className="link-grid">
             {isTenant && (
               <>
+                <Link to="/usage/dashboard">仪表盘</Link>
                 <Link to="/usage">用量与配额</Link>
                 <Link to="/usage/keys">我的 API Key</Link>
                 <Link to="/usage/models">可用抽象模型</Link>

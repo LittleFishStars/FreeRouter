@@ -21,7 +21,8 @@ import (
 // SQL 条件由 store 包的契约测试守（repo_request_logs_contract_test.go）。
 
 // fakeTenantStore 只实现 RequestLogs 的真实行为，其余方法返回零值。
-// TenantUsageStore 是窄接口（8 个方法），穷举实现比反射/嵌入更直白。
+// fakeTenantStore 只实现 RequestLogs 的真实行为，其余方法返回零值。
+// TenantUsageStore 是窄接口（9 个方法），穷举实现比反射/嵌入更直白。
 type fakeTenantStore struct {
 	rows []UsageLogRow
 	// got 记录最后一次收到的筛选条件，供断言「后端到底读没读这个参数」。
@@ -47,6 +48,10 @@ func (f *fakeTenantStore) QuotaRows(context.Context, string) ([]UsageQuotaRow, e
 func (f *fakeTenantStore) RequestLogs(_ context.Context, _ string, filter UsageLogFilter) ([]UsageLogRow, int64, error) {
 	f.got = filter
 	return f.rows, int64(len(f.rows)), nil
+}
+
+func (f *fakeTenantStore) RequestStats(_ context.Context, _ string, _ bool, _ UsageLogFilter, _, _ int64) (UsageStats, error) {
+	return UsageStats{}, nil
 }
 
 func (f *fakeTenantStore) SessionsOf(context.Context, string) ([]UsageSessionRow, error) {

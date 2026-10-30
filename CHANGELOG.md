@@ -237,6 +237,14 @@
 
 ### 新增
 
+- **租户仪表盘 `/usage/dashboard`（2026-10-30，形态参照 Tingly Box 的用量仪表盘）**：
+  五张指标卡（总请求数 / 总 Token 及输入·输出拆分 / 错误率 / 平均首字延迟 / 活跃 Key）+ Token
+  用量堆叠面积图（≤3 天按小时、更长按天，按调用方本地时区切天）+ 按模型用量占比条；
+  admin 类可切「全站 / 我的」口径（默认全站），非 admin 只看自己。
+  新端点 `GET /api/usage/stats?from=&to=&bucket=&tz_offset=&scope=`（会话面，聚合在后端：
+  时间桶 + 按模型两路 GROUP BY，跨度上限 90 天；scope=all 仅 admin 类，否则 403）。
+  数据面差异：Tingly Box 的缓存命中率 / 流式占比两卡需要 requests 表的缓存与流式标记，
+  本站没有这两列，换成同源的平均延迟与活跃 Key 卡（不造假数）。图表用 recharts（MIT）。
 - **声称模型支持多选**（2026-10-25）：`claimed_models` 全量接收（此前只取第一个），
   L1 目录比对按条判定——全部命中 `verified`、部分命中 `unverified`（入池 + 复检，
   证据列命中/未命中明细）、目录非空但全不命中才 `suspect`。前端 API 供应商 Tab 的

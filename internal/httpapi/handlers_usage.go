@@ -51,6 +51,10 @@ type TenantUsageStore interface {
 	QuotaRows(ctx context.Context, accountID string) ([]UsageQuotaRow, error)
 	// RequestLogs 按筛选取调用日志（行 + 总数）。
 	RequestLogs(ctx context.Context, accountID string, f UsageLogFilter) ([]UsageLogRow, int64, error)
+	// RequestStats 聚合请求统计（仪表盘：总量 + 时间桶 + 按模型）。
+	// accountAll=true 时忽略 accountID 做整站聚合（调用前 handler 已验过
+	// admin 类——桥只翻译不判定）。
+	RequestStats(ctx context.Context, accountID string, accountAll bool, f UsageLogFilter, bucketSeconds, tzOffsetSeconds int64) (UsageStats, error)
 	// SessionsOf 取我的会话列表（不含 token）。
 	SessionsOf(ctx context.Context, accountID string) ([]UsageSessionRow, error)
 	// RevokeSession 吊销我的指定会话（id 必须属于该账户，否则 not_found）。
@@ -282,6 +286,172 @@ func (s *Server) HandleUsageLogs(deps *TenantUsageDeps) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"data": out, "total": total, "next_cursor": nil,
 		})
+	}
+}
+
+// ── 仪表盘（GET /api/usage/stats）─────────────────────────────────
+
+// UsageStatsTotals 是筛选范围内的合计。平均延迟由 Sum/N 两列由 handler 除出
+// （没有样本 = null，不冒充 0ms）；Token 是输入+输出之和（缓存归输入侧，
+// 上游未拆时不造数）。
+type UsageStatsTotals struct {
+	Requests    int64
+	Failed      int64
+	InTokens    int64
+	OutTokens   int64
+	ActiveKeys  int64
+	TTFTSum     int64
+	TTFTN       int64
+	DurationSum int64
+	DurationN   int64
+}
+
+// UsageStatsBucket 是一个时间桶（Start 为 Unix 秒；响应时转 RFC3339）。
+type UsageStatsBucket struct {
+	Start     int64
+	Requests  int64
+	Failed    int64
+	InTokens  int64
+	OutTokens int64
+}
+
+// UsageStatsModel 是按抽象模型聚合的一行。
+type UsageStatsModel struct {
+	Model     string
+	Requests  int64
+	Failed    int64
+	InTokens  int64
+	OutTokens int64
+}
+
+// UsageStats 是仪表盘的一次聚合（总量 + 时间桶 + 按模型）。
+type UsageStats struct {
+	Totals  UsageStatsTotals
+	Buckets []UsageStatsBucket
+	Models  []UsageStatsModel
+}
+
+// HandleUsageStats GET /api/usage/stats?from=&to=&bucket=&tz_offset=&scope=
+//
+// 仪表盘读模型（对齐 Tingly Box 的用量仪表盘：五张合计卡 + Token 时间序列 +
+// 按模型用量）。参数：
+//
+//	from/to      RFC3339，可选；缺省 [now-24h, now]；跨度上限 90 天
+//	bucket       hour|day（缺省按跨度：≤72h 用 hour，否则 day）
+//	tz_offset    调用方时区相对 UTC 的秒数（东八区 = 28800）——按天切桶
+//	             必须按调用方的当地零点，否则「今天」会从 UTC 零点开始
+//	scope        own（缺省，只看自己）| all（仅 admin 类，整站聚合）
+//
+// 为什么聚合在后端而不是前端拉日志自己算：日志端点 limit 上限 200，
+// 前端翻页聚合既慢又会把「超过 200 条的部分」静默丢掉——仪表盘要的是
+// 准确的总量，这只有 SQL GROUP BY 能给。
+func (s *Server) HandleUsageStats(deps *TenantUsageDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := requireTenant(w, r, deps)
+		if !ok {
+			return
+		}
+		q := r.URL.Query()
+		now := s.now(deps)
+		from, to := now.Add(-24*time.Hour), now
+		if v, err := time.Parse(time.RFC3339, q.Get("from")); err == nil {
+			from = v
+		}
+		if v, err := time.Parse(time.RFC3339, q.Get("to")); err == nil {
+			to = v
+		}
+		if !from.Before(to) {
+			writeError(w, http.StatusBadRequest, "invalid_request", "from 必须早于 to", nil)
+			return
+		}
+		const maxSpan = 90 * 24 * time.Hour
+		if to.Sub(from) > maxSpan {
+			writeError(w, http.StatusBadRequest, "invalid_request", "时间跨度上限 90 天", nil)
+			return
+		}
+
+		// 桶宽：显式指定优先；否则按跨度自动选（与前端的时间范围选择器同节奏）。
+		var bucketSeconds int64 = 86400
+		if to.Sub(from) <= 72*time.Hour {
+			bucketSeconds = 3600
+		}
+		switch q.Get("bucket") {
+		case "hour":
+			bucketSeconds = 3600
+		case "day":
+			bucketSeconds = 86400
+		case "":
+		default:
+			writeError(w, http.StatusBadRequest, "invalid_request", "bucket 取值须为 hour/day", nil)
+			return
+		}
+
+		// 时区偏移：秒数（local-UTC）。abs 上限 ±14h（现实时区表的边界），
+		// 超界按 UTC 处理——分桶错一档好过让畸形参数变成 500。
+		tzOffset := int64(0)
+		if v, err := strconv.ParseInt(q.Get("tz_offset"), 10, 64); err == nil {
+			if v >= -14*3600 && v <= 14*3600 {
+				tzOffset = v
+			}
+		}
+
+		// scope=all 只给 admin 类：整站聚合包含其他账户的调用量，与 01-ia
+		// 「跨类资源不聚合展示」不冲突（这里只有数字没有行），但仍按能力类
+		// 把关——没有 admin 类的调用一律 403，不给探测面。
+		scopeAll := false
+		switch q.Get("scope") {
+		case "all":
+			if !p.Classes.Has(auth.ClassAdmin) {
+				writeError(w, http.StatusForbidden, "forbidden", "scope=all 需要 admin 类", nil)
+				return
+			}
+			scopeAll = true
+		case "", "own":
+		default:
+			writeError(w, http.StatusBadRequest, "invalid_request", "scope 取值须为 own/all", nil)
+			return
+		}
+
+		stats, err := deps.Store.RequestStats(r.Context(), p.AccountID, scopeAll,
+			UsageLogFilter{From: from, To: to}, bucketSeconds, tzOffset)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "聚合用量统计失败", nil)
+			return
+		}
+
+		// 平均延迟：样本数为 0 时输出 null（没有样本 ≠ 平均 0ms）。
+		avgTTFT, avgDur := any(nil), any(nil)
+		if stats.Totals.TTFTN > 0 {
+			avgTTFT = stats.Totals.TTFTSum / stats.Totals.TTFTN
+		}
+		if stats.Totals.DurationN > 0 {
+			avgDur = stats.Totals.DurationSum / stats.Totals.DurationN
+		}
+		buckets := make([]map[string]any, 0, len(stats.Buckets))
+		for _, b := range stats.Buckets {
+			buckets = append(buckets, map[string]any{
+				"start": unixRFC3339(b.Start), "requests": b.Requests,
+				"failed": b.Failed, "input_tokens": b.InTokens, "output_tokens": b.OutTokens,
+			})
+		}
+		models := make([]map[string]any, 0, len(stats.Models))
+		for _, m := range stats.Models {
+			models = append(models, map[string]any{
+				"model": m.Model, "requests": m.Requests, "failed": m.Failed,
+				"input_tokens": m.InTokens, "output_tokens": m.OutTokens,
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+			"from": unixRFC3339(from.Unix()), "to": unixRFC3339(to.Unix()),
+			"bucket_seconds": bucketSeconds,
+			"totals": map[string]any{
+				"requests": stats.Totals.Requests, "failed": stats.Totals.Failed,
+				"input_tokens": stats.Totals.InTokens, "output_tokens": stats.Totals.OutTokens,
+				"active_keys": stats.Totals.ActiveKeys,
+				"avg_ttft_ms": avgTTFT, "avg_duration_ms": avgDur,
+			},
+			"buckets": buckets, "models": models,
+		}})
 	}
 }
 

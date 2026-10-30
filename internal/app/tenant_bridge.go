@@ -166,6 +166,58 @@ func (b *tenantBridge) RequestLogs(ctx context.Context, accountID string, f http
 	return out, total, nil
 }
 
+// RequestStats 把仪表盘统计请求翻译成 store 调用（字段逐个抄，与 RequestLogs
+// 同一纪律）。accountAll=true 时把「账户条件」换成 nil——store 侧 nil 才是
+// 整站聚合；空串会被当成一个真账户 id（查不到数据但不报错），两种形状不能混。
+func (b *tenantBridge) RequestStats(ctx context.Context, accountID string, accountAll bool,
+	f httpapi.UsageLogFilter, bucketSeconds, tzOffsetSeconds int64) (httpapi.UsageStats, error) {
+	var sf store.RequestLogFilter
+	if !f.From.IsZero() {
+		sf.From = f.From.Unix()
+	}
+	if !f.To.IsZero() {
+		sf.To = f.To.Unix()
+	}
+	var accountIDArg *string
+	if !accountAll {
+		id, err := b.parse(accountID)
+		if err != nil {
+			return httpapi.UsageStats{}, err
+		}
+		accountIDArg = &id
+	}
+	stats, err := b.reps.Usage.RequestStats(ctx, accountIDArg, sf, bucketSeconds, tzOffsetSeconds)
+	if err != nil {
+		return httpapi.UsageStats{}, err
+	}
+	out := httpapi.UsageStats{
+		Buckets: make([]httpapi.UsageStatsBucket, 0, len(stats.Buckets)),
+		Models:  make([]httpapi.UsageStatsModel, 0, len(stats.Models)),
+	}
+	out.Totals.Requests = stats.Totals.Requests
+	out.Totals.Failed = stats.Totals.Failed
+	out.Totals.InTokens = stats.Totals.InTokens
+	out.Totals.OutTokens = stats.Totals.OutTokens
+	out.Totals.ActiveKeys = stats.Totals.ActiveKeys
+	out.Totals.TTFTSum = stats.Totals.TTFTSum
+	out.Totals.TTFTN = stats.Totals.TTFTN
+	out.Totals.DurationSum = stats.Totals.DurationSum
+	out.Totals.DurationN = stats.Totals.DurationN
+	for _, bk := range stats.Buckets {
+		out.Buckets = append(out.Buckets, httpapi.UsageStatsBucket{
+			Start: bk.Start, Requests: bk.Requests, Failed: bk.Failed,
+			InTokens: bk.InTokens, OutTokens: bk.OutTokens,
+		})
+	}
+	for _, m := range stats.Models {
+		out.Models = append(out.Models, httpapi.UsageStatsModel{
+			Model: m.Model, Requests: m.Requests, Failed: m.Failed,
+			InTokens: m.InTokens, OutTokens: m.OutTokens,
+		})
+	}
+	return out, nil
+}
+
 func (b *tenantBridge) SessionsOf(ctx context.Context, accountID string) ([]httpapi.UsageSessionRow, error) {
 	id, err := b.parse(accountID)
 	if err != nil {

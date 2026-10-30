@@ -44,6 +44,7 @@ export const PATHS = {
   keys: '/api/account/keys',
   usageOverview: '/api/usage/overview',
   usageLogs: '/api/usage/logs',
+  usageStats: '/api/usage/stats',
   usageModels: '/api/usage/models',
   // 管理面（docs/api/02-admin.md）
   adminAccounts: '/api/admin/accounts',
@@ -235,8 +236,8 @@ export function getList<T>(
 }
 
 /** GET 单条：/{id}。后端统一包 {data:...}（docs/api/02-admin.md 3.1），这里拆封。 */
-export async function getOne<T>(path: string): Promise<T> {
-  const env = await request<{ data: T }>(path)
+export async function getOne<T>(path: string, query?: RequestOptions['query']): Promise<T> {
+  const env = await request<{ data: T }>(path, { query })
   return env.data
 }
 

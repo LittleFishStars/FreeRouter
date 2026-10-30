@@ -701,6 +701,141 @@ a.metric-link:hover {
   font-size: 0.8125rem;
   line-height: 1.4;
 }
+/* ---------- 仪表盘（/usage/dashboard，Tingly Box 式）---------- */
+
+/* 五张指标卡一排：宽屏五等分，窄屏自动换行（minmax 保证卡不塌）。 */
+.dash-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+@media (max-width: 1100px) {
+  .dash-grid {
+    grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  }
+}
+
+.dash-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 1rem 1.1rem 0.9rem;
+  /* 卡长在页面（Section 外层）上：比 page 深一档（card），Tingly 的指标卡
+     就是一块独立填充块；与 .metric（长在 Section 里用 block）不同层。 */
+  background: var(--fr-card);
+  border-radius: var(--radius);
+}
+
+.dash-value {
+  /* 仪表盘数字比普通指标卡再大一档：它就是这页的主角 */
+  font-size: 2rem;
+}
+
+.dash-sub {
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-chart {
+  /* 图表容器：固定高度给 ResponsiveContainer，内边距留呼吸感 */
+  height: 300px;
+  padding: 0.5rem 0.25rem 0;
+}
+
+/* 按模型用量：一行 = 名称 + 占比条 + 数字；占比条用 inset 底 + 主色填充。 */
+.dash-models {
+  list-style: none;
+  margin: 0.25rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.dash-model {
+  display: grid;
+  grid-template-columns: minmax(6rem, 12rem) 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.dash-model-name {
+  font-weight: 600;
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-model-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--fr-inset);
+  overflow: hidden;
+}
+
+.dash-model-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--fr-primary);
+}
+
+.dash-model-meta {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .dash-model {
+    grid-template-columns: 1fr auto;
+  }
+  .dash-model-bar {
+    grid-column: 1 / -1;
+  }
+}
+
+/* 分段选择器：inset 底圆角容器，选中项主色实心块（与壳层选中态同语言）。 */
+.seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--fr-inset);
+  border-radius: calc(var(--radius) + 2px);
+}
+
+.seg-item {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8125rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.seg-item:hover {
+  background: var(--fr-hover);
+}
+
+.seg-item.seg-on {
+  background: var(--fr-primary);
+  color: var(--fr-on-primary);
+  cursor: default;
+}
+
+.seg-item:focus-visible {
+  outline: 2px solid var(--fr-primary);
+  outline-offset: 1px;
+}
 
 /* ---------- 进度条 ---------- */
 

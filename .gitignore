@@ -1,4 +1,6 @@
 node_modules/
+# 会话临时目录：截图自检、抓包样本等，一律不入库
+.tmp/
 *.log
 .env
 .env.local
