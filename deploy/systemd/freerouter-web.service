@@ -1,0 +1,66 @@
+# FreeRouter Web —— systemd 单元（形态 D：前后端分离，前端边缘服务）
+#
+# 与 freerouter.service（后端 API）成对部署：
+#   freerouter       只监听 127.0.0.1:8080（回环，外部不可达）
+#   freerouter-web   监听 0.0.0.0:8081（唯一对外入口：静态控制台 + /api 反代）
+#
+# 安装（见 docs/ops/02-deploy.md 形态 D；首次初始化用 deploy/server/bootstrap.sh）：
+#   sudo install -m 0755 bin/freerouter-web /usr/local/bin/freerouter-web
+#   sudo install -D -m 0644 deploy/systemd/freerouter-web.service /etc/systemd/system/freerouter-web.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now freerouter-web
+#
+# 为什么 After 而不是 Requires：后端重启/升级期间前端照常出页面，
+# /api 返回 502（webserver 的 ErrorHandler 兜底），比整站一起抖好排查。
+
+[Unit]
+Description=FreeRouter Web —— 控制台静态前端 + API 反代（唯一对外入口）
+Documentation=file:///opt/freerouter/docs/ops/02-deploy.md
+After=network-online.target freerouter.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=freerouter
+Group=freerouter
+
+# 三个参数与 bootstrap.sh 安装的目录布局一一对应：
+#   /opt/freerouter/web/dist  Actions 产物落点（vite 构建产物）
+#   127.0.0.1:8080            freerouter.service 的回环监听
+ExecStart=/usr/local/bin/freerouter-web -addr 0.0.0.0:8081 -root /opt/freerouter/web/dist -upstream http://127.0.0.1:8080
+
+UMask=0077
+WorkingDirectory=/var/lib/freerouter
+
+Restart=on-failure
+RestartSec=3s
+KillSignal=SIGTERM
+# webserver 自身优雅窗口 10s，留余量。
+TimeoutStopSec=20
+TimeoutStartSec=30
+
+# 只读静态产物 + 纯网络进程，没有数据目录可写面。
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadOnlyPaths=/opt/freerouter/web/dist
+PrivateDevices=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=freerouter-web
+
+[Install]
+WantedBy=multi-user.target

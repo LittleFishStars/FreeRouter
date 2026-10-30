@@ -119,7 +119,7 @@ type Credential struct {
 	// 余额（2026-10-28 凭据池「刷新余额」）：balanceText 由 Go 侧把上游应答
 	// 格式化成展示串（如 "1,234 积分"）；空串 = 从未查询过或查询失败。
 	// checkedAt 是该串的落库时刻（UTC 秒，0 = 同上）。
-	BalanceText    string
+	BalanceText      string
 	BalanceCheckedAt int64
 }
 

@@ -451,7 +451,6 @@ func ptr[T any](v T) *T { return &v }
 func (r *ModelRefresher) WithHTTPModels(fn func(ctx context.Context, u store.Upstream) ([]dshprovider.ModelInfo, error)) *ModelRefresher {
 	r.httpModels = fn
 	return r
-	return r
 }
 
 // WithStaticCatalog 注入 OAuth 反代上游的静态目录拉取实现（2026-10-30）。

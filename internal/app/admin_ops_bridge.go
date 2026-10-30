@@ -2,10 +2,10 @@ package app
 
 import (
 	"context"
-	"log/slog"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -148,7 +148,6 @@ func (a *App) buildRefreshBridge() httpapi.AdminModelRefresher {
 }
 
 var _ = json.Marshal // 保留 json 导入供后续扩展（响应里可能出现嵌套结构）
-
 
 // balanceRefreshBridge 实现 httpapi.AdminCredentialBalanceRefresher。
 // 解密凭据 → sidecar 查上游余额 → 落库；凭据明文只过 sidecar 的 stdio

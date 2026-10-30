@@ -41,17 +41,27 @@
 Unix socket 会留下**孤儿监听**（文件还在，进程已死），TCP 则多一个可被本机其它
 进程误连的端口。详情见 [../architecture/04-sidecar.md](../architecture/04-sidecar.md) 2.1。
 
-### 1.2 三种部署形态
+### 1.2 部署形态
 
 | 形态 | 适用 | TLS | 复杂度 |
 |---|---|---|---|
 | **A. 本地直连（默认）** | 先本地跑通、单机自用 | 默认 `tls.mode=off`（明文）；需要时内置 `files` | 低 |
 | **B. Docker Compose** | 生产形态 | 同上，可选内置 | 中 |
 | **C. 反代前置（可选）**（Caddy / Nginx / Traefik） | 已有反代、多站点共用 443 | 反代终止 | 中 |
+| **D. 前后端分离 + Actions 部署** | 服务器生产（YlxcServer 实际形态）：控制台与 API 拆成两个 systemd 服务，git push 自动部署 | 同 A | 中 |
+
+形态 D 的进程拓扑与其它形态完全一致（仍是 Go 主进程 + Node sidecar），只是控制台不再嵌进后端二进制：
+
+- **`freerouter.service`（后端）**：`make build` 产物（不带 `webui_dist`），只监听 `127.0.0.1:8080`，外部不可达；
+- **`freerouter-web.service`（前端边缘服务）**：`make webserver` 产物（`deploy/webserver`，零第三方依赖），监听 `0.0.0.0:8081`，静态托管 vite 产物 + 把 `/api/*` 反代到回环后端（`FlushInterval=-1` 保 SSE 流式）。两个服务对浏览器呈现一个同源站点，**前后端代码零 CORS 改动**；
+- **部署链路**：`git push` → GitHub Actions build job（hosted runner：pnpm + go 构建）→ artifact → deploy job（服务器 self-hosted runner，标签 `freerouter-deploy`）落 staging → root 受控脚本 `install-update.sh` 安装并重启两个服务。runner 对机器的 root 权限收敛为 sudoers 里的单条白名单；
+- **一次性初始化**：`deploy/server/bootstrap.sh`（用法见脚本头部注释）。
+
+为什么后端仍保留单体形态（形态 A 的 `make release`）：本地开发调试一个二进制最省事；形态 D 只改变「生产怎么摆」，不改变进程内结构。
 
 形态 A 与 B 是**默认路径**：直接以 `http://<ip>:<port>` 提供服务，不需要任何前置组件。
 形态 C 是**可选**的，只有部署者自己决定加反代时才用（见 §6）。
-三者只影响「谁在监听、谁终止 TLS」，不影响进程拓扑——§1.1 的两个进程在三种形态下完全相同。
+四者只影响「谁在监听、谁终止 TLS、产物怎么摆」，不影响进程拓扑——§1.1 的两个进程在四种形态下完全相同。
 
 **为什么把「本地直连」放在第一位**：用户 2026-10-19 拍板「不用反代，默认直接通过
 ip+端口访问」，且部署位置是「先本地跑」。文档的默认路径必须与这个决定一致——

@@ -1,0 +1,123 @@
+# FreeRouter 自动部署流水线（形态 D：前后端分离，两个 systemd 服务）
+#
+# 架构（与 MyHomeWeb 同款分体式，官方推荐形态）：
+#   · build  —— GitHub 托管 runner (ubuntu-latest)：pnpm 构建前端 + go 构建后端与边缘服务
+#   · deploy —— 服务器 YlxcServer 上的 self-hosted runner（标签 freerouter-deploy）落盘并重启服务
+#
+# 部署产物与目标布局：
+#   bin/freerouter        → /usr/local/bin/freerouter       （后端 API，监听 127.0.0.1:8080）
+#   bin/freerouter-web    → /usr/local/bin/freerouter-web   （前端边缘服务，监听 0.0.0.0:8081）
+#   sidecar/              → /opt/freerouter/sidecar/        （Node sidecar，providers-hub 适配）
+#   internal/webui/dist/  → /opt/freerouter/web/dist/       （vite 控制台产物）
+#
+# 安全设计：
+#   · 无 SSH 私钥参与：deploy job 跑在目标服务器本机，零凭证同步
+#   · job 最小权限：build 只读仓库；deploy 仅 actions:read（下载 artifact 必需）
+#   · 私有仓库 + 仅 main 推送/手动触发，self-hosted runner 不暴露给不受信 PR
+#   · root 操作收敛到一条 sudo 白名单（/opt/freerouter/bin/install-update.sh），
+#     脚本 root 属主、无参数、路径写死（见 deploy/server/install-update.sh）
+#   · concurrency 串行，避免两次部署同时重启服务
+#
+# 前置条件（服务器 YlxcServer，由 deploy/server/bootstrap.sh 一次性完成）：
+#   · freerouter 系统用户、/opt/freerouter/{staging,bin}、/var/lib/freerouter、/etc/freerouter
+#   · DSH 依赖根（sidecar 的 B 层依赖）在 /usr/lib/node_modules/@deepseek-ai/dsh/node_modules
+#   · ghrunner 免密 sudo /opt/freerouter/bin/install-update.sh
+#   · runner 注册到本仓库，标签 freerouter-deploy
+
+name: Deploy FreeRouter
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-freerouter
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (GitHub hosted)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Build console (vite)
+        run: |
+          cd web
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build backend & web server
+        run: |
+          VERSION=$(git describe --tags --always)
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          PKG=github.com/LittleFishStars/FreeRouter
+          LDFLAGS="-X ${PKG}/internal/version.Version=${VERSION} -X ${PKG}/internal/version.Commit=${COMMIT} -X ${PKG}/internal/version.BuildTime=${BUILD_TIME}"
+          # 后端不带 webui_dist：分离形态下控制台由 freerouter-web 托管（形态 D）
+          go build -trimpath -ldflags "$LDFLAGS" -o bin/freerouter ./cmd/freerouter
+          go build -trimpath -ldflags "$LDFLAGS" -o bin/freerouter-web ./deploy/webserver
+          ls -lh bin/
+
+      - name: Upload deploy artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: freerouter-dist
+          path: |
+            bin/freerouter
+            bin/freerouter-web
+            sidecar/
+            internal/webui/dist/
+          retention-days: 3
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy (server self-hosted)
+    needs: build
+    runs-on: [self-hosted, freerouter-deploy]
+    permissions:
+      actions: read
+    steps:
+      - name: Download deploy artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: freerouter-dist
+          path: payload
+
+      - name: Stage payload
+        run: |
+          # staging 是 ghrunner 与 root 之间的交接区：runner 只能写这里，
+          # 安装动作全部收敛到 root 受控脚本（install-update.sh）里执行。
+          mkdir -p /opt/freerouter/staging
+          rsync -aO --no-owner --no-group --delete payload/ /opt/freerouter/staging/
+          find /opt/freerouter/staging -type f | wc -l
+
+      - name: Install & restart services
+        run: |
+          sudo -n /opt/freerouter/bin/install-update.sh
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf payload

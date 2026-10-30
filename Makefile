@@ -23,7 +23,7 @@ LDFLAGS := -X $(PKG)/internal/version.Version=$(VERSION) \
            -X $(PKG)/internal/version.Commit=$(COMMIT) \
            -X $(PKG)/internal/version.BuildTime=$(BUILD_TIME)
 
-.PHONY: all build release test test-race vet fmt tidy run print-config check-config contract clean web help docs-baseline docs-check docs-brief
+.PHONY: all build release webserver test test-race vet fmt tidy run print-config check-config contract clean web help docs-baseline docs-check docs-brief
 
 all: build
 
@@ -41,6 +41,14 @@ release: web
 	@mkdir -p bin
 	$(GO) build -trimpath -tags webui_dist -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/freerouter
 	@echo "已构建 $(BINARY)：$(VERSION) ($(COMMIT))，内嵌前端"
+
+## webserver: 构建前端边缘服务 freerouter-web（形态 D：前后端分离用）
+# 静态托管控制台产物 + 把 /api 反代到回环后端，编译零第三方依赖。
+# 与后端分离部署时用这个二进制；单体形态（release）不需要它。
+webserver:
+	@mkdir -p bin
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/freerouter-web ./deploy/webserver
+	@echo "已构建 bin/freerouter-web：$(VERSION) ($(COMMIT))"
 
 ## test: 跑全部单元测试
 test:
