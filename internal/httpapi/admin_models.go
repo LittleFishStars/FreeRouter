@@ -64,6 +64,7 @@ func (s *Server) mountAdminModels(r chi.Router, deps *AdminDeps) {
 	r.Patch("/abstract-models/{id}", s.handleAdminAbstractModelPatch(deps))
 	r.Put("/abstract-models/{id}/candidates", s.handleAdminAbstractCandidatesPut(deps))
 	r.Post("/abstract-models/{id}/dry-run", s.handleAdminAbstractDryRun(deps))
+	r.Post("/abstract-models/{id}/connectivity", s.handleAdminAbstractConnectivity(deps))
 	r.Get("/abstract-models/{id}/chain", s.handleAdminAbstractChain(deps))
 	r.Put("/abstract-models/{id}/deprecation", s.handleAdminAbstractDeprecation(deps))
 	r.Get("/abstract-models/{id}/references", s.handleAdminAbstractReferences(deps))
@@ -649,6 +650,113 @@ func (s *Server) handleAdminAbstractCandidatesPut(deps *AdminDeps) http.HandlerF
 // ---------------------------------------------------------------------------
 // 干跑与替代链（§8.3 / §8.4）
 // ---------------------------------------------------------------------------
+
+// handleAdminAbstractConnectivity POST /api/admin/abstract-models/{id}/connectivity。
+//
+// 「检验连通性」（2026-10-31 用户要求）：对抽象模型的**每条候选**做一次实时
+// 轻量探测。与 dry-run 的分工：dry-run 是静态干跑（声明层面的候选/替代链
+// 检查，不发任何网络请求），这里是**真发请求**——每条候选 → 真实模型 → 上游，
+// 按上游 kind 分派探测（relay 问 sidecar 健康；vendor/selfhosted 打
+// {base}/models），把「哪条候选的出站路径断了」逐条亮出来。
+//
+// 为什么探上游而不是发一次真实推理：推理要花上游额度，且单次成功不代表
+// 每条候选都通；探测无额度成本（Upstream.Probe 的既有纪律），管理面可以随手点。
+//
+// 同一上游的多个候选共享一次探测结果（按 upstream_id 缓存）——探测的是
+// 出站路径，与具体模型无关；候选行仍逐条列出（哪条候选挂了要看得到）。
+func (s *Server) handleAdminAbstractConnectivity(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "模型存储", deps.Models != nil) {
+			return
+		}
+		if deps.UpstreamTest == nil {
+			deps.need(w, "上游测试", false)
+			return
+		}
+		id, ok := abstractModelIDParam(w, r)
+		if !ok {
+			return
+		}
+		ctx := r.Context()
+		m, err := deps.Models.GetAbstractModel(ctx, id)
+		if err != nil {
+			mapAdminError(w, err, "抽象模型")
+			return
+		}
+		cands, err := deps.Models.ListCandidates(ctx, id)
+		if err != nil {
+			mapAdminError(w, err, "候选集")
+			return
+		}
+		// 探测按上游去重；结果行逐候选一条。
+		type connRow struct {
+			RealModelID  string `json:"real_model_id"`
+			DisplayName  string `json:"display_name,omitempty"`
+			ModelStatus  string `json:"model_status,omitempty"`
+			UpstreamID   string `json:"upstream_id,omitempty"`
+			UpstreamName string `json:"upstream_name,omitempty"`
+			OK           bool   `json:"ok"`
+			LatencyMs    *int64 `json:"latency_ms,omitempty"`
+			HTTPStatus   *int64 `json:"http_status,omitempty"`
+			Reason       string `json:"reason,omitempty"`
+		}
+		probeCache := map[string]map[string]any{}
+		probe := func(upstreamID string) map[string]any {
+			if hit, ok := probeCache[upstreamID]; ok {
+				return hit
+			}
+			res, err := deps.UpstreamTest.TestUpstream(ctx, upstreamID)
+			if err != nil {
+				res = map[string]any{"ok": false, "reason": err.Error()}
+			}
+			probeCache[upstreamID] = res
+			return res
+		}
+		rows := make([]connRow, 0, len(cands))
+		okCount := 0
+		for _, c := range cands {
+			row := connRow{RealModelID: c.RealModelID}
+			rm, gerr := deps.Models.GetRealModel(ctx, c.RealModelID)
+			if gerr != nil {
+				row.OK = false
+				row.Reason = "真实模型不存在或已被移除"
+				rows = append(rows, row)
+				continue
+			}
+			row.DisplayName = rm.DisplayName
+			row.ModelStatus = rm.Status
+			row.UpstreamID = rm.UpstreamID
+			if u, uerr := deps.Upstreams.GetUpstream(ctx, rm.UpstreamID); uerr == nil {
+				row.UpstreamName = u.Name
+			}
+			res := probe(rm.UpstreamID)
+			if v, ok := res["ok"].(bool); ok {
+				row.OK = v
+			}
+			if v, ok := res["latency_ms"].(int64); ok {
+				ms := v
+				row.LatencyMs = &ms
+			}
+			if v, ok := res["http_status"].(int); ok {
+				hs := int64(v)
+				row.HTTPStatus = &hs
+			}
+			if v, ok := res["reason"].(string); ok {
+				row.Reason = v
+			}
+			if row.OK {
+				okCount++
+			}
+			rows = append(rows, row)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+			"model":   m.Name,
+			"results": rows,
+			"ok":      okCount,
+			"failed":  len(rows) - okCount,
+		}})
+	}
+}
 
 // handleAdminAbstractDryRun POST /abstract-models/{id}/dry-run。
 //

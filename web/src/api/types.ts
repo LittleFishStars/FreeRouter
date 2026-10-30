@@ -375,6 +375,26 @@ export interface ChainPreview {
   }
 }
 
+/** 一条候选的连通性检验结果（POST /abstract-models/{id}/connectivity）。 */
+export interface ConnectivityRow {
+  real_model_id: string
+  display_name?: string
+  model_status?: string
+  upstream_id?: string
+  upstream_name?: string
+  ok: boolean
+  latency_ms?: number
+  http_status?: number
+  reason?: string
+}
+
+export interface ConnectivityResult {
+  model: string
+  results: ConnectivityRow[]
+  ok: number
+  failed: number
+}
+
 export interface DryRunResult {
   reachable: number
   no_candidate: number

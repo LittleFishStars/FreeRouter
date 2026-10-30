@@ -11,6 +11,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApi } from '../../hooks/useApi'
 import { ACTION_ICON, TableAction, TableActions, ToolButton } from '../../components/IconButtons'
 import {
+  checkAbstractModelConnectivity,
   createAbstractModel,
   dryRunAbstractModel,
   getAbstractModel,
@@ -24,6 +25,7 @@ import type {
   AdminAbstractModel,
   AdminModelSourceModel,
   Candidate,
+  ConnectivityResult,
   DryRunResult,
   ModelCapabilities
 } from '../../api/types'
@@ -35,7 +37,9 @@ import {
   IconDown,
   IconPlus,
   IconRefresh,
+  IconTest,
   IconUp,
+  IconWarn,
 } from '../../icons'
 import { CandidateDialog } from './CandidateDialog'
 import ConfirmDialog from '../../components/ConfirmDialog'
@@ -269,6 +273,23 @@ function ModelRow({
   const editTo = `/admin/abstract-models/${encodeURIComponent(m.id)}`
   const [open, setOpen] = useState(false)
 
+  // 连通性检验（2026-10-31）：逐候选实时探测出站路径，结果芯片条挂在行头下
+  const [conn, setConn] = useState<ConnectivityResult | null>(null)
+  const [connBusy, setConnBusy] = useState(false)
+  const [connError, setConnError] = useState<string | null>(null)
+
+  async function runConnectivity() {
+    setConnBusy(true)
+    setConnError(null)
+    try {
+      setConn((await checkAbstractModelConnectivity(m.id)).data)
+    } catch (e) {
+      setConnError(e instanceof Error ? e.message : '检验失败')
+    } finally {
+      setConnBusy(false)
+    }
+  }
+
   return (
     <div className="am-row" data-expanded={expanded}>
       <div className="am-row-head" onClick={onToggle}>
@@ -289,12 +310,38 @@ function ModelRow({
         <span className="am-row-ops" onClick={(e) => e.stopPropagation()}>
           {/* 行头不放「候选集」按钮：展开区的「+ 添加模型」与候选芯片都打开
               同一个编辑弹窗，行头只留低频的「弃用」入口。 */}
+          <button type="button" className="btn-ghost" disabled={connBusy} onClick={() => void runConnectivity()}>
+            <IconTest size="xs" />
+            {connBusy ? '检验中…' : '检验连通性'}
+          </button>
           <Link to={`${editTo}/deprecation`}>弃用</Link>
           <button type="button" className="am-expand" data-open={expanded} onClick={onToggle} aria-expanded={expanded} aria-label={expanded ? '收起候选' : '展开候选'}>
             <IconChevronDown size="sm" />
           </button>
         </span>
       </div>
+      {connError && <div className="am-explain" data-tone="warn">检验失败：{connError}</div>}
+      {conn && (
+        <div className="am-conn">
+          <span className="am-conn-sum" data-tone={conn.failed === 0 ? 'ok' : 'warn'}>
+            {conn.failed === 0 ? `全部 ${conn.ok} 条可达` : `${conn.ok} 可达 / ${conn.failed} 不可达`}
+          </span>
+          {conn.results.map((r) => (
+            <span
+              key={r.real_model_id}
+              className="am-conn-item"
+              data-ok={r.ok}
+              title={`${r.upstream_name ?? r.upstream_id ?? '未知上游'}：${r.reason ?? (r.ok ? '可达' : '不可达')}${r.latency_ms != null ? `（${r.latency_ms}ms）` : ''}`}
+            >
+              {r.ok ? <IconCheck size="xs" /> : <IconWarn size="xs" />}
+              <span className="am-conn-src">{r.upstream_name ?? r.upstream_id ?? '未知上游'}</span>
+              <span className="am-conn-model">{r.display_name || r.real_model_id}</span>
+              {r.latency_ms != null && <span className="am-conn-lat">{r.latency_ms}ms</span>}
+            </span>
+          ))}
+          <button type="button" className="btn-ghost am-conn-close" onClick={() => setConn(null)}>收起</button>
+        </div>
+      )}
       {expanded && (
         <div className="am-expand-body">
           {detail === undefined && <div className="am-explain">展开候选…</div>}

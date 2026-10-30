@@ -61,7 +61,8 @@ import type {
   UsageLog,
   UsageStats,
   UsageStatsQuery,
-  UsageOverview
+  UsageOverview,
+  ConnectivityResult
 } from './types'
 
 const seg = (v: string) => encodeURIComponent(v)
@@ -585,6 +586,14 @@ export interface CheckinState {
   last_run_at?: number
   last_run_result?: string
   due_count: number
+}
+
+// ── 抽象模型连通性检验（2026-10-31）────────────────────────────────
+
+/** 一条候选的连通性结果。 */
+/** POST /api/admin/abstract-models/{id}/connectivity —— 逐候选实时探测出站路径（dry-run 是静态干跑，这是真发请求）。 */
+export function checkAbstractModelConnectivity(id: string) {
+  return postWrite<ConnectivityResult>(`${PATHS.adminAbstractModels}/${seg(id)}/connectivity`)
 }
 
 /** POST /api/admin/credentials/{id}/checkin —— 手动签到一条凭据（显式操作，不受开关/到期约束）。 */

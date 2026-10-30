@@ -2210,6 +2210,56 @@ button.am-add-chip {
   color: var(--fr-on-surface-variant);
 }
 
+/* ── 抽象模型连通性检验（2026-10-31）──────────────────────────────
+   行头下的结果芯片条：汇总 + 逐候选芯片（填充色阶，无描边；颜色只给状态）。 */
+.am-conn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.9rem 0.6rem;
+}
+.am-conn-sum {
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.18rem 0.6rem;
+  border-radius: var(--fr-radius-full);
+}
+.am-conn-sum[data-tone='ok'] {
+  background: var(--fr-success-container);
+  color: var(--fr-success);
+}
+.am-conn-sum[data-tone='warn'] {
+  background: var(--fr-warning-container);
+  color: var(--fr-warning);
+}
+.am-conn-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.22rem 0.6rem;
+  border-radius: var(--fr-radius-full);
+  background: var(--fr-inset);
+  font-size: 0.75rem;
+}
+.am-conn-item[data-ok='true'] {
+  color: var(--fr-success);
+}
+.am-conn-item[data-ok='false'] {
+  color: var(--fr-warning);
+}
+.am-conn-src {
+  font-weight: 600;
+}
+.am-conn-model,
+.am-conn-lat {
+  color: var(--fr-on-surface-variant);
+}
+.am-conn-close {
+  padding: 0.15rem 0.55rem;
+  font-size: 0.72rem;
+}
+
 /* 来源行（2026-10-31）：候选芯片标题下标明供应商。左缩进对齐标题行的模型名
    （跳过序号徽标的宽度），层级用最弱一档文字色，不抢标题。 */
 .amd-cur-chip-src {
