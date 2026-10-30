@@ -554,6 +554,24 @@ func TestContractV1MessagesErrorAnthropicShape(t *testing.T) {
 // TestContractV1ModelsList：/v1/models 形状（§5：object list、
 // owned_by 固定 free-router）。
 func TestContractV1ModelsList(t *testing.T) {
+	// 生产装配顺序（Models 先、V1 后）下 catalog 不得被 AttachV1 覆盖丢失——
+	// 否则 /v1/models 恒空 data:[]（2026-10-31 生产实测）。这里按生产顺序重演：
+	s0 := New(Deps{Config: testConfigV1(t), Logger: discardLogger()})
+	s0.AttachV1Models(&fakeCatalog{ids: []string{"smart"}})
+	s0.AttachV1(&fakeUpstream{}, &fakeCandidates{})
+	rec0 := httptest.NewRecorder()
+	s0.HandleV1Models(rec0, v1Request("GET", "/v1/models", ""))
+	if rec0.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200", rec0.Code)
+	}
+	var body0 struct {
+		Data []struct{ ID string `json:"id"` } `json:"data"`
+	}
+	_ = json.Unmarshal(rec0.Body.Bytes(), &body0)
+	if len(body0.Data) != 1 || body0.Data[0].ID != "smart" {
+		t.Fatalf("生产装配顺序下 /v1/models 应返回目录，got %+v", body0.Data)
+	}
+
 	s := newV1Server(t, &fakeUpstream{}, &fakeCandidates{})
 	s.AttachV1Models(&fakeCatalog{ids: []string{"smart", "fast"}})
 

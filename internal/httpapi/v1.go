@@ -598,10 +598,19 @@ var v1Registry = map[*Server]*v1Panel{}
 
 // AttachV1 把上游与候选源接到 Server（Lead 装配路由时调用；测试注入
 // fake 也走这里）。
+//
+// 必须是 merge 语义而非覆盖：生产装配顺序是 AttachV1Models（先，建
+// panel{catalog}）→ AttachV1（后）——覆盖式会让 /v1/models 的目录静默
+// 丢失，走到「目录未接线」的合法空列表分支（2026-10-31 生产实测：
+// chat 全链路 200 而 /v1/models 恒空 data:[]，两者共用同一套可见性闸，
+// 唯一差别就是 catalog 在不在 panel 上）。
 func (s *Server) AttachV1(up Upstream, cs CandidateSource) {
+	if p, ok := v1Registry[s]; ok {
+		p.upstream, p.candidates = up, cs
+		return
+	}
 	v1Registry[s] = &v1Panel{upstream: up, candidates: cs}
 }
-
 // v1Upstream 返回面板的上游实现；未接线时返回 nil（调用方判空走
 // no_candidate 路径——比 panic 好：未接线是部署态不是程序错误）。
 func (s *Server) v1Upstream() Upstream {
