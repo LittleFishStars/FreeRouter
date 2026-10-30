@@ -26,7 +26,14 @@ import {
   putGroupPolicies,
   removeGroupMember
 } from '../../api/endpoints'
-import type { AdminGroup, GroupPool, GroupPolicyQuota, GroupPolicies } from '../../api/types'
+import type {
+  AdminAbstractModel,
+  AdminAccount,
+  AdminGroup,
+  GroupPool,
+  GroupPolicyQuota,
+  GroupPolicies
+} from '../../api/types'
 import { useApi } from '../../hooks/useApi'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import { ACTION_ICON, TableAction, TableActions, ToolButton } from '../../components/IconButtons'
@@ -57,8 +64,95 @@ const UNITS = [
 // ExpDetail 是展开区的按需加载态（与抽象模型列表同模式）：列表端点只有
 type ExpDetail =
   | { state: 'loading' }
-  | { state: 'ready'; models: string[] }
+  | { state: 'ready'; models: string[]; members: string[] }
   | { state: 'error' }
+
+// GroupPickDialog 是组列表就地编辑的选择浮窗（2026-10-31）。
+//
+// 为什么不用 ConfirmDialog：那边是「危险动作 + 输组名确认」的重量级二次确认，
+// 这边是「列表里勾几项 → 确认」的轻量选择——两组交互混用会让勾选本身失去意义。
+// 泛型项由调用方构造（模型授权 / 成员添加共用一个壳）；确认语义由调用方定
+// （模型 = 整表替换、成员 = 纯增量），浮窗只在 hint 里说清楚。
+function GroupPickDialog({
+  title,
+  hint,
+  confirmLabel,
+  busy,
+  error,
+  items,
+  emptyHint,
+  onCancel,
+  onConfirm
+}: {
+  title: string
+  hint: string
+  confirmLabel: string
+  busy: boolean
+  error: unknown
+  items: { id: string; label: string; sub?: string; checked?: boolean; warn?: string }[]
+  emptyHint?: string
+  onCancel: () => void
+  onConfirm: (selected: string[]) => void
+}) {
+  // 初始勾选 = 调用方给的 checked（模型授权回显当前集合；成员默认全不勾）。
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(items.filter((i) => i.checked).map((i) => i.id))
+  )
+  const [query, setQuery] = useState('')
+  const kw = query.trim().toLowerCase()
+  const visible = kw ? items.filter((i) => `${i.label} ${i.sub ?? ''}`.toLowerCase().includes(kw)) : items
+
+  function toggle(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  return (
+    <div className="dialog-overlay" onClick={onCancel}>
+      <div className="dialog gpick-dialog" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
+        <h2>{title}</h2>
+        <p className="muted gpick-hint">{hint}</p>
+        <div className="source-search gpick-search">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索…"
+            aria-label="搜索"
+          />
+        </div>
+        <FormError error={error} />
+        <div className="gpick-list">
+          {items.length === 0 && <p className="muted">{emptyHint ?? '没有可选项。'}</p>}
+          {visible.map((it) => {
+            const on = selected.has(it.id)
+            return (
+              <label key={it.id} className="gpick-item" data-on={on}>
+                <input type="checkbox" checked={on} onChange={() => toggle(it.id)} />
+                <span className="gpick-label">{it.label}</span>
+                {it.sub && <span className="muted gpick-sub">{it.sub}</span>}
+                {it.warn && <Badge tone="warn">{it.warn}</Badge>}
+              </label>
+            )
+          })}
+          {items.length > 0 && visible.length === 0 && <p className="muted">没有匹配项。</p>}
+        </div>
+        <div className="dialog-actions">
+          <span className="muted">已选 {selected.size} 项</span>
+          <button type="button" className="btn-ghost" onClick={onCancel} disabled={busy}>
+            取消
+          </button>
+          <button type="button" className="btn-primary" disabled={busy} onClick={() => onConfirm([...selected])}>
+            {busy ? '正在保存…' : `${confirmLabel}（${selected.size}）`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // 单行组卡片 + （展开时）横向授权模型芯片条。形态对齐抽象模型列表的 ModelRow：
 // 一行一组，点击展开同一行下方的芯片条；芯片只展示不做链接（模型对外名 →
@@ -68,6 +162,9 @@ function GroupRow({
   expanded,
   onToggle,
   detail,
+  allModels,
+  accounts,
+  onChanged,
   onDuplicate,
   onDelete
 }: {
@@ -75,10 +172,48 @@ function GroupRow({
   expanded: boolean
   onToggle: () => void
   detail: ExpDetail | undefined
+  allModels: AdminAbstractModel[]
+  accounts: AdminAccount[]
+  onChanged: () => void
   onDuplicate: () => void
   onDelete: () => void
 }) {
   const detailTo = `/admin/groups/${encodeURIComponent(g.id)}`
+  // 就地选择浮窗（2026-10-31）：null = 关闭；'models' / 'members' 二选一。
+  const [pick, setPick] = useState<'models' | 'members' | null>(null)
+  const [pickBusy, setPickBusy] = useState(false)
+  const [pickError, setPickError] = useState<unknown>(null)
+
+  const accountName = new Map(accounts.map((a) => [a.id, a.display_name || a.username]))
+  const ready = detail?.state === 'ready' ? detail : null
+
+  async function saveModels(selected: string[]) {
+    setPickBusy(true)
+    setPickError(null)
+    try {
+      await putGroupModels(g.id, selected)
+      setPick(null)
+      onChanged()
+    } catch (e) {
+      setPickError(e)
+    } finally {
+      setPickBusy(false)
+    }
+  }
+
+  async function addMembers(ids: string[]) {
+    setPickBusy(true)
+    setPickError(null)
+    try {
+      await addGroupMembers(g.id, ids)
+      setPick(null)
+      onChanged()
+    } catch (e) {
+      setPickError(e)
+    } finally {
+      setPickBusy(false)
+    }
+  }
   return (
     <div className="am-row" data-expanded={expanded}>
       <div className="am-row-head" onClick={onToggle}>
@@ -120,26 +255,77 @@ function GroupRow({
               <LoadingBlock rows={1} />
             </div>
           )}
-          {detail?.state === 'error' && <div className="am-error muted">授权模型加载失败，请重试。</div>}
-          {detail?.state === 'ready' && (
-            <div className="am-chip-row">
-              {detail.models.length === 0 ? (
-                <span className="muted am-empty">未授权任何模型（继承默认组的全量授权）。</span>
-              ) : (
-                detail.models.map((name) => (
-                  <span key={name} className="am-chip" title="该组授权的抽象模型">
-                    <span className="am-chip-name">{name}</span>
-                  </span>
-                ))
-              )}
-              {/* 快捷动作指到组详情的成员区（#members 锚点 + 详情页自动滚动）：
-                  名字说的是「添加用户」，落点就该是添加成员的表单，而不是页顶。 */}
-              <Link to={`${detailTo}#members`} className="am-add-chip" title="去组详情添加成员">
-                <IconUserPlus size="xs" /> 添加用户
-              </Link>
-            </div>
+          {detail?.state === 'error' && <div className="am-error muted">授权与成员加载失败，请重试。</div>}
+          {ready && (
+            <>
+              {/* 行 1：模型授权。添加 = 浮窗多选（保存是整表替换，浮窗里有说明）。 */}
+              <div className="am-chip-row">
+                <span className="am-row-label">模型（{ready.models.length}）</span>
+                {ready.models.length === 0 ? (
+                  <span className="muted am-empty">未授权任何模型（继承默认组的全量授权）。</span>
+                ) : (
+                  ready.models.map((name) => (
+                    <span key={name} className="am-chip" title="该组授权的抽象模型">
+                      <span className="am-chip-name">{name}</span>
+                    </span>
+                  ))
+                )}
+                <button type="button" className="am-add-chip" onClick={() => setPick('models')}>
+                  <IconPlus size="xs" /> 添加模型
+                </button>
+              </div>
+              {/* 行 2：成员。添加 = 浮窗多选（add 是纯增量，不动既有成员）。 */}
+              <div className="am-chip-row">
+                <span className="am-row-label">用户（{ready.members.length}）</span>
+                {ready.members.length === 0 ? (
+                  <span className="muted am-empty">还没有成员。</span>
+                ) : (
+                  ready.members.map((id) => (
+                    <span key={id} className="am-chip" title={id}>
+                      <span className="am-chip-name">{accountName.get(id) ?? id}</span>
+                    </span>
+                  ))
+                )}
+                <button type="button" className="am-add-chip" onClick={() => setPick('members')}>
+                  <IconUserPlus size="xs" /> 添加用户
+                </button>
+              </div>
+            </>
           )}
         </div>
+      )}
+      {pick === 'models' && ready && (
+        <GroupPickDialog
+          title={`模型授权 · ${g.name}`}
+          hint="勾选即授权集合的最终形态；保存会整体替换（在浮窗里取消勾选 = 移除授权）。"
+          confirmLabel="保存授权"
+          busy={pickBusy}
+          error={pickError}
+          items={allModels.map((m) => ({
+            id: m.name,
+            label: m.name,
+            sub: m.display_name,
+            checked: ready.models.includes(m.name),
+            warn: m.status !== 'active' ? (m.status === 'deprecated' ? '已弃用' : '已停用') : undefined
+          }))}
+          onCancel={() => setPick(null)}
+          onConfirm={(selected) => void saveModels(selected)}
+        />
+      )}
+      {pick === 'members' && ready && (
+        <GroupPickDialog
+          title={`添加用户 · ${g.name}`}
+          hint="只列尚未在该组、且具备调用（租户/管理）能力的账户；添加是纯增量。"
+          confirmLabel="添加所选"
+          busy={pickBusy}
+          error={pickError}
+          items={accounts
+            .filter((a) => (a.classes.includes('tenant') || a.classes.includes('admin')) && !ready.members.includes(a.id))
+            .map((a) => ({ id: a.id, label: a.display_name || a.username, sub: a.username, checked: false }))}
+          emptyHint="没有可添加的账户（都已在该组或无调用能力）。"
+          onCancel={() => setPick(null)}
+          onConfirm={(selected) => void addMembers(selected)}
+        />
       )}
     </div>
   )
@@ -147,6 +333,10 @@ function GroupRow({
 
 export function GroupsPage({ def }: PageProps) {
   const q = useApi(() => listGroups({ limit: 100 }), [])
+  // 选择浮窗的数据源（2026-10-31）：模型授权与成员添加都在列表页就地完成，
+  // 两份目录各拉一次、全组共用（账户同时给成员芯片提供显示名）。
+  const abstractsQ = useApi(() => listAbstractModels({ limit: 200 }), [])
+  const accountsQ = useApi(() => listAccounts({ limit: 200 }), [])
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -165,7 +355,9 @@ export function GroupsPage({ def }: PageProps) {
     if (details[expandedId]) return
     setDetails((d) => ({ ...d, [expandedId]: { state: 'loading' } }))
     getGroup(expandedId)
-      .then((g) => setDetails((d) => ({ ...d, [expandedId]: { state: 'ready', models: g.models ?? [] } })))
+      .then((g) =>
+        setDetails((d) => ({ ...d, [expandedId]: { state: 'ready', models: g.models ?? [], members: g.members ?? [] } }))
+      )
       .catch(() => setDetails((d) => ({ ...d, [expandedId]: { state: 'error' } })))
     // details 故意不进依赖：它的变化不该重新触发拉取（缓存命中早退已保证）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -173,6 +365,16 @@ export function GroupsPage({ def }: PageProps) {
 
   function toggle(id: string) {
     setExpandedId((prev) => (prev === id ? null : id))
+  }
+
+  // 就地编辑后的刷新：重拉该组详情（授权/成员可能变了）+ 行头计数。
+  function refreshDetail(id: string) {
+    getGroup(id)
+      .then((g) =>
+        setDetails((d) => ({ ...d, [id]: { state: 'ready', models: g.models ?? [], members: g.members ?? [] } }))
+      )
+      .catch(() => {})
+    q.reload()
   }
 
   async function submitCreate() {
@@ -275,6 +477,9 @@ export function GroupsPage({ def }: PageProps) {
                   expanded={expandedId === g.id}
                   onToggle={() => toggle(g.id)}
                   detail={expandedId === g.id ? (details[g.id] ?? undefined) : undefined}
+                  allModels={abstractsQ.data?.data ?? []}
+                  accounts={accountsQ.data?.data ?? []}
+                  onChanged={() => refreshDetail(g.id)}
                   onDuplicate={() => {
                     setDuplicating(g)
                     setNewName(`${g.name}-copy`)

@@ -2355,3 +2355,50 @@ button.am-add-chip {
   white-space: nowrap;
   font-size: 13px;
 }
+
+/* ── 组列表就地选择浮窗（2026-10-31）──────────────────────────────
+   两行展开（模型 / 用户）+ 行标签；浮窗 = 勾选列表 + 已选计数。 */
+.am-row-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--fr-on-surface-variant);
+  padding: 0.15rem 0.3rem 0.15rem 0;
+  white-space: nowrap;
+}
+.gpick-dialog {
+  width: min(30rem, 92vw);
+}
+.gpick-hint {
+  font-size: 0.8rem;
+  margin: -0.4rem 0 0.8rem;
+}
+.gpick-search {
+  margin-bottom: 0.6rem;
+}
+.gpick-list {
+  max-height: 18rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding-right: 0.2rem;
+}
+.gpick-item {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.42rem 0.6rem;
+  border-radius: var(--fr-radius-md);
+  background: var(--fr-inset);
+  cursor: pointer;
+}
+.gpick-item[data-on='true'] {
+  background: var(--fr-primary-soft);
+}
+.gpick-label {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.gpick-sub {
+  font-size: 0.75rem;
+}
