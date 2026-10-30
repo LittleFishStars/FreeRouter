@@ -420,9 +420,11 @@ export async function balanceSupportedProviders() {
 //   **不落盘**（红线①：凭据续期只能由 Go 桥写回密文），新值放进应答的
 //   refreshed_credential，与 credits.query 静默续期走同一条写回通道。
 //
-// ⚠️ afterClaimNote / afterClaim（trae 打卡抽奖、buddy 成长中心）**刻意不接**：
-// 它们需要 entry/run 的账号池上下文（budgetMs、credentialRef 等），且属 UI 向
-// 行为；缺省不调用 —— hub 骨架对这两个钩子都是「deps 提供了才跑」。
+// afterClaimNote（trae 1024 打卡抽奖）：照实接 —— 表条目自带，单次快速上游调用；
+// note 拼进 outcome.message，格式与 hub 逐字一致（见 claim 内的实现注释）。
+// ⚠️ afterClaim（CodeBuddy 成长中心）**刻意不接**：单账号一轮 90～270s，会把
+// 与推理共享的串行 stdio 管道阻塞几分钟（hub 是并发 RPC 网关才跑得动）；
+// 需要时去 DSH 面板手动领取。
 
 import { createHash } from 'node:crypto'
 
@@ -532,6 +534,10 @@ export async function claimCreditBalance(provider, credential) {
     },
     accountPool: traeAccountPoolStub(),
   }
+  // attempt 把「预检 → 领取 → 收尾提示」封装成可重试单元：401 自愈时换新
+  // 凭据整体重跑一遍（hub 在 claimAll 入口先 healExpiredAccounts，issue
+  // IKKHL5——只修余额不修领取，症状是「余额能查、领取恒 401」）。
+  const attempt = async (cred) => {
   // 状态预检：precheckStatus 缺省 true（与 hub 骨架同语义）——先查状态，
   // 未开启/已签到就不发领取请求；状态查询失败照常尝试领取（「无法确认
   // 不代表不能领」，交给领取接口以响应体定夺）。
@@ -539,7 +545,7 @@ export async function claimCreditBalance(provider, credential) {
     const statusFn = typeof entry.claimStatus === 'function' ? entry.claimStatus : entry.fetchStatus
     if (typeof statusFn === 'function') {
       try {
-        const status = await statusFn(credential)
+        const status = await statusFn(cred)
         if (status && typeof status === 'object') {
           if (status.active === false) {
             return { ok: true, outcome: { kind: 'inactive', message: '签到活动未开启' } }
@@ -554,8 +560,28 @@ export async function claimCreditBalance(provider, credential) {
     }
   }
   try {
-    const outcome = await entry.claim(credential, { id: entryId }, call)
+    const outcome = await entry.claim(cred, { id: entryId }, call)
     const res = { ok: true, outcome: normalizeClaimOutcome(outcome) }
+    // 签到收尾的附加提示（hub 骨架 afterClaimNote 同款）：表里只有 trae 登记
+    // （1024 打卡抽奖），对 claimed 与 already-claimed 都跑。任何异常都不得
+    // 影响签到结果；note 拼接格式与 hub 逐字一致（`原文 · 提示`，claimed 本无
+    // message 就直接补上）。单次快速上游调用，不会阻塞 sidecar 串行管道。
+    if (typeof entry.afterClaimNote === 'function') {
+      try {
+        const note = await entry.afterClaimNote(credential)
+        if (typeof note === 'string' && note.length > 0) {
+          res.outcome.message = typeof res.outcome.message === 'string' && res.outcome.message.length > 0
+            ? `${res.outcome.message} · ${note}`
+            : note
+        }
+      } catch (error) {
+        console.warn(`[credits.claim] ${provider} 收尾提示失败: ${String(error)}`)
+      }
+    }
+    // ⚠️ afterClaim（CodeBuddy 成长中心）**刻意不接**：成长一轮单账号实测
+    // 90～270s（任务间 1.5s 节流），而本 sidecar 是与推理共享的**串行 stdio
+    // 管道**——一轮成长会把全部 relay 流量阻塞几分钟。hub 能跑是因为它是
+    // 并发 RPC 网关。需要成长任务时去 DSH 面板手动领取（那边有并发与预算闸门）。
     if (persisted && typeof persisted === 'object') res.refreshed_credential = persisted
     return res
   } catch (error) {
@@ -565,4 +591,26 @@ export async function claimCreditBalance(provider, credential) {
       outcome: { kind: 'failed', code: -1, message: error instanceof Error ? error.message : String(error) },
     }
   }
+  }
+  let res = await attempt(credential)
+  // 401 自愈（hub healExpiredAccounts 的失败后等价形态）：minimax/raccoon 的
+  // token 过期时用 refresh_token 换新再试一次；新凭据随应答上行，Go 桥写回
+  // 密文。多花一次失败请求，换取不做「调用前预续期」的复杂度——结果等价。
+  const canSelfRefresh = provider === 'minimax' || provider === 'raccoon'
+  if (
+    canSelfRefresh && res.outcome?.kind === 'failed' &&
+    /401|凭据失效|登录态已过期|invalid|Unauthorized/i.test(res.outcome.message ?? '')
+  ) {
+    try {
+      const fresh = await selfRefresh(provider, credential)
+      res = await attempt(fresh)
+      if (fresh && typeof fresh === 'object') res.refreshed_credential = res.refreshed_credential ?? fresh
+    } catch (error) {
+      return {
+        ok: true,
+        outcome: { kind: 'failed', code: -1, message: `续期失败（${error instanceof Error ? error.message : String(error)}），请重新授权` },
+      }
+    }
+  }
+  return res
 }

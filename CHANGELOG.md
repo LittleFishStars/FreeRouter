@@ -35,6 +35,12 @@
     provider id 直接映射 product（不做双部署盲试——领取是写操作）；「10 点刷新前
     看到的是昨天活动」由 hub 返回 coversToday:false，不会把昨天记成今天。
     zcode 的领取要 captcha + headful 浏览器（hub auto-checkin 也排除它），保持不支持。
+  - 对照 hub claimAll 的全量 parity 补齐：**trae 1024 打卡抽奖**（afterClaimNote，
+    note 按 hub 格式 `原文 · 提示` 拼进 message）；**401 自愈**（minimax/raccoon
+    领取遇凭据失效时 refresh_token 换新重试一次，新值经 refreshed_credential 写回，
+    对应 hub 的 healExpiredAccounts/issue IKKHL5）。**CodeBuddy 成长中心（afterClaim）
+    刻意不接**：单账号一轮 90~270s 会占住 sidecar 与推理共享的串行 stdio 管道
+    （hub 是并发 RPC 网关才跑得动），需要时去 DSH 面板手动领取。
 
 ### 变更
 

@@ -61,7 +61,7 @@
 > **内置 API 目录 + 直连出站**承担（少一层进程，也少一处明文 key 落点）。因此 sidecar 现在
 > 不再提供任何「粘贴 Key 就能跑」的能力，`models.list` / `infer.stream` 两条路都如实报码。
 | `credits.query` | **可用（2026-10-28 起）** | 直接复用 hub `provider-credits.js` 的 17 家分发器（deps shim 装 hub lib 实体）；凭据明文由主进程解密后经 stdio 传入，只读查询 |
-| `credits.claim` | **可用（2026-10-31 起）** | 每日签到/领取积分：走 `createProviderCredits` 的同一份分发表（`claim`/`claimStatus`/`precheckStatus`/`claimUnavailableReason` 全在条目上）；**qoder/qodercn 例外直调** `qoder-credits`（hub 刻意不让它们进表，jet-hub-rpc 的 claimAll 同样保留特例分支）；zcode 要 captcha + headful 浏览器，不支持。**上游业务写，不写凭据存储**——轮换出的新凭据放 `refreshed_credential` 随应答上行，写回密文是 Go 桥的责任 |
+| `credits.claim` | **可用（2026-10-31 起）** | 每日签到/领取积分：走 `createProviderCredits` 的同一份分发表（`claim`/`claimStatus`/`precheckStatus`/`claimUnavailableReason` 全在条目上）；**qoder/qodercn 例外直调** `qoder-credits`（hub 刻意不让它们进表，jet-hub-rpc 的 claimAll 同样保留特例分支）；trae 附带 1024 打卡抽奖（afterClaimNote）；minimax/raccoon 401 自愈换新重试；CodeBuddy 成长中心刻意不接（90~270s 会阻塞串行管道）；zcode 要 captcha + headful 浏览器，不支持。**上游业务写，不写凭据存储**——轮换出的新凭据放 `refreshed_credential` 随应答上行，写回密文是 Go 桥的责任 |
 | `login.start` 的真实登录流 | **E_NOT_IMPLEMENTED**（保持原状） | 登录流是 cordis 插件 `apply(ctx)` 里注册的，走的是第 1.1 节被否掉的那条路；当前只提供会话簿记与 `expiresAt` 自清理 |
 
 > 能力缺失一律**显式报码**，不做「看起来能用」的降级——这是 code-review 对 `secretSource`
