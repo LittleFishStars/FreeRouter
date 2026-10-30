@@ -30,6 +30,11 @@
   - 领取可能轮换凭据（autoclaw 的 refresh_token）：新值经 `refreshed_credential`
     随应答上行，由 Go 桥写回密文——与余额查询的静默续期同一条通道，sidecar
     依旧不落盘（红线①）。
+  - qoder/qodercn 与余额侧同源处理：hub 刻意不把它们接进分发表（jet-hub-rpc
+    保留特例分支直调 qoder-credits），sidecar 同样直调 `claimQoderDailyCheckin`，
+    provider id 直接映射 product（不做双部署盲试——领取是写操作）；「10 点刷新前
+    看到的是昨天活动」由 hub 返回 coversToday:false，不会把昨天记成今天。
+    zcode 的领取要 captcha + headful 浏览器（hub auto-checkin 也排除它），保持不支持。
 
 ### 变更
 

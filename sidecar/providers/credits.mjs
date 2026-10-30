@@ -477,6 +477,34 @@ export async function claimCreditBalance(provider, credential) {
       unsupported: true,
     }
   }
+  // qoder 家族不在分发表里（hub 刻意缺席：QoderCredential 泛型与表形态不匹配，
+  // jet-hub-rpc 的 claimAll 保留特例分支直调 qoder-credits）——sidecar 同样直调，
+  // 语义照抄 hub：**不发外部状态预检**（领取流程自带 loadCampaigns，幂等判据
+  // replayed:true 在 claim 内部处理；「10 点刷新前看到的是昨天的活动」也由它
+  // 返回 coversToday:false，Go 侧不会把昨天记成今天）；provider id 直接映射
+  // product（QODER.id='qoder' / QODER_CN.id='qodercn'，与 hub qoderFamily 一致）——
+  // 领取是写操作，不做双部署盲试：打错站不是查不到，是真领错账号的活动。
+  // 国际版的签到端点同样走 openapi.qoder.sh，无出口代理时会失败（错误原样
+  // 上行，退避重试；需要代理是部署侧配置，不在本模块猜）。
+  if (provider === 'qoder' || provider === 'qodercn') {
+    try {
+      // 裸导入前先装解析钩子（与 distributor 同一纪律：不赌调用时序——
+      // 生产上 health 握手总会先到，但测试与早到的 claim 不该靠这个活）。
+      await hub.getDeps()
+      const mod = await import('dsh-providers-hub/lib/qoder-credits.js')
+      const products = await import('dsh-providers-hub/lib/qoder-product.js')
+      const product = provider === 'qodercn' ? products.QODER_CN : products.QODER
+      const outcome = await mod.claimQoderDailyCheckin(credential, product)
+      return { ok: true, outcome: normalizeClaimOutcome(outcome) }
+    } catch (error) {
+      console.warn(`[credits.claim] ${provider} 领取异常: ${String(error)}`)
+      return {
+        ok: true,
+        outcome: { kind: 'failed', code: -1, message: error instanceof Error ? error.message : String(error) },
+      }
+    }
+  }
+  // ⚠️ 此后的分发面 = createProviderCredits() 表；qoder 家族在上面已特例分流。
   let pc
   try {
     pc = await distributor()
