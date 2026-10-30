@@ -2210,6 +2210,20 @@ button.am-add-chip {
   color: var(--fr-on-surface-variant);
 }
 
+/* 来源行（2026-10-31）：候选芯片标题下标明供应商。左缩进对齐标题行的模型名
+   （跳过序号徽标的宽度），层级用最弱一档文字色，不抢标题。 */
+.amd-cur-chip-src {
+  padding: 0 0.6rem 0.34rem calc(0.6rem + 1.05rem + 0.4rem);
+  margin-top: -0.12rem;
+  font-size: 0.7rem;
+  color: var(--fr-on-surface-variant);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 18rem;
+}
+
 .amd-cur-chip-ops {
   display: inline-flex;
   align-items: center;

@@ -183,6 +183,17 @@ export function CandidateDialog({
     return idx
   }, [sourcesQ.data])
 
+  // real_model_id → 来源供应商（候选芯片标题下要显示「来自哪家」）。口径与
+  // modelFacts 相同：目录里首见的来源获胜；目录里找不到（模型已被移除）时
+  // 返回 undefined，芯片显示「未知来源」——不猜、不冒充。
+  const sourceOfReal = useMemo(() => {
+    const idx = new Map<string, AdminModelSource>()
+    for (const s of sourcesQ.data?.sources ?? []) {
+      for (const m of s.models) if (!idx.has(m.real_model_id)) idx.set(m.real_model_id, s)
+    }
+    return idx
+  }, [sourcesQ.data])
+
   const channels = sourcesQ.data?.channels ?? []
   const sources = sourcesQ.data?.sources ?? []
 
@@ -397,7 +408,9 @@ export function CandidateDialog({
 
   function curChip(r: Candidate, i: number) {
     const fact = modelFacts.get(r.real_model_id)
+    const src = sourceOfReal.get(r.real_model_id)
     const name = fact?.display_name ?? r.real_model_id
+    const srcName = src ? (src.name || src.upstream_name) : ''
     return (
       <div key={r.real_model_id} className="amd-cur-chip" data-expanded={expandedIdx === i} data-off={fact ? undefined : true}>
         <button type="button" className="amd-cur-chip-main" onClick={() => setExpandedIdx(expandedIdx === i ? null : i)}>
@@ -405,6 +418,14 @@ export function CandidateDialog({
           <span className="amd-cur-chip-name">{name}</span>
           <span className="amd-cur-chip-scope">{scopeSummary(r.constraint)}</span>
         </button>
+        {/* 来源（2026-10-31 用户要求）：标题下标明这条候选来自哪家供应商；
+            同名模型在不同供应商下是不同候选，光看 display_name 分不出来 */}
+        <span
+          className="amd-cur-chip-src"
+          title={src ? `${srcName}（${KIND_LABEL[src.kind] ?? src.kind}）` : '目录里找不到这条真实模型（可能已被移除）'}
+        >
+          {srcName || '未知来源'}
+        </span>
         <span className="amd-cur-chip-ops">
           <button type="button" className="amd-cur-op" onClick={() => move(i, -1)} disabled={i === 0} aria-label="上移">
             <IconUp size="xs" />
