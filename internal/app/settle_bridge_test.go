@@ -36,7 +36,7 @@ func newSettleTestApp(t *testing.T) *App {
 	cfg.Store.MasterKeyFile = filepath.Join(dir, "m.key")
 	cfg.Sidecar.Enabled = false
 
-	a, err := Setup(context.Background(), Options{Config: cfg})
+	a, err := Setup(context.Background(), Options{Config: cfg, DisableBackgroundLoops: true})
 	if err != nil {
 		t.Fatalf("Setup 失败: %v", err)
 	}

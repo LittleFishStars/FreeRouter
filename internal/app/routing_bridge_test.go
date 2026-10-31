@@ -29,7 +29,7 @@ func newRoutingTestApp(t *testing.T) *App {
 	cfg.Store.Path = filepath.Join(dir, "r.db")
 	cfg.Store.MasterKeyFile = filepath.Join(dir, "r.key")
 	cfg.Sidecar.Enabled = false
-	a, err := Setup(context.Background(), Options{Config: cfg})
+	a, err := Setup(context.Background(), Options{Config: cfg, DisableBackgroundLoops: true})
 	if err != nil {
 		t.Fatalf("Setup 失败: %v", err)
 	}

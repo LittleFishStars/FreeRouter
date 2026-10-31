@@ -88,6 +88,12 @@ type Options struct {
 	// DisableBootstrap 关闭首启自举（测试专用）：让 Setup 不自动建管理员，
 	// 以保留「空库 + 向导」这条路径的契约测试。生产永远不设。
 	DisableBootstrap bool
+	// DisableBackgroundLoops 关闭全部后台任务（测试专用）：目录刷新 / 余额
+	// 探测 / 签到 / OAuth 行对齐 / auto 模型同步都是**会写库的并发 goroutine**
+	// ——与测试主体并发改同一批表时产生丢更新竞态（2026-11-01 实测：后台的
+	// auto 建模授权与测试的 SetGroupModels 交错，把测试的授权清掉）。要测
+	// 这些后台行为本身的用例直接调它们的同步方法（如 syncAutoModel）。
+	DisableBackgroundLoops bool
 }
 
 // Setup 按启动序列装配整个进程（06-runtime.md：配置→迁移→初始化向导判定
@@ -146,21 +152,33 @@ func Setup(ctx context.Context, opts Options) (*App, error) {
 	// 第 4 步：上游自举 + 模型目录刷新（后台周期任务，06-runtime §2.1）。
 	bgCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	a.bgCancel = cancel
-	a.startModelRefresh(bgCtx)
+	// 测试态：后台任务全关（Stop 的 cancel 钩子保留，幂等无害）。要测后台
+	// 行为本身的用例直接调各同步方法（如 syncAutoModel / reconcile*）。
+	if !opts.DisableBackgroundLoops {
+		a.startModelRefresh(bgCtx)
+	}
 	// 余额探测后台任务（balance 排序键数据源）。必须放在 startModelRefresh
 	// 之后：relay 上游由自举写入，先刷新才有 provider 可探测。
-	a.startBalanceProbe(bgCtx)
+	if !opts.DisableBackgroundLoops {
+		a.startBalanceProbe(bgCtx)
+	}
 	// 定时签到（2026-10-31）：放在余额探测之后——两者都依赖 sidecar，且
 	// 签到自身带 30s 启动延迟，不会抢装配窗口的资源。管理面端点在
 	// buildAdminDeps 里另建一个无状态的 checkinBridge（两者只共享落库）。
-	a.startCheckin(bgCtx)
+	if !opts.DisableBackgroundLoops {
+		a.startCheckin(bgCtx)
+	}
 	// OAuth 贡献行形态对齐（2026-10-31 批量移植）：sidecar 清单声明 relay 的
 	// 贡献行原地翻转（vendor+占位 URL → relay+sidecar://<provider>）。异步跑
 	// 一次——sidecar Call 有超时，不该阻塞启动窗口。
-	go a.reconcileOAuthUpstreamsFromSidecar(bgCtx)
+	if !opts.DisableBackgroundLoops {
+		go a.reconcileOAuthUpstreamsFromSidecar(bgCtx)
+	}
 	// auto 抽象模型同步（2026-10-31）：每个组默认拥有一个覆盖全池的 auto。
 	// 只碰本地库、不依赖 sidecar；启动即跑一轮，之后每分钟对齐候选集。
-	a.startAutoModelSync(bgCtx)
+	if !opts.DisableBackgroundLoops {
+		a.startAutoModelSync(bgCtx)
+	}
 	// 第 6 步：HTTP（装配中间件链 + 路由 + v1 面板注入）。
 	a.server = a.buildServer()
 	return a, nil

@@ -33,7 +33,7 @@ func newConsoleTestApp(t *testing.T) *App {
 	cfg.Sidecar.Enabled = false // 控制台面与 sidecar 无关（上游自举另有它的测试）
 	// DisableBootstrap：本文件的契约面是「空库 + 向导」路径；首启自举
 	//（随机口令自动建号）由 bootstrap_contract_test.go 单独覆盖。
-	a, err := Setup(context.Background(), Options{Config: cfg, DisableBootstrap: true})
+	a, err := Setup(context.Background(), Options{Config: cfg, DisableBootstrap: true, DisableBackgroundLoops: true})
 	if err != nil {
 		t.Fatalf("Setup 失败: %v", err)
 	}

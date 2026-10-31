@@ -36,7 +36,7 @@ func newContributionTestApp(t *testing.T, logBuf *bytes.Buffer) *App {
 	cfg.Store.MasterKeyFile = filepath.Join(dir, "m.key")
 	cfg.Sidecar.Enabled = false // 贡献链路与 sidecar 无关
 
-	opts := Options{Config: cfg}
+	opts := Options{Config: cfg, DisableBackgroundLoops: true}
 	if logBuf != nil {
 		opts.Logger = slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	}

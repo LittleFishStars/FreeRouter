@@ -77,7 +77,7 @@ func TestContractAutoModelSync(t *testing.T) {
 	}
 	for _, g := range []string{gid, otherID} {
 		if !groupHasModel(t, a, g, m.ID) {
-			t.Errorf("组 %s 应在建模时被授予 auto", g)
+			t.Errorf("组 %s 应在建模时被授予 auto，实际授权=%v", g, groupModels(t, a, g))
 		}
 	}
 
