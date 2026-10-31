@@ -260,7 +260,7 @@ export function KeysPage({ def }: PageProps) {
       <Section title="禁用与吊销的区别">
         <ul className="plain-list">
           <li>禁用：可恢复（只是临时停用），列表标红，该 Key 的请求返回 401。</li>
-          <li>吊销：终局，不可恢复；界面需要二次确认。</li>
+          <li>吊销：终局，不可恢复；确认后这把 Key 立即<strong>从列表消失</strong>（调用历史与审计仍保留）。</li>
           <li>合并成一个「删除」会让用户不敢用这个功能，而留着一把不再使用的 Key 才是安全事件。</li>
         </ul>
       </Section>
@@ -287,6 +287,7 @@ export function KeysPage({ def }: PageProps) {
             try {
               await revokeKey(revoking.id)
               setRevoking(null)
+              setNotice('已吊销：这把 Key 已从列表移除（调用历史保留在日志里）')
               q.reload()
             } catch (e) {
               setError(e)
@@ -378,6 +379,7 @@ export function KeyNewPage({ def }: PageProps) {
 
 export function KeyDetailPage({ def }: PageProps) {
   const { id = '' } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const q = useApi(() => getKey(id), [id])
   const usage = useApi(() => getUsageOverview(), [])
   const logs = useApi(() => listUsageLogs({ key_id: id, limit: 20 }), [id])
@@ -521,7 +523,8 @@ export function KeyDetailPage({ def }: PageProps) {
           try {
             await revokeKey(key.id)
             setRevoking(false)
-            q.reload()
+            // 吊销即从列表消失：详情页随之失效，回列表（带一次性提示）。
+            navigate('/usage/keys')
           } catch (e) {
             setError(e)
           } finally {

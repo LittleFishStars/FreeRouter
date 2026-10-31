@@ -73,8 +73,13 @@ func (b *tenantBridge) KeyStats(ctx context.Context, accountID string) (int64, i
 	if err != nil {
 		return 0, 0, 0, err
 	}
+	// 口径与列表一致（2026-11-01）：吊销的 Key 不在册，不计数——否则会
+	// 出现「列表 2 条、统计写 3」的自相矛盾。
 	var total, active int64
 	for _, k := range keys {
+		if k.Status == store.KeyRevoked {
+			continue
+		}
 		total++
 		if k.Status == store.KeyActive {
 			active++

@@ -429,6 +429,63 @@ func TestContractLoginLockoutThenUnlockThenSuccess(t *testing.T) {
 	}
 }
 
+// TestContractRevokedKeyDisappearsFromList 钉住「吊销即从列表消失」
+// （2026-11-01 用户要求）。
+//
+// 三层语义必须同时成立，缺一条就会失衡：
+//  1. 展示层（KeyManager.List）不含 revoked —— 用户的诉求；
+//  2. 存储层读面（ListKeysByAccount）仍返回它 —— storeiface 的契约是
+//     「含已吊销（供数量与审计）」，创建路径的名额校验读同一份；
+//  3. 单点读（KeyByID）仍能拿到 —— 审计与 requests.key_id 归因依赖行存在。
+func TestContractRevokedKeyDisappearsFromList(t *testing.T) {
+	h := newHarness()
+	h.putUser(t, "acc-l", "lay", ClassTenant)
+	h.f.groups["acc-l"] = []GroupPolicy{
+		{Group: Group{ID: "ga"}, Models: []string{"fast"}, CanCreateKey: boolp(true)},
+	}
+	km := NewKeyManager(KeyPolicy{}, h.f.stores()).WithClock(h.nowFn)
+	s := Subject{AccountID: "acc-l", ActingClass: ClassTenant}
+
+	keep, err := km.Create(context.Background(), s, "keep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone, err := km.Create(context.Background(), s, "gone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := km.Revoke(context.Background(), s, gone.Key.ID); err != nil {
+		t.Fatalf("吊销失败: %v", err)
+	}
+
+	// 1. 列表只剩在册的那把。
+	list, err := km.List(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ID != keep.Key.ID {
+		t.Fatalf("列表应只剩 %s，得 %d 条", keep.Key.ID, len(list))
+	}
+
+	// 2. 存储读面仍含吊销行（数量/审计口径不变）。
+	rows, err := h.f.stores().Keys.ListKeysByAccount(context.Background(), "acc-l")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("存储读面应含已吊销（共 2 条），得 %d", len(rows))
+	}
+
+	// 3. 单点读仍可拿到，且状态是 revoked。
+	got, err := km.stores.Keys.KeyByID(context.Background(), gone.Key.ID)
+	if err != nil {
+		t.Fatalf("KeyByID 应仍可读（审计归因）：%v", err)
+	}
+	if got.Status != KeyRevoked {
+		t.Fatalf("状态应为 revoked，得 %s", got.Status)
+	}
+}
+
 func TestContractChangePasswordRevokesSessionsNotKeys(t *testing.T) {
 	h := newHarness()
 	h.putUser(t, "acc-t", "ten", ClassTenant)

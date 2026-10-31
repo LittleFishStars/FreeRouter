@@ -422,7 +422,15 @@ func (kb *keysCountBridge) CountKeys(ctx context.Context, accountID string) (int
 	if err != nil {
 		return 0, err
 	}
-	return int64(len(keys)), nil
+	// 吊销的 Key 不计入「名下 Key 数」（2026-11-01 与列表同口径）：这个数字
+	// 是给管理员看「这个账户手上有几把能用的 Key」，吊销的是废票。
+	var n int64
+	for _, k := range keys {
+		if k.Status != store.KeyRevoked {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // ---------------------------------------------------------------------------

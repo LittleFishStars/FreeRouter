@@ -68,8 +68,14 @@ func (b *keymanagerBridge) ListKeysByAccount(ctx context.Context, accountID stri
 	if err != nil {
 		return nil, err
 	}
+	// 吊销的 Key 不在列表里（与 KeyManager.List 同一口径，2026-11-01）：
+	// 管理端与租户看到的是同一份「在册 Key」。审计与排查走 KeyByID /
+	// requests 的 key_id 归因，不依赖列表。
 	out := make([]auth.APIKey, 0, len(rows))
 	for i := range rows {
+		if rows[i].Status == store.KeyRevoked {
+			continue
+		}
 		out = append(out, *toAuthKey(&rows[i]))
 	}
 	return out, nil

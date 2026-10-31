@@ -328,11 +328,23 @@ func (m *KeyManager) List(ctx context.Context, s Subject) ([]APIKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 防御性清理：即使存储层实现有误，也绝不把哈希对外返回。
+	// 吊销 = 从列表消失（2026-11-01 用户要求）：revoked 是单向终态，留着
+	// 一行「已吊销」既不可操作也不可恢复，只增加噪音。
+	//
+	// 为什么在展示层过滤而不是存储层：storeiface.ListKeysByAccount 的契约
+	// 是「含已吊销（供数量与审计）」，创建路径的 key 名额校验也读它（revoked
+	// 不占名额，由 countAgainstKeyQuota 自己排除）。改存储层会让审计面与
+	// 名额口径一起变，而用户的诉求只是「列表里别出现」。
+	out := make([]APIKey, 0, len(keys))
 	for i := range keys {
+		if keys[i].Status == KeyRevoked {
+			continue
+		}
+		// 防御性清理：即使存储层实现有误，也绝不把哈希对外返回。
 		keys[i].KeyHash = nil
+		out = append(out, keys[i])
 	}
-	return keys, nil
+	return out, nil
 }
 
 // Rename 改名（只影响可读性，不影响鉴权）。
