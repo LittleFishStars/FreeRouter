@@ -755,7 +755,16 @@ func (s *Server) handleAdminAbstractConnectivity(deps *AdminDeps) http.HandlerFu
 					default:
 						resp, derr := cand.Adapter.DecodeResponse(raw)
 						if derr != nil {
-							attempt.Reason = "响应解析失败（协议不符）"
+							// 原文摘要必须带上：不少「OpenAI 兼容」网关把业务错误
+							// 以 HTTP 200 + {code,desc} 信封返回（loomy 讯飞网关
+							// 2026-10-31 实测：{"code":"100002","desc":"缺少 token"}），
+							// 只报「协议不符」等于没诊断。body 是网关侧响应，
+							// 不含凭据，摘录安全。
+							snippet := string(raw)
+							if len(snippet) > 200 {
+								snippet = snippet[:200]
+							}
+							attempt.Reason = "响应解析失败：" + derr.Error() + "；body: " + snippet
 						} else {
 							attempt.OK = true
 							// Usage 是值类型；指针字段为 nil = 上游没报该项。
