@@ -395,6 +395,15 @@ func contributeUpstreamName(provider, fingerprint string) string {
 	return fmt.Sprintf("%s-contrib-%s", provider, short)
 }
 
+// ContributeUpstreamName 是 contributeUpstreamName 的导出面。
+//
+// 为什么导出：账户自助的「我的贡献」页要按凭据反查它的可调用状态（停止贡献与否），
+// 反查依据与撤销是同一份命名事实——第二份实现早晚漂移（撤销后页面却显示
+// 「贡献中」就是那种漂移的表现）。展示面只读不写，逻辑本体仍住在撤销链路里。
+func ContributeUpstreamName(provider, fingerprint string) string {
+	return contributeUpstreamName(provider, fingerprint)
+}
+
 // findOwned 在同一账户的凭据里找 external_id 命中项（幂等判定的读面）。
 func (s *ContributionService) findOwned(ctx context.Context, owner string, provider, externalID string) (*store.Credential, bool, error) {
 	rows, err := s.store.ListCredentials(ctx, store.CredentialFilter{

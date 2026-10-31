@@ -571,3 +571,85 @@ func TestContractContributionPauseResumeReal(t *testing.T) {
 		t.Error("被拒凭据的上游行必须保持 enabled=false")
 	}
 }
+
+// TestContractMyCredentialsBridgeState 钉住「我的贡献」页依赖的桥状态计算
+// （2026-10-31）：桥必须用确定性命名的上游行回答「这条凭据是否被属主停止」，
+// 与撤销/暂停共用同一份命名事实（upstream.ContributeUpstreamName）。
+//
+// 用真库的原因与文件头一致：暂停/入池的落点都是 upstreams.enabled，
+// fake 里没有这个行为，只有真库能证明「暂停后列表立刻反映为已停止」。
+func TestContractMyCredentialsBridgeState(t *testing.T) {
+	a := newContributionTestApp(t, nil)
+	ctx := context.Background()
+	owner := newContributorAccount(t, a, "anonymous-contrib-bridge")
+	svc := a.Contribution()
+	bridge := newContributionBridge(a.store, svc, 10)
+
+	srv := newCatalogServer(t, []string{"m1"}, http.StatusOK)
+	res, err := svc.Submit(ctx, upstream.Submission{
+		OwnerAccountID: owner, Provider: "demo-bridge", BaseURL: srv.URL + "/v1",
+		APIKey: "sk-bridge-state-abcdef123456", ClaimedModels: []string{"m1"},
+	})
+	if err != nil || !res.InPool {
+		t.Fatalf("前置提交应入池：err=%v res=%+v", err, res)
+	}
+
+	assertRow := func(wantPaused bool, phase string) {
+		t.Helper()
+		rows, err := bridge.CredentialsOf(ctx, owner)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("%s：读桥行失败 err=%v n=%d", phase, err, len(rows))
+		}
+		row := rows[0]
+		if row.Provider != "demo-bridge" {
+			t.Errorf("%s：provider 应原样透传，得 %q", phase, row.Provider)
+		}
+		if !row.UpstreamFound {
+			t.Errorf("%s：确定性命名的上游行应能反查到", phase)
+		}
+		if row.Paused != wantPaused {
+			t.Errorf("%s：paused = %v，期望 %v", phase, row.Paused, wantPaused)
+		}
+	}
+
+	// 入池初始态：贡献中。
+	assertRow(false, "入池后")
+
+	// 暂停后：同一行立刻读出「已停止」——页面上的停止/恢复按钮以此为据。
+	if _, err := svc.SetPaused(ctx, res.CredentialID, upstream.RevokeActor{AccountID: owner}, true); err != nil {
+		t.Fatalf("暂停失败：%v", err)
+	}
+	assertRow(true, "暂停后")
+
+	// 恢复后回到贡献中。
+	if _, err := svc.SetPaused(ctx, res.CredentialID, upstream.RevokeActor{AccountID: owner}, false); err != nil {
+		t.Fatalf("恢复失败：%v", err)
+	}
+	assertRow(false, "恢复后")
+
+	// 判定未通过（从未入池）的凭据：上游行存在但 enabled=false。桥如实报
+	// paused=true，但这类行的 status 不是 active——页面按 status 显示
+	// 「鉴定未通过」，不会把它冒充成属主自己停掉的。
+	badSrv := newCatalogServer(t, nil, http.StatusUnauthorized)
+	bad, err := svc.Submit(ctx, upstream.Submission{
+		OwnerAccountID: owner, Provider: "demo-bridge-bad", BaseURL: badSrv.URL + "/v1",
+		APIKey: "sk-bridge-bad-abcdef1234567",
+	})
+	if err != nil || bad.InPool {
+		t.Fatalf("401 的 key 不应入池：err=%v res=%+v", err, bad)
+	}
+	rows, err := bridge.CredentialsOf(ctx, owner)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("读两行失败 err=%v n=%d", err, len(rows))
+	}
+	for i := range rows {
+		if rows[i].ID == bad.CredentialID {
+			if !rows[i].UpstreamFound || !rows[i].Paused {
+				t.Errorf("被拒凭据应报 found+paused（上游行在且停用），得 %+v", rows[i])
+			}
+			if rows[i].Status == "active" {
+				t.Error("被拒凭据的 status 不应是 active（页面据此区分「你停的」与「没通过」）")
+			}
+		}
+	}
+}

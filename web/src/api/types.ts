@@ -684,6 +684,22 @@ export interface ContributionCredential {
   last_called_at: string | null
   /** 是否在候选池中（不给「被哪些抽象模型引用」） */
   in_pool?: boolean
+  /**
+   * 以下为 2026-10-31 账户下「我的贡献」页新增（后端同批扩展）：
+   * provider 是落库列原值（"api:<id>" / "custom" / OAuth 的 sidecar id），
+   * provider_name 是 handler 解析好的展示名；paused/upstream_found 描述
+   * 「停止贡献」状态（上游行开关），与 status（凭据生命周期）是两个平面；
+   * 余额/签到与凭据池页同源，空串 = 从未查询，不冒充值。
+   */
+  provider?: string
+  provider_name?: string
+  paused?: boolean
+  upstream_found?: boolean
+  balance_text?: string
+  balance_checked_at?: string | null
+  checkin_text?: string
+  checkin_date?: string
+  checkin_at?: string | null
 }
 
 export interface ContributionCredentialDetail extends ContributionCredential {

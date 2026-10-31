@@ -43,6 +43,7 @@ import ContributePage, {
   ContributeRecoveryPage
 } from './pages/ContributePage'
 import AccountPage, { PasswordPage, SessionsPage } from './pages/AccountPages'
+import MyContributionsPage from './pages/account/ContributionsPage'
 import ErrorPage from './pages/ErrorPage'
 import ReviewPage from './pages/admin/ReviewPage'
 import InboxPage from './pages/admin/InboxPage'
@@ -138,6 +139,7 @@ export const PAGES: PageDef[] = [
   { path: '/account', title: '账户概览', summary: '显示名、账户 ID、权限、登录方式与最近登录。', nav: 'account', requires: 'auth', icon: IconNavAccount, element: AccountPage },
   { path: '/account/password', title: '自助改密', summary: '改密即吊销全部会话（含当前会话）并强制重新登录。', nav: 'account', requires: 'auth', icon: IconNavPassword, element: PasswordPage },
   { path: '/account/sessions', title: '我的会话', summary: '会话列表与单独吊销。', nav: 'account', requires: 'auth', icon: IconNavSessions, element: SessionsPage },
+  { path: '/account/contributions', title: '我的贡献', summary: '管理自己贡献的凭据：停止/恢复、失效重新登录、供应商状态与添加贡献。', nav: 'account', requires: 'auth', icon: IconNavContributions, element: MyContributionsPage },
 
   // ── 4.3 管理入口（admin 类）─────────────────────────────────
   { path: '/admin', title: '审核队列', summary: '管理入口默认落点：注册申请队列置顶。', nav: 'admin', requires: 'admin', icon: IconNavAdminReview, dangerous: true, element: ReviewPage },

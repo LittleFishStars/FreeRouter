@@ -20,6 +20,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/LittleFishStars/FreeRouter/internal/apidir"
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
 )
 
@@ -676,4 +677,103 @@ func TestContributionCustomAutoDiscover(t *testing.T) {
 			t.Errorf("探测故障不得留下任何写入，得 got=%d created=%d", len(sub.got), st.contributorCreated)
 		}
 	})
+}
+
+// TestMyCredentialsRowShape 钉住「我的凭据」行的供应商与可调用状态字段
+// （2026-10-31 账户下「我的贡献」页）。
+//
+// 三种 provider 形态各一条：OAuth 型（provider=sidecar id）、目录 API 型
+// （provider=api:<id>）、自定义型（provider=custom）。形状错了前端整页白屏；
+// in_pool/paused 说谎会让「停止贡献」按钮失灵——所以这一层用 fake 钉死。
+// 供应商展示名的解析事实源（sidecar 清单 / apidir / 自定义文案）也在这一起守：
+// 桥不认识这些清单，名字必须在 handler 侧解析。
+func TestMyCredentialsRowShape(t *testing.T) {
+	creds := []ContributionCredentialRow{
+		{
+			ID: pauseCred1, Status: "active", Provider: "trae",
+			UpstreamFound: true, BalanceText: "1,234 积分", BalanceCheckedAt: 1700000000,
+			CheckinText: "+200 积分", CheckinDate: "2026-10-31", CheckinAt: 1700000100,
+		},
+		{ID: pauseCred2, Status: "active", Provider: "api:bigmodel-cn", Paused: true, UpstreamFound: true},
+		{ID: pauseNotMine, Status: "active", Provider: "custom", UpstreamFound: true},
+	}
+	deps := &ContributionDeps{
+		Store: &fakeContributionStore{owner: pauseOwner, creds: creds},
+		OAuth: fakeProviderOAuth{choices: []ProviderChoice{
+			{ID: "trae", Name: "TRAE", Flow: "browser_callback", Available: true},
+		}},
+	}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	p := &auth.Principal{AccountID: pauseOwner}
+	r = r.WithContext(context.WithValue(r.Context(), ctxKeySessionPrincipal, p))
+	w := httptest.NewRecorder()
+	(&Server{}).HandleMyCredentials(deps)(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200（body=%s）", w.Code, w.Body.String())
+	}
+	var rows []struct {
+		ID            string `json:"id"`
+		Kind          string `json:"kind"`
+		Provider      string `json:"provider"`
+		ProviderName  string `json:"provider_name"`
+		InPool        bool   `json:"in_pool"`
+		Paused        bool   `json:"paused"`
+		UpstreamFound bool   `json:"upstream_found"`
+		BalanceText   string `json:"balance_text"`
+		CheckinText   string `json:"checkin_text"`
+		CheckinDate   string `json:"checkin_date"`
+	}
+	if err := json.Unmarshal(dataOf(t, w), &rows); err != nil {
+		t.Fatalf("解析行数组失败：%v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("行数 = %d，期望 3", len(rows))
+	}
+	byID := map[string]int{}
+	for i, row := range rows {
+		byID[row.ID] = i
+	}
+	apiName := ""
+	if p, ok := apidir.Get("bigmodel-cn"); ok {
+		apiName = p.Name
+	}
+
+	cases := []struct {
+		id      string
+		kind    string
+		name    string
+		inPool  bool
+		paused  bool
+		found   bool
+		balance string
+		checkin string
+	}{
+		{pauseCred1, "oauth", "TRAE", true, false, true, "1,234 积分", "2026-10-31"},
+		{pauseCred2, "api_key", apiName, false, true, true, "", ""},
+		{pauseNotMine, "api_key", "自定义供应商", true, false, true, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			row := rows[byID[tc.id]]
+			if row.Kind != tc.kind {
+				t.Errorf("kind = %q，期望 %q", row.Kind, tc.kind)
+			}
+			if row.ProviderName != tc.name {
+				t.Errorf("provider_name = %q，期望 %q", row.ProviderName, tc.name)
+			}
+			if row.InPool != tc.inPool {
+				t.Errorf("in_pool = %v，期望 %v（active+上游行在+未停止）", row.InPool, tc.inPool)
+			}
+			if row.Paused != tc.paused || row.UpstreamFound != tc.found {
+				t.Errorf("paused/upstream_found = %v/%v，期望 %v/%v", row.Paused, row.UpstreamFound, tc.paused, tc.found)
+			}
+			if row.BalanceText != tc.balance {
+				t.Errorf("balance_text = %q，期望 %q", row.BalanceText, tc.balance)
+			}
+			if row.CheckinDate != tc.checkin {
+				t.Errorf("checkin_date = %q，期望 %q", row.CheckinDate, tc.checkin)
+			}
+		})
+	}
 }

@@ -117,6 +117,15 @@ type ContributionStore interface {
 }
 
 // ContributionCredentialRow 是一条贡献凭据的展示行。
+//
+// 2026-10-31 起带供应商与可调用状态（账户下「我的贡献」页）：
+//   - Provider 是 upstream_credentials.provider 列原值（"api:<id>" / "custom" /
+//     OAuth 型存 sidecar provider id）；ProviderName 是展示名，由 handler 解析后填入。
+//   - Paused/UpstreamFound 描述「停止贡献」状态（上游行 enabled），与 Status
+//     （凭据本身的生命周期）是两回事：暂停不改变 Status，只有分开带才能在
+//     页面上同时回答「这条凭据本身能不能用」与「你有没有把它撤下」。
+//   - 余额/签到三组字段与凭据池页同源（上游侧格式化好的展示串），给属主
+//     看自己账号在供应商侧的状态；空串 = 从未查询/未签到，不冒充值。
 type ContributionCredentialRow struct {
 	ID           string // UUID
 	Label        string
@@ -125,6 +134,16 @@ type ContributionCredentialRow struct {
 	VerifyDetail string
 	CreatedAt    int64
 	LastUsedAt   int64
+	Provider     string
+	// ProviderName 是展示名；桥不知道目录与 sidecar 清单，由 handler 解析后填。
+	ProviderName     string
+	Paused           bool
+	UpstreamFound    bool
+	BalanceText      string
+	BalanceCheckedAt int64
+	CheckinText      string
+	CheckinDate      string
+	CheckinAt        int64
 }
 
 // ContributionPauser 切换一条贡献凭据的可调用性（暂停 / 恢复）。
@@ -511,7 +530,7 @@ func (s *Server) handleMyCredentials(deps *ContributionDeps) http.HandlerFunc {
 		}
 		out := make([]map[string]any, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, renderContributionCredential(row))
+			out = append(out, renderContributionCredential(row, s.contributionProviderName(r.Context(), deps, row.Provider)))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": out, "next_cursor": nil})
 	}
@@ -540,7 +559,7 @@ func (s *Server) HandleMyCredentialDetail(deps *ContributionDeps) http.HandlerFu
 			writeError(w, http.StatusNotFound, "not_found", "接口不存在", nil)
 			return
 		}
-		data := renderContributionCredential(*row)
+		data := renderContributionCredential(*row, s.contributionProviderName(r.Context(), deps, row.Provider))
 		if row.VerifyDetail != "" {
 			var detail any
 			if json.Unmarshal([]byte(row.VerifyDetail), &detail) == nil {
@@ -734,19 +753,71 @@ func requireContributor(w http.ResponseWriter, r *http.Request, deps *Contributi
 }
 
 // renderContributionCredential 渲染前端 ContributionCredential 行。
-// kind 恒 api_key（凭据表没有 kind 列，OAuth 与 API Key 贡献的行同形）；
-// claimed_model 无列，给空串。改这两个值要同步前端契约。
-func renderContributionCredential(row ContributionCredentialRow) map[string]any {
+//
+// kind 由 provider 列推导："custom" 或 "api:" 前缀 = 粘 Key 型贡献（落库
+// 时的两种 provider 取值，见 resolveSubmissionTarget）；其余是 OAuth 型
+// （OAuth 凭据的 provider 列存 sidecar provider id）。这与管理面来源合并
+// （AdminModelSource.OAuth 的判据）同一口径，不要引入第三份。
+// claimed_model 无列，给空串。in_pool 是「在候选池」的完整口径：凭据本身
+// active 且其上游行存在且未被属主停止——只看 status 会把「已停止贡献」的
+// 行报成在池中，账户页的停止/恢复按钮就会说谎。
+func renderContributionCredential(row ContributionCredentialRow, providerName string) map[string]any {
 	return map[string]any{
-		"id":             row.ID,
-		"external_label": row.Label,
-		"kind":           "api_key",
-		"claimed_model":  "",
-		"status":         row.Status,
-		"verdict":        row.VerifyStatus,
-		"stage":          nil,
-		"created_at":     unixRFC3339(row.CreatedAt),
-		"last_called_at": unixRFC3339(row.LastUsedAt),
-		"in_pool":        row.Status == "active",
+		"id":                 row.ID,
+		"external_label":     row.Label,
+		"kind":               contributionKindOf(row.Provider),
+		"provider":           row.Provider,
+		"provider_name":      providerName,
+		"claimed_model":      "",
+		"status":             row.Status,
+		"verdict":            row.VerifyStatus,
+		"stage":              nil,
+		"created_at":         unixRFC3339(row.CreatedAt),
+		"last_called_at":     unixRFC3339(row.LastUsedAt),
+		"in_pool":            row.Status == "active" && row.UpstreamFound && !row.Paused,
+		"paused":             row.Paused,
+		"upstream_found":     row.UpstreamFound,
+		"balance_text":       row.BalanceText,
+		"balance_checked_at": unixRFC3339(row.BalanceCheckedAt),
+		"checkin_text":       row.CheckinText,
+		"checkin_date":       row.CheckinDate,
+		"checkin_at":         unixRFC3339(row.CheckinAt),
 	}
+}
+
+// contributionKindOf 由 provider 列推导贡献形态（oauth / api_key）。
+// 判据与 AdminModelSource.OAuth 同源：非 "api:" 前缀且非 "custom" 的就是 OAuth 型。
+func contributionKindOf(provider string) string {
+	if provider == "custom" || strings.HasPrefix(provider, "api:") {
+		return "api_key"
+	}
+	return "oauth"
+}
+
+// contributionProviderName 解析 provider 列的展示名（三家各一个事实源）：
+//
+//	custom     → 固定文案（用户自填端点，没有名字可查）；
+//	api:<id>   → 内置目录的名字（apidir 是编译进二进制的事实数据）；
+//	其余       → sidecar 反代供应商清单的名字；清单未命中（如 provider 已下架）
+//	             回退 provider 原值——展示一个 id 比凭空编一个名字诚实。
+func (s *Server) contributionProviderName(ctx context.Context, deps *ContributionDeps, provider string) string {
+	switch {
+	case provider == "":
+		return ""
+	case provider == "custom":
+		return "自定义供应商"
+	case strings.HasPrefix(provider, "api:"):
+		if p, ok := apidir.Get(strings.TrimPrefix(provider, "api:")); ok {
+			return p.Name
+		}
+		return provider
+	}
+	if deps != nil && deps.OAuth != nil {
+		for _, c := range deps.OAuth.Providers(ctx) {
+			if c.ID == provider {
+				return c.Name
+			}
+		}
+	}
+	return provider
 }

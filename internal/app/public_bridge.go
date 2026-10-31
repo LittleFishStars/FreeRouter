@@ -155,15 +155,53 @@ func (b *contributionBridge) CredentialsOf(ctx context.Context, owner string) ([
 	if err != nil {
 		return nil, err
 	}
+	// 一次读全池上游行，按名字建索引：每条凭据的可调用状态（停止贡献与否）
+	// 由它的确定性命名上游行的 enabled 决定，逐条查会变成 N 次全表扫。
+	enabledByName, err := b.upstreamEnabledByName(ctx)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]httpapi.ContributionCredentialRow, 0, len(rows))
 	for _, c := range rows {
-		out = append(out, httpapi.ContributionCredentialRow{
-			ID: c.ID, Label: c.ExternalLabel, Status: c.Status,
-			VerifyStatus: string(c.VerifyStatus), VerifyDetail: c.VerifyDetail,
-			CreatedAt: c.CreatedAt, LastUsedAt: c.LastUsedAt,
-		})
+		out = append(out, b.renderRow(c, enabledByName))
 	}
 	return out, nil
+}
+
+// upstreamEnabledByName 读全池上游行并按名字索引 enabled。
+// 贡献上游行的名字是确定性的（upstream.ContributeUpstreamName），
+// 这个事实由撤销链路与展示面共用，不在这里重建第二份。
+func (b *contributionBridge) upstreamEnabledByName(ctx context.Context) (map[string]bool, error) {
+	ups, err := b.st.Repos().Models.ListUpstreams(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(ups))
+	for _, u := range ups {
+		out[u.Name] = u.Enabled
+	}
+	return out, nil
+}
+
+// renderRow 把存储凭据行翻成展示行，并按确定性命名的上游行补「是否停止贡献」。
+// 找不到对应上游行（历史数据/名字对不上）时 UpstreamFound=false：该凭据本来
+// 就不在候选池里，页面要能区分「你停掉了」与「系统里没有可调用的载体」。
+func (b *contributionBridge) renderRow(c store.Credential, enabledByName map[string]bool) httpapi.ContributionCredentialRow {
+	enabled, found := enabledByName[upstream.ContributeUpstreamName(c.Provider, c.ExternalID)]
+	return httpapi.ContributionCredentialRow{
+		ID: c.ID, Label: c.ExternalLabel, Status: c.Status,
+		VerifyStatus: string(c.VerifyStatus), VerifyDetail: c.VerifyDetail,
+		CreatedAt: c.CreatedAt, LastUsedAt: c.LastUsedAt,
+		Provider: c.Provider,
+		Paused:   found && !enabled,
+		// found=false 时 Paused 恒 false，「没挂到池」由 UpstreamFound 单独表达。
+		UpstreamFound:    found,
+		BalanceText:      c.BalanceText,
+		BalanceCheckedAt: c.BalanceCheckedAt,
+		CheckinText:      c.CheckinText,
+		CheckinDate:      c.CheckinDate,
+		CheckinAt:        c.CheckinAt,
+	}
 }
 
 func (b *contributionBridge) CredentialOf(ctx context.Context, owner, id string) (*httpapi.ContributionCredentialRow, error) {
@@ -175,11 +213,12 @@ func (b *contributionBridge) CredentialOf(ctx context.Context, owner, id string)
 		// 非属主与不存在同语义（不给跨账户探测面）。
 		return nil, store.ErrNotFound
 	}
-	return &httpapi.ContributionCredentialRow{
-		ID: c.ID, Label: c.ExternalLabel, Status: c.Status,
-		VerifyStatus: string(c.VerifyStatus), VerifyDetail: c.VerifyDetail,
-		CreatedAt: c.CreatedAt, LastUsedAt: c.LastUsedAt,
-	}, nil
+	enabledByName, err := b.upstreamEnabledByName(ctx)
+	if err != nil {
+		return nil, err
+	}
+	row := b.renderRow(*c, enabledByName)
+	return &row, nil
 }
 
 func (b *contributionBridge) ContributionUsage(ctx context.Context, owner string, since int64) (int64, int64, int64, error) {
