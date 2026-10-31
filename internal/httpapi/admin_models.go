@@ -44,6 +44,11 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+
+	"errors"
+	"github.com/LittleFishStars/FreeRouter/internal/ir"
+	"io"
+	"time"
 )
 
 func (s *Server) mountAdminModels(r chi.Router, deps *AdminDeps) {
@@ -653,24 +658,24 @@ func (s *Server) handleAdminAbstractCandidatesPut(deps *AdminDeps) http.HandlerF
 
 // handleAdminAbstractConnectivity POST /api/admin/abstract-models/{id}/connectivity。
 //
-// 「检验连通性」（2026-10-31 用户要求）：对抽象模型的**每条候选**做一次实时
-// 轻量探测。与 dry-run 的分工：dry-run 是静态干跑（声明层面的候选/替代链
-// 检查，不发任何网络请求），这里是**真发请求**——每条候选 → 真实模型 → 上游，
-// 按上游 kind 分派探测（relay 问 sidecar 健康；vendor/selfhosted 打
-// {base}/models），把「哪条候选的出站路径断了」逐条亮出来。
+// 「检验连通性」（2026-10-31 用户定案：直接实际请求一次）：对抽象模型发起一次
+// **真实的端到端推理**（max_tokens=1 的 ping），打穿「候选解析 → 凭据 → 出站
+// 协议 → 响应解析」全链路。静态干跑（dry-run）与上游存活探测都替代不了这个：
+// 凭据失效 / 模型名错 / 协议不兼容，只有真发一次才知道。
 //
-// 为什么探上游而不是发一次真实推理：推理要花上游额度，且单次成功不代表
-// 每条候选都通；探测无额度成本（Upstream.Probe 的既有纪律），管理面可以随手点。
+// 与 /v1/chat/completions 的关系：复用同一套管线（v1Candidates 候选源 +
+// v1Upstream 出站 shim + ir 适配器 + 冷却账本），差别只有三处——
+//  1. 不写 HTTP 响应流，结果收进结构化应答（逐候选尝试记录）；
+//  2. 不落用量结算：probe 的 token 消耗真实发生但不进 requests 表——
+//     它不是业务流量；应答里如实带 tokens 供参考；
+//  3. 失败同样回传冷却账本（CandidateFailureNotifier）——探测到的失败与
+//     真实流量同源，冷却口径不打折。
 //
-// 同一上游的多个候选共享一次探测结果（按 upstream_id 缓存）——探测的是
-// 出站路径，与具体模型无关；候选行仍逐条列出（哪条候选挂了要看得到）。
+// 逐候选尝试到首个成功为止：一次点击最多消耗「候选数 × max_tokens=1」的
+// 额度，换来的是每条路径通不通的完整清单。
 func (s *Server) handleAdminAbstractConnectivity(deps *AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if deps == nil || !deps.need(w, "模型存储", deps.Models != nil) {
-			return
-		}
-		if deps.UpstreamTest == nil {
-			deps.need(w, "上游测试", false)
 			return
 		}
 		id, ok := abstractModelIDParam(w, r)
@@ -683,77 +688,119 @@ func (s *Server) handleAdminAbstractConnectivity(deps *AdminDeps) http.HandlerFu
 			mapAdminError(w, err, "抽象模型")
 			return
 		}
-		cands, err := deps.Models.ListCandidates(ctx, id)
-		if err != nil {
-			mapAdminError(w, err, "候选集")
+		cs, up := s.v1Candidates(), s.v1Upstream()
+		if cs == nil || up == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+				"model": m.Name, "ok": false,
+				"reason":   "路由管线未接线（部署态：候选源或出站 shim 为空）",
+				"attempts": []any{},
+			}})
 			return
 		}
-		// 探测按上游去重；结果行逐候选一条。
-		type connRow struct {
-			RealModelID  string `json:"real_model_id"`
-			DisplayName  string `json:"display_name,omitempty"`
-			ModelStatus  string `json:"model_status,omitempty"`
-			UpstreamID   string `json:"upstream_id,omitempty"`
-			UpstreamName string `json:"upstream_name,omitempty"`
-			OK           bool   `json:"ok"`
-			LatencyMs    *int64 `json:"latency_ms,omitempty"`
-			HTTPStatus   *int64 `json:"http_status,omitempty"`
-			Reason       string `json:"reason,omitempty"`
+
+		// ping 请求：max_tokens=1 把探测成本压到最低；非流式便于整体解析。
+		one := 1
+		probe := ir.Request{
+			Model:    m.Name,
+			Messages: []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart{Text: "ping"}}}},
+			Sampling: ir.Sampling{MaxOutput: &one},
+			Stream:   false,
 		}
-		probeCache := map[string]map[string]any{}
-		probe := func(upstreamID string) map[string]any {
-			if hit, ok := probeCache[upstreamID]; ok {
-				return hit
-			}
-			res, err := deps.UpstreamTest.TestUpstream(ctx, upstreamID)
-			if err != nil {
-				res = map[string]any{"ok": false, "reason": err.Error()}
-			}
-			probeCache[upstreamID] = res
-			return res
+
+		// 整体预算：候选循环内部各调用有自己的超时，这里只兜总上限。
+		ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		defer cancel()
+
+		// trace sink：no_candidate / 全失败的「为什么」就在剔除原因里。
+		ctx = WithV1Trace(ctx)
+		cands, cerr := cs.Candidates(ctx, m.Name, probe)
+
+		type probeAttempt struct {
+			Display   string `json:"display"`
+			OK        bool   `json:"ok"`
+			LatencyMs int64  `json:"latency_ms"`
+			Tokens    *int   `json:"tokens,omitempty"`
+			Reason    string `json:"reason,omitempty"`
 		}
-		rows := make([]connRow, 0, len(cands))
-		okCount := 0
-		for _, c := range cands {
-			row := connRow{RealModelID: c.RealModelID}
-			rm, gerr := deps.Models.GetRealModel(ctx, c.RealModelID)
-			if gerr != nil {
-				row.OK = false
-				row.Reason = "真实模型不存在或已被移除"
-				rows = append(rows, row)
-				continue
+		attempts := []probeAttempt{}
+		okTotal := false
+		var latency int64
+		var tokens *int
+
+		switch {
+		case errors.Is(cerr, ErrModelNotFound):
+			attempts = append(attempts, probeAttempt{Reason: "模型不可见（不存在 / 已停用 / 已弃用且无替代）"})
+		case cerr != nil:
+			attempts = append(attempts, probeAttempt{Reason: "候选解析失败：" + cerr.Error()})
+		case len(cands) == 0:
+			attempts = append(attempts, probeAttempt{Reason: "无可用候选（路由诊断里是逐条剔除原因）"})
+		}
+
+		if cerr == nil {
+			for _, cand := range cands {
+				attempt := probeAttempt{Display: cand.Display}
+				start := time.Now()
+				call, callErr := up.Call(ctx, cand, probe, false)
+				switch {
+				case callErr != nil:
+					attempt.Reason = callErr.Error()
+				case call.Err != nil:
+					attempt.Reason = call.Err.Error()
+				default:
+					raw, rerr := io.ReadAll(io.LimitReader(call.Body, 1<<20))
+					_ = call.Body.Close()
+					switch {
+					case rerr != nil:
+						attempt.Reason = "读响应失败：" + rerr.Error()
+					default:
+						resp, derr := cand.Adapter.DecodeResponse(raw)
+						if derr != nil {
+							attempt.Reason = "响应解析失败（协议不符）"
+						} else {
+							attempt.OK = true
+							// Usage 是值类型；指针字段为 nil = 上游没报该项。
+							if resp.Usage.InputTokens != nil || resp.Usage.OutputTokens != nil {
+								t := 0
+								if resp.Usage.InputTokens != nil {
+									t += *resp.Usage.InputTokens
+								}
+								if resp.Usage.OutputTokens != nil {
+									t += *resp.Usage.OutputTokens
+								}
+								attempt.Tokens = &t
+								tokens = &t
+							}
+						}
+					}
+				}
+				attempt.LatencyMs = time.Since(start).Milliseconds()
+				attempts = append(attempts, attempt)
+				if attempt.OK {
+					okTotal = true
+					latency = attempt.LatencyMs
+					break
+				}
+				// 失败回传冷却账本——与 v1 流量同源同口径。
+				if nf, nOk := cs.(CandidateFailureNotifier); nOk {
+					nf.NotifyCandidateFailure(cand)
+				}
 			}
-			row.DisplayName = rm.DisplayName
-			row.ModelStatus = rm.Status
-			row.UpstreamID = rm.UpstreamID
-			if u, uerr := deps.Upstreams.GetUpstream(ctx, rm.UpstreamID); uerr == nil {
-				row.UpstreamName = u.Name
+		}
+
+		// trace 头值（候选剔除原因）随应答下发——「为什么没有候选」的答案。
+		var trace string
+		if t := V1TraceFrom(ctx); t != nil {
+			if v, terr := t.HeaderValue(); terr == nil {
+				trace = v
 			}
-			res := probe(rm.UpstreamID)
-			if v, ok := res["ok"].(bool); ok {
-				row.OK = v
-			}
-			if v, ok := res["latency_ms"].(int64); ok {
-				ms := v
-				row.LatencyMs = &ms
-			}
-			if v, ok := res["http_status"].(int); ok {
-				hs := int64(v)
-				row.HTTPStatus = &hs
-			}
-			if v, ok := res["reason"].(string); ok {
-				row.Reason = v
-			}
-			if row.OK {
-				okCount++
-			}
-			rows = append(rows, row)
+		}
+		reason := ""
+		if !okTotal && len(attempts) > 0 {
+			reason = attempts[len(attempts)-1].Reason
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
-			"model":   m.Name,
-			"results": rows,
-			"ok":      okCount,
-			"failed":  len(rows) - okCount,
+			"model": m.Name, "ok": okTotal, "latency_ms": latency,
+			"tokens": tokens, "attempts": attempts, "trace": trace, "reason": reason,
 		}})
 	}
 }

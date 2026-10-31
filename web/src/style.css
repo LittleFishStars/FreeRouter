@@ -2255,6 +2255,31 @@ button.am-add-chip {
 .am-conn-lat {
   color: var(--fr-on-surface-variant);
 }
+.am-conn-reason {
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.am-conn-trace {
+  width: 100%;
+  font-size: 0.75rem;
+}
+.am-conn-trace summary {
+  cursor: pointer;
+  user-select: none;
+}
+.am-conn-trace-body {
+  display: block;
+  margin-top: 0.3rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--fr-radius-md);
+  background: var(--fr-inset);
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 0.7rem;
+  color: var(--fr-on-surface-variant);
+}
 .am-conn-close {
   padding: 0.15rem 0.55rem;
   font-size: 0.72rem;

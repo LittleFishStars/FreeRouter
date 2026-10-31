@@ -375,24 +375,26 @@ export interface ChainPreview {
   }
 }
 
-/** 一条候选的连通性检验结果（POST /abstract-models/{id}/connectivity）。 */
-export interface ConnectivityRow {
-  real_model_id: string
-  display_name?: string
-  model_status?: string
-  upstream_id?: string
-  upstream_name?: string
+/** 一次真实端到端探测的逐候选尝试（POST /abstract-models/{id}/connectivity）。 */
+export interface ConnectivityAttempt {
+  /** 落点描述：渠道/真实模型#行ID（与 v1 trace 同口径） */
+  display: string
   ok: boolean
-  latency_ms?: number
-  http_status?: number
+  latency_ms: number
+  tokens?: number
   reason?: string
 }
 
 export interface ConnectivityResult {
   model: string
-  results: ConnectivityRow[]
-  ok: number
-  failed: number
+  ok: boolean
+  latency_ms: number
+  /** 实际消耗（max_tokens=1 的 ping；探测不计入用量统计） */
+  tokens?: number
+  attempts: ConnectivityAttempt[]
+  /** 路由诊断（候选剔除原因；no_candidate / 全失败时的「为什么」） */
+  trace?: string
+  reason?: string
 }
 
 export interface DryRunResult {

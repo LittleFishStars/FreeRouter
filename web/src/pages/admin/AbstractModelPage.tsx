@@ -310,9 +310,15 @@ function ModelRow({
         <span className="am-row-ops" onClick={(e) => e.stopPropagation()}>
           {/* 行头不放「候选集」按钮：展开区的「+ 添加模型」与候选芯片都打开
               同一个编辑弹窗，行头只留低频的「弃用」入口。 */}
-          <button type="button" className="btn-ghost" disabled={connBusy} onClick={() => void runConnectivity()}>
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={connBusy}
+            title="实际请求一次（max_tokens=1 的 ping），打穿候选→凭据→出站→响应全链路；消耗极少量额度，不计入用量统计"
+            onClick={() => void runConnectivity()}
+          >
             <IconTest size="xs" />
-            {connBusy ? '检验中…' : '检验连通性'}
+            {connBusy ? '请求中…' : '检验连通性'}
           </button>
           <Link to={`${editTo}/deprecation`}>弃用</Link>
           <button type="button" className="am-expand" data-open={expanded} onClick={onToggle} aria-expanded={expanded} aria-label={expanded ? '收起候选' : '展开候选'}>
@@ -323,22 +329,30 @@ function ModelRow({
       {connError && <div className="am-explain" data-tone="warn">检验失败：{connError}</div>}
       {conn && (
         <div className="am-conn">
-          <span className="am-conn-sum" data-tone={conn.failed === 0 ? 'ok' : 'warn'}>
-            {conn.failed === 0 ? `全部 ${conn.ok} 条可达` : `${conn.ok} 可达 / ${conn.failed} 不可达`}
+          <span className="am-conn-sum" data-tone={conn.ok ? 'ok' : 'warn'}>
+            {conn.ok
+              ? `连通 ✓ ${conn.latency_ms}ms${conn.tokens != null ? ` · ${conn.tokens} tok` : ''}`
+              : '不通'}
           </span>
-          {conn.results.map((r) => (
+          {conn.attempts.map((a, i) => (
             <span
-              key={r.real_model_id}
+              key={i}
               className="am-conn-item"
-              data-ok={r.ok}
-              title={`${r.upstream_name ?? r.upstream_id ?? '未知上游'}：${r.reason ?? (r.ok ? '可达' : '不可达')}${r.latency_ms != null ? `（${r.latency_ms}ms）` : ''}`}
+              data-ok={a.ok}
+              title={`${a.display}：${a.reason ?? (a.ok ? '成功' : '失败')}`}
             >
-              {r.ok ? <IconCheck size="xs" /> : <IconWarn size="xs" />}
-              <span className="am-conn-src">{r.upstream_name ?? r.upstream_id ?? '未知上游'}</span>
-              <span className="am-conn-model">{r.display_name || r.real_model_id}</span>
-              {r.latency_ms != null && <span className="am-conn-lat">{r.latency_ms}ms</span>}
+              {a.ok ? <IconCheck size="xs" /> : <IconWarn size="xs" />}
+              <span className="am-conn-model">{a.display}</span>
+              {a.ok && a.latency_ms != null && <span className="am-conn-lat">{a.latency_ms}ms</span>}
+              {!a.ok && a.reason && <span className="am-conn-reason">{a.reason}</span>}
             </span>
           ))}
+          {!conn.ok && conn.trace && (
+            <details className="am-conn-trace">
+              <summary className="muted">路由诊断</summary>
+              <code className="am-conn-trace-body">{conn.trace}</code>
+            </details>
+          )}
           <button type="button" className="btn-ghost am-conn-close" onClick={() => setConn(null)}>收起</button>
         </div>
       )}
