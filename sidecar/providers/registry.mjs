@@ -607,7 +607,10 @@ register('codely', {
     const mod = await import('dsh-providers-hub/lib/codely-auth.js')
     const auth = await mod.requestCodelyDeviceAuthorization({})
     return background('codely', 'device_code',
-      { authorize_url: auth.verificationUriComplete ?? auth.verificationUri, interval: auth.intervalMs },
+      // interval 的单位契约是**秒**（Go 注释：前端每隔 interval 秒调一次；
+      // 其余设备流 306/335 行都按秒传）——这里传 intervalMs 会变成「每 33
+      // 分钟轮询一次」，用户授权完成后页面永远停在等待（2026-11-01 实测）。
+      { authorize_url: auth.verificationUriComplete ?? auth.verificationUri, interval: Math.max(1, Math.floor(auth.intervalMs / 1000)) },
       async ({ signal }) => {
         const code = await mod.pollCodelyAuthorizationCode(
           auth.authRequestToken, auth.intervalMs ?? 2_000, auth.expiresMs ?? 300_000, { signal })
