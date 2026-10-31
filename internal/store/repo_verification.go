@@ -155,7 +155,9 @@ const credentialColumns = `SELECT id, owner_account_id, provider, external_id, e
 // ux_upstream_credentials_external 前缀段时仍可用（模式带前缀常量段）。
 // 转义由调用方负责（%/_ 想按字面匹配先 ESCAPE）——不在这儿猜意图。
 func (r *ModelRepo) ListUnverified(ctx context.Context, provider, externalIDPattern string) ([]Credential, error) {
-	q := credentialColumns + ` WHERE verify_status = 'unverified'`
+	// removed_at IS NULL：已移除的凭据不进鉴定队列（与凭据池行列表同一口径，
+	// 2026-11-01）——密文是墓碑，鉴定只会得到解密失败。
+	q := credentialColumns + ` WHERE verify_status = 'unverified' AND removed_at IS NULL`
 	var args []any
 	if provider != "" {
 		q += ` AND provider = ?`
@@ -544,7 +546,10 @@ func (r *ModelRepo) ListCredentials(ctx context.Context, f CredentialFilter) ([]
 		limit = 500
 	}
 	q := strings.Builder{}
-	q.WriteString(credentialColumns + ` WHERE 1=1`)
+	// 已移除的凭据不进管理端列表（2026-11-01，与贡献者侧「移除即消失」同口径）：
+	// 移除后密文是墓碑、也不在候选池里，列表留着它只会诱发无效排查。
+	// 详情（LookupCredential）不过滤：审计与 requests 归因仍要能按 id 读。
+	q.WriteString(credentialColumns + ` WHERE removed_at IS NULL`)
 	var args []any
 	if f.OwnerAccountID != nil {
 		q.WriteString(" AND owner_account_id = ?")

@@ -770,9 +770,20 @@ func init() {
 //   - channels：上面这些行已覆盖 real_models 全表，所以在 Go 里顺手去重就够，
 //     不必再加一个 DISTINCT 查询（两份实现就是两个漂移源）。
 func (mb *modelsBridge) ListModelSources(ctx context.Context) ([]httpapi.AdminModelSource, []string, error) {
-	ups, err := mb.b.repos.Models.ListUpstreams(ctx)
+	all, err := mb.b.repos.Models.ListUpstreams(ctx)
 	if err != nil {
 		return nil, nil, mapStoreErr(err)
+	}
+	// 已移除的上游不进来源聚合（2026-11-01）：管理面「移除供应商」与贡献者
+	// 「移除贡献」都会置 removed_at，那之后这条来源在凭据池里不该再出现——
+	// 它已经不在池里了（密文是墓碑、模型也退出候选），留着只会诱发
+	// 「这条还能不能救」的无效排查。行本身保留给归因外键与审计。
+	ups := make([]store.Upstream, 0, len(all))
+	for _, u := range all {
+		if u.RemovedAt != nil {
+			continue
+		}
+		ups = append(ups, u)
 	}
 	// 先读齐再装配：channels 是**全池**事实（跨所有上游），必须看完全部行才能去重。
 	byUpstream := make(map[string][]store.RealModel, len(ups))

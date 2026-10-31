@@ -49,6 +49,12 @@ DROP TABLE IF EXISTS model_multipliers;
 DROP TABLE IF EXISTS usage_daily;
 DROP TABLE IF EXISTS requests;
 DROP TABLE IF EXISTS key_model_allow;
+-- 0013（2026-11-01）把 key_model_allow 改名为 key_model_deny；0009 在本库重跑时
+-- （migrate_uuid_guard_test 的「删版本记录再启动」场景）若不清新名，
+-- 新表对被 DROP 的 abstract_models 的外键会让 DROP 失败（no such table:
+-- main.abstract_models）。补一行 DROP IF EXISTS：0009 的职责是「把旧形状清掉
+-- 再按 UUID 形状重建」，认哪个名字都该清。
+DROP TABLE IF EXISTS key_model_deny;
 DROP TABLE IF EXISTS abstract_candidates;
 DROP TABLE IF EXISTS upstream_credentials;
 DROP TABLE IF EXISTS upstream_secrets;

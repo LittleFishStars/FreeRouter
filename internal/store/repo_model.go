@@ -824,6 +824,7 @@ func (r *ModelRepo) ListUpstreamCredentials(ctx context.Context) (map[string]Ups
 		        SUM(CASE WHEN c.status = 'active' THEN 1 ELSE 0 END) AS active
 		   FROM upstream_credentials c
 		   JOIN upstream_secrets s ON s.id = c.secret_ref
+		  WHERE c.removed_at IS NULL
 		  GROUP BY s.upstream_id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: 聚合上游凭据失败: %w", err)
@@ -895,6 +896,10 @@ func (r *ModelRepo) ListUpstreamCredentialRows(ctx context.Context) (map[string]
 		        COALESCE(c.checkin_text, ''), COALESCE(c.checkin_date, ''), COALESCE(c.checkin_at, 0)
 		   FROM upstream_credentials c
 		   JOIN upstream_secrets s ON s.id = c.secret_ref
+		  -- 已移除的凭据从凭据池消失（2026-11-01）：贡献者在「我的贡献」里
+		  -- 移除等于撤销，管理员这一侧也不该再看到那一行——留着只会诱发
+		  -- 「这条还能不能救」的无效排查（密文已是墓碑，救不回来）。
+		  WHERE c.removed_at IS NULL
 		  ORDER BY c.created_at, c.id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: 列出上游凭据行失败: %w", err)

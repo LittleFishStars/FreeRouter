@@ -121,3 +121,87 @@ func findUpstreamByName(t *testing.T, a *App, prefix string) store.Upstream {
 
 // 编译期引用 time（将来断言 removed_at 值域用）。
 var _ = time.Now
+
+// TestContractRemovedCredentialLeavesPoolViews 钉住 2026-11-01 的修复：
+// 贡献者移除凭据后，**凭据池的四个读面都不再出现它**——行列表、凭据聚合
+// （可用实例数/来源计数）、管理端凭据列表、待鉴定队列；而单点读仍可拿到
+// （审计与 requests 归因要它）。
+//
+// 为什么这条要单独测：移除只写了 removed_at（行保留），读面若忘记过滤，
+// 界面就出现「已禁用」的僵尸行——用户实测到过，且它诱发「这条还能不能救」
+// 的无效排查（密文已是墓碑，救不回来）。
+func TestContractRemovedCredentialLeavesPoolViews(t *testing.T) {
+	a := newContributionTestApp(t, nil)
+	ctx := context.Background()
+	owner := newContributorAccount(t, a, "anonymous-contrib-poolviews")
+
+	svc := a.Contribution()
+	srv := newCatalogServer(t, []string{"m1"}, 200)
+	res, err := svc.Submit(ctx, upstream.Submission{
+		OwnerAccountID: owner, Provider: "demo-poolview", BaseURL: srv.URL + "/v1",
+		APIKey: "sk-poolview-abcdef1234567890", ClaimedModels: []string{"m1"},
+	})
+	if err != nil || !res.InPool {
+		t.Fatalf("前置提交应入池：err=%v res=%+v", err, res)
+	}
+	// 移除（贡献者侧撤销）。
+	if err := svc.Revoke(ctx, res.CredentialID, upstream.RevokeActor{AccountID: owner}); err != nil {
+		t.Fatalf("移除失败：%v", err)
+	}
+
+	// ① 凭据池行列表：该行消失，且它所属的来源也不再出现。
+	rows, err := a.store.Repos().Models.ListUpstreamCredentialRows(ctx)
+	if err != nil {
+		t.Fatalf("列凭据行失败：%v", err)
+	}
+	for upID, list := range rows {
+		for _, r := range list {
+			if r.ID == res.CredentialID {
+				t.Fatalf("已移除的凭据不应出现在凭据池行列表（上游 %s）", upID)
+			}
+		}
+	}
+
+	// ② 凭据聚合（可用实例数/来源计数）：该来源整体消失。
+	agg, err := a.store.Repos().Models.ListUpstreamCredentials(ctx)
+	if err != nil {
+		t.Fatalf("聚合失败：%v", err)
+	}
+	up := findUpstreamByName(t, a, "demo-poolview-contrib-")
+	if _, ok := agg[up.ID]; ok {
+		t.Fatalf("已移除的来源不应出现在凭据聚合（%s）", up.Name)
+	}
+
+	// ③ 管理端凭据列表：按状态/全量都查不到。
+	for _, f := range []store.CredentialFilter{{}, {Status: store.CredDisabled}} {
+		list, err := a.store.Repos().Models.ListCredentials(ctx, f)
+		if err != nil {
+			t.Fatalf("管理端列表失败：%v", err)
+		}
+		for _, c := range list {
+			if c.ID == res.CredentialID {
+				t.Fatalf("已移除的凭据不应出现在管理端列表（filter=%+v）", f)
+			}
+		}
+	}
+
+	// ④ 待鉴定队列：也不该有它。
+	pendingList, err := a.store.Repos().Models.ListUnverified(ctx, "", "")
+	if err != nil {
+		t.Fatalf("待鉴定列表失败：%v", err)
+	}
+	for _, c := range pendingList {
+		if c.ID == res.CredentialID {
+			t.Fatal("已移除的凭据不应进入鉴定队列")
+		}
+	}
+
+	// ⑤ 单点读仍可拿到（审计与归因依赖行存在）。
+	got, err := a.store.Repos().Models.LookupCredential(ctx, res.CredentialID)
+	if err != nil {
+		t.Fatalf("LookupCredential 应仍可读（归因链）：%v", err)
+	}
+	if got.Status != string(store.CredDisabled) {
+		t.Errorf("状态应为 disabled，得 %s", got.Status)
+	}
+}
