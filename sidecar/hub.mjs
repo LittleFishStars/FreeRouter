@@ -72,6 +72,10 @@ const ADAPTERS = {
   // 地区别名共用同一份实现（04-sidecar 6.2 表的备注列）。
   minimaxintl: { module: 'lib/minimax-adapter.js', cls: 'MinimaxAdapter', shape: 'oauth', productModule: 'lib/minimax-product.js', productName: 'MINIMAX_INTL' },
   qodercn: { module: 'lib/qoder-adapter.js', cls: 'QoderAdapter', shape: 'oauth', productModule: 'lib/qoder-product.js', productName: 'QODER_CN' },
+  // 腾讯 CodeBuddy / WorkBuddy（2026-11-01 移植）：同一家实现两个 product，
+  // 身份头（User-Agent）必须跟产品走——productModule 显式注入。
+  buddy: { module: 'lib/buddy-adapter.js', cls: 'BuddyAdapter', shape: 'oauth', productModule: 'lib/product.js', productName: 'CODEBUDDY' },
+  workbuddy: { module: 'lib/buddy-adapter.js', cls: 'BuddyAdapter', shape: 'oauth', productModule: 'lib/product.js', productName: 'WORKBUDDY' },
 };
 
 // 共用选项：adapter 会读但允许缺省的字段。给最小实现而不是 undefined，
@@ -231,6 +235,25 @@ export async function adapterForWithCredential(provider, credential, onRefreshed
         });
         credential = next;
         if (typeof onRefreshed === 'function') onRefreshed(next);
+      };
+      return new Cls(opts);
+    }
+    // buddy 系：hub 的 refreshToken(credential, fetcher, signal, product)——
+    // refresh_token 过期抛 RefreshTokenExpiredError，由 adapter 的 401 路径
+    // 归类为 AUTH → 用户重新授权。
+    if (provider === 'buddy' || provider === 'workbuddy') {
+      opts.refresh = async () => {
+        const bo = await loadModule('lib/buddy-oauth.js');
+        const pm = await loadModule(spec.productModule ?? 'lib/product.js');
+        const product = pm[spec.productName ?? 'CODEBUDDY'];
+        if (!credential || !credential.refresh_token) {
+          throw new Error('buddy: 凭据不可续期（缺 refresh_token），请重新授权');
+        }
+        const next = await bo.refreshToken(credential, fetch, undefined, product);
+        if (next && typeof next === 'object') {
+          credential = next;
+          if (typeof onRefreshed === 'function') onRefreshed(next);
+        }
       };
       return new Cls(opts);
     }

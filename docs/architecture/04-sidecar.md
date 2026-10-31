@@ -138,9 +138,10 @@ credits.query({ provider: string, credentialRef: string }) -> {
 // stream=false 时 sidecar 把 chunk 流攒回完整 chat.completion（relay 的
 // 非流式消费面要 JSON 体）。
 //
-// **覆盖面（2026-10-31 批量移植）**：凡 hub 有 adapter 且 sidecar 清单声明
-// `kind: relay` 的渠道（qoder / qodercn / minimax / minimaxintl / trae /
-// zcode / autoclaw / gemini / accio），贡献凭据的推理都走本端点——落库行
+// **覆盖面（2026-10-31 批量移植；11-01 补 buddy 系）**：凡 hub 有 adapter 且
+// sidecar 清单声明 `kind: relay` 的渠道（qoder / qodercn / minimax /
+// minimaxintl / trae / zcode / autoclaw / gemini / accio / buddy /
+// workbuddy），贡献凭据的推理都走本端点——落库行
 // 即为 relay 形态（sidecar://<provider>），不再 noOpenAI 停用。续期钩子按
 // 渠道接了实测原语（qoder 系 wasm 链路 / minimax 的 refresh_token 换新 /
 // autoclaw 的签名续期 / gemini、accio 走 registry 登记），未登记的降级为

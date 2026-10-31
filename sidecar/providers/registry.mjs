@@ -149,8 +149,8 @@ const ENDPOINTS = {
   // 专有协议（2026-10-31 批量移植）：hub 有 adapter 且 sidecar 已接
   // adapterForWithCredential 的渠道 → kind=relay、base_url=sidecar://<id>，
   // 推理走 infer.stream（凭据单帧传入），落库即可用——不再 noOpenAI。
-  // 仍 noOpenAI 的（buddy/workbuddy/codely/autoclawintl）：hub 无 adapter
-  // 条目，行停用，凭据的签到/余额不受影响。
+  // 仍 noOpenAI 的（codely/autoclawintl）：hub 无 adapter 条目，行停用，
+  // 凭据的签到/余额不受影响。
   gemini: { apiBase: 'sidecar://gemini', kind: 'relay' },
   accio: { apiBase: 'sidecar://accio', kind: 'relay' },
   minimax: { apiBase: 'sidecar://minimax', kind: 'relay' },
@@ -159,8 +159,8 @@ const ENDPOINTS = {
   zcode: { apiBase: 'sidecar://zcode', kind: 'relay' },
   autoclaw: { apiBase: 'sidecar://autoclaw', kind: 'relay' },
   autoclawintl: { apiBase: 'https://autoglm-api.autoglm.ai', kind: 'vendor', noOpenAI: true },
-  buddy: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
-  workbuddy: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
+  buddy: { apiBase: 'sidecar://buddy', kind: 'relay' },
+  workbuddy: { apiBase: 'sidecar://workbuddy', kind: 'relay' },
   codely: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
   qoder: { apiBase: 'sidecar://qoder', kind: 'relay' },
   // qodercn（2026-10-31 移植，批量移植的首家）：同上，走 sidecar infer.stream
@@ -574,12 +574,15 @@ async function buddyRegister(productId, productExport, displayName) {
     flow: 'device_code',
     async start() {
       const mod = await import('dsh-providers-hub/lib/buddy-oauth.js')
+      // buildCredential 住在 lib/buddy.js（核心模块），buddy-oauth 只是内部
+      // import 它——从 oauth 模块上取会 undefined（2026-11-01 登录失败实测）。
+      const core = await import('dsh-providers-hub/lib/buddy.js')
       const { [productExport]: product } = await import('dsh-providers-hub/lib/product.js')
       const { state, authUrl } = await mod.fetchAuthState(fetch, undefined, product)
       return background(productId, 'device_code', { authorize_url: authUrl }, async ({ signal }) => {
         const token = await mod.loopGetToken(state, { signal, product })
         const account = await mod.getAccount(state, token, { signal, product })
-        return mod.buildCredential(token, account)
+        return core.buildCredential(token, account)
       })
     },
     async refresh({ credential }) {
