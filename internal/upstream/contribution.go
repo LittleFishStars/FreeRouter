@@ -79,6 +79,12 @@ type ContributionStore interface {
 	// 所以「撤销立即生效」必须把上游行一起停掉，只改 credential.status 是假的撤销。
 	ListUpstreams(ctx context.Context) ([]store.Upstream, error)
 	UpdateUpstream(ctx context.Context, id string, name, baseURL string, enabled bool) error
+	// MarkUpstreamRemoved / MarkCredentialRemoved 是「移除」的落库标记
+	// （2026-10-31）：留行不留钥——行保留给归因外键与审计，但退出候选池与
+	// 一切列表。撤销（Revoke）从此不再只是 status=disabled，而是同时置位
+	// removed_at，语义上从「停用」升级为「移除」。
+	MarkUpstreamRemoved(ctx context.Context, id string, at int64) error
+	MarkCredentialRemoved(ctx context.Context, id string, at int64) error
 }
 
 // ProbeInput 是一次探测的输入。APIKey 只在本进程内存里流转。
@@ -673,6 +679,17 @@ func (s *ContributionService) Revoke(ctx context.Context, credentialID string, a
 	}
 	if err := s.store.SetCredentialStatus(ctx, credentialID, store.CredDisabled); err != nil {
 		return fmt.Errorf("upstream: 撤销（写状态）失败：%w", err)
+	}
+	// 移除标记（2026-10-31）：撤销从此**从列表里消失**（不再只是 disabled 的
+	// 一行）。行仍在库里——归因外键与审计要它；消失的是「在册」这个事实。
+	at := time.Now().Unix()
+	if err := s.store.MarkCredentialRemoved(ctx, credentialID, at); err != nil {
+		return fmt.Errorf("upstream: 撤销（标记移除）失败：%w", err)
+	}
+	if found {
+		if err := s.store.MarkUpstreamRemoved(ctx, up.ID, at); err != nil {
+			return fmt.Errorf("upstream: 撤销（标记上游移除）失败：%w", err)
+		}
 	}
 	s.clearFailures(credentialID)
 	return nil

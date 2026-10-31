@@ -20,9 +20,12 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
@@ -175,6 +178,65 @@ func (ub *upstreamsBridge) UpdateUpstream(ctx context.Context, id string, in htt
 		}
 	}
 	return nil, auditID, nil
+}
+
+// RemoveUpstream 移除一条上游（2026-10-31「移除供应商」）。
+//
+// 三步，顺序有意义：
+//  1. 行更新（事务内）：enabled=0 + removed_at 置位 + 绑定凭据一并
+//     disabled+removed——**立即退出候选池与各列表**；
+//  2. 墓碑覆写密文（事务外，走 crypto 层）：密钥材料不可恢复。这才是
+//     「移除」与「停用」的分界——停用后还能恢复，移除后恢复的唯一途径是
+//     重新提交/重新授权（那会走完整鉴定流）。
+//  3. 审计（事务内，与行更新同事务：要么都成，要么都不成）。
+//
+// 为什么墓碑在事务外：写密文要 crypto 层（Secrets.PutSecret），它自己开事务；
+// 嵌套事务在这里不值当。失败时行已移除、密文残留成孤儿——可接受（解不开的
+// 密文只是占空间；而且孤儿密文仍受主密钥保护）。
+func (ub *upstreamsBridge) RemoveUpstream(ctx context.Context, id string, audit httpapi.AdminAuditEntry) (*httpapi.AdminUpstream, string, error) {
+	uid, err := decodeID(id)
+	if err != nil {
+		return nil, "", errAdminNotImplemented
+	}
+	var auditID string
+	err = ub.b.st.WithTx(ctx, func(tx *store.Repos) error {
+		if err := tx.Models.RemoveUpstream(ctx, uid, time.Now().Unix()); err != nil {
+			return err
+		}
+		aid, aerr := appendAudit(ctx, tx.Logs, audit)
+		if aerr != nil {
+			return aerr
+		}
+		auditID = aid
+		return nil
+	})
+	if err != nil {
+		return nil, "", mapStoreErr(err)
+	}
+	// 墓碑：把明文换成随机串，原密文就此不可解（与 Revoke 同款处置）。
+	if _, err := ub.b.st.Repos().Secrets.PutSecret(ctx, uid, tombstoneSecret()); err != nil {
+		return nil, "", mapStoreErr(err)
+	}
+	row, err := ub.b.repos.Models.GetUpstreamByID(ctx, uid)
+	if err != nil {
+		return nil, "", mapStoreErr(err)
+	}
+	out := upstreamToAdmin(row)
+	return out, auditID, nil
+}
+
+// tombstoneSecret 生成移除用的墓碑明文（随机 32 字节 hex）。
+// 为什么覆写而不是删行：upstream_secrets.upstream_id 有外键指向 upstreams，
+// 删密文行会让「行仍在但材料没了」的形状更碎；覆写保持结构一致，且原明文
+// 一定解不开（GCM 认证失败）。
+func tombstoneSecret() []byte {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		// 熵源失败是系统级异常：这里退回固定串（同样不可解，且移除照常继续——
+		// 移除的目的是「让密钥不再可用」，固定串同样做到）。
+		return []byte("removed:00000000000000000000000000000000")
+	}
+	return []byte("removed:" + hex.EncodeToString(b))
 }
 
 func (ub *upstreamsBridge) SetUpstreamKind(ctx context.Context, id, kind string, audit httpapi.AdminAuditEntry) (*httpapi.AdminUpstream, string, error) {

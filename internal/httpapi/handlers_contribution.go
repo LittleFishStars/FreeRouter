@@ -57,6 +57,8 @@ type ContributionDeps struct {
 	OAuth ProviderOAuth
 	// Pauser 切换贡献凭据的可调用性（暂停 / 恢复）；nil = 端点报未装配。
 	Pauser ContributionPauser
+	// Remover 移除贡献凭据（撤销：销毁密文 + 退出一切列表）；nil = 端点报未装配。
+	Remover ContributionRemover
 }
 
 // ContributionSubmitter 是贡献提交链路的窄接口（装配桥包装 ContributionService）。
@@ -155,6 +157,17 @@ type ContributionCredentialRow struct {
 // SetPaused 返回操作后的可调用状态（"paused" / "enabled"）；重复调用幂等。
 type ContributionPauser interface {
 	SetPaused(ctx context.Context, owner, credentialID string, paused bool) (string, error)
+}
+
+// ContributionRemover 移除一条贡献凭据（2026-10-31「移除贡献」）。
+//
+// 与暂停/恢复的分界：暂停是**可逆开关**（凭据与密文都留着，恢复即回到池里）；
+// 移除是**撤销**——密钥材料被墓碑覆写（不可恢复）、行退出一切列表。恢复的唯一
+// 途径是重新提交/重新授权（走完整鉴定流）。
+//
+// 归属校验由实现侧做（与 Revoke 同口径：非属主与不存在同形 404）。
+type ContributionRemover interface {
+	Remove(ctx context.Context, owner, credentialID string) error
 }
 
 // 贡献入口的三个分类 id（前端按 id 分 Tab，契约 v2 §1）。
@@ -621,6 +634,45 @@ func (s *Server) handleCredentialPause(deps *ContributionDeps, paused bool) http
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
 			"ok": true, "status": status,
+		}})
+	}
+}
+
+// HandleContributionCredentialRemove POST /api/contributions/credentials/{id}/remove（会话）。
+//
+// 移除自己贡献的凭据（2026-10-31 用户要求「贡献者可以直接移除，而不只是停用」）：
+// 密钥材料被墓碑覆写（不可恢复）、行从列表消失、退出候选池。
+//
+// 为什么要这一层而不只是管理面撤销：贡献者对「收回自己的账号」的承诺必须
+// 可验证（01-flow §7 / 02-credentials §5.3）——只改状态等于密钥还在库里，
+// 状态被误改回 active 就能再次被调用。留行不留钥：归因外键与审计要行在。
+func (s *Server) HandleContributionCredentialRemove(deps *ContributionDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		owner, ok := requireContributor(w, r, deps)
+		if !ok {
+			return
+		}
+		if deps.Remover == nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "移除服务未装配", nil)
+			return
+		}
+		id, err := idgen.Parse(chi.URLParam(r, "id"))
+		if err != nil {
+			writeError(w, http.StatusNotFound, "not_found", "接口不存在", nil)
+			return
+		}
+		// 属主校验走既有 CredentialOf 口径：非属主与不存在同形 404，
+		// 不确认他人凭据的存在（与详情端点一致）。
+		if _, err := deps.Store.CredentialOf(r.Context(), owner, id); err != nil {
+			writeError(w, http.StatusNotFound, "not_found", "接口不存在", nil)
+			return
+		}
+		if err := deps.Remover.Remove(r.Context(), owner, id); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "移除贡献失败", nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+			"ok": true, "status": "removed",
 		}})
 	}
 }

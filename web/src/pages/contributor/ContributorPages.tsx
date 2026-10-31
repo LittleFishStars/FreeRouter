@@ -17,6 +17,7 @@ import {
   listMyCredentials,
   pauseMyCredential,
   regenerateRecoveryCode,
+  removeMyCredential,
   resumeMyCredential
 } from '../../api/endpoints'
 import type {
@@ -26,7 +27,7 @@ import type {
 } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
 import { ACTION_ICON, TableAction, TableActions } from '../../components/IconButtons'
-import { IconPower, IconView } from '../../icons'
+import { IconDelete, IconPower, IconView } from '../../icons'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import OneTimeSecret from '../../components/OneTimeSecret'
 import {
@@ -118,6 +119,24 @@ export function MyCredentialsPage({ def }: PageProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  // 移除（2026-10-31）：不可逆——密钥材料被销毁，只能重新贡献。
+  const [removeTarget, setRemoveTarget] = useState<ContributionCredential | null>(null)
+
+  async function remove(c: ContributionCredential) {
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      await removeMyCredential(c.id)
+      setNotice('已移除这条贡献——密钥材料已销毁，无法恢复')
+      setRemoveTarget(null)
+      q.reload()
+    } catch (e) {
+      setError(e)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   async function toggle(c: ContributionCredential) {
     setBusy(true)
@@ -193,6 +212,12 @@ export function MyCredentialsPage({ def }: PageProps) {
                         disabled={c.status === 'invalid'}
                         onClick={() => void toggle(c)}
                       />
+                      <TableAction
+                        icon={<IconDelete size={ACTION_ICON} />}
+                        label="移除这条贡献"
+                        busy={busy}
+                        onClick={() => setRemoveTarget(c)}
+                      />
                     </TableActions>
                   </td>
                 </tr>
@@ -202,13 +227,38 @@ export function MyCredentialsPage({ def }: PageProps) {
         )}
       </AsyncView>
 
-      <Section title="暂停与恢复">
+      <Section title="暂停、恢复与移除">
         <p className="muted">
           暂停由你自己控制：贡献即生效，对称地，你也可以随时把自己贡献的凭据撤下。
           发现异常用量时不需要等管理员在线。
         </p>
         <p className="muted">恢复不会重置鉴定结论；被鉴定为未通过的凭据需要管理员复核。</p>
+        <p className="muted">
+          <strong>移除</strong>与暂停不同：移除会销毁密钥材料（不可恢复），凭据从清单里消失；
+          只能用重新提交/重新授权找回。停用是可逆的，移除不是。
+        </p>
       </Section>
+
+      <ConfirmDialog
+        open={removeTarget !== null}
+        title="确认移除这条贡献"
+        impact={[
+          `「${removeTarget?.external_label || '这条凭据'}」的密钥材料被销毁，无法恢复`,
+          '它立即退出候选池，不再被任何请求使用',
+          '移除后它会从你的贡献清单里消失',
+          '想再用只能重新提交凭据并重新走一遍鉴定'
+        ]}
+        irreversibility="不可逆：密钥材料被覆写，无法恢复；只能重新贡献。"
+        targetName={removeTarget?.external_label || '移除'}
+        inputLabel="请输入标签以确认"
+        confirmLabel="确认移除"
+        busy={busy}
+        error={error}
+        onCancel={() => setRemoveTarget(null)}
+        onConfirm={async () => {
+          if (removeTarget) await remove(removeTarget)
+        }}
+      />
     </PageFrame>
   )
 }

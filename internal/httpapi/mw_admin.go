@@ -818,6 +818,9 @@ type AdminUpstream struct {
 	Enabled        bool    `json:"enabled"`
 	OwnerAccountID *string `json:"owner_account_id,omitempty"`
 	LastSeenAt     *int64  `json:"-"`
+	// RemovedAt 非空 = 已移除（2026-10-31「移除供应商」）：退出来源聚合与
+	// 候选池；行保留给归因外键与审计。
+	RemovedAt *int64 `json:"-"`
 	// SecretPresent 是"这条上游在 upstream_secrets 里有密文行"的布尔；
 	// **永不返回密文或引用串本身**（06-audit §2 禁止项）。
 	SecretPresent bool `json:"secret_present"`
@@ -864,6 +867,11 @@ type AdminUpstreamStore interface {
 	// 定案值 sidecar://<name>（0001 NOT NULL + task-12 定案），改出 relay
 	// 时若现值是定案值则清空并由桥报错要求先补端点（不静默留个 sidecar://）。
 	SetUpstreamKind(ctx context.Context, id, kind string, audit AdminAuditEntry) (*AdminUpstream, string, error)
+	// RemoveUpstream 移除一条上游（2026-10-31「移除供应商」）：留行不留钥——
+	// 行保留（归因外键 + 审计），但 enabled=0 + removed_at 置位（退出来源
+	// 聚合与候选池），绑在它上面的凭据行一并 disabled + removed。
+	// 密钥材料的销毁（墓碑覆写）由桥在行更新之外做。
+	RemoveUpstream(ctx context.Context, id string, audit AdminAuditEntry) (*AdminUpstream, string, error)
 	// SetUpstreamSecret 写入/替换该上游的密钥材料（AES-GCM 加密入库）。
 	// 为什么不在 CreateUpstream 里顺带写：改名/改端点与改密钥是两类操作，
 	// 混在一个方法里会让「只改名字」也触发密钥重写；且创建时通常还没有 id。

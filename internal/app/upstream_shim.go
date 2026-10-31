@@ -407,6 +407,16 @@ func (c contributionStore) UpdateUpstream(ctx context.Context, id string, name, 
 	return c.repos.Models.UpdateUpstream(ctx, id, name, baseURL, enabled)
 }
 
+// MarkUpstreamRemoved / MarkCredentialRemoved：移除标记（2026-10-31「移除
+// 供应商」/「移除贡献」）的落库通道——留行不留钥。
+func (c contributionStore) MarkUpstreamRemoved(ctx context.Context, id string, at int64) error {
+	return c.repos.Models.MarkUpstreamRemoved(ctx, id, at)
+}
+
+func (c contributionStore) MarkCredentialRemoved(ctx context.Context, id string, at int64) error {
+	return c.repos.Models.MarkCredentialRemoved(ctx, id, at)
+}
+
 // NewContributionService 装配贡献服务：真 store（AES-GCM 密文）+ 默认 HTTP 探测
 // （GET {base}/models，零 token 成本，见 contribution.go 的 HTTPProbe 说明）。
 //

@@ -665,7 +665,7 @@ func (r *ModelRepo) ListVisibleRealModels(ctx context.Context) ([]RealModel, err
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT `+strings.Join(cols, ", ")+` FROM real_models m
 		  JOIN upstreams u ON u.id = m.upstream_id
-		  WHERE u.enabled = 1 AND m.status = 'active' AND m.hidden = 0
+		  WHERE u.enabled = 1 AND u.removed_at IS NULL AND m.status = 'active' AND m.hidden = 0
 		  ORDER BY m.upstream_id, m.sort_order, m.upstream_model_id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: 列可见真实模型失败: %w", err)
@@ -767,7 +767,7 @@ func (r *ModelRepo) upstreamAbsent(ctx context.Context, kind, name string) (bool
 // 由调用方在真正发起上游请求时按需取用。
 func (r *ModelRepo) ListUpstreams(ctx context.Context) ([]Upstream, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, kind, name, base_url, secret_id, owner_account_id, enabled, last_seen_at
+		`SELECT id, kind, name, base_url, secret_id, owner_account_id, enabled, last_seen_at, removed_at
 		   FROM upstreams ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: 列出上游失败: %w", err)
@@ -779,7 +779,7 @@ func (r *ModelRepo) ListUpstreams(ctx context.Context) ([]Upstream, error) {
 		var u Upstream
 		var enabled int
 		if err := rows.Scan(&u.ID, &u.Kind, &u.Name, &u.BaseURL, &u.SecretID,
-			&u.OwnerAccountID, &enabled, &u.LastSeenAt); err != nil {
+			&u.OwnerAccountID, &enabled, &u.LastSeenAt, &u.RemovedAt); err != nil {
 			return nil, fmt.Errorf("store: 扫描上游失败: %w", err)
 		}
 		u.Enabled = enabled != 0
@@ -939,6 +939,57 @@ type Upstream struct {
 	OwnerAccountID *string
 	Enabled        bool
 	LastSeenAt     *int64
+	// RemovedAt 非空 = 已移除（2026-10-31「移除供应商」）：行保留（归因链与
+	// 外键要它），但退出来源聚合/候选池/各列表——留行不留钥的撤销语义。
+	RemovedAt *int64
+}
+
+// RemoveUpstream 移除一条上游（2026-10-31「移除供应商」）：留行不留钥。
+//
+// 三件事一个事务：enabled=0（立即退出候选池）+ removed_at 置位（来源聚合/
+// 列表/对齐器滤掉）+ 绑定到它密文的凭据行一并 disabled+removed（贡献者的
+// 「我的贡献」里同步消失）。
+//
+// 为什么不删行：requests.resolved_credential_id / resolved_real_model_id
+// 的归因外键（RESTRICT）与审计都要求行在——「移除」撤的是**使用权与密钥**，
+// 不是历史。
+//
+// 为什么密钥材料的销毁（墓碑覆写）不在这里：写密文走 crypto 层
+// （Secrets.PutSecret），与行更新分开。失败时行已移除、密文残留成孤儿
+// ——可接受（孤儿密文解不开，占空间而已）。
+func (r *ModelRepo) RemoveUpstream(ctx context.Context, id string, at int64) error {
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE upstreams SET enabled = 0, removed_at = ? WHERE id = ?`, at, id); err != nil {
+		return fmt.Errorf("store: 移除上游失败: %w", err)
+	}
+	// 凭据行：凡 secret_ref 指向本上游的密文（贡献型上游的凭据都这样挂），
+	// 一并 disabled + removed——否则贡献者列表里还留着「已移除」的凭据。
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE upstream_credentials SET status = 'disabled', removed_at = ?
+		 WHERE removed_at IS NULL AND secret_ref IN
+		   (SELECT id FROM upstream_secrets WHERE upstream_id = ?)`, at, id); err != nil {
+		return fmt.Errorf("store: 移除上游的凭据失败: %w", err)
+	}
+	return nil
+}
+
+// MarkUpstreamRemoved / MarkCredentialRemoved 是撤销链路（svc.Revoke）用的
+// 单行标记：Revoke 的落点是「凭据 + 它的确定性命名上游行」，与 RemoveUpstream
+// 的整源移除共享同一对列。
+func (r *ModelRepo) MarkUpstreamRemoved(ctx context.Context, id string, at int64) error {
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE upstreams SET enabled = 0, removed_at = ? WHERE id = ?`, at, id); err != nil {
+		return fmt.Errorf("store: 标记上游移除失败: %w", err)
+	}
+	return nil
+}
+
+func (r *ModelRepo) MarkCredentialRemoved(ctx context.Context, id string, at int64) error {
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE upstream_credentials SET status = 'disabled', removed_at = ? WHERE id = ?`, at, id); err != nil {
+		return fmt.Errorf("store: 标记凭据移除失败: %w", err)
+	}
+	return nil
 }
 
 // boolInt 把布尔转成 SQLite 的 0/1。集中一处，避免各处写法不一导致 CHECK 失败。
@@ -1039,9 +1090,9 @@ func (r *ModelRepo) getUpstreamByID(ctx context.Context, id string) (*Upstream, 
 	var u Upstream
 	var enabled int
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, kind, name, base_url, secret_id, owner_account_id, enabled, last_seen_at
+		`SELECT id, kind, name, base_url, secret_id, owner_account_id, enabled, last_seen_at, removed_at
 		   FROM upstreams WHERE id = ?`, id).
-		Scan(&u.ID, &u.Kind, &u.Name, &u.BaseURL, &u.SecretID, &u.OwnerAccountID, &enabled, &u.LastSeenAt)
+		Scan(&u.ID, &u.Kind, &u.Name, &u.BaseURL, &u.SecretID, &u.OwnerAccountID, &enabled, &u.LastSeenAt, &u.RemovedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

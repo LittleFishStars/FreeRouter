@@ -339,7 +339,7 @@ func (r *UsageRepo) RequestStats(ctx context.Context, accountID *string, f Reque
 // 与管理面 ListCredentials 不同：这里按属主过滤，只看自己的。
 func (r *ModelRepo) ListCredentialsByOwner(ctx context.Context, ownerAccountID string) ([]Credential, error) {
 	rows, err := r.db.QueryContext(ctx, credentialColumns+
-		` WHERE owner_account_id = ? ORDER BY created_at DESC, id DESC`, ownerAccountID)
+		` WHERE owner_account_id = ? AND removed_at IS NULL ORDER BY created_at DESC, id DESC`, ownerAccountID)
 	if err != nil {
 		return nil, fmt.Errorf("store: 列出贡献凭据失败: %w", err)
 	}

@@ -19,6 +19,7 @@ import {
   notifyCredential,
   patchRealModel,
   patchUpstream,
+  removeUpstream,
   checkinCredential,
   getCheckinStatus,
   probeUpstreamModels,
@@ -42,6 +43,7 @@ import {
   IconBack,
   IconCalendarCheck,
   IconCheck,
+  IconDelete,
   IconEdit,
   IconExternal,
   IconPlus,
@@ -217,6 +219,8 @@ export function CredentialsPage({ def }: PageProps) {
 
   // 停用确认
   const [disableTarget, setDisableTarget] = useState<AdminModelSource | null>(null)
+  // 移除（2026-10-31）：不可逆撤销——密钥材料被墓碑覆写，行退出池。
+  const [removeTarget, setRemoveTarget] = useState<AdminModelSource | null>(null)
 
   // 添加模型
   const [addingModel, setAddingModel] = useState(false)
@@ -417,6 +421,23 @@ export function CredentialsPage({ def }: PageProps) {
     }
   }
 
+  async function removeSource(s: AdminModelSource) {
+    setBusy(true)
+    setError(null)
+    try {
+      // 来源合并后一条来源聚合多条上游行：移除是来源级操作，逐个成员调用；
+      // 漏一个成员会留下「来源没了但还有一把 key 在池里」。
+      for (const id of s.upstream_ids ?? [s.id]) {
+        await removeUpstream(id)
+      }
+      sourcesQ.reload()
+    } catch (e) {
+      setError(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function createModelSubmit() {
     if (!active) return
     setBusy(true)
@@ -603,6 +624,16 @@ export function CredentialsPage({ def }: PageProps) {
                       >
                         <IconTest size="sm" />
                         {probeBusy[active.id] ? '检验中…' : '检验可用性'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        disabled={busy}
+                        title="移除供应商：销毁该来源的密钥材料并退出候选池，不可恢复"
+                        onClick={() => setRemoveTarget(active)}
+                      >
+                        <IconDelete size="sm" />
+                        移除
                       </button>
                     </div>
                   </div>
@@ -899,6 +930,40 @@ export function CredentialsPage({ def }: PageProps) {
             try {
               await setEnabled(disableTarget, false)
               setDisableTarget(null)
+            } catch (e) {
+              setError(e)
+            } finally {
+              setBusy(false)
+            }
+          }}
+        />
+      )}
+
+      {/* 移除确认（不可逆撤销） */}
+      {removeTarget && (
+        <ConfirmDialog
+          open
+          title={`确认移除供应商 ${removeTarget.name}`}
+          impact={[
+            `供应商 ${removeTarget.name}（${removeTarget.id}）的密钥材料被销毁，无法恢复`,
+            '该来源的全部凭据立即退出候选池，不再被任何请求使用',
+            '该来源的真实模型从候选集中移除',
+            '想再用它只能重新提交凭据并重新走一遍鉴定'
+          ]}
+          irreversibility="不可逆：密钥材料被覆写，无法恢复；只能重新贡献。"
+          targetName={removeTarget.name}
+          inputLabel="请输入供应商名称以确认"
+          confirmLabel="确认移除"
+          busy={busy}
+          error={error}
+          onCancel={() => setRemoveTarget(null)}
+          onConfirm={async () => {
+            setBusy(true)
+            setError(null)
+            try {
+              await removeSource(removeTarget)
+              setRemoveTarget(null)
+              setNotice(`已移除供应商 ${removeTarget.name}`)
             } catch (e) {
               setError(e)
             } finally {

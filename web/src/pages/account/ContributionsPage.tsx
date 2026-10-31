@@ -23,13 +23,14 @@ import { Link } from 'react-router-dom'
 import {
   listMyCredentials,
   pauseMyCredential,
+  removeMyCredential,
   resumeMyCredential
 } from '../../api/endpoints'
 import type { ContributionCredential } from '../../api/types'
 import { useSession } from '../../api/session'
 import { useApi } from '../../hooks/useApi'
 import { ACTION_ICON, TableAction, TableActions } from '../../components/IconButtons'
-import { IconLogin, IconPower, IconView } from '../../icons'
+import { IconDelete, IconLogin, IconPower, IconView } from '../../icons'
 import {
   AsyncView,
   Badge,
@@ -40,6 +41,7 @@ import {
   Section,
   StatusBadge
 } from '../../components/ui'
+import ConfirmDialog from '../../components/ConfirmDialog'
 import { fmtNum, fmtTime, statusLabel } from '../../utils/format'
 import { FREE_NOTICE } from '../../utils/contribute'
 import PageFrame from '../PageFrame'
@@ -131,9 +133,27 @@ export default function MyContributionsPage({ def }: PageProps) {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  // 移除（2026-10-31）：不可逆——密钥材料被销毁，只能重新贡献。
+  const [removeTarget, setRemoveTarget] = useState<ContributionCredential | null>(null)
 
   /** 是否能看贡献者完整面（详情/证据）。contributor 类只在自动建号路径授予。 */
   const canSeeDetail = session?.classes.includes('contributor') ?? false
+
+  async function remove(c: ContributionCredential) {
+    setBusyId(c.id)
+    setError(null)
+    setNotice(null)
+    try {
+      await removeMyCredential(c.id)
+      setNotice(`已移除「${c.external_label || c.provider_name || '这条贡献'}」——密钥材料已销毁，无法恢复`)
+      setRemoveTarget(null)
+      q.reload()
+    } catch (e) {
+      setError(e)
+    } finally {
+      setBusyId(null)
+    }
+  }
 
   async function toggle(c: ContributionCredential) {
     setBusyId(c.id)
@@ -272,6 +292,12 @@ export default function MyContributionsPage({ def }: PageProps) {
                             to="/contribute"
                           />
                         )}
+                        <TableAction
+                          icon={<IconDelete size={ACTION_ICON} />}
+                          label="移除这条贡献"
+                          busy={busyId === c.id}
+                          onClick={() => setRemoveTarget(c)}
+                        />
                         {canSeeDetail && (
                           <TableAction
                             icon={<IconView size={ACTION_ICON} />}
@@ -309,6 +335,26 @@ export default function MyContributionsPage({ def }: PageProps) {
           </>
         )}
       </AsyncView>
+      <ConfirmDialog
+        open={removeTarget !== null}
+        title={`确认移除这条贡献`}
+        impact={[
+          `「${removeTarget?.external_label || removeTarget?.provider_name || '这条贡献'}」的密钥材料被销毁，无法恢复`,
+          '它立即退出候选池，不再被任何请求使用',
+          '移除后它会从你的贡献清单里消失',
+          '想再用只能重新提交凭据并重新走一遍鉴定'
+        ]}
+        irreversibility="不可逆：密钥材料被覆写，无法恢复；只能重新贡献。"
+        targetName={removeTarget?.external_label || removeTarget?.provider_name || '移除'}
+        inputLabel="请输入标签或供应商名称以确认"
+        confirmLabel="确认移除"
+        busy={busyId !== null}
+        error={error}
+        onCancel={() => setRemoveTarget(null)}
+        onConfirm={async () => {
+          if (removeTarget) await remove(removeTarget)
+        }}
+      />
     </PageFrame>
   )
 }

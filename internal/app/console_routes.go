@@ -377,6 +377,9 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 		// 暂停/恢复钉到 ContributionService 的窄方法（落点是 upstream.enabled）；
 		// 不走 contributionBridge：存储桥只负责读写行，开/关候选池的含义归 upstream。
 		Pauser: contributionPauseBridge{svc: a.Contribution()},
+		// 移除（撤销）同样钉到 svc 的窄方法：归属校验与「墓碑覆写 + 退池」的
+		// 编排都在 upstream 侧（与 Revoke 同一份语义）。
+		Remover: contributionRemoveBridge{svc: a.Contribution()},
 	}
 	// 供应商 OAuth：发起（会话面，返回 authorize_url）+ 回调（裸路径，302 回前端）。
 	// 回调路径由供应商按「端口 + /oauth/callback」构造，不能改到 /api 下。
@@ -413,6 +416,8 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	// 暂停/恢复：会话面 + 属主校验。两个端点幂等，重复点不改变状态。
 	r.Post("/api/contributions/credentials/{id}/pause", sessMW(a.server.HandleContributionCredentialPause(contribDeps)).(http.HandlerFunc))
 	r.Post("/api/contributions/credentials/{id}/resume", sessMW(a.server.HandleContributionCredentialResume(contribDeps)).(http.HandlerFunc))
+	// 移除（2026-10-31）：不可逆撤销——密文墓碑覆写 + 行退出列表与候选池。
+	r.Post("/api/contributions/credentials/{id}/remove", sessMW(a.server.HandleContributionCredentialRemove(contribDeps)).(http.HandlerFunc))
 	r.Get("/api/contributions/stats", sessMW(a.server.HandleContributionStats(contribDeps)).(http.HandlerFunc))
 	r.Get("/api/contributions/recovery-code", sessMW(a.server.HandleRecoveryCodeState(contribDeps)).(http.HandlerFunc))
 	r.Post("/api/contributions/recovery-code/regenerate", sessMW(a.server.HandleRecoveryCodeRegenerate(contribDeps)).(http.HandlerFunc))
@@ -446,6 +451,24 @@ func (b contributionPauseBridge) SetPaused(ctx context.Context, owner, credentia
 }
 
 var _ httpapi.ContributionPauser = contributionPauseBridge{}
+
+// contributionRemoveBridge 把「移除贡献」钉到 upstream.ContributionService 的
+// Revoke（同一份撤销语义：销毁密文 + 退出候选池 + 留行留痕）。
+//
+// 为什么不是 contributionBridge：那个桥只负责读写行；撤销的编排（先停上游、
+// 再墓碑覆写密文、再写状态、最后标记移除）归 upstream，与管理面撤销同源。
+type contributionRemoveBridge struct {
+	svc *upstream.ContributionService
+}
+
+func (b contributionRemoveBridge) Remove(ctx context.Context, owner, credentialID string) error {
+	if b.svc == nil {
+		return fmt.Errorf("贡献服务未装配")
+	}
+	return b.svc.Revoke(ctx, credentialID, upstream.RevokeActor{AccountID: owner})
+}
+
+var _ httpapi.ContributionRemover = contributionRemoveBridge{}
 
 // accountProfileBridge 实现 httpapi.AccountProfileStore（显示名写面）。
 //

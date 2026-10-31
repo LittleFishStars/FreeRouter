@@ -360,6 +360,9 @@ type fakeContributionStore struct {
 	lastSecretRef   string
 	nextSeq         int // 自增序号；id() 用它造可区分的 id（不再依赖整型主键）
 	trace           string
+	// 移除标记的记录（2026-10-31「移除」语义）：断言 revoked 时行被标记。
+	removedUpstreams   []string
+	removedCredentials []string
 }
 
 func newFakeContributionStore() *fakeContributionStore {
@@ -491,6 +494,22 @@ func (f *fakeContributionStore) SeedCatalog(_ context.Context, upstreamID string
 	defer f.mu.Unlock()
 	f.seeded[upstreamID] = append(f.seeded[upstreamID], models...)
 	return len(models), nil
+}
+
+// MarkUpstreamRemoved / MarkCredentialRemoved：移除标记的 fake 通道
+// （2026-10-31「移除」语义）。记录被标记的 id，供断言用。
+func (f *fakeContributionStore) MarkUpstreamRemoved(_ context.Context, id string, _ int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removedUpstreams = append(f.removedUpstreams, id)
+	return nil
+}
+
+func (f *fakeContributionStore) MarkCredentialRemoved(_ context.Context, id string, _ int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removedCredentials = append(f.removedCredentials, id)
+	return nil
 }
 
 func (f *fakeContributionStore) UpdateUpstream(_ context.Context, id string, name, baseURL string, enabled bool) error {

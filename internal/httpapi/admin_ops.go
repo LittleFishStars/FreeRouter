@@ -62,6 +62,8 @@ func (s *Server) mountAdminOps(r chi.Router, deps *AdminDeps) {
 	r.Patch("/upstreams/{id}", s.handleAdminUpstreamPatch(deps))
 	r.Post("/upstreams/{id}/kind", s.handleAdminUpstreamKind(deps))
 	r.Post("/upstreams/{id}/test", s.handleAdminUpstreamTest(deps))
+	// 移除供应商（2026-10-31）：留行不留钥的不可逆撤销——界面 🔒（危险写）。
+	r.Post("/upstreams/{id}/remove", s.handleAdminUpstreamRemove(deps))
 	r.Post("/upstreams/{id}/probe-models", s.handleAdminUpstreamModelProbe(deps))
 
 	// 凭据
@@ -350,6 +352,37 @@ func (s *Server) handleAdminUpstreamKind(deps *AdminDeps) http.HandlerFunc {
 		}
 		audit := adminBaseAudit(p, r, "upstream.kind_change", "upstream:"+id, "ok")
 		row, auditID, err := deps.Upstreams.SetUpstreamKind(r.Context(), id, body.Kind, audit)
+		if err != nil {
+			mapAdminError(w, err, "上游")
+			return
+		}
+		adminWriteOK(w, http.StatusOK, renderAdminUpstream(row), auditID)
+	}
+}
+
+// handleAdminUpstreamRemove POST /upstreams/{id}/remove——移除供应商。
+//
+// 为什么是「移除」而不是「停用」：停用是运行时开关（可逆，凭据与密文都留），
+// 移除是**撤销**——密钥材料被墓碑覆写（不可恢复）、行退出来源聚合与候选池、
+// 绑在它上面的凭据一并 disabled+removed。行本身保留：requests 的归因外键
+// （RESTRICT）与审计都要它。
+//
+// 不可逆：界面上是 🔒 危险写 + 二次确认（确认框列出影响面）。
+func (s *Server) handleAdminUpstreamRemove(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "上游存储", deps.Upstreams != nil) {
+			return
+		}
+		p, ok := adminActor(w, r)
+		if !ok {
+			return
+		}
+		id, ok := adminUpstreamID(w, r)
+		if !ok {
+			return
+		}
+		audit := adminBaseAudit(p, r, "upstream.remove", "upstream:"+id, "ok")
+		row, auditID, err := deps.Upstreams.RemoveUpstream(r.Context(), id, audit)
 		if err != nil {
 			mapAdminError(w, err, "上游")
 			return

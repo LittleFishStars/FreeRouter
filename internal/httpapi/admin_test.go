@@ -593,6 +593,7 @@ type upstreamsFake struct {
 	byID    map[string]*AdminUpstream
 	created []AdminUpstream
 	nextID  int
+	removed []string // 移除调用的记录（2026-10-31）
 }
 
 func newUpstreamsFake(a *adminAuditFake) *upstreamsFake {
@@ -659,6 +660,20 @@ func (f *upstreamsFake) SetUpstreamSecret(ctx context.Context, id, plaintext str
 	}
 	u.SecretPresent = true
 	return f.audit.Append(ctx, audit)
+}
+
+// RemoveUpstream fake：标记移除（留行不留钥的撤销语义，2026-10-31）。
+// 记录移除调用，供端点断言用。
+func (f *upstreamsFake) RemoveUpstream(ctx context.Context, id string, audit AdminAuditEntry) (*AdminUpstream, string, error) {
+	u, ok := f.byID[id]
+	if !ok {
+		return nil, "", ErrAdminUpstreamNotFound
+	}
+	now := time.Now().Unix()
+	u.Enabled = false
+	u.RemovedAt = &now
+	f.removed = append(f.removed, id)
+	return u, "", nil
 }
 
 func (f *upstreamsFake) SetUpstreamKind(ctx context.Context, id, kind string, audit AdminAuditEntry) (*AdminUpstream, string, error) {

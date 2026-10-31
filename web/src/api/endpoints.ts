@@ -543,6 +543,17 @@ export function testUpstream(id: string) {
   return postWrite<Record<string, unknown>>(`${PATHS.adminUpstreams}/${seg(id)}/test`)
 }
 
+/**
+ * POST /api/admin/upstreams/{id}/remove —— 移除供应商（2026-10-31）。
+ *
+ * 与「停用」的分界：停用是可逆开关（凭据与密文都留着）；移除是**撤销**——
+ * 密钥材料被墓碑覆写（不可恢复）、行退出来源聚合与候选池。行本身保留
+ * （归因外键与审计要它）。不可逆，界面走二次确认。
+ */
+export function removeUpstream(id: string) {
+  return postWrite<AdminUpstream>(`${PATHS.adminUpstreams}/${seg(id)}/remove`)
+}
+
 export function listCredentials(
   q: PageQuery & { owner?: string; provider?: string; verify_status?: string; status?: string } = {}
 ) {
@@ -842,6 +853,15 @@ export function pauseMyCredential(id: string) {
 /** POST /api/contributions/credentials/{id}/resume —— 恢复（不重置鉴定结论）。 */
 export function resumeMyCredential(id: string) {
   return postWrite<CredentialToggleResult>(`${PATHS.myCredentials}/${seg(id)}/resume`)
+}
+
+/**
+ * POST /api/contributions/credentials/{id}/remove —— 移除自己的贡献
+ * （2026-10-31）。不可逆：密钥材料被墓碑覆写、行退出列表与候选池。
+ * 恢复的唯一途径是重新提交/重新授权（走完整鉴定流）。
+ */
+export function removeMyCredential(id: string) {
+  return postWrite<{ ok: boolean; status: 'removed' }>(`${PATHS.myCredentials}/${seg(id)}/remove`)
 }
 
 export function getContributionStats(range: 'day' | 'month' = 'month') {
