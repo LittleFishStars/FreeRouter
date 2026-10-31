@@ -73,7 +73,10 @@ const ADAPTERS = {
 // 共用选项：adapter 会读但允许缺省的字段。给最小实现而不是 undefined，
 // 避免每个 provider 在「没有账号池」时各抛各的 TypeError。
 function baseOptions(apiKey, slotOption, slotsOf) {
-  const slots = slotsOf(apiKey);
+  // slotsOf 缺省兜底（2026-10-31）：adapterForWithCredential 的调用不带槽位
+  // （oauth 形状的 ADAPTERS 条目没有 slotOption/slotsOf 字段）——槽位是
+  // apiKey 形状专属的机制，oauth 形状走 resolveCredential 钩子。
+  const slots = typeof slotsOf === 'function' ? slotsOf(apiKey) : [];
   return {
     // 槽位：只有 apiKey 型 adapter 会用到（当前表里没有这类条目，保留机制因为它
     // 是把「一把明文 key」翻译成 DSH 槽位形状的唯一入口）
