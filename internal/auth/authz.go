@@ -35,7 +35,7 @@ const (
 	OpDisableKey      Op = "disable_key"
 	OpEnableKey       Op = "enable_key"
 	OpRevokeKey       Op = "revoke_key"
-	OpSetKeyAllowlist Op = "set_key_allowlist"
+	OpSetKeyDenylist Op = "set_key_denylist"
 	OpViewOwnUsage    Op = "view_own_usage"
 	OpViewOwnKeys     Op = OpListKeys // 别名：读侧习惯叫"我的 Key"
 
@@ -111,7 +111,7 @@ func (c CapabilitySet) Can(op Op) bool { return c[op] }
 var classCapabilities = map[Class]CapabilitySet{
 	ClassTenant: opsTo(
 		OpCallModel, OpCreateKey, OpListKeys, OpRenameKey, OpDisableKey,
-		OpEnableKey, OpRevokeKey, OpSetKeyAllowlist, OpViewOwnUsage,
+		OpEnableKey, OpRevokeKey, OpSetKeyDenylist, OpViewOwnUsage,
 	),
 	ClassContributor: opsTo(
 		OpContributeCredential, OpListOwnCredentials, OpViewOwnVerification,
@@ -149,7 +149,7 @@ func opsTo(list ...Op) CapabilitySet {
 // 管理面与模型面共用同一条链；差异只在"主体从哪来"（会话 vs Key），
 // 而那发生在协议层组装 Principal 的时候，不在这里。
 type AuthzService struct {
-	keys     authzKeyStore    // 窄接口：Key 的三读（KeyByHash/KeyByID/KeyAllowlist）
+	keys     authzKeyStore    // 窄接口：Key 的三读（KeyByHash/KeyByID/KeyDenylist）
 	accounts AccountByIDOnly  // 账户实时状态（单方法子集）
 	policies PolicyRepository // 组策略（GroupsForAccount）
 	now      func() time.Time // CheckModelCall 的 Key 过期判定需要时钟（测试注入，不 sleep）
@@ -163,7 +163,7 @@ type AuthzService struct {
 type authzKeyStore interface {
 	KeyByHash(ctx context.Context, keyHash []byte) (*APIKey, error)
 	KeyByID(ctx context.Context, keyID string) (*APIKey, error)
-	KeyAllowlist(ctx context.Context, keyID string) ([]string, error)
+	KeyDenylist(ctx context.Context, keyID string) ([]string, error)
 }
 
 // NewAuthz 用完整 Stores 构造（全仓既有调用点保持不变）。
@@ -297,7 +297,6 @@ type EffectivePolicy struct {
 	// 旧实现「初值 true、只有显式 false 才翻」是 fail-open，与 03-groups
 	// §5「缺口最容易变成 fail-open」要防的事故同形，已废。
 	CanCreateKey   bool
-	AllowlistWiden bool
 	MaxKeys        *int // 放开类数值：多组取**最大值**；nil = 无组设置（落默认值）
 	// 限制类：逐键取 min；键不存在于结果 = 所有组都未设 = Unlimited。
 	Quotas         map[QuotaKey]int64
@@ -332,7 +331,7 @@ func MergeGroupPolicies(groups []GroupPolicy) *EffectivePolicy {
 	}
 	seenModels := make(map[string]bool)
 	// 逐组布尔：记录"该组是否全部显式 true"。初值 false = 无组即 false。
-	canCreateOK, widenOK := len(groups) > 0, len(groups) > 0
+	canCreateOK := len(groups) > 0
 
 	for i := range groups {
 		g := &groups[i]
@@ -347,9 +346,6 @@ func MergeGroupPolicies(groups []GroupPolicy) *EffectivePolicy {
 		// 布尔开关（fail-closed）：任一组的值为 nil（未设）或 false 即永久 false。
 		if !allGroupsAllowBool(g.CanCreateKey) {
 			canCreateOK = false
-		}
-		if !allGroupsAllowBool(g.KeyAllowlistWiden) {
-			widenOK = false
 		}
 		// Key 数量上限：放开类数值取**最大值**。
 		if g.MaxKeys != nil {
@@ -385,7 +381,6 @@ func MergeGroupPolicies(groups []GroupPolicy) *EffectivePolicy {
 	}
 
 	eff.CanCreateKey = canCreateOK
-	eff.AllowlistWiden = widenOK
 	sort.Strings(eff.VisibleModels)
 	return eff
 }
@@ -435,7 +430,7 @@ func minPtr64(cur, next *int64) *int64 {
 // EffectiveModels 计算第二层收敛的结果（04-authz.md §2）。
 //
 // 白名单默认空 = 交集为空 = 新建 Key 不改配置时**无法发起任何请求**（验收 5）。
-// 白名单元素必须 ⊆ 组授权是写入时校验（SetAllowlist）；这里再交一次，
+// 黑名单的 ⊆ 校验已在白名单时代移除（拒绝项无需 ⊆ 组授权）；这里再交一次，
 // 是因为组授权会在白名单写入**之后**被管理员收窄——读取时求交集让
 // "账户被移出组后白名单不变、可用集合自动收窄"（05-keys.md §5）无损成立。
 func (a *AuthzService) EffectiveModels(ctx context.Context, accountID, keyID string) ([]string, error) {
@@ -447,27 +442,26 @@ func (a *AuthzService) EffectiveModels(ctx context.Context, accountID, keyID str
 	if a.keys == nil {
 		return nil, Errorf(CodeInternal, nil, "Authz 缺少 Key 存储")
 	}
-	allow, err := a.keys.KeyAllowlist(ctx, keyID)
+	deny, err := a.keys.KeyDenylist(ctx, keyID)
 	if err != nil {
 		return nil, err
 	}
-	if len(allow) == 0 {
-		// 未设置白名单 = **不额外收窄** = 组授权全集。
-		// 为什么不是"默认拒绝"：Key 白名单的职责是收窄（05-keys §4「只能从
-		// 账户可访问的抽象模型里收窄」），不是兜底的拒绝闸——账户级的默认拒绝
-		// 已由额度承担（daily=0 → 不可用）。把"未设"解释成空集会让每一把新签的
-		// Key 在管理员逐一配白名单之前完全不可用（实测 401 之外的 404 全表）。
+	if len(deny) == 0 {
+		// 未设置黑名单 = **不额外收窄** = 组授权全集（2026-11-01 用户定案：
+		// 白名单 → 黑名单）。黑名单的职责是按 Key 隐藏个别模型，不是兜底的
+		// 拒绝闸——账户级的默认拒绝已由额度承担（daily=0 → 不可用）；组授权
+		// 仍是天花板，黑名单只可能让能力变小。
 		out := make([]string, 0, len(eff.VisibleModels))
 		out = append(out, eff.VisibleModels...)
 		return out, nil
 	}
-	vis := make(map[string]bool, len(eff.VisibleModels))
-	for _, m := range eff.VisibleModels {
-		vis[m] = true
+	denySet := make(map[string]bool, len(deny))
+	for _, m := range deny {
+		denySet[m] = true
 	}
-	out := make([]string, 0, len(allow))
-	for _, m := range allow {
-		if vis[m] {
+	out := make([]string, 0, len(eff.VisibleModels))
+	for _, m := range eff.VisibleModels {
+		if !denySet[m] {
 			out = append(out, m)
 		}
 	}

@@ -271,19 +271,14 @@ func (b *tenantBridge) AllowedModels(ctx context.Context, accountID string, keyI
 		if err != nil {
 			return nil, store.ErrNotFound
 		}
-		allowIDs, err := b.reps.Keys.KeyAllowlist(ctx, kid)
+		denyIDs, err := b.reps.Keys.KeyDenylist(ctx, kid)
 		if err != nil {
 			return nil, err
 		}
-		set := map[string]bool{}
-		for _, mid := range allowIDs {
-			set[mid] = true
-		}
-		// Key 白名单是「只能收窄」的判定（05-keys.md §5）：交集为空 = 该 Key 不可用。
-		for mid := range allowed {
-			if !set[mid] {
-				delete(allowed, mid)
-			}
+		// Key 黑名单是「只可能缩小」的判定（05-keys.md §5）：列出的模型从
+		// 组授权集合里减掉；空黑名单 = 不收窄（2026-11-01 白名单 → 黑名单）。
+		for _, mid := range denyIDs {
+			delete(allowed, mid)
 		}
 	}
 	models, err := b.reps.Models.ListAbstractModels(ctx, false)

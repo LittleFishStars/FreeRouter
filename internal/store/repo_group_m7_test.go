@@ -264,17 +264,14 @@ func intPtr(i int64) *int64 { return &i }
 // TestContractComposeUnion：放开类并集——布尔任一 false 即 false、
 // 全 true 才 true；MaxKeys 取 max；类别并集排序去重。
 func TestContractComposeUnion(t *testing.T) {
-	g1 := GroupPolicySet{GroupID: "g1", CanCreateKey: boolPtr(true), KeyAllowlistWiden: boolPtr(true),
+	g1 := GroupPolicySet{GroupID: "g1", CanCreateKey: boolPtr(true),
 		MaxKeys: intPtr(5), ModelClasses: []string{"fast", "smart"}}
-	g2 := GroupPolicySet{GroupID: "g2", CanCreateKey: boolPtr(true), KeyAllowlistWiden: boolPtr(false),
+	g2 := GroupPolicySet{GroupID: "g2", CanCreateKey: boolPtr(true),
 		MaxKeys: intPtr(10), ModelClasses: []string{"smart", "vision"}}
 
 	ep := ComposeEffectivePolicy(mkSnapshot([]GroupPolicySet{g1, g2}, -1))
 	if !ep.CanCreateKey {
 		t.Error("两组都 true，CanCreateKey 应 true")
-	}
-	if ep.KeyAllowlistWiden {
-		t.Error("g2 false，KeyAllowlistWiden 应 false（deny 优先）")
 	}
 	if ep.MaxKeys != 10 {
 		t.Errorf("MaxKeys 应取 max=10，得到 %d", ep.MaxKeys)
@@ -303,7 +300,7 @@ func TestContractComposeUnion(t *testing.T) {
 		t.Error("存在未设组 → CanCreateKey 应 false（fail-closed）")
 	}
 	ep = ComposeEffectivePolicy(mkSnapshot(nil, -1))
-	if ep.CanCreateKey || ep.KeyAllowlistWiden {
+	if ep.CanCreateKey {
 		t.Error("无组 → 布尔应 false")
 	}
 	if ep.MaxKeys != -1 {
@@ -311,11 +308,11 @@ func TestContractComposeUnion(t *testing.T) {
 	}
 }
 
-// TestContractBooleanFailClosedMatrix：布尔放开类（can_create_key /
-// key_allowlist_widen）双组三态全组合矩阵。语义（effective_policy.go
-// allGroupsAllow）：任一组显式 false → false（deny 优先）；全部组显式
-// true → true；混入任一未设组 → false（fail-closed：「没有全员明确
-// 允许就是不允许」）。两个布尔键走同一实现，逐一扫防单键特化回归。
+// TestContractBooleanFailClosedMatrix：布尔放开类（can_create_key）双组
+// 三态全组合矩阵。语义（effective_policy.go allGroupsAllow）：任一组显式
+// false → false（deny 优先）；全部组显式 true → true；混入任一未设组 →
+// false（fail-closed：「没有全员明确允许就是不允许」）。
+// （key_allowlist_widen 已随 2026-11-01 白名单 → 黑名单移除。）
 func TestContractBooleanFailClosedMatrix(t *testing.T) {
 	compose := func(groups []GroupPolicySet) EffectivePolicy {
 		return ComposeEffectivePolicy(mkSnapshot(groups, -1))
@@ -336,9 +333,6 @@ func TestContractBooleanFailClosedMatrix(t *testing.T) {
 		{"CanCreateKey",
 			func(g *GroupPolicySet, v *bool) { g.CanCreateKey = v },
 			func(ep EffectivePolicy) bool { return ep.CanCreateKey }},
-		{"KeyAllowlistWiden",
-			func(g *GroupPolicySet, v *bool) { g.KeyAllowlistWiden = v },
-			func(ep EffectivePolicy) bool { return ep.KeyAllowlistWiden }},
 	}
 
 	for _, sel := range selects {

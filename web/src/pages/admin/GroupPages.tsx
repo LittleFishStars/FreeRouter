@@ -833,14 +833,6 @@ export function GroupDetailPage({ def }: PageProps) {
             />
             允许成员创建 Key
           </label>
-          <label className="checkbox-line">
-            <input
-              type="checkbox"
-              checked={Boolean(policy.allow_widen_allowlist)}
-              onChange={(e) => patchPolicy('allow_widen_allowlist', e.target.checked)}
-            />
-            允许放宽 Key 白名单
-          </label>
           <Field label="Key 数量上限（每人）" hint="留空 = 不限">
             <input
               type="number"

@@ -101,7 +101,7 @@
 | `GET` | `/api/account/keys` | 我的 Key 列表 |
 | `GET` | `/api/account/keys/{id}` | 单个 Key 详情 |
 | `POST` | `/api/account/keys` | 创建（**明文只返回一次**） |
-| `PATCH` | `/api/account/keys/{id}` | 改名 / 改白名单 / 改有效期 |
+| `PATCH` | `/api/account/keys/{id}` | 改名 / 改黑名单 / 改有效期 |
 | `POST` | `/api/account/keys/{id}/enable` | 启用 |
 | `POST` | `/api/account/keys/{id}/disable` | 停用 |
 | `POST` | `/api/account/keys/{id}/revoke` | 吊销（不可恢复） |

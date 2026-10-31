@@ -86,9 +86,9 @@ func (f *fakeKeyRepo) RotateKey(_ context.Context, _ string, _ *auth.APIKey) err
 	return auth.ErrNotFound // 本文件的端点不涉及轮换
 }
 
-func (f *fakeKeyRepo) SetKeyAllowlist(_ context.Context, _ string, _ []string) error { return nil }
+func (f *fakeKeyRepo) SetKeyDenylist(_ context.Context, _ string, _ []string) error { return nil }
 
-func (f *fakeKeyRepo) KeyAllowlist(_ context.Context, _ string) ([]string, error) { return nil, nil }
+func (f *fakeKeyRepo) KeyDenylist(_ context.Context, _ string) ([]string, error) { return nil, nil }
 
 // keyPatchHarness 把服务器、路由与 fake 仓储拼起来。
 type keyPatchHarness struct {

@@ -310,7 +310,7 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	// SetKeyExpiry：桥只翻译（字符串 id → int64 主键 + unix 秒），写回 KeyRepo。
 	keysDeps := &httpapi.AccountKeysDeps{
 		Manager:     km,
-		AllowlistOf: kmBridge.KeyAllowlist,
+		DenylistOf: kmBridge.KeyDenylist,
 		SetKeyExpiry: func(ctx context.Context, keyID string, t *time.Time) error {
 			id, err := parseID(keyID)
 			if err != nil {

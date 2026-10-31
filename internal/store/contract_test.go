@@ -49,7 +49,7 @@ func TestContractOpenCreatesSchema(t *testing.T) {
 		"group_quota_pools", "group_model_quota_caps",
 		"abstract_models", "real_models", "abstract_candidates",
 		"upstreams", "upstream_secrets", "upstream_credentials",
-		"api_keys", "key_model_allow",
+		"api_keys", "key_model_deny",
 		"requests", "usage_daily",
 		"audit_log", "admin_inbox", "model_multipliers", "settings",
 		"schema_migrations",

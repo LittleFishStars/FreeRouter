@@ -8,10 +8,10 @@ package httpapi
 // 无限自我续命。
 //
 // 归属与数量上限全部由 auth.KeyManager 判定（tenant 类、每账户上限、
-// 白名单只能收窄）；本文件只做 HTTP 形状（解码、错误映射、明文只回一次）。
+// 黑名单只可能缩小可用集）；本文件只做 HTTP 形状（解码、错误映射、明文只回一次）。
 //
 // 响应形状对齐前端 web/src/api/types.ts 的 ApiKey/ApiKeyCreated：
-//   {id, name, prefix, status, expires_at, allowlist: [模型名],
+//   {id, name, prefix, status, expires_at, denylist: [模型名],
 //    last_used_at, created_at}
 // last_used_at/created_at 当前列不存在，恒为 null——前端类型可空，
 // 不谎造数据；列落地后这里无需再改前端。
@@ -31,8 +31,8 @@ import (
 // AccountKeysDeps 是租户 Key 面需要的依赖。
 type AccountKeysDeps struct {
 	Manager *auth.KeyManager
-	// AllowlistOf 读一把 Key 的白名单（抽象模型名）。nil = 恒空数组。
-	AllowlistOf func(ctx context.Context, keyID string) ([]string, error)
+	// DenylistOf 读一把 Key 的黑名单（抽象模型名）。nil = 恒空数组。
+	DenylistOf func(ctx context.Context, keyID string) ([]string, error)
 	// SetKeyExpiry 写/清过期时间（PATCH expires_at 用）。nil = 不支持（PATCH 里忽略）。
 	SetKeyExpiry func(ctx context.Context, keyID string, expiresAt *time.Time) error
 }
@@ -48,10 +48,10 @@ func subjectFromRequest(r *http.Request) (auth.Subject, bool) {
 
 // renderKey 把 auth.APIKey 渲染成前端 ApiKey 形状。
 func (s *Server) renderKey(ctx context.Context, deps *AccountKeysDeps, k auth.APIKey) map[string]any {
-	allowlist := []string{}
-	if deps != nil && deps.AllowlistOf != nil {
-		if names, err := deps.AllowlistOf(ctx, k.ID); err == nil && names != nil {
-			allowlist = names
+	denylist := []string{}
+	if deps != nil && deps.DenylistOf != nil {
+		if names, err := deps.DenylistOf(ctx, k.ID); err == nil && names != nil {
+			denylist = names
 		}
 	}
 	return map[string]any{
@@ -60,7 +60,7 @@ func (s *Server) renderKey(ctx context.Context, deps *AccountKeysDeps, k auth.AP
 		"prefix":       k.Prefix,
 		"status":       string(k.Status),
 		"expires_at":   timePtrRFC3339(k.ExpiresAt),
-		"allowlist":    allowlist,
+		"denylist":     denylist,
 		"last_used_at": nil,
 		"created_at":   nil,
 	}
@@ -134,7 +134,7 @@ func (s *Server) ownKeyOr404(w http.ResponseWriter, r *http.Request, deps *Accou
 
 // HandleAccountKeyCreate POST /api/account/keys。
 //
-// 请求体 {"name"?, "expires_at"?(RFC3339), "allowlist"?: [抽象模型名]}。
+// 请求体 {"name"?, "expires_at"?(RFC3339), "denylist"?: [抽象模型名]}。
 // 明文只在本次响应出现（05-keys §3）；响应 {data:{key, plaintext}}。
 func (s *Server) HandleAccountKeyCreate(deps *AccountKeysDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +146,7 @@ func (s *Server) HandleAccountKeyCreate(deps *AccountKeysDeps) http.HandlerFunc 
 		var body struct {
 			Name      string   `json:"name"`
 			ExpiresAt string   `json:"expires_at"`
-			Allowlist []string `json:"allowlist"`
+			Denylist []string `json:"denylist"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeErrorParam(w, http.StatusBadRequest, "invalid_request", "body", "请求体不是合法 JSON")
@@ -166,8 +166,8 @@ func (s *Server) HandleAccountKeyCreate(deps *AccountKeysDeps) http.HandlerFunc 
 			mapKeyErr(w, err)
 			return
 		}
-		if body.Allowlist != nil {
-			if err := deps.Manager.SetAllowlist(r.Context(), sub, res.Key.ID, body.Allowlist); err != nil {
+		if body.Denylist != nil {
+			if err := deps.Manager.SetDenylist(r.Context(), sub, res.Key.ID, body.Denylist); err != nil {
 				mapKeyErr(w, err)
 				return
 			}
@@ -215,7 +215,7 @@ func (n *patchString) UnmarshalJSON(b []byte) error {
 
 // HandleAccountKeyPatch PATCH /api/account/keys/{id}。
 //
-// 请求体 {"name"?, "expires_at"?(RFC3339 | null | ""), "allowlist"?: [模型名]}。
+// 请求体 {"name"?, "expires_at"?(RFC3339 | null | ""), "denylist"?: [模型名]}。
 // 三个字段都可选；**只有出现过的字段才会被写**。响应 {data:key}。
 //
 // expires_at 的三值语义（审计 P1，2026-10-24 修复）：
@@ -247,7 +247,7 @@ func (s *Server) HandleAccountKeyPatch(deps *AccountKeysDeps) http.HandlerFunc {
 		var body struct {
 			Name      *string     `json:"name"`
 			ExpiresAt patchString `json:"expires_at"`
-			Allowlist *[]string   `json:"allowlist"`
+			Denylist *[]string   `json:"denylist"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeErrorParam(w, http.StatusBadRequest, "invalid_request", "body", "请求体不是合法 JSON")
@@ -280,8 +280,8 @@ func (s *Server) HandleAccountKeyPatch(deps *AccountKeysDeps) http.HandlerFunc {
 				return
 			}
 		}
-		if body.Allowlist != nil {
-			if err := deps.Manager.SetAllowlist(r.Context(), sub, id, *body.Allowlist); err != nil {
+		if body.Denylist != nil {
+			if err := deps.Manager.SetDenylist(r.Context(), sub, id, *body.Denylist); err != nil {
 				mapKeyErr(w, err)
 				return
 			}

@@ -21,7 +21,7 @@ type fakeStore struct {
 	accounts map[string]*Account // by ID
 	sessions map[string]*Session // by hex-less string key of tokenHash
 	keys     map[string]*APIKey  // by ID
-	allow    map[string][]string // keyID → 白名单
+	deny     map[string][]string // keyID → 黑名单
 	groups   map[string][]GroupPolicy
 }
 
@@ -30,7 +30,7 @@ func newFakeStore() *fakeStore {
 		accounts: make(map[string]*Account),
 		sessions: make(map[string]*Session),
 		keys:     make(map[string]*APIKey),
-		allow:    make(map[string][]string),
+		deny:    make(map[string][]string),
 		groups:   make(map[string][]GroupPolicy),
 	}
 }
@@ -217,7 +217,7 @@ func (f *fakeStore) RotateKey(ctx context.Context, oldKeyID string, newKey *APIK
 	return f.CreateKey(ctx, newKey)
 }
 
-func (f *fakeStore) SetKeyAllowlist(_ context.Context, keyID string, ids []string) error {
+func (f *fakeStore) SetKeyDenylist(_ context.Context, keyID string, ids []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.keys[keyID]; !ok {
@@ -225,14 +225,14 @@ func (f *fakeStore) SetKeyAllowlist(_ context.Context, keyID string, ids []strin
 	}
 	cp := make([]string, len(ids))
 	copy(cp, ids)
-	f.allow[keyID] = cp
+	f.deny[keyID] = cp
 	return nil
 }
 
-func (f *fakeStore) KeyAllowlist(_ context.Context, keyID string) ([]string, error) {
+func (f *fakeStore) KeyDenylist(_ context.Context, keyID string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]string(nil), f.allow[keyID]...), nil
+	return append([]string(nil), f.deny[keyID]...), nil
 }
 
 // ---- PolicyRepository ----

@@ -162,7 +162,7 @@ type CreateOptions struct {
 //
 // 为什么拆出来而不改 Create 签名：Create 已有三个调用点（含测试），
 // 可变参数会让「谁在用过期时间」不可见；显式方法让旧调用点零改动。
-// 白名单不在创建参数里：它经 SetAllowlist 单独设置（有 ⊆ 组授权校验）。
+// 黑名单不在创建参数里：它经 SetDenylist 单独设置（形状校验后整体覆盖）。
 func (m *KeyManager) CreateWithOptions(ctx context.Context, s Subject, opts CreateOptions) (*CreateResult, error) {
 	if m.stores.Keys == nil || m.stores.Accounts == nil {
 		return nil, Errorf(CodeInternal, nil, "KeyManager 缺少存储依赖")
@@ -445,46 +445,29 @@ func newID(kind string) string {
 	return kind + "-" + base62EncodeFixed(b[:])
 }
 
-// SetAllowlist 设置 Key 的模型白名单（只能收窄，不能放宽）。
+// SetDenylist 设置 Key 的模型黑名单（2026-11-01 用户定案：白名单 → 黑名单）。
 //
-// 规则链（05-keys.md §5 / 04-authz.md §2）：
-//  1. 白名单元素必须是**抽象模型**（真实模型名对租户不可见，出现在白名单里
-//     本身就是泄露；但本层拿不到真实模型目录——models 层的职责——
-//     所以只能校验「⊆ 组授权」：不在授权集里的名字无论是不是真实模型都会被拒，
-//     两个错误在判定上同形）；
-//  2. ⊆ (∪ 所属组的抽象模型)：放宽权是组策略（KeyAllowlistWiden）管的事，
-//     而它管的是「能否改自己白名单」的动作，不是「白名单可以超出组授权」；
-//     后者在数学上也无效果（最终可用 = 交集）；
-//  3. 写的是整表替换：收窄语义下「去掉一项」和「换成子集」是同一个动作，
-//     增量 add/remove 两个方法只会多两个错用面。
-func (m *KeyManager) SetAllowlist(ctx context.Context, s Subject, keyID string, abstractModelIDs []string) error {
-	if m.stores.Keys == nil || m.stores.Policies == nil {
-		return Errorf(CodeInternal, nil, "KeyManager 缺少存储/策略依赖")
+// 规则链（05-keys.md §5）：
+//  1. 黑名单元素必须是**抽象模型**——翻译（名字 → id）由桥层完成，这里只做
+//     形状校验；黑名单只可能让能力变小，组授权仍是天花板；
+//  2. **不做 ⊆ 组授权校验**（与白名单相反）：拒绝一个本来就不在授权集里的
+//     模型无效果但无害——「把这个名字拉黑」是用户对自己 Key 的明确意志，
+//     不该因为组授权恰好没覆盖它而被 403；
+//  3. 写的是整表替换：「去掉一项」和「换成子集」是同一个动作，增量
+//     add/remove 两个方法只会多两个错用面。
+func (m *KeyManager) SetDenylist(ctx context.Context, s Subject, keyID string, abstractModelIDs []string) error {
+	if m.stores.Keys == nil {
+		return Errorf(CodeInternal, nil, "KeyManager 缺少存储依赖")
 	}
 	if _, err := m.mustOwnKey(ctx, s, keyID); err != nil {
 		return err
 	}
-	groups, err := m.stores.Policies.GroupsForAccount(ctx, s.AccountID)
-	if err != nil {
-		return err
-	}
-	authorized := make(map[string]bool)
-	for _, g := range groups {
-		for _, mdl := range g.Models {
-			authorized[mdl] = true
-		}
-	}
 	seen := make(map[string]bool, len(abstractModelIDs))
 	for _, mdl := range abstractModelIDs {
 		if mdl == "" || seen[mdl] {
-			return Errorf(CodeInvalidRequest, nil, "白名单含空项或重复项")
+			return Errorf(CodeInvalidRequest, nil, "黑名单含空项或重复项")
 		}
 		seen[mdl] = true
-		if !authorized[mdl] {
-			// 与「模型不存在」同形的 403：白名单是本人动作，超集拒绝不需要
-			// 隐藏存在性（他本来就能通过 EffectiveModels 看到授权集）。
-			return Errorf(CodeForbidden, nil, "白名单只能收窄：模型 %q 不在组授权内", mdl)
-		}
 	}
-	return m.stores.Keys.SetKeyAllowlist(ctx, keyID, abstractModelIDs)
+	return m.stores.Keys.SetKeyDenylist(ctx, keyID, abstractModelIDs)
 }

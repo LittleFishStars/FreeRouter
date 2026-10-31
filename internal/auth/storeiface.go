@@ -104,14 +104,14 @@ type KeyRepository interface {
 	// 用户被锁在门外且无凭据可用。
 	RotateKey(ctx context.Context, oldKeyID string, newKey *APIKey) error
 
-	// SetKeyAllowlist 整表替换一把 Key 的模型白名单（key_model_allow）。
-	// 调用方（KeyManager.SetAllowlist）负责「只能收窄 ⊆ 组授权」的校验；
+	// SetKeyDenylist 整表替换一把 Key 的模型黑名单（key_model_deny）。
+	// 调用方（KeyManager.SetDenylist）负责形状校验；
 	// 存储层不做策略判断，只做写入。
-	SetKeyAllowlist(ctx context.Context, keyID string, abstractModelIDs []string) error
+	SetKeyDenylist(ctx context.Context, keyID string, abstractModelIDs []string) error
 
-	// KeyAllowlist 读取一把 Key 的白名单（未设置返回空切片，不是 nil 语义上的「缺省」：
+	// KeyDenylist 读取一把 Key 的黑名单（未设置返回空切片，不是 nil 语义上的「缺省」：
 	// 默认拒绝要求「空」与「未初始化」在判定上同形）。
-	KeyAllowlist(ctx context.Context, keyID string) ([]string, error)
+	KeyDenylist(ctx context.Context, keyID string) ([]string, error)
 }
 
 // GroupPolicy 是一个组的策略快照（storage 把 group_models / group_policies /
@@ -133,7 +133,6 @@ type GroupPolicy struct {
 
 	// 放开类布尔开关：nil = 该组未设置（不参与合并）。
 	CanCreateKey      *bool
-	KeyAllowlistWiden *bool
 
 	// 放开类数值：nil = 未设置；多组取**最大值**（Key 数量上限的定案）。
 	MaxKeys *int

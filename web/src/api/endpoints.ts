@@ -771,14 +771,14 @@ export function getKey(id: string) {
 export function createKey(body: {
   name: string
   expires_at?: string | null
-  allowlist: string[]
+  denylist: string[]
 }) {
   return postWrite<ApiKeyCreated>(PATHS.keys, body)
 }
 
 export function patchKey(
   id: string,
-  body: { name?: string; expires_at?: string | null; allowlist?: string[] }
+  body: { name?: string; expires_at?: string | null; denylist?: string[] }
 ) {
   return patchWrite<ApiKey>(`${PATHS.keys}/${seg(id)}`, body)
 }

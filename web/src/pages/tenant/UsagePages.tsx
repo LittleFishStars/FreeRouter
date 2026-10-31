@@ -56,7 +56,7 @@ export function UsagePage({ def }: PageProps) {
   return (
     <PageFrame def={def}>
       <Banner tone="muted" title="额度归属">
-        以下额度与速率属于<strong>账户</strong>，名下所有 Key 共享；Key 只提供模型白名单收窄。
+        以下额度与速率属于<strong>账户</strong>，名下所有 Key 共享；Key 只提供模型黑名单（按 Key 隐藏个别模型）。
         额度是「生效值」（各组取最严的合并结果），不显示它来自哪个组。
       </Banner>
 
@@ -366,7 +366,7 @@ export function LogsPage({ def }: PageProps) {
           <li><code>no_candidate</code>：当前没有可用资源，稍后重试或换模型。</li>
           <li><code>rate_limited</code>：触发速率限制，按 Retry-After 等待。</li>
           <li><code>quota_exceeded</code>：额度打满，等周期重置或联系管理员调高。</li>
-          <li><code>model_not_found</code>：名字不在你当前可见集合里（组授权 ∩ Key 白名单）。</li>
+          <li><code>model_not_found</code>：名字不在你当前可见集合里（组授权减去 Key 黑名单）。</li>
         </ul>
         <p className="muted">完整映射见文档 docs/api/03-errors.md；日志保留期尚未定案。</p>
       </Section>
@@ -380,7 +380,6 @@ export function ModelsPage({ def }: PageProps) {
   const keys = useApi(() => listKeys({ limit: 100 }), [])
   const [keyId, setKeyId] = useState('')
   const models = useApi(() => listAvailableModels(keyId || undefined), [keyId])
-  const currentKey = keys.data?.data.find((k) => k.id === keyId)
   const [copied, setCopied] = useState<string | null>(null)
 
   async function copy(name: string) {
@@ -396,7 +395,7 @@ export function ModelsPage({ def }: PageProps) {
   return (
     <PageFrame def={def}>
       <Banner tone="muted">
-        这里列的是「你所属组的授权 ∩ 当前 Key 的白名单」的收敛结果；未在此列出的名字调用会失败。
+        这里列的是「你所属组的授权」减去「当前 Key 的黑名单」的收敛结果；未在此列出的名字调用会失败。
         弃用的模型仍然接受请求，只是建议迁移。
       </Banner>
       <div className="toolbar">
@@ -410,11 +409,9 @@ export function ModelsPage({ def }: PageProps) {
           </select>
         </label>
       </div>
-      {currentKey && currentKey.allowlist.length === 0 && (
-        <Banner tone="warn" title="这把 Key 的白名单为空">
-          白名单为空时它无法调用任何模型。请到 Key 编辑页勾选至少一个抽象模型。
-        </Banner>
-      )}
+      {/* 黑名单为空是常态（= 不收窄）——不再提示；只有「可见集合真的为空」
+          才在下面的空态里解释（组授权没给任何模型）。 */}
+
 
       <AsyncView
         state={models}
@@ -423,8 +420,8 @@ export function ModelsPage({ def }: PageProps) {
           d.data.length === 0 ? (
             <EmptyState
               title="没有可用的抽象模型"
-              hint="你所属的组当前没有授权任何模型（或选中的 Key 白名单为空）。请联系管理员或调整 Key 白名单。"
-              action={<Link to="/usage/keys">管理 Key 白名单</Link>}
+              hint="你所属的组当前没有授权任何模型（或这些模型正好都在选中 Key 的黑名单里）。请联系管理员或调整 Key 黑名单。"
+              action={<Link to="/usage/keys">管理 Key 黑名单</Link>}
             />
           ) : null
         }
@@ -463,7 +460,7 @@ export function ModelsPage({ def }: PageProps) {
 
       <Section title="可见性说明">
         <p className="muted">
-          可见集合 =（∪ 所属组的抽象模型授权）∩ Key 白名单。不同 Key 的白名单可能不同，
+          可见集合 =（∪ 所属组的抽象模型授权）减去 Key 黑名单。不同 Key 的黑名单可能不同，
           所以同一模型在 A Key 上能用、在 B Key 上不能。渠道与真实模型构成对租户不可见。
         </p>
       </Section>

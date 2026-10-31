@@ -605,12 +605,6 @@ func (r *GroupRepo) loadGroupPolicySet(ctx context.Context, groupID string) (*Gr
 				return nil, fmt.Errorf("store: 组 %s 策略 %s 坏布尔: %w", groupID, k, err)
 			}
 			gps.CanCreateKey = &b
-		case key == PolicyKeyAllowlistWiden:
-			var b bool
-			if err := json.Unmarshal([]byte(v), &b); err != nil {
-				return nil, fmt.Errorf("store: 组 %s 策略 %s 坏布尔: %w", groupID, k, err)
-			}
-			gps.KeyAllowlistWiden = &b
 		case key == PolicyMaxKeys:
 			var n int64
 			if err := json.Unmarshal([]byte(v), &n); err != nil {

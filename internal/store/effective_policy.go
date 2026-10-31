@@ -27,7 +27,6 @@ const (
 	// 放开类：并集。
 	PolicyCanCreateKey      PolicyKey = "can_create_key"      // 布尔
 	PolicyMaxKeys           PolicyKey = "max_keys"            // 整数 ≥-1，多组取 max（2026-10-19 定案）
-	PolicyKeyAllowlistWiden PolicyKey = "key_allowlist_widen" // 布尔
 	PolicyModelClass        PolicyKey = "model_class_allow"   // 字符串数组
 
 	// 限制类：逐键取最严（min）。
@@ -57,7 +56,7 @@ const (
 // 可见性（visible_models）与共享池不进键值表，返回 false 由调用方指路。
 func policyKindOf(key PolicyKey) (PolicyKind, bool) {
 	switch key {
-	case PolicyCanCreateKey, PolicyMaxKeys, PolicyKeyAllowlistWiden, PolicyModelClass:
+	case PolicyCanCreateKey, PolicyMaxKeys, PolicyModelClass:
 		return PolicyOpen, true
 	case PolicyQuotaRequestDay, PolicyQuotaRequestMonth,
 		PolicyQuotaTokenDay, PolicyQuotaTokenMonth,
@@ -72,7 +71,7 @@ func policyKindOf(key PolicyKey) (PolicyKind, bool) {
 // 供 SetPolicy 的应用层 schema 校验（DDL 注释明说：键值表的值无法由 DB
 // 约束校验形状，必须在应用层做——这三个函数就是那道校验的形状分支）。
 func isBoolPolicyKey(key PolicyKey) bool {
-	return key == PolicyCanCreateKey || key == PolicyKeyAllowlistWiden
+	return key == PolicyCanCreateKey
 }
 
 func isNumberPolicyKey(key PolicyKey) bool {
@@ -122,7 +121,6 @@ type GroupPolicySet struct {
 	GroupID           string              // UUID
 	CanCreateKey      *bool               // nil = 该组未设
 	MaxKeys           *int64              // nil = 未设；-1 = 显式不限
-	KeyAllowlistWiden *bool               // nil = 未设
 	ModelClasses      []string            // nil = 未设（已去重排序）
 	Numbers           map[PolicyKey]int64 // 限制类数字键：只含该组已设且 ≠-1 的键
 }
@@ -167,7 +165,6 @@ type EffectivePolicy struct {
 	VisibleModels     []string // ∪ 各组 group_models
 	CanCreateKey      bool     // ALL(允许)：任一组 false 或全部未设 → false（fail-closed）
 	MaxKeys           int64    // 取 max；任一组 -1 → -1；全部未设 → -1
-	KeyAllowlistWiden bool     // ALL(允许)，同 CanCreateKey
 	ModelClasses      []string // ∪ model_class_allow（排序去重）
 
 	// ---- 限制类（逐键 min）----
@@ -207,7 +204,6 @@ func ComposeEffectivePolicy(snap PolicySnapshot) EffectivePolicy {
 	// 允许」；与 masterkey 权限、审计触发器的姿态一致。管理员想放开，
 	// 就在（至少默认）组里显式配 true）。
 	ep.CanCreateKey = allGroupsAllow(snap.Groups, func(g GroupPolicySet) *bool { return g.CanCreateKey })
-	ep.KeyAllowlistWiden = allGroupsAllow(snap.Groups, func(g GroupPolicySet) *bool { return g.KeyAllowlistWiden })
 
 	// MaxKeys：放开类取 max，但 -1 是「+∞」语义——任一组不限则整体不限。
 	ep.MaxKeys = -1

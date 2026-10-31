@@ -591,7 +591,7 @@ func TestContractAuthzOthersKeyIs404(t *testing.T) {
 	}
 }
 
-func TestContractSetAllowlistOnlyNarrows(t *testing.T) {
+func TestContractSetDenylistOnlyShrinks(t *testing.T) {
 	h := newHarness()
 	h.putUser(t, "acc-t", "ten", ClassTenant)
 	h.f.groups["acc-t"] = []GroupPolicy{
@@ -604,23 +604,24 @@ func TestContractSetAllowlistOnlyNarrows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 超出组授权（∪ = fast/smart/eco）→ 拒绝。
-	err = km.SetAllowlist(context.Background(), s, res.Key.ID, []string{"fast", "gpt-4o-real"})
-	codeOfErr(t, err, CodeForbidden)
-	// 合法子集写入。
-	if err := km.SetAllowlist(context.Background(), s, res.Key.ID, []string{"fast", "eco"}); err != nil {
-		t.Fatalf("子集应可写: %v", err)
+	// 黑名单不做 ⊆ 组授权校验：拒绝一个组外模型无效果但无害（用户意志）。
+	if err := km.SetDenylist(context.Background(), s, res.Key.ID, []string{"fast", "gpt-4o-real"}); err != nil {
+		t.Fatalf("黑名单可含组外模型（无效果但无害）: %v", err)
 	}
-	// 空白名单 = 什么都不能调（验收 5：默认拒绝）。
-	if err := km.SetAllowlist(context.Background(), s, res.Key.ID, nil); err != nil {
+	// 空黑名单 = 不收窄（2026-11-01 白名单 → 黑名单：新建 Key 即全组授权可用）。
+	if err := km.SetDenylist(context.Background(), s, res.Key.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := km.Usable(context.Background(), res.Plaintext); err != nil {
-		t.Fatalf("Key 本身仍可用（白名单为空只影响模型集）: %v", err)
+		t.Fatalf("Key 本身仍可用（黑名单为空只影响模型集）: %v", err)
+	}
+	// 重复项/空项拒绝。
+	if err := km.SetDenylist(context.Background(), s, res.Key.ID, []string{"fast", "fast"}); err == nil {
+		t.Fatal("重复项应拒绝")
 	}
 }
 
-func TestContractEffectiveModelsIsIntersection(t *testing.T) {
+func TestContractEffectiveModelsExcludesDenylist(t *testing.T) {
 	h := newHarness()
 	h.putUser(t, "acc-t", "ten", ClassTenant)
 	h.f.groups["acc-t"] = []GroupPolicy{
@@ -630,23 +631,32 @@ func TestContractEffectiveModelsIsIntersection(t *testing.T) {
 	km := NewKeyManager(KeyPolicy{}, h.f.stores()).WithClock(h.nowFn)
 	s := Subject{AccountID: "acc-t", ActingClass: ClassTenant}
 	res, _ := km.Create(context.Background(), s, "k")
-	if err := km.SetAllowlist(context.Background(), s, res.Key.ID, []string{"smart", "eco"}); err != nil {
-		t.Fatal(err)
-	}
+	// 空黑名单 = 组授权全集（新语义：新建 Key 即可用）。
 	az := NewAuthz(h.f.stores())
 	m, err := az.EffectiveModels(context.Background(), "acc-t", res.Key.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(m, ",") != "eco,smart" {
-		t.Fatalf("(∪组)∩白名单 = %v，期望 [eco smart]", m)
+	if strings.Join(m, ",") != "eco,fast,smart" {
+		t.Fatalf("空黑名单应为组授权全集，得 %v", m)
 	}
-	// 管理员把 smart 从组里收走：白名单不变，可用集自动收窄（05-keys.md §5）。
+	// 拉黑 smart：从组授权集里减掉（∪组 \ 黑名单）。
+	if err := km.SetDenylist(context.Background(), s, res.Key.ID, []string{"smart"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err = az.EffectiveModels(context.Background(), "acc-t", res.Key.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(m, ",") != "eco,fast" {
+		t.Fatalf("(∪组)\\黑名单 = %v，期望 [eco fast]", m)
+	}
+	// 管理员把 smart 从组里收走：黑名单不变，smart 依旧不可调（组授权天花板）。
 	h.f.groups["acc-t"] = []GroupPolicy{{Group: Group{ID: "ga"}, Models: []string{"fast"}}}
 	if ok, _ := az.ModelCallable(context.Background(), "acc-t", res.Key.ID, "smart"); ok {
 		t.Fatal("组授权收窄后 smart 必须不可调")
 	}
-	// eco 随 gb 一起消失；fast 在白名单外——交集应为空（默认拒绝）。
+	// eco 随 gb 一起消失（组授权天花板独立于黑名单）。
 	if ok, _ := az.ModelCallable(context.Background(), "acc-t", res.Key.ID, "eco"); ok {
 		t.Fatal("eco 已从组授权中移除，必须不可调")
 	}
@@ -720,7 +730,7 @@ func TestContractMergeUnionAndStrictest(t *testing.T) {
 	}
 	// 空输入：fail-closed——布尔全 false（无组 = 无显式许可），数值键不落。
 	empty := MergeGroupPolicies(nil)
-	if empty.CanCreateKey || empty.AllowlistWiden || empty.MaxKeys != nil || len(empty.Pools) != 0 {
+	if empty.CanCreateKey || empty.MaxKeys != nil || len(empty.Pools) != 0 {
 		t.Fatalf("空组合并应全 false（fail-closed）: %+v", empty)
 	}
 }

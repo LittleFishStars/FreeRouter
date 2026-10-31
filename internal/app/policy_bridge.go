@@ -72,10 +72,6 @@ func snapshotToGroupPolicies(ctx context.Context, models *store.ModelRepo, snap 
 			v := *g.CanCreateKey
 			gp.CanCreateKey = &v
 		}
-		if g.KeyAllowlistWiden != nil {
-			v := *g.KeyAllowlistWiden
-			gp.KeyAllowlistWiden = &v
-		}
 		if g.MaxKeys != nil {
 			v := int(*g.MaxKeys)
 			gp.MaxKeys = &v
@@ -168,7 +164,7 @@ func modelNamesOf(ctx context.Context, models *store.ModelRepo, ids []string) ([
 
 // authzKeyBridge 实现 auth 侧的窄接口 authzKeyStore（三读）。
 //
-// KeyAllowlist 返回 []int64（store 形状）→ 翻成 []string（auth 形状，
+// KeyDenylist 返回 []int64（store 形状）→ 翻成 []string（auth 形状，
 // 名口径）。白名单 id 查不到名（模型被删）= 该白名单项失效——交集
 // 自然收窄，与 05-keys §5「组收窄自动生效」同一条无损规则。
 type authzKeyBridge struct {
@@ -196,17 +192,17 @@ func (b authzKeyBridge) KeyByID(ctx context.Context, keyID string) (*auth.APIKey
 	return keyRowToAuth(k, nil)
 }
 
-func (b authzKeyBridge) KeyAllowlist(ctx context.Context, keyID string) ([]string, error) {
+func (b authzKeyBridge) KeyDenylist(ctx context.Context, keyID string) ([]string, error) {
 	id, err := parseID(keyID)
 	if err != nil {
 		return nil, store.ErrNotFound
 	}
-	ids, err := b.keys.KeyAllowlist(ctx, id)
+	ids, err := b.keys.KeyDenylist(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	if len(ids) == 0 {
-		return nil, nil // 空白名单 = 默认拒绝（交集必空），不报错
+		return nil, nil // 空黑名单 = 不收窄（组授权全集），不报错
 	}
 	names, err := modelNamesOf(ctx, b.models, ids)
 	if err != nil {

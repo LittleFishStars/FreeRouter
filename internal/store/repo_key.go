@@ -166,40 +166,41 @@ func (r *KeyRepo) SetKeyStatus(ctx context.Context, id string, status KeyStatus)
 // 2026-10-20：旧版 AddQuotaUsed（api_keys.quota_used 递增）已随六列删除而移除：
 // 额度计数在 account_quotas，由 UsageRepo 在同一结算事务里递增。
 
-// SetKeyModelAllow 覆盖式设置 Key 的模型白名单（在组授权之外再收窄）。
+// SetKeyModelDeny 覆盖式设置 Key 的模型黑名单（2026-11-01 用户定案：白名单 → 黑名单）。
 //
-// 为什么整体覆盖而不是增量 add/remove：白名单是一个集合，增量 API 会让调用方
+// 黑名单语义：**空 = 不收窄**（组授权全集直接可用），列出的模型对这把 Key
+// 隐藏。为什么整体覆盖而不是增量 add/remove：黑名单是一个集合，增量 API 会让调用方
 // 在"我先读了、再改了、中间别人也改了"时静默丢失对方的修改。整体覆盖把语义
 // 变成"设置成这个集合"，配合调用方在表单里提交完整集合用起来是确定的。
-func (r *KeyRepo) SetKeyModelAllow(ctx context.Context, keyID string, abstractModelIDs []string) error {
+func (r *KeyRepo) SetKeyModelDeny(ctx context.Context, keyID string, abstractModelIDs []string) error {
 	// 在事务里做"删干净 + 重插"，否则中途失败会留下半个白名单。
 	if r.s != nil && r.s.tx == nil {
 		return r.s.WithTx(ctx, func(tx *Repos) error {
-			return tx.Keys.SetKeyModelAllow(ctx, keyID, abstractModelIDs)
+			return tx.Keys.SetKeyModelDeny(ctx, keyID, abstractModelIDs)
 		})
 	}
 
 	if _, err := r.db.ExecContext(ctx,
-		`DELETE FROM key_model_allow WHERE key_id = ?`, keyID); err != nil {
-		return fmt.Errorf("store: 清空 Key 白名单失败: %w", err)
+		`DELETE FROM key_model_deny WHERE key_id = ?`, keyID); err != nil {
+		return fmt.Errorf("store: 清空 Key 黑名单失败: %w", err)
 	}
 	for _, mid := range abstractModelIDs {
 		if _, err := r.db.ExecContext(ctx,
-			`INSERT INTO key_model_allow(key_id, abstract_model_id) VALUES(?,?)`,
+			`INSERT INTO key_model_deny(key_id, abstract_model_id) VALUES(?,?)`,
 			keyID, mid); err != nil {
-			return fmt.Errorf("store: 写 Key 白名单失败: %w", err)
+			return fmt.Errorf("store: 写 Key 黑名单失败: %w", err)
 		}
 	}
 	return nil
 }
 
-// KeyModelAllow 读 Key 的模型白名单。空切片 = Key 没有额外收窄（不代表"没有可用模型"）。
-func (r *KeyRepo) KeyModelAllow(ctx context.Context, keyID string) ([]string, error) {
+// KeyModelDeny 读 Key 的模型黑名单。空切片 = 不收窄（组授权全集可用）。
+func (r *KeyRepo) KeyModelDeny(ctx context.Context, keyID string) ([]string, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT abstract_model_id FROM key_model_allow WHERE key_id = ? ORDER BY abstract_model_id`,
+		`SELECT abstract_model_id FROM key_model_deny WHERE key_id = ? ORDER BY abstract_model_id`,
 		keyID)
 	if err != nil {
-		return nil, fmt.Errorf("store: 读取 Key 白名单失败: %w", err)
+		return nil, fmt.Errorf("store: 读取 Key 黑名单失败: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -207,12 +208,12 @@ func (r *KeyRepo) KeyModelAllow(ctx context.Context, keyID string) ([]string, er
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: 扫描 Key 白名单失败: %w", err)
+			return nil, fmt.Errorf("store: 扫描 Key 黑名单失败: %w", err)
 		}
 		out = append(out, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: 遍历 Key 白名单失败: %w", err)
+		return nil, fmt.Errorf("store: 遍历 Key 黑名单失败: %w", err)
 	}
 	return out, nil
 }
@@ -225,16 +226,15 @@ func (s KeyStatus) valid() bool {
 	return false
 }
 
-// SetKeyAllowlist 是 storeiface 里 authn 使用的名字：写 Key 的模型白名单。
-// 与 SetKeyModelAllow 同一实现——接口名对齐仓储名，避免 Lead 合并时写适配器；
-// 语义仍是「整体覆盖」：authn 在管理面收到的就是完整集合。
-func (r *KeyRepo) SetKeyAllowlist(ctx context.Context, keyID string, abstractModelIDs []string) error {
-	return r.SetKeyModelAllow(ctx, keyID, abstractModelIDs)
+// SetKeyDenylist 是 storeiface 里 authn 使用的名字：写 Key 的模型黑名单。
+// 与 SetKeyModelDeny 同一实现——接口名对齐仓储名；语义仍是「整体覆盖」。
+func (r *KeyRepo) SetKeyDenylist(ctx context.Context, keyID string, abstractModelIDs []string) error {
+	return r.SetKeyModelDeny(ctx, keyID, abstractModelIDs)
 }
 
-// KeyAllowlist 读 Key 的模型白名单（storeiface 对齐别名）。语义见 KeyModelAllow。
-func (r *KeyRepo) KeyAllowlist(ctx context.Context, keyID string) ([]string, error) {
-	return r.KeyModelAllow(ctx, keyID)
+// KeyDenylist 读 Key 的模型黑名单（storeiface 对齐别名）。语义见 KeyModelDeny。
+func (r *KeyRepo) KeyDenylist(ctx context.Context, keyID string) ([]string, error) {
+	return r.KeyModelDeny(ctx, keyID)
 }
 
 // SetKeyName 改展示名（不影响鉴权）。名字为空串等价于清空。

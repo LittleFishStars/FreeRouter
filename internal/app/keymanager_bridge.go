@@ -115,13 +115,13 @@ func (b *keymanagerBridge) RotateKey(ctx context.Context, oldKeyID string, newKe
 	return b.keys.SetKeyStatus(ctx, oldID, store.KeyRevoked)
 }
 
-// SetKeyAllowlist 写白名单。
+// SetKeyDenylist 写黑名单。
 //
-// 白名单两侧的语言是**抽象模型名**（auth.KeyManager.SetAllowlist 用组授权的
+// 黑名单两侧的语言是**抽象模型名**（auth.KeyManager.SetDenylist 用组授权的
 // 名字集合做 ⊆ 校验），store 存的是 id——桥负责名字↔id 翻译。
 // 旧实现把名字字符串直接 strconv.ParseInt，全部 parse 失败后白名单恒为空
 // （租户设了等于没设，静默失效）；这里显式查表，名字不存在时报错而不是吞掉。
-func (b *keymanagerBridge) SetKeyAllowlist(ctx context.Context, keyID string, abstractModelNames []string) error {
+func (b *keymanagerBridge) SetKeyDenylist(ctx context.Context, keyID string, abstractModelNames []string) error {
 	id, err := idgen.Parse(keyID)
 	if err != nil {
 		return store.ErrNotFound
@@ -134,16 +134,16 @@ func (b *keymanagerBridge) SetKeyAllowlist(ctx context.Context, keyID string, ab
 		}
 		ids = append(ids, m.ID)
 	}
-	return b.keys.SetKeyAllowlist(ctx, id, ids)
+	return b.keys.SetKeyDenylist(ctx, id, ids)
 }
 
-// KeyAllowlist 读白名单（翻译成模型名，与 auth 层/前端的语言一致）。
-func (b *keymanagerBridge) KeyAllowlist(ctx context.Context, keyID string) ([]string, error) {
+// KeyDenylist 读黑名单（翻译成模型名，与 auth 层/前端的语言一致）。
+func (b *keymanagerBridge) KeyDenylist(ctx context.Context, keyID string) ([]string, error) {
 	id, err := idgen.Parse(keyID)
 	if err != nil {
 		return nil, store.ErrNotFound
 	}
-	ids, err := b.keys.KeyAllowlist(ctx, id)
+	ids, err := b.keys.KeyDenylist(ctx, id)
 	if err != nil {
 		return nil, err
 	}

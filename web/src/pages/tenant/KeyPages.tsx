@@ -3,8 +3,8 @@
 // 三条硬约束：
 //   - 列表只显示前缀（fr-xxxx…xxxx）；明文只在创建时出现一次；
 //   - Key 没有自己的额度与速率：额度/速率是**账户级**的，Key 只剩
-//     「认证、模型白名单、生命周期」三件事；
-//   - 白名单默认为空 = 无法发起请求（默认拒绝），创建页必须主动解释。
+//     「认证、模型黑名单、生命周期」三件事；
+//   - 黑名单默认为空 = 不收窄（组授权全集直接可用），2026-11-01 用户定案。
 //
 // 端点说明：租户面在 docs/api 尚无分册，路径按 REST 形状暂定；未接入时
 // 页面走「接口尚未接入」态。
@@ -44,8 +44,8 @@ import { fmtNum, fmtTime, statusLabel, truncate } from '../../utils/format'
 import PageFrame from '../PageFrame'
 import type { PageProps } from '../../routes'
 
-/** 新建/编辑共用的白名单多选。 */
-function AllowlistPicker({
+/** 新建/编辑共用的黑名单多选（勾选 = 对这把 Key 隐藏该模型）。 */
+function DenylistPicker({
   models,
   value,
   onChange
@@ -121,7 +121,7 @@ export function KeysPage({ def }: PageProps) {
   const [editing, setEditing] = useState<ApiKey | null>(null)
   const [name, setName] = useState('')
   const [expiry, setExpiry] = useState('')
-  const [allowlist, setAllowlist] = useState<string[]>([])
+  const [denylist, setDenylist] = useState<string[]>([])
   const [revoking, setRevoking] = useState<ApiKey | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
@@ -131,7 +131,7 @@ export function KeysPage({ def }: PageProps) {
     if (!editing) return
     setName(editing.name)
     setExpiry(editing.expires_at ? isoToLocalInput(editing.expires_at) : '')
-    setAllowlist(editing.allowlist ?? [])
+    setDenylist(editing.denylist ?? [])
   }, [editing])
 
   async function saveEdit() {
@@ -141,8 +141,8 @@ export function KeysPage({ def }: PageProps) {
     try {
       // expires_at 三态：缺省=不变、null=清空、字符串=设定。这里必须显式传这个键
       // （留空时值为 null）：省掉它就变成“不变”，过期时间依旧清不掉（审计 P1）。
-      await patchKey(editing.id, { name, expires_at: expiryToISO(expiry), allowlist })
-      setNotice('已保存（收窄白名单立即生效）')
+      await patchKey(editing.id, { name, expires_at: expiryToISO(expiry), denylist })
+      setNotice('已保存（黑名单立即生效）')
       setEditing(null)
       q.reload()
     } catch (e) {
@@ -171,7 +171,7 @@ export function KeysPage({ def }: PageProps) {
       actions={<Link className="btn-primary" to="/usage/keys/new">新建 API Key</Link>}
     >
       <Banner tone="muted">
-        额度与速率属于**账户**，名下所有 Key 共享；Key 只提供模型白名单收窄与生命周期管理。
+        额度与速率属于**账户**，名下所有 Key 共享；Key 只提供模型黑名单（按 Key 隐藏个别模型）与生命周期管理。
         列表只显示前缀，明文只在创建时出现一次。
       </Banner>
       <FormError error={error} />
@@ -181,7 +181,7 @@ export function KeysPage({ def }: PageProps) {
         <Section
           title={`编辑 Key ${editing.name}`}
           actions={<button type="button" className="btn-ghost" onClick={() => setEditing(null)}>取消</button>}
-          hint="收窄白名单是安全的；放宽受组的放开类上限约束。"
+          hint="黑名单只可能让这把 Key 的能力变小；组授权仍是天花板。"
         >
           <div className="field-row">
             <Field label="名称" required>
@@ -191,7 +191,7 @@ export function KeysPage({ def }: PageProps) {
               <input type="datetime-local" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
             </Field>
           </div>
-          <AllowlistPicker models={models.data?.data ?? []} value={allowlist} onChange={setAllowlist} />
+          <DenylistPicker models={models.data?.data ?? []} value={denylist} onChange={setDenylist} />
           <button type="button" className="btn-primary" onClick={() => void saveEdit()} disabled={busy || !name.trim()}>
             保存
           </button>
@@ -205,7 +205,7 @@ export function KeysPage({ def }: PageProps) {
           d.data.length === 0 ? (
             <EmptyState
               title="还没有任何 API Key"
-              hint="新建的 Key 默认白名单为空，需要先勾选模型才能调用；额度是账户级的，不随 Key 变化。"
+              hint="新建的 Key 默认黑名单为空 = 组授权全集直接可用；额度是账户级的，不随 Key 变化。"
               action={<Link className="btn-primary" to="/usage/keys/new">新建 API Key</Link>}
             />
           ) : null
@@ -213,18 +213,18 @@ export function KeysPage({ def }: PageProps) {
       >
         {(d) => (
           <Section title={`我的 Key（${d.total ?? d.data.length}）`}>
-            <DataTable headers={['名称', '前缀', '状态', '过期时间', '模型白名单', '最近使用', '创建时间', '操作']}>
+            <DataTable headers={['名称', '前缀', '状态', '过期时间', '模型黑名单', '最近使用', '创建时间', '操作']}>
               {d.data.map((k) => (
                 <tr key={k.id}>
                   <td><Link to={`/usage/keys/${encodeURIComponent(k.id)}`}>{k.name}</Link></td>
                   <td><code>{k.prefix}</code></td>
                   <td><StatusBadge status={k.status} label={statusLabel(k.status)} /></td>
                   <td>{expiryText(k.expires_at)}</td>
-                  <td title={k.allowlist.join(', ')}>
-                    {k.allowlist.length === 0 ? (
+                  <td title={k.denylist.join(', ')}>
+                    {k.denylist.length === 0 ? (
                       <span className="badge badge-warn">空（不能调用）</span>
                     ) : (
-                      `${k.allowlist.length} 个：${truncate(k.allowlist.join(', '), 32)}`
+                      `${k.denylist.length} 个：${truncate(k.denylist.join(', '), 32)}`
                     )}
                   </td>
                   <td>{fmtTime(k.last_used_at)}</td>
@@ -233,7 +233,7 @@ export function KeysPage({ def }: PageProps) {
                     <TableActions>
                       <TableAction
                         icon={<IconEdit size={ACTION_ICON} />}
-                        label="编辑 Key（白名单 / 过期 / 名称）"
+                        label="编辑 Key（黑名单 / 过期 / 名称）"
                         onClick={() => setEditing(k)}
                       />
                       <TableAction
@@ -272,7 +272,7 @@ export function KeysPage({ def }: PageProps) {
           impact={[
             `Key ${revoking.prefix} 立即失效，使用它的请求返回 401`,
             '此操作不可恢复；需要新 Key 请重新创建',
-            `该 Key 的白名单：${revoking.allowlist.join(', ') || '空'}`
+            `该 Key 的黑名单：${revoking.denylist.join(', ') || '空'}`
           ]}
           irreversibility="不可恢复：被吊销的 Key 无法重新启用。"
           targetName={revoking.name}
@@ -307,7 +307,7 @@ export function KeyNewPage({ def }: PageProps) {
   const models = useApi(() => listAvailableModels(), [])
   const [name, setName] = useState('')
   const [expiry, setExpiry] = useState('')
-  const [allowlist, setAllowlist] = useState<string[]>([])
+  const [denylist, setDenylist] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [created, setCreated] = useState<ApiKeyCreated | null>(null)
@@ -317,7 +317,7 @@ export function KeyNewPage({ def }: PageProps) {
     setBusy(true)
     setError(null)
     try {
-      const r = await createKey({ name, expires_at: expiryToISO(expiry), allowlist })
+      const r = await createKey({ name, expires_at: expiryToISO(expiry), denylist })
       setCreated(r.data)
     } catch (e2) {
       setError(e2)
@@ -341,8 +341,8 @@ export function KeyNewPage({ def }: PageProps) {
 
   return (
     <PageFrame def={def} actions={<Link to="/usage/keys" className="icon-link"><IconBack size={ACTION_ICON} />返回列表</Link>}>
-      <Banner tone="muted" title="新建的 Key 默认白名单为空">
-        白名单为空时这把 Key 无法发起任何请求（默认拒绝）。额度与速率属于账户，表单里不出现额度字段。
+      <Banner tone="muted" title="新建的 Key 默认黑名单为空">
+        黑名单为空时这把 Key 可用你所属组的全部授权模型；勾选模型即对这把 Key 隐藏它。额度与速率属于账户，表单里不出现额度字段。
       </Banner>
       <form className="form-card" onSubmit={onSubmit}>
         <Field label="名称" required hint="你自己认得出的名字，例如「本地调试」。">
@@ -352,10 +352,10 @@ export function KeyNewPage({ def }: PageProps) {
           <input type="datetime-local" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
         </Field>
         <div className="field-block">
-          <span className="field-label">模型白名单</span>
+          <span className="field-label">模型黑名单</span>
           <span className="field-hint">只能收窄，不能超出所属组的授权；不勾选 = 拒绝所有调用。</span>
           <AsyncView state={models} loadingRows={3}>
-            {(d) => <AllowlistPicker models={d.data} value={allowlist} onChange={setAllowlist} />}
+            {(d) => <DenylistPicker models={d.data} value={denylist} onChange={setDenylist} />}
           </AsyncView>
         </div>
         <FormError error={error} />
@@ -424,12 +424,12 @@ export function KeyDetailPage({ def }: PageProps) {
             { label: '创建时间', value: fmtTime(key.created_at) },
             { label: '最近使用', value: fmtTime(key.last_used_at) },
             {
-              label: '模型白名单',
+              label: '模型黑名单',
               value:
-                key.allowlist.length === 0 ? (
-                  <span className="badge badge-warn">空（不能调用）</span>
+                key.denylist.length === 0 ? (
+                  <span className="badge badge-ok">空（不收窄）</span>
                 ) : (
-                  key.allowlist.map((m) => (
+                  key.denylist.map((m) => (
                     <span key={m} className="badge badge-muted"><code>{m}</code></span>
                   ))
                 )
@@ -437,7 +437,7 @@ export function KeyDetailPage({ def }: PageProps) {
           ]}
         />
         <p className="muted">
-          白名单默认空（默认拒绝）：如果不勾选任何模型，这把 Key 的请求会直接失败。
+          黑名单默认空 = 不收窄（你所属组的全部授权模型都可用）；列出的模型对这把 Key 隐藏。
           额度与速率属于整个账户，不在这把 Key 上。
         </p>
       </Section>

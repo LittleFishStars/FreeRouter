@@ -148,7 +148,6 @@ export interface GroupPool {
 export interface GroupPolicies {
   allow_create_key?: boolean
   max_keys?: number
-  allow_widen_allowlist?: boolean
   account_quotas?: GroupPolicyQuota[]
   model_quota_caps?: GroupModelQuotaCap[]
   account_rpm_limit?: number
@@ -546,8 +545,8 @@ export interface ApiKey {
   prefix: string
   status: 'active' | 'disabled' | 'expired' | string
   expires_at: string | null
-  /** 白名单里的抽象模型名 */
-  allowlist: string[]
+  /** 黑名单里的抽象模型名（空 = 不收窄，组授权全集可用） */
+  denylist: string[]
   last_used_at: string | null
   created_at: string | null
 }

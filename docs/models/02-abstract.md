@@ -210,9 +210,9 @@ candidate = {
 |---|---|
 | `id` | 抽象模型的 `name` |
 | 列表范围 | **只列抽象模型**；`status != active` 的是否列出见 6.4 |
-| 可见性 | 进一步叠加租户所属组的授权（[../security/03-groups.md](../security/03-groups.md)）与 Key 白名单（[../security/05-keys.md](../security/05-keys.md)） |
+| 可见性 | 进一步叠加租户所属组的授权（[../security/03-groups.md](../security/03-groups.md)）与 Key 黑名单（[../security/05-keys.md](../security/05-keys.md)） |
 
-**为什么 `/v1/models` 也要按 Key 过滤**：总纲 11.3 的三层收敛是"组的模型授权 ∩ Key 白名单 = 实际可用"。若 `/v1/models` 列出全部抽象模型，用户会看到自己有 Key 但用不了的模型——这既是误导，也泄露了"本站还有哪些模型"的运营信息。
+**为什么 `/v1/models` 也要按 Key 过滤**：三层收敛是"组的模型授权 \\ Key 黑名单 = 实际可用"（2026-11-01 白名单 → 黑名单）。若 `/v1/models` 列出全部抽象模型，用户会看到自己有 Key 但用不了的模型——这既是误导，也泄露了"本站还有哪些模型"的运营信息。
 
 ### 6.2 请求与响应
 

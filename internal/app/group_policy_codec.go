@@ -18,7 +18,6 @@ package app
 //
 //	allow_create_key      -> can_create_key        (bool)
 //	max_keys              -> max_keys              (int)
-//	allow_widen_allowlist -> key_allowlist_widen   (bool)
 //	account_rpm_limit     -> rpm_limit             (int)
 //	account_tpm_limit     -> tpm_limit             (int)
 //	account_max_concurrency -> max_concurrency     (int)
@@ -45,7 +44,6 @@ import (
 type policyDoc struct {
 	AllowCreateKey      *bool         `json:"allow_create_key"`
 	MaxKeys             *int64        `json:"max_keys"`
-	AllowWidenAllowlist *bool         `json:"allow_widen_allowlist"`
 	AccountRPMLimit     *int64        `json:"account_rpm_limit"`
 	AccountTPMLimit     *int64        `json:"account_tpm_limit"`
 	AccountMaxConc      *int64        `json:"account_max_concurrency"`
@@ -116,9 +114,6 @@ func encodePolicyDoc(ctx context.Context, models *store.ModelRepo, doc json.RawM
 		}
 		put(store.PolicyMaxKeys, *d.MaxKeys)
 	}
-	if d.AllowWidenAllowlist != nil {
-		put(store.PolicyKeyAllowlistWiden, *d.AllowWidenAllowlist)
-	}
 	if d.AccountRPMLimit != nil {
 		put(store.PolicyRPMLimit, *d.AccountRPMLimit)
 	}
@@ -185,7 +180,7 @@ func encodePolicyDoc(ctx context.Context, models *store.ModelRepo, doc json.RawM
 func decodePolicyDoc(ctx context.Context, repos *store.Repos, gid string) json.RawMessage {
 	out := map[string]any{}
 	keys := []store.PolicyKey{
-		store.PolicyCanCreateKey, store.PolicyMaxKeys, store.PolicyKeyAllowlistWiden,
+		store.PolicyCanCreateKey, store.PolicyMaxKeys,
 		store.PolicyRPMLimit, store.PolicyTPMLimit, store.PolicyMaxConcurrency,
 		store.PolicyQuotaRequestDay, store.PolicyQuotaRequestMonth,
 		store.PolicyQuotaTokenDay, store.PolicyQuotaTokenMonth,
@@ -194,8 +189,7 @@ func decodePolicyDoc(ctx context.Context, repos *store.Repos, gid string) json.R
 	fieldOf := map[store.PolicyKey]string{
 		store.PolicyCanCreateKey:      "allow_create_key",
 		store.PolicyMaxKeys:           "max_keys",
-		store.PolicyKeyAllowlistWiden: "allow_widen_allowlist",
-		store.PolicyRPMLimit:          "account_rpm_limit",
+			store.PolicyRPMLimit:          "account_rpm_limit",
 		store.PolicyTPMLimit:          "account_tpm_limit",
 		store.PolicyMaxConcurrency:    "account_max_concurrency",
 	}
