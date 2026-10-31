@@ -96,16 +96,22 @@ func (t *upstreamTesterBridge) TestUpstream(ctx context.Context, id string) (map
 			out["reason"] = "sidecar 未运行：relay 类上游不可用（不影响 vendor/selfhosted 转发）"
 			return out, nil
 		}
-		h, err := t.sidecar.Health(ctx)
-		if err != nil {
+		// 运行态快照（纯内存读），**不走 Health 过管道**：sidecar 的调用是一条
+		// 串行 stdio 管道，签到轮的长调用（每条 claim 最多 60s）会让排队的
+		// Health 撞上 15s 读窗/游散帧上限，误报「健康检查失败」——2026-10-31
+		// 实测：签到轮运行中点「检验连通性」，relay 全挂、vendor 全通，而同一
+		// 时刻 models.list 与签到本身都是好的。探测要回答的是「sidecar 活着吗」，
+		// 运行态快照就是权威答案，且零管道占用、永不排队。
+		st := t.sidecar.Status()
+		if !st.Available {
 			out["ok"] = false
-			out["reason"] = "sidecar 健康检查失败: " + err.Error()
+			out["reason"] = "sidecar 不可用：" + st.Reason
 			return out, nil
 		}
 		out["ok"] = true
-		out["sidecar_version"] = h.Version
-		out["providers"] = h.Providers
-		out["reason"] = "sidecar 在线（具体渠道的额度与登录态由贡献页展示）"
+		out["sidecar_version"] = st.Version
+		out["providers"] = st.Providers
+		out["reason"] = "sidecar 在线（渠道级额度与登录态由贡献页/签到状态展示）"
 		return out, nil
 	default:
 		base := strings.TrimRight(u.BaseURL, "/")
