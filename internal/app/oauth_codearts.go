@@ -135,6 +135,10 @@ type sidecarProvider struct {
 	Needs   []string `json:"needs"`
 	APIBase string   `json:"apiBase"`
 	Kind    string   `json:"kind"`
+	// NoOpenAI = 该渠道没有 OpenAI 兼容推理端点（qoder 系专有协议）。
+	// 入池上游行必须 enabled=false：写一个能连通的 URL 也没用——请求形状
+	// 不是 /chat/completions，真发只会得到协议层失败（2026-10-31 实测）。
+	NoOpenAI bool `json:"noOpenAI,omitempty"`
 	// Unavailable 是「配置缺失」的原因（如未设 OAuth 客户端 secret）。
 	// 非空时该 provider 列出但不可用——界面显示原因而不是一个必败的按钮。
 	Unavailable string `json:"unavailable"`
@@ -478,16 +482,19 @@ func (b *oauthBridge) persist(ctx context.Context, owner string, provider, crede
 		short = short[:8]
 	}
 	upstreamName := fmt.Sprintf("%s-oauth-%s", provider, short)
-	kind, baseURL := b.endpointFor(ctx, provider)
+	kind, baseURL, usable := b.endpointFor(ctx, provider)
 
 	var credID string
 	var uid string
 	err := b.st.WithTx(ctx, func(tx *store.Repos) error {
-		// 上游行直接启用（2026-10-30）：OAuth 反代凭据由供应商账号体系背书
+		// 上游行默认直接启用（2026-10-30）：OAuth 反代凭据由供应商账号体系背书
 		// （换出凭据的链路不含人工粘贴），无需人工审核——需要审核的是
 		// API/custom 型的贡献（粘 Key 无法自证，走 contribution.go 的审核流）。
+		// ⚠️ 例外（2026-10-31）：sidecar 清单标 noOpenAI 的渠道（qoder 系专有
+		// 协议）没有 OpenAI 兼容推理端点，行必须停用——凭据照常入池（签到/
+		// 余额走 sidecar，可用），推理等协议 adapter 化再点亮。
 		var uerr error
-		uid, uerr = tx.Models.UpsertUpstream(ctx, kind, upstreamName, baseURL, &owner, true)
+		uid, uerr = tx.Models.UpsertUpstream(ctx, kind, upstreamName, baseURL, &owner, usable)
 		if uerr != nil {
 			return uerr
 		}
@@ -575,8 +582,10 @@ func (b *oauthBridge) seedModelCatalog(ctx context.Context, provider, upstreamID
 	}
 }
 
-// endpointFor 取该 provider 的（kind, base_url）。
-func (b *oauthBridge) endpointFor(ctx context.Context, provider string) (string, string) {
+// endpointFor 取该 provider 的（kind, base_url, usable）。
+// usable=false = 清单标 noOpenAI（无 OpenAI 兼容推理端点）或清单缺席：
+// 上游行落库但停用，凭据的签到/余额能力不受影响。
+func (b *oauthBridge) endpointFor(ctx context.Context, provider string) (string, string, bool) {
 	if list, err := b.list(ctx); err == nil {
 		for _, p := range list.Providers {
 			if p.ID == provider && p.APIBase != "" {
@@ -584,11 +593,12 @@ func (b *oauthBridge) endpointFor(ctx context.Context, provider string) (string,
 				if kind == "" {
 					kind = "vendor"
 				}
-				return kind, p.APIBase
+				return kind, p.APIBase, !p.NoOpenAI
 			}
 		}
 	}
-	return defaultEndpoint(provider)
+	kind, baseURL := defaultEndpoint(provider)
+	return kind, baseURL, false
 }
 
 // defaultEndpoint 是 sidecar 清单不可用时的兜底。

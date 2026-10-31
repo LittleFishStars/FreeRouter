@@ -129,13 +129,21 @@ function sleep(ms, signal) {
  * kind     上游类型：vendor = 公网 https；selfhosted = 本机
  */
 const ENDPOINTS = {
+  // ⚠️ apiBase 必须抄 hub 各家 product 的**实测**推理端点，不许拍脑湊营销域：
+  // 这里的值会被主进程写进上游行 base_url，错了就是一批 http=000（2026-10-31
+  // 实测：loomy 写成 api.loomy.ai——域名根本不存在，真实端点是讯飞的
+  // loomyad.xunfei.cn/api/v1，见 hub loomy-product 的 LOOMY_API_BASE）。
+  // noOpenAI: true = 该渠道**没有 OpenAI 兼容推理端点**（专有协议，hub 用自家
+  // adapter），主进程据此把入池上游行 enabled=false——凭据照常入池（签到/
+  // 余额可用），等协议 adapter 化再点亮。
   codearts: { apiBase: 'https://snap-access.cn-north-4.myhuaweicloud.com', kind: 'vendor' },
   gemini: { apiBase: 'https://cloudcode-pa.googleapis.com', kind: 'vendor' },
   accio: { apiBase: 'https://api.accio.ai', kind: 'vendor' },
   minimax: { apiBase: 'https://api.minimax.chat', kind: 'vendor' },
   cline: { apiBase: 'https://api.cline.bot', kind: 'vendor' },
-  qoder: { apiBase: 'https://api.qoder.com', kind: 'vendor' },
-  loomy: { apiBase: 'https://api.loomy.ai', kind: 'vendor' },
+  qoder: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
+  qodercn: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
+  loomy: { apiBase: 'https://loomyad.xunfei.cn/api/v1', kind: 'vendor' },
   raccoon: { apiBase: 'https://api.raccoon.ai', kind: 'vendor' },
   lobsterai: { apiBase: 'https://api.lobsterai.com', kind: 'vendor' },
   autoclaw: { apiBase: 'https://api.autoclaw.ai', kind: 'vendor' },
