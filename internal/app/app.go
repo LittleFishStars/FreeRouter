@@ -154,6 +154,10 @@ func Setup(ctx context.Context, opts Options) (*App, error) {
 	// 签到自身带 30s 启动延迟，不会抢装配窗口的资源。管理面端点在
 	// buildAdminDeps 里另建一个无状态的 checkinBridge（两者只共享落库）。
 	a.startCheckin(bgCtx)
+	// OAuth 贡献行形态对齐（2026-10-31 批量移植）：sidecar 清单声明 relay 的
+	// 贡献行原地翻转（vendor+占位 URL → relay+sidecar://<provider>）。异步跑
+	// 一次——sidecar Call 有超时，不该阻塞启动窗口。
+	go a.reconcileOAuthUpstreamsFromSidecar(bgCtx)
 	// auto 抽象模型同步（2026-10-31）：每个组默认拥有一个覆盖全池的 auto。
 	// 只碰本地库、不依赖 sidecar；启动即跑一轮，之后每分钟对齐候选集。
 	a.startAutoModelSync(bgCtx)

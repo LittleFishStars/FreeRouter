@@ -137,6 +137,18 @@ credits.query({ provider: string, credentialRef: string }) -> {
 // resolveCredential/refresh 钩子接到这份凭据上（「单凭据账号池替身」）。
 // stream=false 时 sidecar 把 chunk 流攒回完整 chat.completion（relay 的
 // 非流式消费面要 JSON 体）。
+//
+// **覆盖面（2026-10-31 批量移植）**：凡 hub 有 adapter 且 sidecar 清单声明
+// `kind: relay` 的渠道（qoder / qodercn / minimax / minimaxintl / trae /
+// zcode / autoclaw / gemini / accio），贡献凭据的推理都走本端点——落库行
+// 即为 relay 形态（sidecar://<provider>），不再 noOpenAI 停用。续期钩子按
+// 渠道接了实测原语（qoder 系 wasm 链路 / minimax 的 refresh_token 换新 /
+// autoclaw 的签名续期 / gemini、accio 走 registry 登记），未登记的降级为
+// no-op（主动续期窗口沿用当前凭据，真过期走重新授权）。账号池替身必须
+// 返回 null 而不是 undefined——adapter 的换号判据是 `next === null`，返回
+// undefined 会在换号路径上 TypeError（qoder 实测）。已落库的 vendor 老行由
+// 启动时的 OAuth 行对齐（app.reconcileOAuthUpstreams）原地翻转，enabled
+// （属主的停止贡献开关）不动。
 infer.stream({ provider, model, body, stream, credential? }) -> {
   sse?: string,          // stream=true：OpenAI chat.completion.chunk 的 SSE 全文
   completion?: object    // stream=false：合成的完整 chat.completion

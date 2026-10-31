@@ -146,21 +146,25 @@ const ENDPOINTS = {
   lobsterai: { apiBase: 'https://lobsterai-server.youdao.com/api/proxy/v1', kind: 'vendor' },
   astudio: { apiBase: 'https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1', kind: 'vendor' },
   officeace: { apiBase: 'https://officeace.cn-southwest-2.huaweicloud-agentarts.com/v2', kind: 'vendor' },
-  // 专有协议（noOpenAI：行停用，凭据的签到/余额不受影响）：
-  gemini: { apiBase: 'https://cloudcode-pa.googleapis.com', kind: 'vendor', noOpenAI: true },
-  accio: { apiBase: 'https://phoenix-gw.alibaba.com', kind: 'vendor', noOpenAI: true },
-  minimax: { apiBase: 'https://agent.minimax.cn', kind: 'vendor', noOpenAI: true },
-  minimaxintl: { apiBase: 'https://agent.minimax.io', kind: 'vendor', noOpenAI: true },
-  trae: { apiBase: 'https://trae-api-cn.mchost.guru', kind: 'vendor', noOpenAI: true },
-  zcode: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
-  autoclaw: { apiBase: 'https://autoglm-api.autoglm.ai', kind: 'vendor', noOpenAI: true },
+  // 专有协议（2026-10-31 批量移植）：hub 有 adapter 且 sidecar 已接
+  // adapterForWithCredential 的渠道 → kind=relay、base_url=sidecar://<id>，
+  // 推理走 infer.stream（凭据单帧传入），落库即可用——不再 noOpenAI。
+  // 仍 noOpenAI 的（buddy/workbuddy/codely/autoclawintl）：hub 无 adapter
+  // 条目，行停用，凭据的签到/余额不受影响。
+  gemini: { apiBase: 'sidecar://gemini', kind: 'relay' },
+  accio: { apiBase: 'sidecar://accio', kind: 'relay' },
+  minimax: { apiBase: 'sidecar://minimax', kind: 'relay' },
+  minimaxintl: { apiBase: 'sidecar://minimaxintl', kind: 'relay' },
+  trae: { apiBase: 'sidecar://trae', kind: 'relay' },
+  zcode: { apiBase: 'sidecar://zcode', kind: 'relay' },
+  autoclaw: { apiBase: 'sidecar://autoclaw', kind: 'relay' },
   autoclawintl: { apiBase: 'https://autoglm-api.autoglm.ai', kind: 'vendor', noOpenAI: true },
   buddy: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
   workbuddy: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
   codely: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
-  qoder: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
-  // qodercn（2026-10-31 移植）：推理走 sidecar 的 infer.stream（hub QoderAdapter
-  // 含 wasm 加密链路，凭据由主进程单帧传入）——kind=relay、base_url=sidecar://<id>。
+  qoder: { apiBase: 'sidecar://qoder', kind: 'relay' },
+  // qodercn（2026-10-31 移植，批量移植的首家）：同上，走 sidecar infer.stream
+  // （hub QoderAdapter 含 wasm 加密链路，凭据由主进程单帧传入）。
   qodercn: { apiBase: 'sidecar://qodercn', kind: 'relay' },
 }
 

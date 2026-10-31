@@ -109,6 +109,8 @@ func (p *upstreamProbeBridge) ProbeUpstreamModels(ctx context.Context, id string
 		})
 	}
 	one := 1
+	_ = one // 保留变量位：未来若需要逐模型不同预算从这里取
+	probeModelMaxOutput := 256
 	for i := range models {
 		m := &models[i]
 		row := httpapi.UpstreamModelProbeRow{RealModelID: m.ID, ModelID: m.UpstreamModelID}
@@ -139,11 +141,14 @@ func (p *upstreamProbeBridge) ProbeUpstreamModels(ctx context.Context, id string
 			Display: fmt.Sprintf("%s/%s#%s", channelOf(m.Channel, *up), m.UpstreamModelID, m.ID),
 			Adapter: adapter,
 		}
-		// ping 请求：max_tokens=1 压成本；模型用真实模型 id（业务流量同款）。
+		// ping 请求：模型用真实模型 id（业务流量同款）。max_tokens 给到
+		// probeModelMaxOutput 而不是 1：推理型模型（MiniMax-M2.7 实测）会把
+		// 1 个 token 全花在思考上、返回零内容块——检验会把「可达且正常服务」
+		// 的模型误判成不通。256 对 ping 提示词的成本可忽略。
 		probe := ir.Request{
 			Model:    m.UpstreamModelID,
 			Messages: []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart{Text: "ping"}}}},
-			Sampling: ir.Sampling{MaxOutput: &one},
+			Sampling: ir.Sampling{MaxOutput: &probeModelMaxOutput},
 			Stream:   false,
 		}
 		mctx, mcancel := context.WithTimeout(ctx, probeModelBudget)

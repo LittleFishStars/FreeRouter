@@ -23,6 +23,10 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadDeps } from './deps.mjs';
 import * as dshCredentials from './credentials.mjs';
+// registry 提供「per-provider 凭据续期」的已登记实现（registry.refresh({credential})）。
+// 为什么 hub 反向引 registry：续期原语各家形状不一，registry 是**已实测的那份**包装；
+// provider 模块不 import hub，无环。
+import * as registry from './providers/registry.mjs';
 
 // HUB_PATH 与 index.mjs 同源（FR_HUB_PATH 由 Go 侧 Options.HubPath 注入）。
 export function hubPath() {
@@ -86,7 +90,9 @@ function baseOptions(apiKey, slotOption, slotsOf) {
     // 账号池替身：只提供 adapter 会调的那几个读方法（写方法不存在 = 我们不留状态）
     accountPool: {
       findAccountIdByCredential: async () => '',
-      getAvailableAccount: async () => undefined,
+      // 必须是 null 不是 undefined：adapter 的换号判据是 `next === null`
+      // （qoder-adapter 换号路径实测，undefined 会在 next.entry.id 上 TypeError）。
+      getAvailableAccount: async () => null,
       isRateLimited: async () => false,
       // 这两个是写语义（标记限流/更新限流）：不实现 —— 红线①的延伸，
       // sidecar 不为 DSH 的池状态做任何持久化决定。
@@ -188,6 +194,62 @@ export async function adapterForWithCredential(provider, credential, onRefreshed
     opts.product = pmod[spec.productName];
   }
   opts.resolveCredential = async () => credential;
+  // 续期钩子（2026-10-31 批量移植泛化）：qoder 系保留专用链路（wasm 原语 +
+  // 105 重绑，见下）；其余 provider 优先走 registry 已登记的 refresh
+  // （gemini/accio），没登记的降级为 no-op——主动续期窗口沿用当前凭据
+  // （token 还没过期就能用），真过期时上游 401 → 用户重新授权。宁可降级
+  // 也不猜：各家续期原语形状不一，写错等于把好凭据换坏。
+  if (provider !== 'qoder' && provider !== 'qodercn') {
+    // minimax 系：hub 有完整续期原语（refreshMinimaxCredential，refresh_token
+    // 换新）——不接它，access_token 过期后推理就死到重新授权为止（实测 30 分钟
+    // 级 TTL，必接）。productModule 决定国内/国际网关，与构造时同源。
+    if (provider === 'minimax' || provider === 'minimaxintl') {
+      opts.refresh = async () => {
+        const mo = await loadModule('lib/minimax-oauth.js');
+        const pm = await loadModule(spec.productModule ?? 'lib/minimax-product.js');
+        const product = pm[spec.productName ?? 'MINIMAX'];
+        if (!credential || !credential.refresh_token) {
+          throw new Error('minimax: 凭据不可续期（缺 refresh_token），请重新授权');
+        }
+        const next = await mo.refreshMinimaxCredential(credential.refresh_token, fetch, product);
+        credential = next;
+        if (typeof onRefreshed === 'function') onRefreshed(next);
+      };
+      return new Cls(opts);
+    }
+    // autoclaw：hub 有 refreshAutoclawToken（refresh_token 换新，双端点回退）。
+    // 不接它，401 Invalid token 后推理死到重新授权为止（实测 token 会过期）。
+    if (provider === 'autoclaw') {
+      opts.refresh = async () => {
+        const ao = await loadModule('lib/autoclaw-oauth.js');
+        const pm = await loadModule('lib/autoclaw-product.js');
+        if (!credential || !credential.refresh_token) {
+          throw new Error('autoclaw: 凭据不可续期（缺 refresh_token），请重新授权');
+        }
+        const next = await ao.refreshAutoclawToken(credential.refresh_token, {
+          product: pm[spec.productName ?? 'AUTOCLAW'],
+        });
+        credential = next;
+        if (typeof onRefreshed === 'function') onRefreshed(next);
+      };
+      return new Cls(opts);
+    }
+    // 其余：registry 已登记 refresh 的（gemini/accio）走登记实现；没登记的
+    // 降级为 no-op——主动续期窗口沿用当前凭据（token 还没过期就能用），真
+    // 过期时上游 401 → 用户重新授权。宁可降级也不猜：各家续期原语形状不一，
+    // 写错等于把好凭据换坏。
+    const entry = registry.PROVIDERS[provider];
+    const regRefresh = entry && typeof entry.refresh === 'function' ? entry.refresh : null;
+    opts.refresh = async () => {
+      if (!regRefresh) return; // 降级：沿用当前凭据（no-op），过期走重新授权
+      const next = await regRefresh({ credential });
+      if (next && typeof next === 'object') {
+        credential = next;
+        if (typeof onRefreshed === 'function') onRefreshed(next);
+      }
+    };
+    return new Cls(opts);
+  }
   // 105（auth_error）的续期钩子：用 refresh_token 走 deviceToken/refresh 换新
   // （hub qoder.js 原语 + QODER_REFRESH_PATH）。新凭据**重绑闭包**——adapter 的
   // 重试经 resolveCredential 拿到新 token；并经 onRefreshed 透传，由 streamInfer
