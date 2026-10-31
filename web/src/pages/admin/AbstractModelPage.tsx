@@ -511,6 +511,12 @@ export function AbstractModelDetailPage({ def }: PageProps) {
     >
       <FormError error={error} />
       {notice && <Banner tone="ok">{notice}</Banner>}
+      {model.name === 'auto' && (
+        <Banner tone="info" title="此模型由系统自动维护">
+          候选集每分钟与全池可路由模型对齐，手工编辑会被覆盖；它已默认授予每个组，
+          在组编辑里撤回后不会被自动加回。要下线请「停用」——删除后下一轮同步会重建。
+        </Banner>
+      )}
 
       <Section title="基本信息">
         <KeyValues

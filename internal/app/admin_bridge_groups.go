@@ -111,6 +111,12 @@ func (gb *groupsBridge) CreateGroup(ctx context.Context, in httpapi.AdminGroup, 
 				return err
 			}
 		}
+		// auto 模型默认授予（2026-10-31 用户定案：每个组默认拥有 auto）。
+		// 放在显式授权之后追加，管理员随后可以在组编辑里撤掉——那是终态，
+		// 同步循环不会把它加回来。
+		if err := ensureAutoModelGrant(ctx, tx.Models, tx.Groups, id); err != nil {
+			return err
+		}
 		if len(policies) > 0 {
 			if err := applyPolicyDoc(ctx, tx, id, policies); err != nil {
 				return err
@@ -283,6 +289,11 @@ func (gb *groupsBridge) DuplicateGroup(ctx context.Context, id, newName string, 
 			if err := tx.Groups.SetGroupModels(ctx, nid, mids); err != nil {
 				return err
 			}
+		}
+		// 复制组同样默认授予 auto（与 CreateGroup 同一条规则：auto 是
+		// 「每个组出生即有」的默认，撤回是管理员的显式后续动作）。
+		if err := ensureAutoModelGrant(ctx, tx.Models, tx.Groups, nid); err != nil {
+			return err
 		}
 		if pols, err := tx.Groups.ListPolicies(ctx, gid); err == nil {
 			for k, v := range pols {

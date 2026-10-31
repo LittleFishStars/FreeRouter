@@ -154,6 +154,9 @@ func Setup(ctx context.Context, opts Options) (*App, error) {
 	// 签到自身带 30s 启动延迟，不会抢装配窗口的资源。管理面端点在
 	// buildAdminDeps 里另建一个无状态的 checkinBridge（两者只共享落库）。
 	a.startCheckin(bgCtx)
+	// auto 抽象模型同步（2026-10-31）：每个组默认拥有一个覆盖全池的 auto。
+	// 只碰本地库、不依赖 sidecar；启动即跑一轮，之后每分钟对齐候选集。
+	a.startAutoModelSync(bgCtx)
 	// 第 6 步：HTTP（装配中间件链 + 路由 + v1 面板注入）。
 	a.server = a.buildServer()
 	return a, nil
