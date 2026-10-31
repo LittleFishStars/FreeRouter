@@ -247,7 +247,7 @@ func TestContractRelayNilClientAndValidation(t *testing.T) {
 	if err == nil {
 		t.Fatal("nil 传输应失败")
 	}
-	tr = NewRelayTransport(nil)
+	tr = NewRelayTransport(nil, nil)
 	_, err = tr.InferStream(testCtx, Target{Kind: KindRelay, RealModel: "buddy/x"}, nil, true)
 	if err == nil {
 		t.Fatal("nil client 应失败")
@@ -314,7 +314,7 @@ func TestContractRelayUnwrapSSEPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("构造信封失败：%v", err)
 	}
-	rc, err := unwrapInferPayload(enveloped)
+	rc, err := unwrapInferPayload(enveloped, true)
 	if err != nil {
 		t.Fatalf("拆信封失败：%v", err)
 	}
@@ -325,7 +325,7 @@ func TestContractRelayUnwrapSSEPayload(t *testing.T) {
 	_ = rc.Close()
 
 	// 形态二：裸 SSE 文本（旧版 sidecar / 直通实现）
-	rc, err = unwrapInferPayload([]byte(sse))
+	rc, err = unwrapInferPayload([]byte(sse), true)
 	if err != nil {
 		t.Fatalf("裸载荷应透传：%v", err)
 	}
@@ -334,8 +334,25 @@ func TestContractRelayUnwrapSSEPayload(t *testing.T) {
 		t.Fatalf("裸载荷被改写了：%q", string(got))
 	}
 
-	// 形态三：空载荷是协议错误（不是"空响应"）。
-	if _, err := unwrapInferPayload(nil); err == nil {
+	// 形态三：非流式的 {"completion":...} 信封（2026-10-31）——交出完整 JSON。
+	completion, err := json.Marshal(map[string]any{
+		"completion": map[string]any{"id": "x", "choices": []map[string]any{{"index": 0}}},
+	})
+	if err != nil {
+		t.Fatalf("构造 completion 失败：%v", err)
+	}
+	rc, err = unwrapInferPayload(completion, false)
+	if err != nil {
+		t.Fatalf("拆 completion 失败：%v", err)
+	}
+	got, _ = io.ReadAll(rc)
+	if string(got) != `{"choices":[{"index":0}],"id":"x"}` {
+		t.Fatalf("拆出的 completion 不一致：%q", string(got))
+	}
+	_ = rc.Close()
+
+	// 形态四：空载荷是协议错误（不是"空响应"）。
+	if _, err := unwrapInferPayload(nil, true); err == nil {
 		t.Fatal("空载荷应 ErrProtocol")
 	} else if ue, ok := err.(*Error); !ok || ue.Class != ErrProtocol {
 		t.Fatalf("空载荷应归 protocol，得 %v", err)
@@ -385,7 +402,7 @@ func TestContractRelayEndToEndFakeSidecar(t *testing.T) {
 	}
 	defer func() { _ = client.Close(testCtx) }()
 
-	tr := NewRelayTransport(client)
+	tr := NewRelayTransport(client, nil)
 	tgt := Target{UpstreamID: "u1", Kind: KindRelay, RealModel: "buddy/deepseek-v4.1"}
 	// M8 后 fake 真的实现了 infer.stream，且返回 {"sse": ...} 信封——
 	// 这条 e2e 验证的是**生产调用点**：InferStream 必须先拆信封再交给
@@ -630,7 +647,7 @@ func TestContractTargetOfRelayPrefixStripped(t *testing.T) {
 // TestContractCallerDispatchAndC6：派发 + C6 透传 + 结构化 Err。
 func TestContractCallerDispatchAndC6(t *testing.T) {
 	// targetOf 固定回 relay 目标。
-	caller := NewCaller(NewRelayTransport(nil), NewHTTPTransport(nil, nil), func(cand CallCandidate) (Target, error) {
+	caller := NewCaller(NewRelayTransport(nil, nil), NewHTTPTransport(nil, nil), func(cand CallCandidate) (Target, error) {
 		return Target{UpstreamID: "u1", Kind: KindRelay, RealModel: cand.UpstreamModelID}, nil
 	})
 	req := minIREquest()
@@ -747,7 +764,7 @@ func TestContractEncodeForNilAdapter(t *testing.T) {
 
 // TestContractRelayTransportValidationOrder：校验顺序（ValidateTarget 先于 client 判空）。
 func TestContractRelayTransportValidationOrder(t *testing.T) {
-	tr := NewRelayTransport(nil)
+	tr := NewRelayTransport(nil, nil)
 	// relay 带 BaseURL：即使 client 也为 nil，ValidateTarget 先拒绝（错误信息更准确）。
 	_, err := tr.InferStream(testCtx, Target{Kind: KindRelay, BaseURL: "http://x"}, nil, false)
 	if err == nil {

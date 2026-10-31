@@ -19,6 +19,12 @@ import (
 // 发布；Go 重写等于把 14 个 adapter 的矩阵复制一遍并立刻漂移。
 // relay 的代价必须写明：sidecar 挂了这一整类不可用（/readyz 两类分开算的原因）。
 
+// RawCredentialSource 按 SecretRef 取**凭据明文原文**（不提取 token）。
+// 与 SecretSource（提取 Bearer）的差异：relay 推理的凭据是 JSON 对象
+// （oauth.exchange 产出，含 access_token/machine_id/uid），sidecar 的
+// adapter 要吃完整对象——单帧 stdio 传入，只读使用不落盘（红线①）。
+type RawCredentialSource func(ctx context.Context, secretRef string) (json.RawMessage, error)
+
 // RelayTransport 是 relay 类上游的传输实现。
 //
 // 方法面：dshprovider.Client.Call(ctx, "infer.stream", params)（04-sidecar.md
@@ -26,14 +32,20 @@ import (
 // 帧 → ir.Event 的转换在 relay_stream.go：sidecar 侧 hub 未就绪时仍会返回
 // E_NOT_IMPLEMENTED（归 ErrProtocol），但 Go 侧的调用形状、帧映射与错误归一
 // 已定型——sidecar 一就绪即可用，不需要再改适配层。
+//
+// credentials（2026-10-31 qodercn 移植）：上游行带 SecretRef 时（贡献凭据），
+// 推理前解密并单帧传给 sidecar 的 adapter——这是「DSH 账号池」之外的第二种
+// 凭据来源，让 relay 类上游不再依赖 DSH 池。
 type RelayTransport struct {
-	client *dshprovider.Client
+	client      *dshprovider.Client
+	credentials RawCredentialSource
 }
 
 // NewRelayTransport 建传输。client 允许为 nil——sidecar 不可用时装配层
 // 仍可持有（每次 Call 返回 E_SIDECAR_DOWN 形态的结构化错误，不 panic）。
-func NewRelayTransport(client *dshprovider.Client) *RelayTransport {
-	return &RelayTransport{client: client}
+// credentials 可为 nil——nil 时 relay 候选只在「凭据在 DSH 池」的场景可用。
+func NewRelayTransport(client *dshprovider.Client, credentials RawCredentialSource) *RelayTransport {
+	return &RelayTransport{client: client, credentials: credentials}
 }
 
 // inferParams 是 infer.stream 的参数（04-sidecar.md 5.x 的推理帧）。
@@ -44,6 +56,10 @@ type inferParams struct {
 	// Go 侧不翻译（协议知识在 adapter，重写即双重维护）。
 	Body   json.RawMessage `json:"body"`
 	Stream bool            `json:"stream"`
+	// Credential 是贡献凭据的解密原文（完整 JSON 对象，2026-10-31）。
+	// omitempty：凭据在 DSH 池的 relay（红线①场景）不带它，sidecar 走
+	// credentialRef/账号池的老路。
+	Credential json.RawMessage `json:"credential,omitempty"`
 }
 
 // InferStream 发起一次 relay 推理调用。
@@ -55,10 +71,13 @@ func (t *RelayTransport) InferStream(ctx context.Context, tgt Target, body []byt
 	if err != nil {
 		return nil, err
 	}
-	// 必须解一层信封：M8 起 sidecar 把 adapter 的 StreamChunk 还原成 SSE 文本，
-	// 装进 {"sse": "..."} 返回；直接把信封交给 adapter 的 StreamReader，
-	// 会得到「200 + 空回答」（信封不是 SSE，reader 只看到 EOF）——比 502 更难发现。
-	return unwrapInferPayload(raw)
+	// 必须解一层信封（形态随消费面走，2026-10-31 起分两种）：
+	//   流式 → {"sse": "文本"}，消费面是 adapter 的 StreamReader（SSE 原文）；
+	//   非流式 → {"completion": {...}}，消费面是 proxyOnce 的 DecodeResponse
+	//   （要完整 chat.completion JSON——sidecar 已把 chunk 流攒回整响应）。
+	// 直接把信封交给消费面，前者得到「200 + 空回答」、后者得到「协议不符」
+	// ——都比 502 更难发现。
+	return unwrapInferPayload(raw, stream)
 }
 
 // inferPayload 是 relay 调用的公共前半段：参数编码、IPC 调用、错误归一。
@@ -85,6 +104,17 @@ func (t *RelayTransport) inferPayload(ctx context.Context, tgt Target, body []by
 	}
 	params := inferParams{Provider: provider, Model: model, Body: json.RawMessage(body), Stream: stream}
 
+	// 贡献凭据（2026-10-31）：上游行带 SecretRef 时解密原文传给 sidecar——
+	// adapter 的 resolveCredential 钩子吃完整凭据对象（access_token/machine_id/uid）。
+	// 解密失败归 ErrAuth（与 vendor 路径的解密失败同类）。
+	if tgt.SecretRef != "" && t.credentials != nil {
+		cred, cerr := t.credentials(ctx, tgt.SecretRef)
+		if cerr != nil {
+			return nil, &Error{Class: ErrAuth, Message: "解密 relay 凭据失败: " + cerr.Error()}
+		}
+		params.Credential = cred
+	}
+
 	// dshprovider.Call 是「一问一答」语义（串行锁内单帧应答）；流式推理的多帧应答
 	// 由 sidecar 在 result 内以帧流/帧数组返回，由 relay_stream.go 逐帧解成 ir.Event。
 	raw, err := t.client.Call(ctx, "infer.stream", params)
@@ -104,9 +134,20 @@ func (t *RelayTransport) inferPayload(ctx context.Context, tgt Target, body []by
 //
 // 为什么要兼容裸载荷：M8 之前的契约假设是「adapter 吐的原文直接当载荷」，同一段代码
 // 也会被旧版 sidecar（或未来的直通实现）打到。两种形态都接受，判定只看 `sse` 字段。
-func unwrapInferPayload(raw []byte) (io.ReadCloser, error) {
+func unwrapInferPayload(raw []byte, stream bool) (io.ReadCloser, error) {
 	if len(raw) == 0 {
 		return nil, &Error{Class: ErrProtocol, Message: "sidecar infer.stream 返回空载荷"}
+	}
+	// 非流式：拆 {"completion": {...}} 信封，交出完整 chat.completion JSON。
+	if !stream {
+		var nonStream struct {
+			Completion json.RawMessage `json:"completion"`
+		}
+		if err := json.Unmarshal(raw, &nonStream); err == nil && len(nonStream.Completion) > 0 {
+			return io.NopCloser(bytesReader(nonStream.Completion)), nil
+		}
+		// 旧版 sidecar 非流式也回 {"sse":...}：交出去会在 DecodeResponse 报
+		// 「协议不符」——如实暴露版本错配，不做静默转换。
 	}
 	// 两种形态都接受：M8 起 sidecar 把 adapter 的 StreamChunk 还原成 OpenAI SSE 文本，
 	// 装进 {"sse": "..."}；旧版 sidecar（或未来直通实现）直接给载荷原文。

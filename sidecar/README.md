@@ -53,7 +53,7 @@
 |---|---|---|
 | `health` / `providers.list` / `login.*` 会话簿记 / 红线守卫 | **可用** | 不依赖 hub，纯内存/session |
 | `credentials.resolve` / `credentials.describe` | **可用（只读）** | 读 `$DSH_HOME/.credentials.yaml` 的 `refs:` 段；22 条真实引用解析通过，且调用后文件 mtime/内容不变 |
-| `models.list` / `infer.stream`（全部 15 家 provider） | **E_NOT_IMPLEMENTED（如实拒绝）** | 这些 adapter 从 `options.accountPool` 取 `credential.access_token`，账号池是 DSH 的运行态；sidecar 没有池替身，硬跑会把「没账号」伪装成上游故障 |
+| `infer.stream` | **qoder/qodercn 可用（2026-10-31 移植）** | 贡献凭据由主进程解密后单帧传入（`credential` 参数），hub QoderAdapter 的 wasm 加密链路在 sidecar 内跑通；stream=false 时合成完整 chat.completion。其余 oauth 形状渠道仍 E_NOT_IMPLEMENTED（同一接缝，逐家点亮即可） | 这些 adapter 从 `options.accountPool` 取 `credential.access_token`，账号池是 DSH 的运行态；sidecar 没有池替身，硬跑会把「没账号」伪装成上游故障 |
 
 > **2026-10-24 变更**：原先唯一「可用」的那一类是 modelscope / opencode 两个「粘贴 API Key」
 > 的 adapter（`slots()` / `identitySlots()` 由我们注入，纯 Node 可驱动）。两家已按

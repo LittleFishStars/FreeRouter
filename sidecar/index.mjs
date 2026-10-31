@@ -486,16 +486,17 @@ const METHODS = {
   //     不进应答、不写回任何存储（红线①）。
   // 应答：{ sse: "<OpenAI chat.completion.chunk 的 SSE 全文>" }——relay.go 的消费面
   //      是「OpenAI 形态流原文」，这样 Go 侧 StreamReader 一行都不用改。
-  'infer.stream': async ({ provider, model, body, stream, credentialRef, apiKey }) => {
+  'infer.stream': async ({ provider, model, body, stream, credentialRef, apiKey, credential }) => {
     if (!provider) throw new SidecarError('E_BAD_REQUEST', 'provider 不能为空');
     if (!model) throw new SidecarError('E_BAD_REQUEST', 'model 不能为空');
     if (body == null || typeof body !== 'object') {
       throw new SidecarError('E_BAD_REQUEST', 'body 必须是请求体对象（候选方言已编码的 JSON）');
     }
     await requireHub('infer.stream');
-    void stream; // 流式与否已编码在 body 里；adapter 自己决定线上形态
+    // stream 现在有两层语义：body 里的 stream 是上游线上形态（adapter 决定），
+    // 这里的 stream 是消费面形态（Go 侧要 SSE 流还是完整 JSON）。
     try {
-      return await hub.streamInfer({ provider, model, body, credentialRef, apiKey });
+      return await hub.streamInfer({ provider, model, body, credentialRef, apiKey, credential, stream: stream !== false });
     } catch (e) {
       throw asSidecarError(e, 'infer.stream');
     }

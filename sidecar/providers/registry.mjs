@@ -159,7 +159,9 @@ const ENDPOINTS = {
   workbuddy: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
   codely: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
   qoder: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
-  qodercn: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
+  // qodercn（2026-10-31 移植）：推理走 sidecar 的 infer.stream（hub QoderAdapter
+  // 含 wasm 加密链路，凭据由主进程单帧传入）——kind=relay、base_url=sidecar://<id>。
+  qodercn: { apiBase: 'sidecar://qodercn', kind: 'relay' },
 }
 
 /** 注册表条目：{ id, name, flow, needs?, endpoints }。 */

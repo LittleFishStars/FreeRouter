@@ -131,6 +131,17 @@ credits.query({ provider: string, credentialRef: string }) -> {
   raw?: unknown     // 上游原始响应的子集，仅供排障
 }
 
+// —— 推理（2026-10-31 起对「贡献凭据 + 专有协议」渠道可用） ——
+// credential 是主进程解密后的凭据原文（完整 JSON 对象，单帧传入、只读使用、
+// 不落盘——红线①的推理侧镜像）；带它时 oauth 形状 adapter 的
+// resolveCredential/refresh 钩子接到这份凭据上（「单凭据账号池替身」）。
+// stream=false 时 sidecar 把 chunk 流攒回完整 chat.completion（relay 的
+// 非流式消费面要 JSON 体）。
+infer.stream({ provider, model, body, stream, credential? }) -> {
+  sse?: string,          // stream=true：OpenAI chat.completion.chunk 的 SSE 全文
+  completion?: object    // stream=false：合成的完整 chat.completion
+}
+
 // —— 签到（2026-10-31；上游业务写，不写凭据存储——红线①不变） ——
 // credential 是已解密明文（与 credits.query 的 Go 侧二分一致：反代型 JSON
 // 对象 / API 型裸 key——后者直接回 unsupported，没有签到活动）。

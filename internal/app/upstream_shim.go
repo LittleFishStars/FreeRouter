@@ -13,6 +13,7 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"strings"
 
+	"encoding/json"
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
 	"github.com/LittleFishStars/FreeRouter/internal/ir/openai"
@@ -156,7 +157,9 @@ func (a *App) newUpstreamShim() (upstreamShim, *realModelCandidates) {
 	// 无鉴权 selfhosted 是合法配置，凭据问题不该挡住整个进程。
 	a.auditCredentialWiring(context.Background())
 	http := upstream.NewHTTPTransport(nil, a.secretSource())
-	relay := upstream.NewRelayTransport(a.sidecar)
+	// relay 传输带凭据源（2026-10-31 qodercn 移植）：贡献凭据解密后单帧传给
+	// sidecar 的 adapter——relay 类上游不再依赖 DSH 账号池。
+	relay := upstream.NewRelayTransport(a.sidecar, a.credentialJSONSource())
 	// relay 目标识别：Candidate→Target 需要 kind/base_url/real_model——
 	// 这里从行查（与 Candidates 同一数据源，口径一致）。
 	src := &appRealModelSource{app: a}
@@ -227,7 +230,40 @@ func (a *App) secretSource() upstream.SecretSource {
 		if token == "" {
 			return "", fmt.Errorf("app: 上游凭据解密结果为空（secret id=%s）", secretID)
 		}
+		// OAuth 反代型凭据的明文是 JSON 对象（oauth.exchange 产出）——Bearer 需要的
+		// 是其中的 access_token，不是整段 JSON（2026-10-31 实测：整段 JSON 当
+		// Bearer 发给 loomy 网关等于没认证）。API 型凭据是裸 key 字符串，
+		// 不是 JSON，原样返回。无 access_token 的 JSON 原样返回（宁可上游
+		// 401 也不要猜字段）。
+		var obj map[string]any
+		if json.Unmarshal([]byte(token), &obj) == nil {
+			if at, ok := obj["access_token"].(string); ok && strings.TrimSpace(at) != "" {
+				return strings.TrimSpace(at), nil
+			}
+		}
 		return token, nil
+	}
+}
+
+// credentialJSONSource 按 SecretRef 取**凭据明文原文**——relay 推理专用。
+// 与 secretSource 的差异：OAuth 反代凭据的明文是 JSON 对象（含 access_token/
+// machine_id/uid），sidecar 的 adapter 要吃完整对象；secretSource 走的是
+// 「提取 Bearer token」的 vendor 口径。解密与错误归同一份实现。
+func (a *App) credentialJSONSource() upstream.RawCredentialSource {
+	return func(ctx context.Context, secretRef string) (json.RawMessage, error) {
+		ref := strings.TrimSpace(secretRef)
+		if ref == "" {
+			return nil, fmt.Errorf("app: relay 候选缺少凭据引用")
+		}
+		secretID, err := parseSecretRefID(ref)
+		if err != nil {
+			return nil, fmt.Errorf("app: secretRef %q 不是合法的密文引用：%w", ref, err)
+		}
+		plain, err := a.store.Repos().Secrets.GetSecret(ctx, secretID)
+		if err != nil {
+			return nil, fmt.Errorf("app: 解密上游凭据失败（secret id=%s）：%w", secretID, err)
+		}
+		return json.RawMessage(plain), nil
 	}
 }
 

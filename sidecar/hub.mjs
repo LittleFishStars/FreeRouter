@@ -157,6 +157,32 @@ export async function adapterFor(provider, apiKey) {
   return inst;
 }
 
+// adapterForWithCredential 用**调用方显式传入的凭据**实例化 oauth 形状的 adapter。
+//
+// 为什么存在（2026-10-31 qodercn 移植）：FreeRouter 的贡献凭据存在主进程密文库里
+// （不进 DSH 账号池），推理时主进程解密后经 stdio 单帧传入——把「账号池」依赖压缩
+// 成「单凭据注入」的最小替身：oauth 形状 adapter 取凭据的两个钩子
+// （resolveCredential / refresh）接到这份凭据上，其余池语义保持 baseOptions 空实现。
+// 凭据只在本调用内存活：不缓存（token 会轮换，按内容缓存会命中旧实例）、不落盘
+// ——红线①的推理侧镜像（只读使用，没有写回路径）。
+export async function adapterForWithCredential(provider, credential) {
+  await getDeps();
+  const spec = ADAPTERS[provider];
+  if (!spec) return null;
+  const mod = await loadModule(spec.module);
+  const Cls = mod[spec.cls];
+  if (typeof Cls !== 'function') {
+    throw new SidecarHubError('E_NOT_IMPLEMENTED', `${spec.module} 未导出 ${spec.cls}（hub 版本漂移）`);
+  }
+  const opts = baseOptions('', spec.slotOption, spec.slotsOf);
+  opts.resolveCredential = async () => credential;
+  opts.refresh = async () => {
+    // 无池可刷新：token 过期时 adapter 如实抛错，上层提示重新授权。
+    // 与 credits.mjs 静默续期的差异：推理链路不回写凭据（红线①）。
+  };
+  return new Cls(opts);
+}
+
 // probe 报告 hub 装载状态：hub 根是否可读、依赖根是否找到、各 adapter 模块是否可 import。
 // health 直接把它摊开给 Go 侧，避免「能用/不能用」靠试调用去猜（04-sidecar 3 节的同一原则）。
 export async function probe() {
@@ -274,6 +300,41 @@ function chunksToSSE(model, chunks) {
   return out;
 }
 
+// chunksToCompletion 把 StreamChunk 流合成一条**非流式** chat.completion。
+// 为什么需要：relay 的非流式消费面（proxyOnce → DecodeResponse）要 JSON 体，
+// 而 oauth 形状 adapter 只有流式出口——sidecar 负责把流攒回整响应。
+// reasoning_content 按 DeepSeek 扩展字段回填（ir 解码器忽略未知字段，
+// 探测/兼容流量不受影响；完整语义走流式路径）。
+export function chunksToCompletion(model, chunks) {
+  const id = `chatcmpl-fr-${Date.now().toString(36)}`;
+  const created = Math.floor(Date.now() / 1000);
+  let content = '';
+  let reasoning = '';
+  const toolCalls = [];
+  let finish = 'stop';
+  for (const c of chunks) {
+    if (c.type === 'text-delta' && c.text) content += c.text;
+    else if (c.type === 'reasoning-delta' && c.text) reasoning += c.text;
+    else if (c.type === 'tool-call-delta') {
+      const idx = c.index ?? 0;
+      while (toolCalls.length <= idx) toolCalls.push({ id: '', type: 'function', function: { name: '', arguments: '' } });
+      if (c.id) toolCalls[idx].id = c.id;
+      if (c.name) toolCalls[idx].function.name = c.name;
+      toolCalls[idx].function.arguments += c.argumentsDelta || '';
+    } else if (c.type === 'finish') {
+      finish = c.reason === 'stop' ? 'stop' : String(c.reason ?? 'stop');
+    }
+  }
+  const message = { role: 'assistant', content };
+  if (reasoning) message.reasoning_content = reasoning;
+  if (toolCalls.length > 0) message.tool_calls = toolCalls;
+  return {
+    id, object: 'chat.completion', created, model,
+    choices: [{ index: 0, message, finish_reason: finish }],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+  };
+}
+
 // resolveKey 取明文 key：优先显式 apiKey（FreeRouter 自有凭据，由 Go 侧解密后单帧传入），
 // 否则按 credentialRef 读 DSH 的只读存储（红线①：只读，没有写回路径）。
 // 为什么 key 走**顶层参数**而不是塞进 body：body 会被原样交给 adapter，且一旦进身体
@@ -287,13 +348,18 @@ function resolveKey({ credentialRef, apiKey }) {
 // streamInfer 执行一次推理，返回 SSE 文本（relay.go 期待的形状）。
 // 为什么整段缓冲而不是逐帧回传：NDJSON 是一问一答（04-sidecar 2.1：sidecar 不主动推送），
 // 真流式要改契约（多帧应答），属于单独的一次接口演进；当前先把「adapter 真能跑通」落地。
-export async function streamInfer({ provider, model, body, credentialRef, apiKey }) {
-  const adapter = await adapterFor(provider, resolveKey({ credentialRef, apiKey }));
+export async function streamInfer({ provider, model, body, credentialRef, apiKey, credential, stream = true }) {
+  // 凭据三选一：显式 credential（FreeRouter 贡献凭据，单帧传入）> apiKey > credentialRef。
+  const adapter = credential !== undefined && credential !== null
+    ? await adapterForWithCredential(provider, credential)
+    : await adapterFor(provider, resolveKey({ credentialRef, apiKey }));
   const opts = openaiBodyToGenerateOptions(provider, model, body || {});
   opts.signal = new AbortController().signal;
   const chunks = [];
   for await (const c of adapter.stream(opts)) chunks.push(c);
-  return { sse: chunksToSSE(model, chunks) };
+  // 流式 → SSE 文本（relay_stream 逐帧解）；非流式 → 合成完整 chat.completion
+  // （proxyOnce → DecodeResponse 要 JSON 体）。
+  return stream ? { sse: chunksToSSE(model, chunks) } : { completion: chunksToCompletion(model, chunks) };
 }
 
 // SidecarHubError 是本模块的错误类型（index.mjs 统一转成帧错误码）。
