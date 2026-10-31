@@ -57,7 +57,7 @@ const ADAPTERS = {
   lobsterai: { module: 'lib/lobsterai-adapter.js', cls: 'LobsteraiAdapter', shape: 'oauth' },
   raccoon: { module: 'lib/raccoon-adapter.js', cls: 'RaccoonAdapter', shape: 'oauth' },
   loomy: { module: 'lib/loomy-adapter.js', cls: 'LoomyAdapter', shape: 'oauth' },
-  autoclaw: { module: 'lib/autoclaw-adapter.js', cls: 'AutoclawAdapter', shape: 'oauth' },
+  autoclaw: { module: 'lib/autoclaw-adapter.js', cls: 'AutoclawAdapter', shape: 'oauth', productModule: 'lib/autoclaw-product.js', productName: 'AUTOCLAW' },
   astudio: { module: 'lib/astudio-adapter.js', cls: 'AstudioAdapter', shape: 'oauth' },
   gemini: { module: 'lib/gemini-adapter.js', cls: 'GeminiAdapter', shape: 'oauth' },
   // 实测类名是 OfficeAceAdapter（不是 OfficeaceAdapter）——版本漂移会在这里先炸，
@@ -66,8 +66,8 @@ const ADAPTERS = {
   // codearts 没有独立 adapter 文件，它的 adapter 与注册器都在 llm-adapter.js 里。
   codearts: { module: 'lib/llm-adapter.js', cls: 'CodeArtsAdapter', shape: 'oauth' },
   // 地区别名共用同一份实现（04-sidecar 6.2 表的备注列）。
-  minimaxintl: { module: 'lib/minimax-adapter.js', cls: 'MinimaxAdapter', shape: 'oauth' },
-  qodercn: { module: 'lib/qoder-adapter.js', cls: 'QoderAdapter', shape: 'oauth' },
+  minimaxintl: { module: 'lib/minimax-adapter.js', cls: 'MinimaxAdapter', shape: 'oauth', productModule: 'lib/minimax-product.js', productName: 'MINIMAX_INTL' },
+  qodercn: { module: 'lib/qoder-adapter.js', cls: 'QoderAdapter', shape: 'oauth', productModule: 'lib/qoder-product.js', productName: 'QODER_CN' },
 };
 
 // 共用选项：adapter 会读但允许缺省的字段。给最小实现而不是 undefined，
@@ -178,6 +178,15 @@ export async function adapterForWithCredential(provider, credential, onRefreshed
     throw new SidecarHubError('E_NOT_IMPLEMENTED', `${spec.module} 未导出 ${spec.cls}（hub 版本漂移）`);
   }
   const opts = baseOptions('', spec.slotOption, spec.slotsOf);
+  // ⚠️ **product 必须按 provider 设置**（2026-10-31 qodercn 移植实测的真缺陷）：
+  // adapter 构造器 `this.product = options.product ?? <国际版默认>`——不传时
+  // qodercn 的凭据会被发到国际版网关（api2.qoder.sh），服务端回
+  // 「Login expired (105)」而真实原因只是「渠道错配」。变体渠道（intl/cn）
+  // 的 product 常量在各自的 product 模块里，按清单加载注入。
+  if (spec.productModule !== undefined && spec.productName !== undefined) {
+    const pmod = await loadModule(spec.productModule);
+    opts.product = pmod[spec.productName];
+  }
   opts.resolveCredential = async () => credential;
   // 105（auth_error）的续期钩子：用 refresh_token 走 deviceToken/refresh 换新
   // （hub qoder.js 原语 + QODER_REFRESH_PATH）。新凭据**重绑闭包**——adapter 的
