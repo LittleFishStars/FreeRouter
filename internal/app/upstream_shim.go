@@ -159,7 +159,7 @@ func (a *App) newUpstreamShim() (upstreamShim, *realModelCandidates) {
 	http := upstream.NewHTTPTransport(nil, a.secretSource())
 	// relay 传输带凭据源（2026-10-31 qodercn 移植）：贡献凭据解密后单帧传给
 	// sidecar 的 adapter——relay 类上游不再依赖 DSH 账号池。
-	relay := upstream.NewRelayTransport(a.sidecar, a.credentialJSONSource())
+	relay := upstream.NewRelayTransport(a.sidecar, a.credentialJSONSource(), a.credentialWriteBack())
 	// relay 目标识别：Candidate→Target 需要 kind/base_url/real_model——
 	// 这里从行查（与 Candidates 同一数据源，口径一致）。
 	src := &appRealModelSource{app: a}
@@ -264,6 +264,19 @@ func (a *App) credentialJSONSource() upstream.RawCredentialSource {
 			return nil, fmt.Errorf("app: 解密上游凭据失败（secret id=%s）：%w", secretID, err)
 		}
 		return json.RawMessage(plain), nil
+	}
+}
+
+// credentialWriteBack 把 sidecar 续期出的新凭据写回密文（relay 推理的
+// 凭据轮换，2026-10-31）。secretRef 就是 upstream_secrets.id，直接按行更新；
+// 写回失败由调用方记日志（不影响本次推理结果）。
+func (a *App) credentialWriteBack() upstream.CredentialWriteBack {
+	return func(ctx context.Context, secretRef string, fresh json.RawMessage) error {
+		secretID, err := parseSecretRefID(secretRef)
+		if err != nil {
+			return fmt.Errorf("app: secretRef %q 不是合法的密文引用：%w", secretRef, err)
+		}
+		return a.store.Repos().Secrets.UpdatePlaintextBySecretID(ctx, secretID, fresh)
 	}
 }
 

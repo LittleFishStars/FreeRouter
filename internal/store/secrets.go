@@ -243,6 +243,30 @@ func (r *SecretRepo) GetPlaintextByCredentialID(ctx context.Context, credentialI
 	return OpenSecret(key, ciphertext, nonce)
 }
 
+// UpdatePlaintextBySecretID 按密文行 id 原地更新（relay 推理的凭据轮换写回：
+// SecretRef 就是 upstream_secrets.id，Target 上有现成引用，不需要经凭据行绕行）。
+// 语义与 UpdatePlaintextByCredentialID 相同：原地换密文，nonce 重生成。
+func (r *SecretRepo) UpdatePlaintextBySecretID(ctx context.Context, secretID string, plaintext []byte) error {
+	key := r.s.MasterKey()
+	if len(key) == 0 {
+		return errors.New("store: 主密钥不可用（Store 未初始化或已关闭）")
+	}
+	ciphertext, nonce, err := SealSecret(key, plaintext)
+	if err != nil {
+		return fmt.Errorf("store: 重封密文失败: %w", err)
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE upstream_secrets SET ciphertext = ?, nonce = ? WHERE id = ?`,
+		ciphertext, nonce, secretID)
+	if err != nil {
+		return fmt.Errorf("store: 更新密文失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrSecretNotFound
+	}
+	return nil
+}
+
 // UpdatePlaintextByCredentialID 按凭据行更新密文（静默续期写回：新 token
 // 替换旧密文，secret_ref 与凭据行都不动——与 ReplaceCredential 的「换行」
 // 不同，续期是「原地换密文」）。

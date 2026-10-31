@@ -19,6 +19,10 @@ import (
 // 发布；Go 重写等于把 14 个 adapter 的矩阵复制一遍并立刻漂移。
 // relay 的代价必须写明：sidecar 挂了这一整类不可用（/readyz 两类分开算的原因）。
 
+// CredentialWriteBack 是凭据轮换的写回钩子类型（SecretRef → 新密文）。
+// 单独命名：装配层（app）要声明返回它的方法，匿名函数签名不可引用。
+type CredentialWriteBack func(ctx context.Context, secretRef string, fresh json.RawMessage) error
+
 // RawCredentialSource 按 SecretRef 取**凭据明文原文**（不提取 token）。
 // 与 SecretSource（提取 Bearer）的差异：relay 推理的凭据是 JSON 对象
 // （oauth.exchange 产出，含 access_token/machine_id/uid），sidecar 的
@@ -39,13 +43,18 @@ type RawCredentialSource func(ctx context.Context, secretRef string) (json.RawMe
 type RelayTransport struct {
 	client      *dshprovider.Client
 	credentials RawCredentialSource
+	// onCredentialRefreshed 是凭据轮换的写回钩子（2026-10-31）：sidecar 在
+	// 105（auth_error）时用 refresh_token 续期并重试，新凭据随应答信封上行；
+	// 不写回 = 每次请求都续期一次（旧 token 作废 → 每请求一跳）。
+	// nil 时只跳过写回，不影响本次推理结果。返回 error 供日志归因。
+	onCredentialRefreshed CredentialWriteBack
 }
 
 // NewRelayTransport 建传输。client 允许为 nil——sidecar 不可用时装配层
 // 仍可持有（每次 Call 返回 E_SIDECAR_DOWN 形态的结构化错误，不 panic）。
 // credentials 可为 nil——nil 时 relay 候选只在「凭据在 DSH 池」的场景可用。
-func NewRelayTransport(client *dshprovider.Client, credentials RawCredentialSource) *RelayTransport {
-	return &RelayTransport{client: client, credentials: credentials}
+func NewRelayTransport(client *dshprovider.Client, credentials RawCredentialSource, onCredentialRefreshed CredentialWriteBack) *RelayTransport {
+	return &RelayTransport{client: client, credentials: credentials, onCredentialRefreshed: onCredentialRefreshed}
 }
 
 // inferParams 是 infer.stream 的参数（04-sidecar.md 5.x 的推理帧）。
@@ -72,12 +81,25 @@ func (t *RelayTransport) InferStream(ctx context.Context, tgt Target, body []byt
 		return nil, err
 	}
 	// 必须解一层信封（形态随消费面走，2026-10-31 起分两种）：
-	//   流式 → {"sse": "文本"}，消费面是 adapter 的 StreamReader（SSE 原文）；
-	//   非流式 → {"completion": {...}}，消费面是 proxyOnce 的 DecodeResponse
-	//   （要完整 chat.completion JSON——sidecar 已把 chunk 流攒回整响应）。
+	//   流式 → {"sse": "文本", "refreshed_credential"?}，消费面是 adapter 的
+	//   StreamReader（SSE 原文）；
+	//   非流式 → {"completion": {...}, "refreshed_credential"?}，消费面是
+	//   proxyOnce 的 DecodeResponse（要完整 chat.completion JSON——sidecar 已把
+	//   chunk 流攒回整响应）。
 	// 直接把信封交给消费面，前者得到「200 + 空回答」、后者得到「协议不符」
 	// ——都比 502 更难发现。
-	return unwrapInferPayload(raw, stream)
+	rc, refreshed, uerr := unwrapInferPayload(raw, stream)
+	if uerr != nil {
+		return nil, uerr
+	}
+	if len(refreshed) > 0 && t.onCredentialRefreshed != nil && tgt.SecretRef != "" {
+		// 凭据轮换写回（与余额刷新的静默续期同一条通道）：失败只记日志，
+		// 不影响本次推理结果（新凭据已丢，下次续期再轮换）。
+		if err := t.onCredentialRefreshed(ctx, tgt.SecretRef, refreshed); err != nil {
+			LogUpstreamFailureIfErr(ctx, tgt, &Error{Class: ErrInternalBug, Message: "续期凭据写回失败: " + err.Error()}, 0)
+		}
+	}
+	return rc, nil
 }
 
 // inferPayload 是 relay 调用的公共前半段：参数编码、IPC 调用、错误归一。
@@ -134,17 +156,23 @@ func (t *RelayTransport) inferPayload(ctx context.Context, tgt Target, body []by
 //
 // 为什么要兼容裸载荷：M8 之前的契约假设是「adapter 吐的原文直接当载荷」，同一段代码
 // 也会被旧版 sidecar（或未来的直通实现）打到。两种形态都接受，判定只看 `sse` 字段。
-func unwrapInferPayload(raw []byte, stream bool) (io.ReadCloser, error) {
+func unwrapInferPayload(raw []byte, stream bool) (io.ReadCloser, json.RawMessage, error) {
 	if len(raw) == 0 {
-		return nil, &Error{Class: ErrProtocol, Message: "sidecar infer.stream 返回空载荷"}
+		return nil, nil, &Error{Class: ErrProtocol, Message: "sidecar infer.stream 返回空载荷"}
 	}
+	// refreshed_credential 是 sidecar 在 105 续期后带回的新凭据（可选字段，
+	// 两种形态都可能出现）——提取后由调用方写回密文。
+	var refreshed struct {
+		Fresh json.RawMessage `json:"refreshed_credential"`
+	}
+	_ = json.Unmarshal(raw, &refreshed)
 	// 非流式：拆 {"completion": {...}} 信封，交出完整 chat.completion JSON。
 	if !stream {
 		var nonStream struct {
 			Completion json.RawMessage `json:"completion"`
 		}
 		if err := json.Unmarshal(raw, &nonStream); err == nil && len(nonStream.Completion) > 0 {
-			return io.NopCloser(bytesReader(nonStream.Completion)), nil
+			return io.NopCloser(bytesReader(nonStream.Completion)), refreshed.Fresh, nil
 		}
 		// 旧版 sidecar 非流式也回 {"sse":...}：交出去会在 DecodeResponse 报
 		// 「协议不符」——如实暴露版本错配，不做静默转换。
@@ -157,9 +185,9 @@ func unwrapInferPayload(raw []byte, stream bool) (io.ReadCloser, error) {
 		SSE string `json:"sse"`
 	}
 	if err := json.Unmarshal(raw, &wrapped); err == nil && wrapped.SSE != "" {
-		return io.NopCloser(bytesReader([]byte(wrapped.SSE))), nil
+		return io.NopCloser(bytesReader([]byte(wrapped.SSE))), refreshed.Fresh, nil
 	}
-	return io.NopCloser(bytesReader(raw)), nil
+	return io.NopCloser(bytesReader(raw)), refreshed.Fresh, nil
 }
 
 // relayErr 把 dshprovider 错误映射到本包 ErrClass（03-upstream.md 2.3 表：

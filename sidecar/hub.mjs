@@ -168,7 +168,7 @@ export async function adapterFor(provider, apiKey) {
 // （resolveCredential / refresh）接到这份凭据上，其余池语义保持 baseOptions 空实现。
 // 凭据只在本调用内存活：不缓存（token 会轮换，按内容缓存会命中旧实例）、不落盘
 // ——红线①的推理侧镜像（只读使用，没有写回路径）。
-export async function adapterForWithCredential(provider, credential) {
+export async function adapterForWithCredential(provider, credential, onRefreshed) {
   await getDeps();
   const spec = ADAPTERS[provider];
   if (!spec) return null;
@@ -179,9 +179,33 @@ export async function adapterForWithCredential(provider, credential) {
   }
   const opts = baseOptions('', spec.slotOption, spec.slotsOf);
   opts.resolveCredential = async () => credential;
+  // 105（auth_error）的续期钩子：用 refresh_token 走 deviceToken/refresh 换新
+  // （hub qoder.js 原语 + QODER_REFRESH_PATH）。新凭据**重绑闭包**——adapter 的
+  // 重试经 resolveCredential 拿到新 token；并经 onRefreshed 透传，由 streamInfer
+  // 装进应答信封回 Go 写回密文（与 credits.query 静默续期同一条通道）。
   opts.refresh = async () => {
-    // 无池可刷新：token 过期时 adapter 如实抛错，上层提示重新授权。
-    // 与 credits.mjs 静默续期的差异：推理链路不回写凭据（红线①）。
+    const qm = await loadModule('lib/qoder.js');
+    const prod = await loadModule('lib/qoder-product.js');
+    const product = provider === 'qodercn' ? prod.QODER_CN : prod.QODER;
+    if (typeof mod.isQoderRefreshable !== 'function' || !mod.isQoderRefreshable(credential)) {
+      throw new Error('qoder: 凭据不可续期（缺 refresh_token），请重新授权');
+    }
+    const r = await fetch(product.openApiBase + mod.QODER_REFRESH_PATH, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'User-Agent': `${product.userAgentPrefix}/1.0.0`,
+      },
+      body: JSON.stringify(mod.qoderRefreshBody(credential)),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (r.status === 401 || r.status === 403) {
+      throw new Error(`qoder: 续期被拒（HTTP ${r.status}），请重新授权`);
+    }
+    const payload = await r.json();
+    credential = mod.applyQoderRefresh(credential, payload);
+    if (typeof onRefreshed === 'function') onRefreshed(credential);
   };
   return new Cls(opts);
 }
@@ -353,16 +377,19 @@ function resolveKey({ credentialRef, apiKey }) {
 // 真流式要改契约（多帧应答），属于单独的一次接口演进；当前先把「adapter 真能跑通」落地。
 export async function streamInfer({ provider, model, body, credentialRef, apiKey, credential, stream = true }) {
   // 凭据三选一：显式 credential（FreeRouter 贡献凭据，单帧传入）> apiKey > credentialRef。
+  let refreshed;
   const adapter = credential !== undefined && credential !== null
-    ? await adapterForWithCredential(provider, credential)
+    ? await adapterForWithCredential(provider, credential, (c) => { refreshed = c; })
     : await adapterFor(provider, resolveKey({ credentialRef, apiKey }));
   const opts = openaiBodyToGenerateOptions(provider, model, body || {});
   opts.signal = new AbortController().signal;
   const chunks = [];
   for await (const c of adapter.stream(opts)) chunks.push(c);
   // 流式 → SSE 文本（relay_stream 逐帧解）；非流式 → 合成完整 chat.completion
-  // （proxyOnce → DecodeResponse 要 JSON 体）。
-  return stream ? { sse: chunksToSSE(model, chunks) } : { completion: chunksToCompletion(model, chunks) };
+  // （proxyOnce → DecodeResponse 要 JSON 体）。续期出的新凭据随信封回 Go 写回。
+  const payload = stream ? { sse: chunksToSSE(model, chunks) } : { completion: chunksToCompletion(model, chunks) };
+  if (refreshed !== undefined) payload.refreshed_credential = refreshed;
+  return payload;
 }
 
 // SidecarHubError 是本模块的错误类型（index.mjs 统一转成帧错误码）。
