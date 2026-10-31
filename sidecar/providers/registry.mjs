@@ -129,28 +129,37 @@ function sleep(ms, signal) {
  * kind     上游类型：vendor = 公网 https；selfhosted = 本机
  */
 const ENDPOINTS = {
-  // ⚠️ apiBase 必须抄 hub 各家 product 的**实测**推理端点，不许拍脑湊营销域：
-  // 这里的值会被主进程写进上游行 base_url，错了就是一批 http=000（2026-10-31
-  // 实测：loomy 写成 api.loomy.ai——域名根本不存在，真实端点是讯飞的
-  // loomyad.xunfei.cn/api/v1，见 hub loomy-product 的 LOOMY_API_BASE）。
-  // noOpenAI: true = 该渠道**没有 OpenAI 兼容推理端点**（专有协议，hub 用自家
-  // adapter），主进程据此把入池上游行 enabled=false——凭据照常入池（签到/
-  // 余额可用），等协议 adapter 化再点亮。
+  // ⚠️ 本表是「贡献入池 → 上游行 base_url」的唯一来源，2026-10-31 对照 hub
+  // 各家 adapter/product 逐家审计过（此前一半是拍脑湊的营销域，loomy 写成
+  // api.loomy.ai——域名不存在，一批 http=000）。三条纪律：
+  //   1. apiBase 必须抄 hub product/adapter 的**实测**推理端点（含路径前缀！
+  //      FreeRouter 会拼上 /chat/completions）；
+  //   2. 推理是**专有协议**的渠道（hub 用自家 adapter 而非标准 OpenAI 形状）
+  //      一律 noOpenAI: true——主进程把入池上游行 enabled=false，凭据照常
+  //      入池（签到/余额走 sidecar 可用），推理等协议 adapter 化再点亮；
+  //   3. 不在表内的 provider 走 defaultEndpoint 占位并停用——要新增先核实。
+  // OpenAI 兼容（FreeRouter 的 vendor 直连可用）：
   codearts: { apiBase: 'https://snap-access.cn-north-4.myhuaweicloud.com', kind: 'vendor' },
-  gemini: { apiBase: 'https://cloudcode-pa.googleapis.com', kind: 'vendor' },
-  accio: { apiBase: 'https://api.accio.ai', kind: 'vendor' },
-  minimax: { apiBase: 'https://api.minimax.chat', kind: 'vendor' },
-  cline: { apiBase: 'https://api.cline.bot', kind: 'vendor' },
+  cline: { apiBase: 'https://api.cline.bot/api/v1', kind: 'vendor' },
+  loomy: { apiBase: 'https://loomyad.xunfei.cn/api/v1', kind: 'vendor' },
+  raccoon: { apiBase: 'https://xiaohuanxiong.com/api/web/llm/v2', kind: 'vendor' },
+  lobsterai: { apiBase: 'https://lobsterai-server.youdao.com/api/proxy/v1', kind: 'vendor' },
+  astudio: { apiBase: 'https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1', kind: 'vendor' },
+  officeace: { apiBase: 'https://officeace.cn-southwest-2.huaweicloud-agentarts.com/v2', kind: 'vendor' },
+  // 专有协议（noOpenAI：行停用，凭据的签到/余额不受影响）：
+  gemini: { apiBase: 'https://cloudcode-pa.googleapis.com', kind: 'vendor', noOpenAI: true },
+  accio: { apiBase: 'https://phoenix-gw.alibaba.com', kind: 'vendor', noOpenAI: true },
+  minimax: { apiBase: 'https://agent.minimax.cn', kind: 'vendor', noOpenAI: true },
+  minimaxintl: { apiBase: 'https://agent.minimax.io', kind: 'vendor', noOpenAI: true },
+  trae: { apiBase: 'https://trae-api-cn.mchost.guru', kind: 'vendor', noOpenAI: true },
+  zcode: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
+  autoclaw: { apiBase: 'https://autoglm-api.autoglm.ai', kind: 'vendor', noOpenAI: true },
+  autoclawintl: { apiBase: 'https://autoglm-api.autoglm.ai', kind: 'vendor', noOpenAI: true },
+  buddy: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
+  workbuddy: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
+  codely: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
   qoder: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
   qodercn: { apiBase: 'https://oauth-only.invalid', kind: 'vendor', noOpenAI: true },
-  loomy: { apiBase: 'https://loomyad.xunfei.cn/api/v1', kind: 'vendor' },
-  raccoon: { apiBase: 'https://api.raccoon.ai', kind: 'vendor' },
-  lobsterai: { apiBase: 'https://api.lobsterai.com', kind: 'vendor' },
-  autoclaw: { apiBase: 'https://api.autoclaw.ai', kind: 'vendor' },
-  astudio: { apiBase: 'https://astronstudio-api-volces-prod.xf-yun.com', kind: 'vendor' },
-  officeace: { apiBase: 'https://codearts.huaweicloud.com', kind: 'vendor' },
-  trae: { apiBase: 'https://api.trae.ai', kind: 'vendor' },
-  zcode: { apiBase: 'https://api.zcode.ai', kind: 'vendor' },
 }
 
 /** 注册表条目：{ id, name, flow, needs?, endpoints }。 */
