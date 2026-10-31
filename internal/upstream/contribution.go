@@ -395,13 +395,27 @@ func contributeUpstreamName(provider, fingerprint string) string {
 	return fmt.Sprintf("%s-contrib-%s", provider, short)
 }
 
-// ContributeUpstreamName 是 contributeUpstreamName 的导出面。
+// ContributeUpstreamNames 返回一条贡献凭据可能对应的上游行名字（全部历史形态）。
 //
-// 为什么导出：账户自助的「我的贡献」页要按凭据反查它的可调用状态（停止贡献与否），
-// 反查依据与撤销是同一份命名事实——第二份实现早晚漂移（撤销后页面却显示
-// 「贡献中」就是那种漂移的表现）。展示面只读不写，逻辑本体仍住在撤销链路里。
-func ContributeUpstreamName(provider, fingerprint string) string {
-	return contributeUpstreamName(provider, fingerprint)
+// 为什么是两个而不是一个：OAuth 落库（app/oauth_codearts.go 的 persist）用的名字是
+// "<provider>-oauth-<指纹前8>"，API/custom 提交链路（Submit）用的是
+// "<provider>-contrib-<指纹前8>"——同一个概念两套命名是已落库的历史事实。
+// 撤销/暂停（findContributeUpstream）与账户「我的贡献」页的反查必须两个都认，
+// 否则 OAuth 凭据对上游行的反查永远落空：页面把在池中的反代凭据显示成「未挂载」，
+// 更糟的是暂停/恢复对它们静默无效（2026-10-31 真库实测）。
+//
+// contrib 在前：若将来统一命名，新行只会出现 contrib 形态，两态匹配自然收敛。
+// 展示面只读不写；新行的命名仍由 Submit / persist 各自决定，这里不做改名迁移
+// （改名会让 UpsertUpstream 撞唯一约束另起新行，旧行连同密文滞留成孤儿）。
+func ContributeUpstreamNames(provider, fingerprint string) []string {
+	short := fingerprint
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return []string{
+		contributeUpstreamName(provider, fingerprint),
+		fmt.Sprintf("%s-oauth-%s", provider, short),
+	}
 }
 
 // findOwned 在同一账户的凭据里找 external_id 命中项（幂等判定的读面）。
@@ -667,13 +681,18 @@ func (s *ContributionService) Revoke(ctx context.Context, credentialID string, a
 // findContributeUpstream 按「确定性名字」反查贡献上游行。
 // 找不到不是错误：历史数据/改名后的行可能对不上，此时仍执行状态撤销并保留痕迹。
 func (s *ContributionService) findContributeUpstream(ctx context.Context, provider, externalID string) (store.Upstream, bool, error) {
-	want := contributeUpstreamName(provider, externalID)
+	// 两种历史命名都认（ContributeUpstreamNames 注释）：只认 contrib 会让
+	// OAuth 凭据的暂停/恢复/撤销变成查无此行的静默 no-op。
+	want := make(map[string]bool)
+	for _, n := range ContributeUpstreamNames(provider, externalID) {
+		want[n] = true
+	}
 	ups, err := s.store.ListUpstreams(ctx)
 	if err != nil {
 		return store.Upstream{}, false, fmt.Errorf("upstream: 撤销前查上游行失败：%w", err)
 	}
 	for _, u := range ups {
-		if u.Name == want {
+		if want[u.Name] {
 			return u, true, nil
 		}
 	}

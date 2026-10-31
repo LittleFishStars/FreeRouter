@@ -653,3 +653,83 @@ func TestContractMyCredentialsBridgeState(t *testing.T) {
 		}
 	}
 }
+
+// TestContractOAuthNamedUpstreamReachable 钉住 2026-10-31 的双命名修复：
+// OAuth 反代凭据的上游行按 "<provider>-oauth-<指纹前8>" 落库（app/oauth_codearts.go
+// persist），与 API/custom 提交链路的 "-contrib-" 命名并存。撤销/暂停（findContributeUpstream）
+// 与账户「我的贡献」页的反查必须两种都认——只认 contrib 时，反代凭据会被显示成
+// 「未挂载」，且暂停/恢复对它们静默无效（真库实测）。
+//
+// 用真库的原因：暂停的落点是 upstreams.enabled，fake 里没有这个行为；
+// 这里同时验证读面（桥找到行）与写面（SetPaused 真的翻开关）。
+func TestContractOAuthNamedUpstreamReachable(t *testing.T) {
+	a := newContributionTestApp(t, nil)
+	ctx := context.Background()
+	owner := newContributorAccount(t, a, "anonymous-contrib-oauthname")
+	svc := a.Contribution()
+	bridge := newContributionBridge(a.store, svc, 10)
+
+	// 直接按 OAuth 落库形态造数据：上游行 -oauth- 命名 + 同指纹的凭据行。
+	const externalID = "key_oauthface1234567890" // 前 8 位进名字
+	uid, err := a.store.Repos().Models.UpsertUpstream(ctx, "vendor",
+		"demooauth-oauth-key_oaut", "https://gw.example/v1", &owner, true)
+	if err != nil {
+		t.Fatalf("建 oauth 命名上游行失败：%v", err)
+	}
+	cid, err := a.store.Repos().Models.CreateCredential(ctx, owner, "demooauth",
+		externalID, "demooauth OAuth", "secret-row-1")
+	if err != nil {
+		t.Fatalf("建凭据行失败：%v", err)
+	}
+	if err := a.store.Repos().Models.SetCredentialStatus(ctx, cid, store.CredActive); err != nil {
+		t.Fatalf("置 active 失败：%v", err)
+	}
+
+	// 读面：桥必须通过 oauth 命名找到这行，报「在池、未停止」。
+	rows, err := bridge.CredentialsOf(ctx, owner)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("读桥行失败 err=%v n=%d", err, len(rows))
+	}
+	if !rows[0].UpstreamFound || rows[0].Paused {
+		t.Fatalf("oauth 命名上游行应可反查且未停止，得 found=%v paused=%v",
+			rows[0].UpstreamFound, rows[0].Paused)
+	}
+
+	// 写面：暂停必须真的翻 upstreams.enabled（修复前这里是查无此行的 no-op）。
+	callable, err := svc.SetPaused(ctx, cid, upstream.RevokeActor{AccountID: owner}, true)
+	if err != nil || callable {
+		t.Fatalf("暂停应成功且返回不可调用：callable=%v err=%v", callable, err)
+	}
+	up := upstreamRowByID(t, a, uid)
+	if up.Enabled {
+		t.Fatal("暂停后上游行必须 enabled=false")
+	}
+	rows, _ = bridge.CredentialsOf(ctx, owner)
+	if !rows[0].Paused {
+		t.Error("暂停后桥应报 paused=true（页面据此显示「已停止贡献」）")
+	}
+
+	// 恢复对称成立。
+	if callable, err := svc.SetPaused(ctx, cid, upstream.RevokeActor{AccountID: owner}, false); err != nil || !callable {
+		t.Fatalf("恢复应成功且返回可调用：callable=%v err=%v", callable, err)
+	}
+	if up := upstreamRowByID(t, a, uid); !up.Enabled {
+		t.Error("恢复后上游行必须 enabled=true")
+	}
+}
+
+// upstreamRowByID 按 id 取上游行（测试辅助；GetUpstreamByID 是包内小写，跨包只能遍历）。
+func upstreamRowByID(t *testing.T, a *App, id string) store.Upstream {
+	t.Helper()
+	ups, err := a.store.Repos().Models.ListUpstreams(context.Background())
+	if err != nil {
+		t.Fatalf("列上游失败：%v", err)
+	}
+	for _, u := range ups {
+		if u.ID == id {
+			return u
+		}
+	}
+	t.Fatalf("找不到上游行 %s", id)
+	return store.Upstream{}
+}

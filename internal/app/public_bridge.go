@@ -183,11 +183,23 @@ func (b *contributionBridge) upstreamEnabledByName(ctx context.Context) (map[str
 	return out, nil
 }
 
+// lookupEnabledByName 按候选名字（contrib / oauth 两种历史命名）反查上游行的 enabled。
+// 命中第一个存在的名字即返回：正常数据里一条凭据只有一个对应上游行，
+// 两个名字同时存在属于异常态，取 contrib（Submit 链路）优先的确定序。
+func lookupEnabledByName(byName map[string]bool, names []string) (enabled, found bool) {
+	for _, n := range names {
+		if v, ok := byName[n]; ok {
+			return v, true
+		}
+	}
+	return false, false
+}
+
 // renderRow 把存储凭据行翻成展示行，并按确定性命名的上游行补「是否停止贡献」。
 // 找不到对应上游行（历史数据/名字对不上）时 UpstreamFound=false：该凭据本来
 // 就不在候选池里，页面要能区分「你停掉了」与「系统里没有可调用的载体」。
 func (b *contributionBridge) renderRow(c store.Credential, enabledByName map[string]bool) httpapi.ContributionCredentialRow {
-	enabled, found := enabledByName[upstream.ContributeUpstreamName(c.Provider, c.ExternalID)]
+	enabled, found := lookupEnabledByName(enabledByName, upstream.ContributeUpstreamNames(c.Provider, c.ExternalID))
 	return httpapi.ContributionCredentialRow{
 		ID: c.ID, Label: c.ExternalLabel, Status: c.Status,
 		VerifyStatus: string(c.VerifyStatus), VerifyDetail: c.VerifyDetail,
