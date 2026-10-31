@@ -173,6 +173,14 @@ credits.claim({ provider: string, credential: unknown }) -> {
 }
 ```
 
+**定时刷新全部余额（2026-11-01）**：Go 侧 `balance_sync.go` 的调度循环按周期
+（默认 60 分钟，管理面可改 5 分钟–24 小时）遍历**全部在册凭据**，逐条调用同一个
+`credits.query`（与凭据池页按行「刷新余额」是同一份实现，落库口径不会分叉）。
+串行执行——`credits.query` 走 sidecar 的单条 stdio 管道，并发会让各家风控看到
+突发请求；单条上限 30s，一轮最坏几分钟，下一 tick 因 busy 跳过。开关与周期存
+settings（`balance_sync_enabled` / `balance_sync_interval_minutes`），最近一轮
+摘要存 `balance_sync_last_run`。端点：`/api/admin/balance-sync/{run,status,enabled,interval}`。
+
 ### 2.3 方法集合的边界（重要）
 
 | **不存在**的方法 | 为什么不存在 |

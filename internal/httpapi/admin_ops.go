@@ -79,6 +79,11 @@ func (s *Server) mountAdminOps(r chi.Router, deps *AdminDeps) {
 	r.Post("/checkin/run", s.handleAdminCheckinRun(deps))
 	r.Get("/checkin/status", s.handleAdminCheckinStatus(deps))
 	r.Put("/checkin/enabled", s.handleAdminCheckinEnabled(deps))
+	// 定时刷新全部余额（2026-11-01）：/run 立刻跑一轮，其余是状态/开关/周期。
+	r.Post("/balance-sync/run", s.handleAdminBalanceSyncRun(deps))
+	r.Get("/balance-sync/status", s.handleAdminBalanceSyncStatus(deps))
+	r.Put("/balance-sync/enabled", s.handleAdminBalanceSyncEnabled(deps))
+	r.Put("/balance-sync/interval", s.handleAdminBalanceSyncInterval(deps))
 	// 鉴定
 	r.Get("/verifications", s.handleAdminVerificationsList(deps))
 	r.Get("/verifications/{id}", s.handleAdminVerificationDetail(deps))
@@ -622,6 +627,92 @@ func (s *Server) handleAdminCheckinStatus(deps *AdminDeps) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": st})
+	}
+}
+
+// handleAdminBalanceSyncRun POST /api/admin/balance-sync/run —— 立刻刷一轮全部余额。
+//
+// 显式操作不受开关与排期约束（「我现在就想看最新的」）。
+func (s *Server) handleAdminBalanceSyncRun(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "定时余额刷新", deps.BalanceSync != nil) {
+			return
+		}
+		res, err := deps.BalanceSync.BalanceSyncRound(r.Context())
+		if err != nil {
+			mapAdminError(w, err, "定时余额刷新")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": res})
+	}
+}
+
+// handleAdminBalanceSyncStatus GET /api/admin/balance-sync/status。
+func (s *Server) handleAdminBalanceSyncStatus(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "定时余额刷新", deps.BalanceSync != nil) {
+			return
+		}
+		st, err := deps.BalanceSync.BalanceSyncState(r.Context())
+		if err != nil {
+			mapAdminError(w, err, "定时余额刷新状态")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": st})
+	}
+}
+
+// handleAdminBalanceSyncEnabled PUT /api/admin/balance-sync/enabled —— 开关。
+func (s *Server) handleAdminBalanceSyncEnabled(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "定时余额刷新", deps.BalanceSync != nil) {
+			return
+		}
+		p, ok := adminActor(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			Enabled bool `json:"enabled"`
+		}
+		if _, ok := adminDecodeBoth(w, r, &body); !ok {
+			return
+		}
+		audit := adminBaseAudit(p, r, "balance_sync.enabled", "balance_sync:auto", "ok")
+		if err := deps.BalanceSync.SetBalanceSyncEnabled(r.Context(), body.Enabled, audit); err != nil {
+			mapAdminError(w, err, "定时余额刷新开关")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"enabled": body.Enabled}})
+	}
+}
+
+// handleAdminBalanceSyncInterval PUT /api/admin/balance-sync/interval —— 刷新周期。
+func (s *Server) handleAdminBalanceSyncInterval(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "定时余额刷新", deps.BalanceSync != nil) {
+			return
+		}
+		p, ok := adminActor(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			IntervalMinutes int `json:"interval_minutes"`
+		}
+		if _, ok := adminDecodeBoth(w, r, &body); !ok {
+			return
+		}
+		if body.IntervalMinutes < 5 {
+			adminWriteParamErr(w, "interval_minutes", "刷新周期下限 5 分钟（每轮都是真上游请求，太勤会触发风控）")
+			return
+		}
+		audit := adminBaseAudit(p, r, "balance_sync.interval", "balance_sync:auto", "ok")
+		if err := deps.BalanceSync.SetBalanceSyncInterval(r.Context(), body.IntervalMinutes, audit); err != nil {
+			mapAdminError(w, err, "定时余额刷新周期")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"interval_minutes": body.IntervalMinutes}})
 	}
 }
 

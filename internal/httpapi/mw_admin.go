@@ -88,6 +88,9 @@ type AdminDeps struct {
 	// CheckinRun 是单凭据手动签到触发器（POST /credentials/{id}/checkin）。
 	// 可空：nil = 未装配（sidecar 不在），端点按惯例 404 not_found。
 	CheckinRun AdminCredentialCheckinRunner
+	// BalanceSync 是定时刷新全部余额与开关/周期控制
+	// （/balance-sync/run|status|enabled|interval，2026-11-01）。
+	BalanceSync AdminBalanceSyncer
 	// CheckinScheduler 是整轮签到与自动签到控制（/checkin/run|status|enabled）。
 	// 可空：nil = 未装配，同上。
 	CheckinScheduler AdminCheckinScheduler
@@ -1012,6 +1015,45 @@ type UpstreamModelProbeResult struct {
 	Failed     int                     `json:"failed"`
 	Skipped    int                     `json:"skipped"`
 	Results    []UpstreamModelProbeRow `json:"results"`
+}
+
+// AdminBalanceSyncer 是定时刷新全部余额的窄边界（2026-11-01）。
+//
+// 与 AdminCredentialBalanceRefresher 的分工：那个是一次一条（凭据池按行点
+// 「刷新余额」），这个是整批 + 排期控制。两者共用同一份单条实现（桥内），
+// 所以「手动刷新」与「定时刷新」的落库口径不会分叉。
+type AdminBalanceSyncer interface {
+	// BalanceSyncRound 立刻跑一轮（遍历在册凭据；单条失败不中断）。
+	BalanceSyncRound(ctx context.Context) (*BalanceSyncResult, error)
+	// BalanceSyncState 读状态（开关 + 周期 + 最近一轮 + 下次时刻 + 待刷数）。
+	BalanceSyncState(ctx context.Context) (*BalanceSyncState, error)
+	// SetBalanceSyncEnabled 写开关（业务写与审计同事务在桥内）。
+	SetBalanceSyncEnabled(ctx context.Context, enabled bool, audit AdminAuditEntry) error
+	// SetBalanceSyncInterval 写刷新周期（分钟；桥内下限 5）。
+	SetBalanceSyncInterval(ctx context.Context, minutes int, audit AdminAuditEntry) error
+}
+
+// BalanceSyncResult 是一轮批量刷新的汇总（手动端点与调度器共用）。
+type BalanceSyncResult struct {
+	Attempted   int    `json:"attempted"`
+	OK          int    `json:"ok"`
+	Failed      int    `json:"failed"`
+	Unavailable int    `json:"unavailable"`
+	Summary     string `json:"summary"`
+}
+
+// BalanceSyncState 是定时余额刷新的状态视图（GET /balance-sync/status）。
+type BalanceSyncState struct {
+	Enabled bool `json:"enabled"`
+	// IntervalMinutes 是当前刷新周期（分钟）。
+	IntervalMinutes int `json:"interval_minutes"`
+	// LastRunAt 是最近一轮完成时刻（epoch 秒）；0 = 从未跑过。
+	LastRunAt     int64  `json:"last_run_at,omitempty"`
+	LastRunResult string `json:"last_run_result,omitempty"`
+	// NextRunAt 是下一次计划刷新的时刻（epoch 秒）；0 = 开关关闭。
+	NextRunAt int64 `json:"next_run_at,omitempty"`
+	// DueCount 是当前能参与刷新的凭据数（「立即刷新」按钮旁的数量提示）。
+	DueCount int `json:"due_count"`
 }
 
 // AdminCheckinScheduler 是整轮签到与自动签到控制的窄边界（2026-10-31）。

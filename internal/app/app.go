@@ -167,6 +167,9 @@ func Setup(ctx context.Context, opts Options) (*App, error) {
 	// buildAdminDeps 里另建一个无状态的 checkinBridge（两者只共享落库）。
 	if !opts.DisableBackgroundLoops {
 		a.startCheckin(bgCtx)
+		// 定时刷新全部余额（2026-11-01）：与签到同样依赖 sidecar，启动延迟
+		// 错开（90s vs 30s）避让装配窗口。
+		a.startBalanceSync(bgCtx)
 	}
 	// OAuth 贡献行形态对齐（2026-10-31 批量移植）：sidecar 清单声明 relay 的
 	// 贡献行原地翻转（vendor+占位 URL → relay+sidecar://<provider>）。异步跑

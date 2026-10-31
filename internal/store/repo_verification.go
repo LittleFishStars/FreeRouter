@@ -400,6 +400,32 @@ type CheckinDueRow struct {
 	CheckinAt   int64
 }
 
+// ListBalanceSyncTargets 列出定时余额刷新的目标凭据 id（2026-11-01）。
+//
+// 口径：**在册**（removed_at IS NULL）。已移除的凭据密文是墓碑，查询只会
+// 得到解密失败，纯浪费上游请求。
+// 不筛 status：余额是「上游账号还剩多少」，与能不能路由无关——停用/失效的
+// 账号同样值得看一眼还剩多少（与签到同一条纪律）。也不筛 provider：能力
+// 判定在 sidecar（credits.query 对不支持的渠道回 unsupported），这里再维护
+// 一份名单必然漂移。
+func (r *ModelRepo) ListBalanceSyncTargets(ctx context.Context) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id FROM upstream_credentials WHERE removed_at IS NULL ORDER BY id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列余额刷新目标失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: 扫描余额刷新目标失败: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // ListCheckinCandidates 列出**全部**凭据的签到视图（调度器的取数面）。
 //
 // 为什么不筛「支持签到的 provider」：能力判定在 sidecar（调用即判定），

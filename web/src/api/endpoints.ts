@@ -628,6 +628,51 @@ export function getCheckinStatus() {
   return getOne<CheckinState>(`${PATHS.adminCheckin}/status`)
 }
 
+// ── 定时刷新全部余额（2026-11-01）─────────────────────────────────
+
+/** 一轮批量余额刷新的汇总。 */
+export interface BalanceSyncResult {
+  attempted: number
+  ok: number
+  failed: number
+  unavailable: number
+  summary: string
+}
+
+/** 定时余额刷新的状态视图。 */
+export interface BalanceSyncState {
+  enabled: boolean
+  interval_minutes: number
+  last_run_at?: number
+  last_run_result?: string
+  /** 下次计划刷新时刻（epoch 秒）；0 = 开关关闭 */
+  next_run_at?: number
+  /** 当前能参与刷新的凭据数 */
+  due_count: number
+}
+
+/** POST /api/admin/balance-sync/run —— 立刻刷一轮全部余额（显式操作，不受开关约束）。 */
+export function runBalanceSync() {
+  return postWrite<BalanceSyncResult>(`${PATHS.adminBalanceSync}/run`)
+}
+
+/** GET /api/admin/balance-sync/status —— 定时余额刷新状态。 */
+export function getBalanceSyncStatus() {
+  return getOne<BalanceSyncState>(`${PATHS.adminBalanceSync}/status`)
+}
+
+/** PUT /api/admin/balance-sync/enabled —— 定时余额刷新开关。 */
+export function setBalanceSyncEnabled(enabled: boolean) {
+  return putWrite<{ enabled: boolean }>(`${PATHS.adminBalanceSync}/enabled`, { enabled })
+}
+
+/** PUT /api/admin/balance-sync/interval —— 刷新周期（分钟，下限 5）。 */
+export function setBalanceSyncInterval(intervalMinutes: number) {
+  return putWrite<{ interval_minutes: number }>(`${PATHS.adminBalanceSync}/interval`, {
+    interval_minutes: intervalMinutes
+  })
+}
+
 /** PUT /api/admin/checkin/enabled —— 自动签到开关。 */
 export function setCheckinEnabled(enabled: boolean) {
   return putWrite<{ enabled: boolean }>(`${PATHS.adminCheckin}/enabled`, { enabled })

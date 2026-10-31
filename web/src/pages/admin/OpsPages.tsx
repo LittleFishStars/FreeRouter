@@ -21,6 +21,10 @@ import {
   patchUpstream,
   removeUpstream,
   checkinCredential,
+  getBalanceSyncStatus,
+  runBalanceSync,
+  setBalanceSyncEnabled,
+  setBalanceSyncInterval,
   getCheckinStatus,
   probeUpstreamModels,
   refreshCredentialBalance,
@@ -306,6 +310,53 @@ export function CredentialsPage({ def }: PageProps) {
     }
   }
 
+  // —— 定时刷新全部余额（2026-11-01）——
+  // balanceQ 是全局状态（开关/周期/最近一轮/下次时刻/待刷数）。
+  const balanceQ = useApi(() => getBalanceSyncStatus(), [])
+  const [balanceBusy, setBalanceBusy] = useState(false)
+  const [balanceNote, setBalanceNote] = useState<{ text: string; ok: boolean } | null>(null)
+
+  async function runBalanceNow() {
+    setBalanceBusy(true)
+    setBalanceNote(null)
+    try {
+      const d = (await runBalanceSync()).data
+      setBalanceNote({ text: `本轮余额刷新：${d.summary}`, ok: d.failed === 0 })
+      sourcesQ.reload()
+      balanceQ.reload()
+    } catch (e) {
+      setBalanceNote({ text: e instanceof Error ? e.message : '刷新失败', ok: false })
+    } finally {
+      setBalanceBusy(false)
+    }
+  }
+
+  async function toggleBalanceSync(next: boolean) {
+    setBalanceBusy(true)
+    setBalanceNote(null)
+    try {
+      await setBalanceSyncEnabled(next)
+      balanceQ.reload()
+    } catch (e) {
+      setBalanceNote({ text: e instanceof Error ? e.message : '开关保存失败', ok: false })
+    } finally {
+      setBalanceBusy(false)
+    }
+  }
+
+  async function changeBalanceInterval(minutes: number) {
+    setBalanceBusy(true)
+    setBalanceNote(null)
+    try {
+      await setBalanceSyncInterval(minutes)
+      balanceQ.reload()
+    } catch (e) {
+      setBalanceNote({ text: e instanceof Error ? e.message : '周期保存失败', ok: false })
+    } finally {
+      setBalanceBusy(false)
+    }
+  }
+
   // —— 供应商可用性检验（2026-10-31）——
   // 按供应商逐模型真实请求一次（max_tokens=1）；结果芯片条挂在来源详情头部下
   const [probeRes, setProbeRes] = useState<Record<string, UpstreamModelProbeResult>>({})
@@ -535,6 +586,54 @@ export function CredentialsPage({ def }: PageProps) {
           </div>
         )}
       </AsyncView>
+
+      {/* 定时刷新全部余额（2026-11-01）：与签到同属全池级状态，放页面级。 */}
+      <AsyncView state={balanceQ} loadingRows={1}>
+        {(bs) => (
+          <div className="checkin-strip">
+            <button
+              type="button"
+              className="btn-ghost"
+              disabled={balanceBusy}
+              onClick={() => void toggleBalanceSync(!bs.enabled)}
+            >
+              <IconPower size="xs" />
+              定时刷新余额{bs.enabled ? '已开启' : '已关闭'}
+            </button>
+            <span className="checkin-strip-summary muted">
+              {bs.last_run_result
+                ? `上次：${bs.last_run_result}${bs.last_run_at ? `（${fmtTime(bs.last_run_at)}）` : ''}`
+                : '尚未运行过；开启后按周期自动执行'}
+              {bs.enabled && bs.next_run_at
+                ? ` · 下次 ${fmtTime(bs.next_run_at)}`
+                : bs.enabled
+                  ? ' · 首轮约在启动 90 秒后'
+                  : ''}
+              {bs.due_count > 0 && ` · 可刷 ${bs.due_count} 条`}
+            </span>
+            <label className="toolbar-field">
+              周期
+              <select
+                value={bs.interval_minutes}
+                disabled={balanceBusy}
+                onChange={(e) => void changeBalanceInterval(Number(e.target.value))}
+              >
+                <option value={15}>15 分钟</option>
+                <option value={30}>30 分钟</option>
+                <option value={60}>1 小时</option>
+                <option value={180}>3 小时</option>
+                <option value={720}>12 小时</option>
+                <option value={1440}>24 小时</option>
+              </select>
+            </label>
+            <button type="button" className="btn-ghost" disabled={balanceBusy} onClick={() => void runBalanceNow()}>
+              <IconRefresh size="xs" />
+              立即刷新全部余额
+            </button>
+          </div>
+        )}
+      </AsyncView>
+      {balanceNote && <Banner tone={balanceNote.ok ? 'ok' : 'warn'}>{balanceNote.text}</Banner>}
 
       <AsyncView state={sourcesQ} loadingRows={6}>
         {() => (

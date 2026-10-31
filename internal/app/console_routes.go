@@ -309,7 +309,7 @@ func (a *App) MountConsoleRoutes(r chiRouter) {
 	kmBridge := newKeyManagerBridge(a.store)
 	// SetKeyExpiry：桥只翻译（字符串 id → int64 主键 + unix 秒），写回 KeyRepo。
 	keysDeps := &httpapi.AccountKeysDeps{
-		Manager:     km,
+		Manager:    km,
 		DenylistOf: kmBridge.KeyDenylist,
 		SetKeyExpiry: func(ctx context.Context, keyID string, t *time.Time) error {
 			id, err := parseID(keyID)
@@ -530,10 +530,13 @@ func (a *App) buildAdminDeps() *httpapi.AdminDeps {
 		UpstreamProbe:    newUpstreamProbeBridge(a),
 		CheckinRun:       &checkinBridge{b: b, sidecar: a.sidecar},
 		CheckinScheduler: &checkinBridge{b: b, sidecar: a.sidecar},
-		UpstreamTest:     &upstreamTesterBridge{store: a.store, sidecar: a.sidecar, cfg: a.cfg, httpc: &http.Client{Timeout: 3 * time.Second}},
-		SettingsView:     &settingsBridge{b: b, cfg: a.cfg},
-		SettingsPatch:    &settingsBridge{b: b, cfg: a.cfg},
-		IPCheck:          &settingsBridge{b: b, cfg: a.cfg},
+		// 定时刷新全部余额（2026-11-01）：整批 + 排期控制，单条复用同一个
+		// balanceRefreshBridge（与凭据池按行「刷新余额」同源）。
+		BalanceSync:   a.balanceSyncBridge(),
+		UpstreamTest:  &upstreamTesterBridge{store: a.store, sidecar: a.sidecar, cfg: a.cfg, httpc: &http.Client{Timeout: 3 * time.Second}},
+		SettingsView:  &settingsBridge{b: b, cfg: a.cfg},
+		SettingsPatch: &settingsBridge{b: b, cfg: a.cfg},
+		IPCheck:       &settingsBridge{b: b, cfg: a.cfg},
 	}
 }
 
