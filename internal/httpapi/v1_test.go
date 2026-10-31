@@ -565,7 +565,9 @@ func TestContractV1ModelsList(t *testing.T) {
 		t.Fatalf("状态码 = %d，期望 200", rec0.Code)
 	}
 	var body0 struct {
-		Data []struct{ ID string `json:"id"` } `json:"data"`
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
 	}
 	_ = json.Unmarshal(rec0.Body.Bytes(), &body0)
 	if len(body0.Data) != 1 || body0.Data[0].ID != "smart" {

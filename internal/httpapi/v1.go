@@ -611,6 +611,7 @@ func (s *Server) AttachV1(up Upstream, cs CandidateSource) {
 	}
 	v1Registry[s] = &v1Panel{upstream: up, candidates: cs}
 }
+
 // v1Upstream 返回面板的上游实现；未接线时返回 nil（调用方判空走
 // no_candidate 路径——比 panic 好：未接线是部署态不是程序错误）。
 func (s *Server) v1Upstream() Upstream {

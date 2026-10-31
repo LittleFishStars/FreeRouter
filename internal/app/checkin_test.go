@@ -40,8 +40,8 @@ func TestUTC8DateString(t *testing.T) {
 func TestCheckinDue(t *testing.T) {
 	now := time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)
 	today := UTC8DateString(now)
-	backoffAgo := now.Add(-CheckinRetryBackoff).Unix()      // 恰好满退避期
-	recentAgo := now.Add(-CheckinRetryBackoff / 2).Unix()   // 退避期内
+	backoffAgo := now.Add(-CheckinRetryBackoff).Unix()    // 恰好满退避期
+	recentAgo := now.Add(-CheckinRetryBackoff / 2).Unix() // 退避期内
 	yesterday := "2026-10-30"
 
 	cases := []struct {
