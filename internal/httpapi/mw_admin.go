@@ -91,6 +91,9 @@ type AdminDeps struct {
 	// BalanceSync 是定时刷新全部余额与开关/周期控制
 	// （/balance-sync/run|status|enabled|interval，2026-11-01）。
 	BalanceSync AdminBalanceSyncer
+	// CheckinCapability 报告支持签到的 provider（/credits/supported，
+	// 2026-11-01）：前端据此决定是否渲染签到按钮。
+	CheckinCapability AdminCheckinCapability
 	// CheckinScheduler 是整轮签到与自动签到控制（/checkin/run|status|enabled）。
 	// 可空：nil = 未装配，同上。
 	CheckinScheduler AdminCheckinScheduler
@@ -1054,6 +1057,16 @@ type BalanceSyncState struct {
 	NextRunAt int64 `json:"next_run_at,omitempty"`
 	// DueCount 是当前能参与刷新的凭据数（「立即刷新」按钮旁的数量提示）。
 	DueCount int `json:"due_count"`
+}
+
+// AdminCheckinCapability 报告「哪些 provider 支持签到」（2026-11-01）。
+//
+// 为什么单列一个接口：它是**能力事实**而不是签到动作——前端在渲染按钮之前
+// 就要知道答案（不支持的渠道不显示按钮，而不是点了才报「不支持」）。
+// 名单只有 sidecar 的分发表那一份，Go 侧不复制（签到模块注释里记过这条成训）。
+type AdminCheckinCapability interface {
+	// CheckinSupportedProviders 返回支持每日签到的 provider id 列表。
+	CheckinSupportedProviders(ctx context.Context) ([]string, error)
 }
 
 // AdminCheckinScheduler 是整轮签到与自动签到控制的窄边界（2026-10-31）。

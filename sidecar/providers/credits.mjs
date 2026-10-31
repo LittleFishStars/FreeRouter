@@ -404,6 +404,38 @@ export async function balanceSupportedProviders() {
   }
 }
 
+/**
+ * claimSupportedProviders 列出**支持每日签到**的 provider（2026-11-01）。
+ *
+ * 为什么由 sidecar 导出而不是 Go 侧硬编码：签到能力登记在 createProviderCredits()
+ * 这一份表上（claim / claimUnavailableReason 逐条），第二份名单必然漂移 ——
+ * hub 在 auto-checkin 里记过同一条成训，本模块 407 行注释也重申过一次。
+ * 管理界面要「不支持签到的不显示签到按钮」，它问的就是这份表。
+ *
+ * 判据与 claimCreditBalance 的分发分支**逐条对应**（三处 unsupported 出口）：
+ *   - API 型（api:<目录id> / custom）没有签到活动 → 不是 provider 级事实，
+ *     由调用方按 provider 前缀自行排除；
+ *   - qoder 家族（qoder / qodercn）走特例直调 hub → 支持；
+ *   - 其余看分发表里条目是否登记了可用 claim（claimUnavailableReason 或
+ *     claim 缺席即不支持）。
+ */
+export async function claimSupportedProviders() {
+  const out = ['qoder', 'qodercn'] // qoder 家族是特例分支（见 claimCreditBalance）
+  try {
+    const pc = await distributor()
+    for (const [provider, entry] of Object.entries(pc)) {
+      if (!entry) continue
+      if (typeof entry.claimUnavailableReason === 'string') continue
+      if (typeof entry.claim !== 'function') continue
+      out.push(provider)
+    }
+  } catch {
+    // 分发表装载失败：只报 qoder 家族（它们是直调，不依赖这张表）。
+    // 宁可少报（前端少显示按钮）也不要多报（点了才失败的按钮更糟）。
+  }
+  return [...new Set(out)].sort()
+}
+
 // ── 每日签到/领取（写上游业务的积分活动） ────────────────────────────
 //
 // 参考实现：dsh-providers-hub 的 credits.claimAll（jet-hub-rpc.js 的

@@ -29,6 +29,11 @@ const (
 	methodCreditsQuery = "credits.query"
 	// methodCreditsClaim 是每日签到/领取（上游业务写，不写凭据存储；见 CreditsClaim）。
 	methodCreditsClaim = "credits.claim"
+
+	// methodCreditsSupported 是「支持签到的 provider 清单」（2026-11-01）：
+	// 管理界面据此决定是否显示签到按钮。名单只有 sidecar 一份（分发表就在
+	// 那里），Go 侧不建第二份——签到模块注释里记过这条成训。
+	methodCreditsSupported = "credits.supported"
 	// methodShutdown 是关闭顺序里的那条特殊帧（04-sidecar.md 5.4 步骤 4）。
 	// 它不是普通业务方法，故不在 2.2 的清单里；sidecar 收到后应清理会话并自行退出。
 	methodShutdown = "shutdown"
@@ -461,6 +466,29 @@ func (c *Client) CreditsClaim(ctx context.Context, provider string, credential a
 		return nil, err
 	}
 	return &out, nil
+}
+
+// creditsSupportedResult 对应 credits.supported 的应答。
+type creditsSupportedResult struct {
+	Providers []string `json:"providers"`
+}
+
+// CreditsSupported 取「支持每日签到」的 provider 清单。
+//
+// 为什么需要它：管理界面要「不支持签到的不显示签到按钮」——点击后才报
+// 「不支持」的按钮是更差的体验。判定依据只能是 sidecar 的分发表（那里登记
+// 了 claim 与 claimUnavailableReason），Go 侧不复制名单。
+//
+// 装载失败不返回 error 而是空清单：前端少显示一排按钮，比整页报错轻。
+func (c *Client) CreditsSupported(ctx context.Context) ([]string, error) {
+	var out creditsSupportedResult
+	if err := c.do(ctx, methodCreditsSupported, map[string]any{}, &out); err != nil {
+		return nil, err
+	}
+	if out.Providers == nil {
+		return []string{}, nil
+	}
+	return out.Providers, nil
 }
 
 // do 是所有类型化方法的共同通道：发请求、解 JSON、把解码失败归一成 E_PROTOCOL。

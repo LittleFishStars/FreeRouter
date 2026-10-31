@@ -352,6 +352,10 @@ const METHODS = {
   // 对象 / API 型裸 key——后者直接报 unsupported，没有签到活动）。
   // 轮换出的新凭据（autoclaw 领取可能换 refresh_token）放进 refreshed_credential
   // 随应答上行，由 Go 桥原地写回密文 —— sidecar 自己不落盘（红线①）。
+  // 支持签到的 provider 清单（2026-11-01）：管理界面据此决定是否显示签到
+  // 按钮（不支持的渠道不显示，而不是点了才报「不支持」）。
+  'credits.supported': async () => ({ providers: await credits.claimSupportedProviders() }),
+
   'credits.claim': async ({ provider, credential }) => {
     if (!provider) throw new SidecarError('E_BAD_REQUEST', 'provider 不能为空');
     if (!credential) throw new SidecarError('E_BAD_REQUEST', 'credential 不能为空');

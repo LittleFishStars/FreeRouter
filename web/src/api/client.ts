@@ -57,6 +57,7 @@ export const PATHS = {
   adminCredentials: '/api/admin/credentials',
   adminCheckin: '/api/admin/checkin',
   adminBalanceSync: '/api/admin/balance-sync',
+  adminCreditsSupported: '/api/admin/credits/supported',
   adminVerifications: '/api/admin/verifications',
   adminAudit: '/api/admin/audit',
   adminSettings: '/api/admin/settings',

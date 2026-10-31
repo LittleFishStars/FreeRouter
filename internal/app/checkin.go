@@ -43,6 +43,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -57,6 +58,8 @@ const (
 	// CheckinStartupDelay 启动后延迟再跑第一轮：一轮签到是「凭据数 × 预检+领取」
 	// 次串行公网请求，启动瞬间打它会拖慢装配（hub auto-checkin 同值同理由）。
 	CheckinStartupDelay = 30 * time.Second
+	// checkinSupportedTTL 是签到能力清单的缓存时长（见 CheckinSupportedProviders）。
+	checkinSupportedTTL = 5 * time.Minute
 	// CheckinTickInterval 到点检查周期。日界由「date != today」判定而不是推算
 	// 下一次时刻，周期只决定「发现到期」的延迟上限；10min 对签到粒度足够。
 	CheckinTickInterval = 10 * time.Minute
@@ -501,6 +504,50 @@ func (cb *checkinBridge) SetEnabled(ctx context.Context, enabled bool, audit htt
 }
 
 // —— httpapi 窄接口适配（方法名与接口对齐；桥本体方法名保持领域语义） ——
+
+// —— 签到能力清单（2026-11-01） ——
+//
+// 缓存 5 分钟：名单是「哪些渠道有签到活动」这类极慢变化的事实，而它会在
+// 凭据池页每次渲染时被问一次。缓存让前端拿到的是稳定答案，也避免每次渲染
+// 都跨一次 stdio 边界。sidecar 装了新渠道最迟 5 分钟反映出来。
+
+var (
+	checkinSupportedMu   sync.Mutex
+	checkinSupportedList []string
+	checkinSupportedAt   time.Time
+)
+
+// CheckinSupportedProviders 实现 httpapi.AdminCheckinCapability。
+//
+// sidecar 未装配/清单装载失败 → 返回**空列表且不报错**：前端少显示一排按钮，
+// 比整页报错轻（「不知道」绝不能显示成「全部支持」）。
+func (cb *checkinBridge) CheckinSupportedProviders(ctx context.Context) ([]string, error) {
+	if cb.sidecar == nil {
+		return []string{}, nil
+	}
+	checkinSupportedMu.Lock()
+	defer checkinSupportedMu.Unlock()
+	if !checkinSupportedAt.IsZero() && time.Since(checkinSupportedAt) < checkinSupportedTTL {
+		out := make([]string, len(checkinSupportedList))
+		copy(out, checkinSupportedList)
+		return out, nil
+	}
+	list, err := cb.sidecar.CreditsSupported(ctx)
+	if err != nil {
+		// 读缓存兜底（非首次失败时），否则空列表。
+		if !checkinSupportedAt.IsZero() {
+			out := make([]string, len(checkinSupportedList))
+			copy(out, checkinSupportedList)
+			return out, nil
+		}
+		return []string{}, nil
+	}
+	checkinSupportedList = list
+	checkinSupportedAt = time.Now()
+	out := make([]string, len(list))
+	copy(out, list)
+	return out, nil
+}
 
 // RunCredentialCheckin 实现 httpapi.AdminCredentialCheckinRunner（手动单签：
 // 显式操作不受开关与到期判定约束，永远放行）。

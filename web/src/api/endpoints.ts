@@ -618,6 +618,17 @@ export function checkinCredential(id: string) {
   return postWrite<CheckinClaimResult>(`${PATHS.adminCredentials}/${seg(id)}/checkin`)
 }
 
+/**
+ * GET /api/admin/credits/supported —— 支持每日签到的 provider 清单（2026-11-01）。
+ *
+ * 前端据此决定是否渲染签到按钮：不支持签到的渠道不显示按钮，而不是点了才报
+ * 「不支持」。空清单（sidecar 未就绪/装载失败）= 一个按钮都不显示——「不知道」
+ * 绝不显示成「全部支持」。
+ */
+export function getCheckinSupportedProviders() {
+  return getOne<{ providers: string[] }>(PATHS.adminCreditsSupported)
+}
+
 /** POST /api/admin/checkin/run —— 手动跑一轮（只签当前到期的凭据）。 */
 export function runCheckinRound() {
   return postWrite<CheckinRoundResult>(`${PATHS.adminCheckin}/run`)

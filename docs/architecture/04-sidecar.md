@@ -173,6 +173,13 @@ credits.claim({ provider: string, credential: unknown }) -> {
 }
 ```
 
+**签到能力清单（2026-11-01）**：`credits.supported` 返回支持每日签到的 provider id
+列表。名单由 sidecar 从 `createProviderCredits()` 分发表现算（与 `credits.claim`
+的分支逐条对应），**Go 侧不复制**——hub 在 auto-checkin 里记过「另抄一份能力名单
+必然漂移」这条成训。管理界面用它决定是否渲染签到按钮：不支持的渠道连按钮都不
+出现，而不是点了才报「不支持」。清单为空是合法结果（装载失败），前端据此一个
+按钮都不显示。
+
 **定时刷新全部余额（2026-11-01）**：Go 侧 `balance_sync.go` 的调度循环按周期
 （默认 60 分钟，管理面可改 5 分钟–24 小时）遍历**全部在册凭据**，逐条调用同一个
 `credits.query`（与凭据池页按行「刷新余额」是同一份实现，落库口径不会分叉）。

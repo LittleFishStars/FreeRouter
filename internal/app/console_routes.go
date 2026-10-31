@@ -530,6 +530,8 @@ func (a *App) buildAdminDeps() *httpapi.AdminDeps {
 		UpstreamProbe:    newUpstreamProbeBridge(a),
 		CheckinRun:       &checkinBridge{b: b, sidecar: a.sidecar},
 		CheckinScheduler: &checkinBridge{b: b, sidecar: a.sidecar},
+		// 签到能力清单（2026-11-01）：同一个桥（无状态），前端据此隐藏按钮。
+		CheckinCapability: &checkinBridge{b: b, sidecar: a.sidecar},
 		// 定时刷新全部余额（2026-11-01）：整批 + 排期控制，单条复用同一个
 		// balanceRefreshBridge（与凭据池按行「刷新余额」同源）。
 		BalanceSync:   a.balanceSyncBridge(),

@@ -79,6 +79,8 @@ func (s *Server) mountAdminOps(r chi.Router, deps *AdminDeps) {
 	r.Post("/checkin/run", s.handleAdminCheckinRun(deps))
 	r.Get("/checkin/status", s.handleAdminCheckinStatus(deps))
 	r.Put("/checkin/enabled", s.handleAdminCheckinEnabled(deps))
+	// 支持签到的 provider 清单（2026-11-01）：前端据此隐藏「不支持」的签到按钮。
+	r.Get("/credits/supported", s.handleAdminCreditsSupported(deps))
 	// 定时刷新全部余额（2026-11-01）：/run 立刻跑一轮，其余是状态/开关/周期。
 	r.Post("/balance-sync/run", s.handleAdminBalanceSyncRun(deps))
 	r.Get("/balance-sync/status", s.handleAdminBalanceSyncStatus(deps))
@@ -597,6 +599,31 @@ func (s *Server) handleAdminCredentialCheckin(deps *AdminDeps) http.HandlerFunc 
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": res})
+	}
+}
+
+// handleAdminCreditsSupported GET /api/admin/credits/supported。
+//
+// 返回支持每日签到的 provider id 列表（如 ["minimax","qoder","qodercn",…]）。
+// 前端按凭据的 provider 是否在列表里决定是否渲染签到按钮——「不支持」应当是
+// 一个**不出现的按钮**，而不是点了才报错的按钮。
+//
+// 清单为空是合法结果（sidecar 未就绪 / 分发表装载失败）：前端据此不显示按钮，
+// 不会把「不知道」显示成「全部支持」。
+func (s *Server) handleAdminCreditsSupported(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "签到能力清单", deps.CheckinCapability != nil) {
+			return
+		}
+		list, err := deps.CheckinCapability.CheckinSupportedProviders(r.Context())
+		if err != nil {
+			mapAdminError(w, err, "签到能力清单")
+			return
+		}
+		if list == nil {
+			list = []string{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"providers": list}})
 	}
 }
 

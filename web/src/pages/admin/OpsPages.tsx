@@ -22,6 +22,7 @@ import {
   removeUpstream,
   checkinCredential,
   getBalanceSyncStatus,
+  getCheckinSupportedProviders,
   runBalanceSync,
   setBalanceSyncEnabled,
   setBalanceSyncInterval,
@@ -263,6 +264,14 @@ export function CredentialsPage({ def }: PageProps) {
   // —— 定时签到（2026-10-31）——
   // checkinQ 是全局自动签到状态（开关/最近一轮/到期数）；checkBusy 是按行 busy。
   const checkinQ = useApi(() => getCheckinStatus(), [])
+  // 支持签到的 provider 清单（2026-11-01）：不在清单里的渠道**不渲染签到按钮**。
+  // 空清单 = sidecar 未就绪 → 一个按钮都不显示（「不知道」不肯显示成「支持」）。
+  const supportedQ = useApi(() => getCheckinSupportedProviders(), [])
+  const supportedProviders = useMemo(
+    () => new Set(supportedQ.data?.providers ?? []),
+    [supportedQ.data]
+  )
+  // 签到提示改为 toast（2026-11-01 用户：只在成功/失败时弹一个提示，不再常驻横幅）。
   const [checkBusy, setCheckBusy] = useState<Record<string, boolean>>({})
   const [checkRoundBusy, setCheckRoundBusy] = useState(false)
   const [checkNote, setCheckNote] = useState<{ text: string; ok: boolean } | null>(null)
@@ -272,8 +281,18 @@ export function CredentialsPage({ def }: PageProps) {
     setCheckNote(null)
     try {
       const d = (await checkinCredential(id)).data
-      // 成功/失败都弹 toast：text 是 Go 侧格式化好的展示串（"+200 积分"/失败原因）
-      setCheckNote({ text: d.text || d.message || (d.ok ? '签到完成' : '签到失败'), ok: d.kind !== 'failed' })
+      // 只有两种结论弹提示（2026-11-01 用户：只在签到成功或失败时弹一个提示）：
+      //   - 成功：claimed（领到了）/ already-claimed（今天已领过，是正常结果）
+      //   - 失败：failed（含 inactive：账号无权益，属于「签不成」）
+      // unsupported 不该出现在这里——按钮本身只在支持的渠道上渲染；真拿到
+      // 这种结果说明清单过期，提示一句即可（不当作失败的红字）。
+      const text = d.text || d.message || (d.kind === 'failed' ? '签到失败' : '签到完成')
+      if (d.unsupported) {
+        setCheckNote({ text, ok: false })
+        supportedQ.reload() // 清单过期了，拉一次最新
+      } else {
+        setCheckNote({ text, ok: d.kind !== 'failed' })
+      }
       sourcesQ.reload()
       checkinQ.reload()
     } catch (e) {
@@ -558,7 +577,7 @@ export function CredentialsPage({ def }: PageProps) {
       </Banner>
       <FormError error={error} />
       {notice && <Banner tone="ok">{notice}</Banner>}
-      {checkNote && <Banner tone={checkNote.ok ? 'ok' : 'warn'}>{checkNote.text}</Banner>}
+
 
       {/* 自动签到状态条（2026-10-31）：开关与最近一轮是全池级状态，不是单个
           供应商的——放页面级而不是 pool 头部，避免逐源重复渲染。 */}
@@ -810,11 +829,6 @@ export function CredentialsPage({ def }: PageProps) {
                                       {balanceNumber(c.balance_text)}
                                     </span>
                                   )}
-                                  {c.checkin_text && (
-                                    <span className="am-chip-tag" data-tone={c.checkin_date ? 'ok' : 'warn'} title={c.checkin_date ? `签到于 ${c.checkin_date}` : '最近一次尝试没有签上（失败会按退避自动重试）'}>
-                                      {c.checkin_text}
-                                    </span>
-                                  )}
                                 </span>
                                 <span className="pool-cred-time">{fmtTime(c.created_at)}</span>
                               </Link>
@@ -829,15 +843,22 @@ export function CredentialsPage({ def }: PageProps) {
                                   <IconRefresh size="xs" />
                                   {balBusy[c.id] ? '查询中…' : '刷新余额'}
                                 </button>
-                                <button
-                                  type="button"
-                                  className="btn-ghost"
-                                  disabled={busy || checkBusy[c.id]}
-                                  onClick={() => void checkinOne(c.id)}
-                                >
-                                  <IconCalendarCheck size="xs" />
-                                  {checkBusy[c.id] ? '签到中…' : '签到'}
-                                </button>
+                                {/* 签到按钮只在支持的 provider 上出现（2026-11-01）：
+                                    不支持的渠道连按钮都没有，而不是点了才报「不支持」。 */}
+                                {/* 只认凭据行自己的 provider：sidecar 的清单里是 provider id
+                                    （minimax/qodercn…），而上游行的 provider_id 是剥过 api: 前缀的
+                                    目录 id，两套命名混用会误判。 */}
+                                {supportedProviders.has(c.provider) && (
+                                  <button
+                                    type="button"
+                                    className="btn-ghost"
+                                    disabled={busy || checkBusy[c.id]}
+                                    onClick={() => void checkinOne(c.id)}
+                                  >
+                                    <IconCalendarCheck size="xs" />
+                                    {checkBusy[c.id] ? '签到中…' : '签到'}
+                                  </button>
+                                )}
                               </div>
                             </li>
                           ))}
@@ -1092,6 +1113,13 @@ export function CredentialsPage({ def }: PageProps) {
         onClose={() => setBalNote(null)}
       >
         {balNote?.text}
+      </Toast>
+      <Toast
+        open={checkNote !== null}
+        tone={checkNote?.ok ? 'ok' : 'err'}
+        onClose={() => setCheckNote(null)}
+      >
+        {checkNote?.text}
       </Toast>
     </PageFrame>
   )
