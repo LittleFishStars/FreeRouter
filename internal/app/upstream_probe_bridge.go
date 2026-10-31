@@ -52,6 +52,32 @@ func (p *upstreamProbeBridge) ProbeUpstreamModels(ctx context.Context, id string
 	if err != nil {
 		return nil, mapStoreErr(err)
 	}
+	// 上游停用 → 检验整体不适用（2026-10-31 实测修）：停用的行不在业务
+	// 流量里，「通了」反而是误导；更糟的是 noOpenAI 渠道（minimax/qoder 系，
+	// 落库即停用）的端点根本不吐 OpenAI 兼容响应，逐模型打真实请求只会
+	// 收获一堆注定 404 的噪音（真库实测 0 可达 / 4 不通）。如实整单跳过，
+	// 理由逐模型给出；管理员真要诊断，先启用再点检验。
+	if !u.Enabled {
+		models, merr := p.b.repos.Models.ListRealModelsByUpstream(ctx, id)
+		if merr != nil {
+			return nil, mapStoreErr(merr)
+		}
+		rows := make([]httpapi.UpstreamModelProbeRow, 0, len(models))
+		for i := range models {
+			rows = append(rows, httpapi.UpstreamModelProbeRow{
+				RealModelID: models[i].ID,
+				ModelID:     models[i].UpstreamModelID,
+				Reason:      "跳过：上游已停用，检验不适用（先启用再检验）",
+			})
+		}
+		return &httpapi.UpstreamModelProbeResult{
+			UpstreamID: id,
+			Name:       u.Name,
+			Kind:       u.Kind,
+			Skipped:    len(rows),
+			Results:    rows,
+		}, nil
+	}
 	adapter := adapterForKind(u.Kind)
 	if adapter == nil {
 		return nil, fmt.Errorf("app: 上游 %s 的 kind %q 无适配器", u.Name, u.Kind)
