@@ -129,6 +129,8 @@ export const IconPlay = glyph(TB.IconPlayerPlay)
 export const IconTest = glyph(TB.IconActivity)
 export const IconClear = glyph(TB.IconEraser)
 export const IconTune = glyph(TB.IconAdjustments)
+// 余额徽标的前置图标（2026-11-01）：线型金币，与其余 outline 图标同族。
+export const IconCoin = glyph(TB.IconCoin)
 
 /* ── 外壳与状态 ─────────────────────────────────────────────────── */
 

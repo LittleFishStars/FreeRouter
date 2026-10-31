@@ -30,7 +30,7 @@ import type { ContributionCredential } from '../../api/types'
 import { useSession } from '../../api/session'
 import { useApi } from '../../hooks/useApi'
 import { ACTION_ICON, TableAction, TableActions } from '../../components/IconButtons'
-import { IconDelete, IconLogin, IconPower, IconView } from '../../icons'
+import { IconCoin, IconDelete, IconLogin, IconPower, IconView } from '../../icons'
 import {
   AsyncView,
   Badge,
@@ -42,7 +42,7 @@ import {
   StatusBadge
 } from '../../components/ui'
 import ConfirmDialog from '../../components/ConfirmDialog'
-import { fmtNum, fmtTime, statusLabel } from '../../utils/format'
+import { balanceNumber, fmtNum, fmtTime, statusLabel } from '../../utils/format'
 import { FREE_NOTICE } from '../../utils/contribute'
 import PageFrame from '../PageFrame'
 import type { PageProps } from '../../routes'
@@ -249,9 +249,14 @@ export default function MyContributionsPage({ def }: PageProps) {
                     </td>
                     <td className="cell-wrap">
                       {/* 与凭据池页同源的展示串：空 = 从未查询/未签到，不冒充值。 */}
+                      {/* 与凭据池页同一视觉语言（2026-11-01）：黄色底 + 金币 + 只显示数字。 */}
                       {c.balance_text && (
-                        <span className="am-chip-tag" data-tone="ok" title={`查询于 ${fmtTime(c.balance_checked_at)}`}>
-                          {c.balance_text}
+                        <span
+                          className="badge badge-warn"
+                          title={[c.balance_text, `查询于 ${fmtTime(c.balance_checked_at)}`].filter(Boolean).join('\n')}
+                        >
+                          <IconCoin size="xs" />
+                          {balanceNumber(c.balance_text)}
                         </span>
                       )}
                       {c.checkin_text && (

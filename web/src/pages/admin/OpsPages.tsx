@@ -47,6 +47,7 @@ import {
   IconBack,
   IconCalendarCheck,
   IconCheck,
+  IconCoin,
   IconDelete,
   IconEdit,
   IconExternal,
@@ -69,7 +70,7 @@ import {
   StatusBadge,
   Toast
 } from '../../components/ui'
-import { fmtNum, fmtTime, statusLabel } from '../../utils/format'
+import { balanceNumber, fmtNum, fmtTime, statusLabel } from '../../utils/format'
 import PageFrame from '../PageFrame'
 import type { PageProps } from '../../routes'
 
@@ -790,11 +791,23 @@ export function CredentialsPage({ def }: PageProps) {
                                 <span className="pool-cred-badges">
                                   <StatusBadge status={c.status} label={statusLabel(c.status)} />
                                   <StatusBadge status={c.verify_status} label={statusLabel(c.verify_status)} />
-                                  {/* 余额徽标（2026-10-28）：text 非空才显示——「从未查询」
-                                      与「查询失败」不冒充余额（失败文案在刷新动作的结果里） */}
+                                  {/* 余额徽标（2026-11-01 用户定案）：与前面的状态徽标同款
+                                      黄色底（badge-warn）+ 金币图标 + **只显示数字**（单位与
+                                      明细在 title 里）。不是数字（查询失败/上游未报余额）时
+                                      只留图标，失败原因不塞进徽标——那是刷新动作结果的事。 */}
                                   {c.balance_text && (
-                                    <span className="am-chip-tag" data-tone="ok" title={c.balance_detail ? `明细：${c.balance_detail}\n查询于 ${fmtTime(c.balance_checked_at)}` : `查询于 ${fmtTime(c.balance_checked_at)}`}>
-                                      {c.balance_text}
+                                    <span
+                                      className="badge badge-warn"
+                                      title={[
+                                        c.balance_text,
+                                        c.balance_detail ? `明细：${c.balance_detail}` : '',
+                                        `查询于 ${fmtTime(c.balance_checked_at)}`
+                                      ]
+                                        .filter(Boolean)
+                                        .join('\n')}
+                                    >
+                                      <IconCoin size="xs" />
+                                      {balanceNumber(c.balance_text)}
                                     </span>
                                   )}
                                   {c.checkin_text && (

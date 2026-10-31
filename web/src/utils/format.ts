@@ -73,6 +73,26 @@ export function fmtDate(v: string | number | null | undefined): string {
   return t === '—' ? t : t.slice(0, 10)
 }
 
+/**
+ * 从余额展示串里取数字部分（2026-11-01 用户要求：余额徽标只显示数字）。
+ *
+ * 后端把余额格式化成 `"1,234 积分"` / `"0.85 credit"` 这类展示串落库，
+ * 徽标只要前半截数字——单位在 title 里还能看到，徽标里是冗余信息。
+ *
+ * 不是数字（`"查询失败：…"` / `"上游未报余额"`）返回 null：调用方据此
+ * 只渲染图标（原因放 title），绝不把失败文案塞进徽标。
+ */
+export function balanceNumber(text: string | null | undefined): string | null {
+  if (!text) return null
+  // 允许负号、千分位逗号与小数；只认**开头**的数字，避免把失败文案里的
+  // 数字（如 "HTTP 500"）误当余额。
+  const m = /^-?[\d,]+(?:\.\d+)?/.exec(text.trim())
+  if (!m) return null
+  const digits = m[0].replace(/,/g, '')
+  if (!/^-?\d+(?:\.\d+)?$/.test(digits)) return null
+  return m[0]
+}
+
 /** 数字：千分位；null 用破折号。 */
 export function fmtNum(v: number | null | undefined): string {
   if (v === null || v === undefined) return '—'
