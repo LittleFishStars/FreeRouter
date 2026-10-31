@@ -62,6 +62,7 @@ func (s *Server) mountAdminOps(r chi.Router, deps *AdminDeps) {
 	r.Patch("/upstreams/{id}", s.handleAdminUpstreamPatch(deps))
 	r.Post("/upstreams/{id}/kind", s.handleAdminUpstreamKind(deps))
 	r.Post("/upstreams/{id}/test", s.handleAdminUpstreamTest(deps))
+	r.Post("/upstreams/{id}/probe-models", s.handleAdminUpstreamModelProbe(deps))
 
 	// 凭据
 	r.Get("/credentials", s.handleAdminCredentialsList(deps))
@@ -491,6 +492,29 @@ func (s *Server) handleAdminCredentialStatus(deps *AdminDeps, status, action str
 			return
 		}
 		adminWriteOK(w, http.StatusOK, renderAdminCredential(row), auditID)
+	}
+}
+
+// handleAdminUpstreamModelProbe POST /api/admin/upstreams/{id}/probe-models。
+//
+// 凭据池页「供应商可用性检验」：对该上游的全部 active 真实模型各发一次
+// max_tokens=1 的真实推理（复用与业务流量相同的管线），逐模型报告
+// 通/不通 + 延迟 + 失败原因。探测不落用量结算、不写冷却账本。
+func (s *Server) handleAdminUpstreamModelProbe(deps *AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps == nil || !deps.need(w, "可用性检验", deps.UpstreamProbe != nil) {
+			return
+		}
+		id, ok := adminVerificationID(w, r)
+		if !ok {
+			return
+		}
+		res, err := deps.UpstreamProbe.ProbeUpstreamModels(r.Context(), id)
+		if err != nil {
+			mapAdminError(w, err, "可用性检验")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": res})
 	}
 }
 

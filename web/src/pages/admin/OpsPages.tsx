@@ -21,6 +21,7 @@ import {
   patchUpstream,
   checkinCredential,
   getCheckinStatus,
+  probeUpstreamModels,
   refreshCredentialBalance,
   refreshRealModels,
   runCheckinRound,
@@ -31,7 +32,8 @@ import type {
   AdminCredential,
   AdminModelSource,
   AdminModelSourceModel,
-  UpstreamKind
+  UpstreamKind,
+  UpstreamModelProbeResult
 } from '../../api/types'
 import { useApi } from '../../hooks/useApi'
 import ConfirmDialog from '../../components/ConfirmDialog'
@@ -45,6 +47,8 @@ import {
   IconPlus,
   IconPower,
   IconRefresh,
+  IconTest,
+  IconWarn,
   IconSearch
 } from '../../icons'
 import {
@@ -295,6 +299,25 @@ export function CredentialsPage({ def }: PageProps) {
       setCheckNote({ text: e instanceof Error ? e.message : '开关保存失败', ok: false })
     } finally {
       setCheckRoundBusy(false)
+    }
+  }
+
+  // —— 供应商可用性检验（2026-10-31）——
+  // 按供应商逐模型真实请求一次（max_tokens=1）；结果芯片条挂在来源详情头部下
+  const [probeRes, setProbeRes] = useState<Record<string, UpstreamModelProbeResult>>({})
+  const [probeBusy, setProbeBusy] = useState<Record<string, boolean>>({})
+  const [probeErr, setProbeErr] = useState<Record<string, string>>({})
+
+  async function probeSource(id: string) {
+    setProbeBusy((m) => ({ ...m, [id]: true }))
+    setProbeErr((m) => ({ ...m, [id]: '' }))
+    try {
+      const d = (await probeUpstreamModels(id)).data
+      setProbeRes((m) => ({ ...m, [id]: d }))
+    } catch (e) {
+      setProbeErr((m) => ({ ...m, [id]: e instanceof Error ? e.message : '检验失败' }))
+    } finally {
+      setProbeBusy((m) => ({ ...m, [id]: false }))
     }
   }
 
@@ -571,8 +594,47 @@ export function CredentialsPage({ def }: PageProps) {
                         <IconEdit size="sm" />
                         编辑
                       </button>
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        disabled={probeBusy[active.id]}
+                        title="对该供应商的全部模型各发一次真实推理（max_tokens=1），检验可用性；消耗极少量额度，不计入用量统计"
+                        onClick={() => void probeSource(active.id)}
+                      >
+                        <IconTest size="sm" />
+                        {probeBusy[active.id] ? '检验中…' : '检验可用性'}
+                      </button>
                     </div>
                   </div>
+
+                  {probeErr[active.id] && (
+                    <div className="am-explain" data-tone="warn">检验失败：{probeErr[active.id]}</div>
+                  )}
+                  {probeRes[active.id] && (
+                    <div className="am-conn">
+                      <span className="am-conn-sum" data-tone={probeRes[active.id].failed === 0 ? 'ok' : 'warn'}>
+                        {probeRes[active.id].failed === 0
+                          ? `全部 ${probeRes[active.id].ok} 个模型可达`
+                          : `${probeRes[active.id].ok} 可达 / ${probeRes[active.id].failed} 不通${probeRes[active.id].skipped > 0 ? ` / 跳过 ${probeRes[active.id].skipped}` : ''}`}
+                      </span>
+                      {probeRes[active.id].results.map((r) => (
+                        <span
+                          key={r.real_model_id}
+                          className="am-conn-item"
+                          data-ok={r.ok}
+                          title={`${r.model_id}：${r.reason ?? (r.ok ? '可达' : '不通')}${r.latency_ms ? `（${r.latency_ms}ms）` : ''}`}
+                        >
+                          {r.ok ? <IconCheck size="xs" /> : <IconWarn size="xs" />}
+                          <span className="am-conn-model">{r.model_id}</span>
+                          {r.ok && r.latency_ms > 0 && <span className="am-conn-lat">{r.latency_ms}ms</span>}
+                          {!r.ok && r.reason && <span className="am-conn-reason">{r.reason}</span>}
+                        </span>
+                      ))}
+                      <button type="button" className="btn-ghost am-conn-close" onClick={() => setProbeRes((m) => ({ ...m, [active.id]: undefined as unknown as UpstreamModelProbeResult }))}>
+                        收起
+                      </button>
+                    </div>
+                  )}
 
                   <div className="pool-blocks">
                     <div className="pool-block">

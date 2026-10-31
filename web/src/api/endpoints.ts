@@ -62,7 +62,8 @@ import type {
   UsageStats,
   UsageStatsQuery,
   UsageOverview,
-  ConnectivityResult
+  ConnectivityResult,
+  UpstreamModelProbeResult
 } from './types'
 
 const seg = (v: string) => encodeURIComponent(v)
@@ -591,6 +592,11 @@ export interface CheckinState {
 // ── 抽象模型连通性检验（2026-10-31）────────────────────────────────
 
 /** 一条候选的连通性结果。 */
+/** POST /api/admin/upstreams/{id}/probe-models —— 凭据池页「检验可用性」：对该上游全部 active 模型各发一次真实推理。 */
+export function probeUpstreamModels(id: string) {
+  return postWrite<UpstreamModelProbeResult>(`${PATHS.adminUpstreams}/${seg(id)}/probe-models`)
+}
+
 /** POST /api/admin/abstract-models/{id}/connectivity —— 逐候选实时探测出站路径（dry-run 是静态干跑，这是真发请求）。 */
 export function checkAbstractModelConnectivity(id: string) {
   return postWrite<ConnectivityResult>(`${PATHS.adminAbstractModels}/${seg(id)}/connectivity`)

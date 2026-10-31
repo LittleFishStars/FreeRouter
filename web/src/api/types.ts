@@ -375,6 +375,26 @@ export interface ChainPreview {
   }
 }
 
+/** 供应商级「可用性检验」的逐模型结果（POST /upstreams/{id}/probe-models）。 */
+export interface UpstreamModelProbeRow {
+  real_model_id: string
+  model_id: string
+  ok: boolean
+  latency_ms: number
+  tokens?: number
+  reason?: string
+}
+
+export interface UpstreamModelProbeResult {
+  upstream_id: string
+  name: string
+  kind: string
+  ok: number
+  failed: number
+  skipped: number
+  results: UpstreamModelProbeRow[]
+}
+
 /** 一次真实端到端探测的逐候选尝试（POST /abstract-models/{id}/connectivity）。 */
 export interface ConnectivityAttempt {
   /** 落点描述：渠道/真实模型#行ID（与 v1 trace 同口径） */

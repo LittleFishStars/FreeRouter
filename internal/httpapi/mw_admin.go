@@ -91,6 +91,9 @@ type AdminDeps struct {
 	// CheckinScheduler 是整轮签到与自动签到控制（/checkin/run|status|enabled）。
 	// 可空：nil = 未装配，同上。
 	CheckinScheduler AdminCheckinScheduler
+	// UpstreamProbe 是凭据池页「供应商可用性检验」触发器
+	// （POST /upstreams/{id}/probe-models）。可空：nil = 未装配，同上。
+	UpstreamProbe AdminUpstreamModelProber
 	// ModelCreate 是手工登记真实模型（POST /real-models，凭据池改版 2026-10-26
 	// 的「添加模型」）。可空：nil = 该能力未装配，端点按既有惯例 404 not_found。
 	ModelCreate AdminRealModelCreator
@@ -972,6 +975,35 @@ type AdminCredentialCheckinRunner interface {
 	// error：返回 Kind=failed 的结果（可重试）；凭据不存在/未装配才是 error。
 	// 手动签到不受开关与到期判定约束（显式操作永远放行，hub 同款语义）。
 	RunCredentialCheckin(ctx context.Context, id string) (*CheckinClaimResult, error)
+}
+
+// AdminUpstreamModelProber 是凭据池页「供应商可用性检验」的窄边界
+// （2026-10-31）：对一个上游的全部 active 真实模型各发一次真实推理。
+// 复用与业务流量相同的管线（upstreamShim 同源的 Caller），失败原因带
+// 响应原文摘要；探测不落用量结算、不写冷却账本。
+type AdminUpstreamModelProber interface {
+	ProbeUpstreamModels(ctx context.Context, upstreamID string) (*UpstreamModelProbeResult, error)
+}
+
+// UpstreamModelProbeRow 是一个真实模型的检验结果。
+type UpstreamModelProbeRow struct {
+	RealModelID string `json:"real_model_id"`
+	ModelID     string `json:"model_id"`
+	OK          bool   `json:"ok"`
+	LatencyMs   int64  `json:"latency_ms"`
+	Tokens      *int   `json:"tokens,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+// UpstreamModelProbeResult 是一次供应商级检验的结果。
+type UpstreamModelProbeResult struct {
+	UpstreamID string                  `json:"upstream_id"`
+	Name       string                  `json:"name"`
+	Kind       string                  `json:"kind"`
+	OK         int                     `json:"ok"`
+	Failed     int                     `json:"failed"`
+	Skipped    int                     `json:"skipped"`
+	Results    []UpstreamModelProbeRow `json:"results"`
 }
 
 // AdminCheckinScheduler 是整轮签到与自动签到控制的窄边界（2026-10-31）。

@@ -504,6 +504,7 @@ func (a *App) buildAdminDeps() *httpapi.AdminDeps {
 		BalanceRefresh: &balanceRefreshBridge{b: b, sidecar: a.sidecar},
 		// 签到（2026-10-31）：与余额刷新同源（解密凭据 → sidecar → 落库），
 		// 同一注入理由；调度器本体在 startCheckin，这里只接端点触发面。
+		UpstreamProbe:    newUpstreamProbeBridge(a),
 		CheckinRun:       &checkinBridge{b: b, sidecar: a.sidecar},
 		CheckinScheduler: &checkinBridge{b: b, sidecar: a.sidecar},
 		UpstreamTest:     &upstreamTesterBridge{store: a.store, sidecar: a.sidecar, cfg: a.cfg, httpc: &http.Client{Timeout: 3 * time.Second}},
