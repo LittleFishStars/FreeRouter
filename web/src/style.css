@@ -2380,6 +2380,85 @@ button.am-add-chip {
   min-height: 0;
 }
 
+/* ── 抽象模型连通性检验（2026-10-31，2026-11-01 误删后补回）───────────
+   行头下的结果芯片条：汇总 + 逐候选芯片（填充色阶，无描边；颜色只给状态）。
+   ⚠️ 这段在 0c5fbdb 里被当作「只为候选芯片条活着」一起删掉了，但它服务的是
+   `检验可用性` 的探测结果（OpsPages 与 AbstractModelPage 各一处引用），
+   删掉后的症状不是「少个圆角」而是整块退化成一屏连着的纯文本——长错误原因
+   不再被省略号截断，直接铺满面板。任何「删 CSS」的提交都要先 grep 类名。 */
+.am-conn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.9rem 0.6rem;
+}
+.am-conn-sum {
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.18rem 0.6rem;
+  border-radius: var(--fr-radius-full);
+}
+.am-conn-sum[data-tone='ok'] {
+  background: var(--fr-success-container);
+  color: var(--fr-success);
+}
+.am-conn-sum[data-tone='warn'] {
+  background: var(--fr-warning-container);
+  color: var(--fr-warning);
+}
+.am-conn-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.22rem 0.6rem;
+  border-radius: var(--fr-radius-full);
+  background: var(--fr-inset);
+  font-size: 0.75rem;
+}
+.am-conn-item[data-ok='true'] {
+  color: var(--fr-success);
+}
+.am-conn-item[data-ok='false'] {
+  color: var(--fr-warning);
+}
+.am-conn-src {
+  font-weight: 600;
+}
+.am-conn-model,
+.am-conn-lat {
+  color: var(--fr-on-surface-variant);
+}
+.am-conn-reason {
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.am-conn-trace {
+  width: 100%;
+  font-size: 0.75rem;
+}
+.am-conn-trace summary {
+  cursor: pointer;
+  user-select: none;
+}
+.am-conn-trace-body {
+  display: block;
+  margin-top: 0.3rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--fr-radius-md);
+  background: var(--fr-inset);
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 0.7rem;
+  color: var(--fr-on-surface-variant);
+}
+.am-conn-close {
+  padding: 0.15rem 0.55rem;
+  font-size: 0.72rem;
+}
+
 /* 行内按钮伪装成链接（「候选集」入口：原来是指向已删除路由的 <Link>） */
 .am-op-link {
   background: transparent;

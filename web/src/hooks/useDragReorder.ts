@@ -39,7 +39,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 
 export interface DragReorderHandle {
-  /** 挂到滚动容器（.am-chip-row / .amd-cur-row）上：限定拖动的查询范围。 */
+  /** 挂到滚动容器（.am-chip-row / .am-card-row）上：限定拖动的查询范围。 */
   containerRef: RefObject<HTMLDivElement | null>
   /** 挂到每个可拖元素根节点。 */
   itemProps: (key: string, index: number) => {
