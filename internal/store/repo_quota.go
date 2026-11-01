@@ -131,17 +131,38 @@ type QuotaState struct {
 	UpdatedAt       int64
 }
 
+// QuotaUnlimited 是账户额度的「不限」哨兵（2026-11-01 用户定案）。
+//
+// 为什么允许 -1 而不是只让调用方去删行：管理面（审核批准表单、账户详情页、
+// CSV 导入）把「不限」作为**一个可选值**暴露给管理员，表单值是数字输入框，
+// 让前端为「不限」单独发一个 DELETE 请求等于把一条语义拆成两个端点，而
+// 「这次批准给的额度是不限」在审计里也需要一个可读的值（detail.quota.limit
+// = -1 比「字段缺省」更容易复盘）。
+//
+// 关键：-1 **不落库**。表上 quota_limit CHECK >= 0，且「无行 = 不限」是
+// 05-storage.md 3.3 的定案——把 -1 存进行里会让条件 UPDATE 的
+// `used + cost <= limit` 恒假（-1 小于任何 cost），结果是「设了不限反而
+// 全拒」，正好反义。所以这里把 -1 翻译成删行，存储层永远只有「有行且 >=0」
+// 与「无行」两种事实。
+//
+// 其他负数仍然拒绝：-2 既不是「不限」也不是合法上限，静默当成不限会掩盖
+// 调用方的计算错误。
+const QuotaUnlimited int64 = -1
+
 // SetAccountQuota 设置/更新账户的额度行。
 //
-// limit = 0 是合法的（"全拒"）；"不限"由 DeleteAccountQuota 删行表达，不用 -1：
-// NULL/-1 参与比较会得到 UNKNOWN 或意外为真，而条件 UPDATE 只接受"真"。
-// abstractModelID 传 TotalScope(0) 表示全模型合计。
+// limit = 0 是合法的（"全拒"）；limit = QuotaUnlimited(-1) 表示「不限」，
+// 落库形态是**删掉该维度行**（见 QuotaUnlimited 的注释）；其余负值报错。
+// abstractModelID 传 TotalScope("") 表示全模型合计。
 func (r *QuotaRepo) SetAccountQuota(ctx context.Context, accountID, abstractModelID string, unit QuotaUnit, period QuotaPeriod, limit int64) error {
 	if accountID == "" {
 		return errors.New("store: 额度必须归属某个账户")
 	}
+	if limit == QuotaUnlimited {
+		return r.DeleteAccountQuota(ctx, accountID, abstractModelID, unit, period)
+	}
 	if limit < 0 {
-		return fmt.Errorf("store: quota_limit 不能为负（%d）；「不限」请删行", limit)
+		return fmt.Errorf("store: quota_limit 不能为负（%d）；「不限」用 -1，其余负值无意义", limit)
 	}
 	return r.setQuota(ctx, "account_quotas", "account_id", "quota_limit", "quota_used",
 		accountID, abstractModelID, unit, period, limit)
@@ -193,7 +214,7 @@ func (r *QuotaRepo) setQuota(ctx context.Context, table, ownerCol, limitCol, use
 	return nil
 }
 
-// DeleteAccountQuota 删行 = 该维度不限。
+// DeleteAccountQuota 删行 = 该维度不限（幂等：本来没有行也算成功）。
 func (r *QuotaRepo) DeleteAccountQuota(ctx context.Context, accountID, abstractModelID string, unit QuotaUnit, period QuotaPeriod) error {
 	return r.deleteQuota(ctx, "account_quotas", "account_id", accountID, abstractModelID, unit, period)
 }

@@ -59,7 +59,7 @@ export interface SetupStatus {
 export interface AdminQuota {
   /** request / token / credit */
   unit: 'request' | 'token' | 'credit'
-  /** 0 = 零额度全拒；没有该行 = 不限 */
+  /** 0 = 零额度全拒；-1 = 不限（服务端落成「该维度无行」）；正数 = 上限 */
   limit: number
   /** 只读：由结算写入 */
   used: number
@@ -114,7 +114,7 @@ export interface PendingAccount {
 export interface ApproveInput {
   /** 批准必须指定组（服务端要求非空数组） */
   groups: string[]
-  /** 账户级额度（唯一一份，量词是"每人"） */
+  /** 账户级额度（唯一一份，量词是"每人"）；limit = -1 表示不限 */
   quota: {
     unit: 'request' | 'token' | 'credit'
     limit: number

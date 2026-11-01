@@ -26,6 +26,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"github.com/LittleFishStars/FreeRouter/internal/idgen"
 	"net/http"
@@ -505,16 +506,41 @@ func (s *Server) handleAdminAccountApprove(deps *AdminDeps) http.HandlerFunc {
 			return
 		}
 		groups := *body.Groups
+		// 批准必须**同时授予 tenant 类**（03-admin.md §3：账户转 active，
+		// 加 tenant 类，进所选组）。这不是额外的赠予，而是动作本身的一部分：
+		// 注册出来的 pending 账户只有 contributor 容器类（零权限占位，保证
+		// 类集合非空），而组成员关系在存储层要求 tenant（repo_group.AddMember，
+		// 03-groups §9）。
+		//
+		// 2026-11-01 修正的真实故障：此前这里只发 status+groups+quota，桥按
+		// 「先转 active → 再落组」走，落组时账户还没有 tenant 类 →
+		// AddMember 直接报「无 tenant 类，不能入组」→ 整个事务回滚 →
+		// 错误既不是 not_found 也不是 conflict，被 mapAdminError 兜底成
+		// 500 internal_error「管理面存储操作失败」。现象就是审核队列里
+		// 点「确认批准」永远失败、账户永远停在 pending。
+		//
+		// 落点选在 handler 而不是桥：桥的 UpdateAccount 同时服务账户详情页
+		// 的 PATCH，「改组顺带改类」在那里是未经确认的能力变更（§2.3）；
+		// 只有批准这一个动作可以连带授予 tenant。
+		classes, err := approveClasses(r.Context(), deps.Accounts, id)
+		if err != nil {
+			mapAdminError(w, err, "账户")
+			return
+		}
 		audit := adminBaseAudit(p, r, "account.approve", "account:"+id, "ok")
 		if b, err := json.Marshal(map[string]any{
-			"groups": groups,
-			"quota":  body.Quota,
+			"groups":  groups,
+			"quota":   body.Quota,
+			"classes": classes,
 		}); err == nil {
 			audit.Detail = b
 		}
-		// 批准 = PATCH{status:active, groups, quota} 的受控版本；
-		// 桥（UpdateAccount）对 pending 行放行 active 迁移并同事务落组/额度。
-		in := AdminAccountUpdate{Status: strPtr("active"), Groups: &groups, Quota: body.Quota}
+		// 批准 = PATCH{status:active, classes(+tenant), groups, quota} 的受控版本；
+		// 桥（UpdateAccount）对 pending 行放行 active 迁移并同事务落类/组/额度。
+		// 顺序在桥里固定为「状态 → 类 → 组 → 额度」，类先于组是入组的前置条件。
+		in := AdminAccountUpdate{
+			Status: strPtr("active"), Classes: &classes, Groups: &groups, Quota: body.Quota,
+		}
 		row, auditID, err := deps.Accounts.UpdateAccount(r.Context(), id, in, audit)
 		if err != nil {
 			mapAdminError(w, err, "账户")
@@ -523,6 +549,35 @@ func (s *Server) handleAdminAccountApprove(deps *AdminDeps) http.HandlerFunc {
 		s.fillAdminCounts(deps, r, row)
 		adminWriteOK(w, http.StatusOK, renderAdminAccount(row), auditID)
 	}
+}
+
+// approveClasses 算出批准后该账户应有的权限类集合：现有类 ∪ {tenant}。
+//
+// 为什么读一次现有类而不是直接发 ["tenant"]：pending 账户可能已经被管理员
+// 手工加过 admin 等服务类（或注册来的 contributor 容器类要保留——它是
+// 「贡献上游凭据」的身份，批准不改变这一点）。直接用 ["tenant"] 会把它们
+// 静默抹掉，而 SetAccountClasses 是整组替换，「改个状态顺手降权」正是
+// 02-admin §2.3 点名的危险写。
+//
+// 读不到账户时原样返回错误：让上层走 mapAdminError（404/500 仍是那两档，
+// 不在这里自造状态）。
+func approveClasses(ctx context.Context, store AdminAccountsStore, id string) ([]string, error) {
+	cur, err := store.GetAccount(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(cur.Classes)+1)
+	hasTenant := false
+	for _, c := range cur.Classes {
+		if c == "tenant" {
+			hasTenant = true
+		}
+		out = append(out, c)
+	}
+	if !hasTenant {
+		out = append(out, "tenant")
+	}
+	return out, nil
 }
 
 // strPtr 小工具（载荷构造处反复用到 *string）。

@@ -1423,6 +1423,127 @@ func TestContractApprovalRequiresGroupAndQuota(t *testing.T) {
 	}
 }
 
+// TestContractApprovalGrantsTenantBeforeGroup 锁 2026-11-01 的真实故障：
+// 注册出来的 pending 账户只有 contributor 容器类，而组成员关系要求 tenant
+// （repo_group.AddMember，03-groups §9）。此前 handler 只发 status+groups+quota，
+// 桥按「先转 active → 再落组」走，落组时没有 tenant 类直接报错，错误既不是
+// not_found 也不是 conflict，被 mapAdminError 兜底成 500 internal_error
+// 「管理面存储操作失败」——现象是审核队列里点「确认批准」永远失败。
+//
+// 所以这条测试断言的是**批准动作本身带上了 tenant 类**，不是"批准成功"这个
+// 结果（结果已经被上一条测试覆盖）。同时锁住「原有类不被抹掉」：批准不是
+// 降权动作，contributor（贡献上游凭据的身份）必须保留。
+func TestContractApprovalGrantsTenantBeforeGroup(t *testing.T) {
+	h := newAdminHarness(t)
+	tok := h.issueSession(t, "approver2", auth.ClassAdmin)
+	const pid = "00000010-0000-4000-8000-000000000060"
+	// 与真实注册流一致：pending + 仅 contributor 容器类。
+	h.accounts.byID[pid] = &AdminAccount{
+		ID: pid, Username: "freshreg", Status: "pending",
+		Classes: []string{"contributor"}, CreatedAt: 1700000000,
+	}
+	h.accounts.byName["freshreg"] = pid
+
+	w := h.req(t, http.MethodPost, "/api/admin/accounts/pending/"+pid+"/approve", tok,
+		`{"groups":["00000020-0000-4000-8000-000000000001"],"quota":{"unit":"token","limit":200000,"period":"day"}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("批准应 200，实得 %d %s", w.Code, w.Body.String())
+	}
+	got := h.accounts.byID[pid]
+	if got.Status != "active" {
+		t.Fatalf("批准后状态应 active，实得 %q", got.Status)
+	}
+	var hasTenant, hasContrib, hasAdmin bool
+	for _, c := range got.Classes {
+		switch c {
+		case "tenant":
+			hasTenant = true
+		case "contributor":
+			hasContrib = true
+		case "admin":
+			hasAdmin = true
+		}
+	}
+	if !hasTenant {
+		t.Fatalf("批准必须授予 tenant 类（否则落组必然失败），实得 %v", got.Classes)
+	}
+	if !hasContrib {
+		t.Fatalf("批准不应抹掉既有 contributor 容器类，实得 %v", got.Classes)
+	}
+	if hasAdmin {
+		t.Fatalf("批准绝不该顺手给 admin 类，实得 %v", got.Classes)
+	}
+	// 审计 Detail 应记下本次授予的类集合（06-audit：批准必带组与额度，
+	// 类也要能复盘——"这个人是怎么拿到 tenant 的"）。
+	var detail string
+	for _, e := range h.audit.entries {
+		if e.Action == "account.approve" && e.Detail != nil {
+			detail = string(e.Detail)
+		}
+	}
+	if !strings.Contains(detail, "tenant") {
+		t.Fatalf("account.approve 的 Detail 应记录授予的类，实得 %q", detail)
+	}
+}
+
+// TestContractImportQuotaUnlimited 锁 CSV 导入与写接口的额度值域同口径：
+// 0 = 全拒、-1 = 不限、正数 = 上限；其余负值按行报错（不整单拒）。
+// 纯解析层测试：这里只验值域判定，落库形态由 store 契约测试锁住。
+func TestContractImportQuotaUnlimited(t *testing.T) {
+	csv := "用户名,密码,组,额度单位,额度上限\n" +
+		"ok_unltd,pw-123456789012,grp,token,-1\n" +
+		"bad_neg,pw-123456789012,grp,token,-2\n" +
+		"ok_zero,pw-123456789012,grp,request,0\n" +
+		"ok_num,pw-123456789012,grp,credit,1000\n"
+	rows, problems := parseImportCSV(csv)
+	if len(problems) != 1 {
+		t.Fatalf("只有 -2 那行应报错，实得问题表 %v", problems)
+	}
+	if !strings.Contains(problems[0], "额度上限仅允许") {
+		t.Fatalf("错误应说明额度上限值域，实得 %q", problems[0])
+	}
+	if len(rows) != 3 {
+		t.Fatalf("应保留 3 行合法数据（-1/0/正数），实得 %d 行", len(rows))
+	}
+	// -1 必须原样进入 ImportRow：桥据此走「删行 = 不限」。
+	if rows[0].QuotaLimit == nil || *rows[0].QuotaLimit != -1 {
+		t.Fatalf("-1 应原样进入 ImportRow，实得 %+v", rows[0])
+	}
+	if rows[1].QuotaLimit == nil || *rows[1].QuotaLimit != 0 {
+		t.Fatalf("0 应原样进入 ImportRow，实得 %+v", rows[1])
+	}
+}
+
+// TestContractApprovalQuotaUnlimited 锁 2026-11-01 定案：额度上限可写 -1 = 不限。
+// -1 不会被拒绝（此前 adminValidQuota 一律拒负），也不会被当成"全拒"。
+func TestContractApprovalQuotaUnlimited(t *testing.T) {
+	h := newAdminHarness(t)
+	tok := h.issueSession(t, "approver3", auth.ClassAdmin)
+	const pid = "00000010-0000-4000-8000-000000000070"
+	h.accounts.byID[pid] = &AdminAccount{
+		ID: pid, Username: "unltd", Status: "pending", Classes: []string{"contributor"},
+	}
+	h.accounts.byName["unltd"] = pid
+
+	w := h.req(t, http.MethodPost, "/api/admin/accounts/pending/"+pid+"/approve", tok,
+		`{"groups":["00000020-0000-4000-8000-000000000001"],"quota":{"unit":"token","limit":-1,"period":"day"}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("quota.limit=-1（不限）应 200，实得 %d %s", w.Code, w.Body.String())
+	}
+	if got := h.accounts.byID[pid].Quota; got == nil || got.Limit != -1 {
+		t.Fatalf("批准后应回显 quota.limit=-1，实得 %+v", got)
+	}
+	// -2 及更小的负数仍然拒绝：既不是不限也不是合法上限。
+	w2 := h.req(t, http.MethodPost, "/api/admin/accounts/pending/"+pid+"/approve", tok,
+		`{"groups":["00000020-0000-4000-8000-000000000001"],"quota":{"unit":"token","limit":-2,"period":"day"}}`)
+	if w2.Code != http.StatusBadRequest {
+		t.Fatalf("quota.limit=-2 应 400（仅 -1/0/正数），实得 %d %s", w2.Code, w2.Body.String())
+	}
+	if !strings.Contains(w2.Body.String(), "quota") {
+		t.Fatalf("错误应指名 quota 字段：%s", w2.Body.String())
+	}
+}
+
 // TestContractResetPasswordRevokesSessions 锁 §5.1：重置密码带联动吊销数，
 // 且 revoke_sessions=false 时不吊销。
 func TestContractResetPasswordRevokesSessions(t *testing.T) {

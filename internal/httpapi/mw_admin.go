@@ -221,8 +221,11 @@ func (s *Server) mwAdmin() func(http.Handler) http.Handler {
 
 // AdminQuota 是账户级额度（02-admin §5.2 的单个对象；used 只读）。
 type AdminQuota struct {
-	Unit   string `json:"unit"`   // request / token / credit
-	Limit  int64  `json:"limit"`  // 0 = 零额度全拒（与"没有该行=不限"互斥）
+	Unit string `json:"unit"` // request / token / credit
+	// Limit：0 = 零额度全拒；**-1 = 不限**（2026-11-01 定案，写响应里回显 -1，
+	// 落库形态是删掉该维度行）；正数 = 上限。读响应里"不限"仍是**没有 quota
+	// 对象**（无行 = 不限），-1 只出现在写载荷与写响应的审计回显里。
+	Limit  int64  `json:"limit"`
 	Used   int64  `json:"used"`   // 只读：由结算写入
 	Period string `json:"period"` // day / month
 }
@@ -1588,8 +1591,15 @@ func adminValidRateLimit(field string, v int64) error {
 	return nil
 }
 
-// adminValidQuota 校验额度对象的单位/周期枚举与下限（02-admin §5.2；
-// limit=0 合法=零额度全拒，"不限"是**没有 quota 对象**）。
+// adminValidQuota 校验额度对象的单位/周期枚举与下限（02-admin §5.2）。
+//
+// limit 的可写值域：0 = 零额度全拒；**-1 = 不限**（2026-11-01 用户定案——
+// 批准表单与账户详情页都用同一个数字输入框表达「不限」，不为它单开一个
+// DELETE 端点）；正数 = 上限。-2 及更小的负数仍拒绝：它们既不是「不限」
+// 也不是合法上限，静默当不限会掩盖调用方的计算错误。
+//
+// 读面不变：账户没有任何额度行时响应里**没有 quota 对象**（无行 = 不限），
+// 所以 -1 只在写载荷与写响应里出现。
 func adminValidQuota(q *AdminQuota) error {
 	if q == nil {
 		return nil
@@ -1604,8 +1614,8 @@ func adminValidQuota(q *AdminQuota) error {
 	default:
 		return fmt.Errorf("quota.period 非法 %q（day/month）", q.Period)
 	}
-	if q.Limit < 0 {
-		return errors.New("quota.limit 不能为负（不限 = 不提供 quota 对象）")
+	if q.Limit < -1 {
+		return fmt.Errorf("quota.limit 仅允许 -1（不限）、0（全拒）或正数，给了 %d", q.Limit)
 	}
 	return nil
 }

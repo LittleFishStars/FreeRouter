@@ -65,6 +65,8 @@ export default function ReviewPage({ def }: PageProps) {
     try {
       await approvePendingAccount(approving.id, {
         groups: [groupId],
+        // -1 = 不限：服务端把它落成「该维度没有额度行」（无行 = 不限），
+        // 额度域永远只有「有行且 >= 0」与「无行」两种事实。
         quota: { unit: quotaUnit, limit: Number(quotaLimit), period: quotaPeriod }
       })
       setApproving(null)
@@ -106,7 +108,7 @@ export default function ReviewPage({ def }: PageProps) {
     >
       <Banner tone="muted">
         批准时必须同时选择组与账户级额度；额度是<strong>每人</strong>一份，名下多把 Key 共享，
-        不会因为多建 Key 而翻倍。
+        不会因为多建 Key 而翻倍。上限填 <strong>-1</strong> 表示不限。
       </Banner>
 
       {approving && (
@@ -144,10 +146,14 @@ export default function ReviewPage({ def }: PageProps) {
                   <option value="credit">Credits</option>
                 </select>
               </Field>
-              <Field label="额度上限" required hint="0 = 全拒；上限按人计。">
+              <Field
+                label="额度上限"
+                required
+                hint="0 = 全拒；-1 = 不限；上限按人计（名下多把 Key 共享这一份）。"
+              >
                 <input
                   type="number"
-                  min={0}
+                  min={-1}
                   value={quotaLimit}
                   onChange={(e) => setQuotaLimit(e.target.value)}
                   required

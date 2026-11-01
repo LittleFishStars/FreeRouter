@@ -670,6 +670,29 @@ func TestContractQuotaConditionalDebit(t *testing.T) {
 	if err := r.Quotas.SetAccountQuota(ctx, acctID, TotalScope, QuotaUnit("requests"), PeriodDay, 5); err == nil {
 		t.Error("旧 dimension 值 requests 被接受，期望拒绝（2026-10-20 起 unit 是单数）")
 	}
+
+	// ⑥ 2026-11-01 定案：limit = -1 = 不限，落库形态是**没有这一行**。
+	//
+	// 为什么不能存 -1：表上 quota_limit CHECK >= 0，而条件扣减是
+	// `used + cost <= limit`——-1 小于任何 cost（含 0），存进去会让
+	// 「设了不限」变成「全拒」，正好反义。所以 SetAccountQuota 必须把它
+	// 翻译成删行；随后扣减要能拿到「无行 → 放行」。
+	if err := r.Quotas.SetAccountQuota(ctx, acctID, TotalScope, UnitToken, PeriodDay, 200000); err != nil {
+		t.Fatalf("先造一行有限额度: %v", err)
+	}
+	if err := r.Quotas.SetAccountQuota(ctx, acctID, TotalScope, UnitToken, PeriodDay, QuotaUnlimited); err != nil {
+		t.Errorf("quota_limit=-1（不限）应被接受并落成删行，实际: %v", err)
+	}
+	if _, err := r.Quotas.AccountQuota(ctx, acctID, TotalScope, UnitToken, PeriodDay); !errors.Is(err, ErrNotFound) {
+		t.Errorf("-1 应落成「无行」（ErrNotFound），实得 %v", err)
+	}
+	if err := r.Quotas.TryDebitAccountQuota(ctx, acctID, TotalScope, UnitToken, PeriodDay, 999999); err != nil {
+		t.Errorf("不限的维度扣减应放行（无行=不设限），实得 %v", err)
+	}
+	// 其余负值仍拒绝：-2 既不是「不限」也不是合法上限。
+	if err := r.Quotas.SetAccountQuota(ctx, acctID, TotalScope, UnitToken, PeriodDay, -2); err == nil {
+		t.Error("quota_limit=-2 被接受，期望拒绝（只有 -1 表示不限）")
+	}
 }
 
 // TestContractRecordRequestAtomicity 覆盖 7.2 的事务边界：

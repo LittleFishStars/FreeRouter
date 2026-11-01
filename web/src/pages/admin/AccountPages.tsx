@@ -491,12 +491,19 @@ export function AccountDetailPage({ def }: PageProps) {
                 <option value="credit">Credits</option>
               </select>
             </Field>
-            <Field label="上限">
+            <Field label="上限" hint="-1 = 不限">
               <input
                 type="number"
-                min={0}
+                min={-1}
                 value={quota.limit}
-                onChange={(e) => setQuota({ ...quota, limit: Number(e.target.value) })}
+                onChange={(e) =>
+                  setQuota({
+                    ...quota,
+                    // 空输入框不要变成 0：Number('') 是 0，会让「清空重填」
+                    // 中途把额度写成「全拒」。保留上一次数字直到填完。
+                    limit: e.target.value === '' ? quota.limit : Number(e.target.value)
+                  })
+                }
               />
             </Field>
             <Field label="周期">

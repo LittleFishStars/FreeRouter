@@ -46,7 +46,8 @@ type ImportRow struct {
 	PasswordHash string
 	// Group 是组 id（grp_ 形态）；空 → 默认组。
 	Group string
-	// QuotaUnit / QuotaLimit 成对出现；limit=0 是「全拒」，缺省是不写行。
+	// QuotaUnit / QuotaLimit 成对出现；limit=0 是「全拒」、-1 是「不限」，
+	// 缺省是不写行。
 	QuotaUnit  string
 	QuotaLimit *int64
 }
@@ -109,6 +110,12 @@ func parseImportCSV(text string) ([]ImportRow, []string) {
 		}
 		if row.QuotaUnit == "" && row.QuotaLimit != nil {
 			problems = append(problems, "第 "+strconv.Itoa(i+1)+" 行：给了额度上限但缺额度单位")
+			continue
+		}
+		// 额度上限值域与写接口同口径：0 = 全拒、-1 = 不限、正数 = 上限。
+		// 其余负值按行报错（不整单拒），与「部分成功」策略一致。
+		if row.QuotaLimit != nil && *row.QuotaLimit < -1 {
+			problems = append(problems, "第 "+strconv.Itoa(i+1)+" 行：额度上限仅允许 -1（不限）、0（全拒）或正数")
 			continue
 		}
 		if row.QuotaUnit != "" && !validQuotaUnit(row.QuotaUnit) {

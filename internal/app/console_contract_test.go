@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/LittleFishStars/FreeRouter/internal/config"
+	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
 
 // console_routes.go 的契约测试（≥4）：会话面端到端（真 SQLite + 真装配）。
@@ -179,5 +182,116 @@ func TestContractConsoleLoginAntiEnumEndToEnd(t *testing.T) {
 	}
 	if r1.Body.String() != r2.Body.String() {
 		t.Fatalf("防枚举破坏：\n%s\nvs\n%s", r1.Body.String(), r2.Body.String())
+	}
+}
+
+//  6. 审核批准端到端：注册出来的 pending 账户（仅 contributor 容器类）经管理面
+//     「批准」后**真的进了组**、状态变 active、拿到 tenant 类、额度行按选择落库。
+//
+// 这是 2026-11-01 那个 500 的回归锁：handler 此前只发 status+groups+quota，
+// 桥先转 active 再落组，落组时账户还没有 tenant 类 → AddMember 报
+// 「无 tenant 类，不能入组」→ 事务回滚 → 500「管理面存储操作失败」，
+// 审核队列里点「确认批准」永远失败。走真 SQLite + 真中间件链，
+// 因为「闸在哪」本身就是被验证的对象（桥的字段顺序、store 的入组前置条件）。
+func TestContractAdminApprovePendingAccountEndToEnd(t *testing.T) {
+	a := newConsoleTestApp(t)
+	h := a.Handler()
+	ctx := context.Background()
+
+	// 建首个 admin（向导）+ 登录，拿到管理面会话。
+	if rec := doConsole(t, h, http.MethodPost, "/api/setup/init",
+		`{"username":"root","password":"correct-horse-battery"}`, "", ""); rec.Code != http.StatusCreated {
+		t.Fatalf("init 应 201，得 %d（%s）", rec.Code, rec.Body.String())
+	}
+	login := doConsole(t, h, http.MethodPost, "/api/auth/login",
+		`{"username":"root","password":"correct-horse-battery"}`, "", "")
+	if login.Code != http.StatusOK {
+		t.Fatalf("登录应 200，得 %d（%s）", login.Code, login.Body.String())
+	}
+	cookie := "fr_session=" + login.Result().Cookies()[0].Value
+
+	// 自助注册一个账户：落库形态是 pending + 仅 contributor 容器类、不进组。
+	if rec := doConsole(t, h, http.MethodPost, "/api/register",
+		`{"username":"newbie","password":"correct-horse-battery"}`, "", ""); rec.Code != http.StatusCreated {
+		t.Fatalf("注册应 201，得 %d（%s）", rec.Code, rec.Body.String())
+	}
+	pend, err := a.store.Repos().Accounts.GetAccountByUsername(ctx, "newbie")
+	if err != nil {
+		t.Fatalf("读取注册账户失败：%v", err)
+	}
+	if pend.Status != store.AccountPending {
+		t.Fatalf("注册后状态应 pending，得 %q", pend.Status)
+	}
+	// 回归锁的前置条件必须真的成立，否则这条测试测不到那个 500。
+	var hasTenant bool
+	for _, c := range pend.Classes {
+		if c == store.ClassTenant {
+			hasTenant = true
+		}
+	}
+	if hasTenant {
+		t.Fatalf("注册出来的 pending 账户不应带 tenant 类（回归前提），实得 %v", pend.Classes)
+	}
+
+	// 默认组 id（批准表单里的「加入组」）。
+	defID, err := a.store.EnsureDefaultGroup(ctx, 0)
+	if err != nil {
+		t.Fatalf("取默认组失败：%v", err)
+	}
+
+	// 批准：组 + 额度（这里顺带用 -1 = 不限，一并锁住新定案）。
+	rec := doConsole(t, h, http.MethodPost,
+		"/api/admin/accounts/pending/"+pend.ID+"/approve",
+		fmt.Sprintf(`{"groups":[%q],"quota":{"unit":"token","limit":-1,"period":"day"}}`, defID),
+		cookie, "XMLHttpRequest")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("批准应 200，实得 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// ① 状态转 active；② 组真的写进 group_members（不是"接口说成功了"）。
+	after, err := a.store.Repos().Accounts.GetAccount(ctx, pend.ID)
+	if err != nil {
+		t.Fatalf("批准后读账户失败：%v", err)
+	}
+	if after.Status != store.AccountActive {
+		t.Fatalf("批准后状态应 active，得 %q", after.Status)
+	}
+	hasTenant = false
+	for _, c := range after.Classes {
+		if c == store.ClassTenant {
+			hasTenant = true
+		}
+	}
+	if !hasTenant {
+		t.Fatalf("批准后应获得 tenant 类，实得 %v", after.Classes)
+	}
+	groups, err := a.store.Repos().Groups.ListAccountGroups(ctx, pend.ID)
+	if err != nil {
+		t.Fatalf("读账户所属组失败：%v", err)
+	}
+	if len(groups) != 1 || groups[0] != defID {
+		t.Fatalf("批准后应恰好属于默认组 %s，实得 %v", defID, groups)
+	}
+
+	// ③ 额度 -1 = 不限 → 落库形态是**没有这一行**（额度域只有「有行且 >=0」
+	// 与「无行」两种事实；存 -1 会让 used+cost<=limit 恒假、设了不限反而全拒）。
+	qs, err := a.store.Repos().Quotas.AccountQuota(ctx, pend.ID, store.TotalScope,
+		store.UnitToken, store.PeriodDay)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("quota=-1 应落成「无行」（不限，AccountQuota 报 ErrNotFound），实得 %v（行=%+v）", err, qs)
+	}
+
+	// ④ 账户本人此后能发 Key（tenant 类到位的最直接外部表现）。
+	info, err := a.store.Repos().Accounts.AccountStatusOf(ctx, pend.ID)
+	if err != nil {
+		t.Fatalf("读账户状态失败：%v", err)
+	}
+	if info.Status != string(store.AccountActive) {
+		t.Fatalf("AccountStatusOf 应报 active，得 %q", info.Status)
+	}
+	// 自助面（账户本人点「刷新状态」）看到的类集合必须含 tenant——否则
+	// 本人登录后仍然发不出 Key，会以为批准没生效。
+	if len(info.Classes) != 2 { // contributor（注册时的容器类，保留）+ tenant
+		t.Fatalf("批准后的类集合应含 contributor 与 tenant，实得 %v", info.Classes)
 	}
 }
