@@ -31,7 +31,7 @@ import (
 // 的 defer 里，不能依赖 handler 的局部变量生命周期。
 type SettleInput struct {
 	RequestID string
-	// Endpoint 是 requests.endpoint 的受控词表值（0001_init.sql CHECK：
+	// Endpoint 是 requests.endpoint 的受控词表值（0016 迁移后含 openai-completion；
 	// openai-chat / openai-responses / anthropic-messages / gemini-generate）。
 	Endpoint string
 	// AccountID / KeyID 是对外字符串 id（acc_42 / key_7）。

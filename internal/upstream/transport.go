@@ -81,10 +81,14 @@ func (t *HTTPTransport) Do(ctx context.Context, tgt Target, body []byte, opts ht
 	}
 	defer release()
 
-	// 拼 URL：BaseURL + /chat/completions（openai-chat 方言的既定路径）。
-	// responses 方言在 M5 入站侧自解码；vendor 出站按 chat 走（03-upstream.md §4
-	// 「默认 OpenAI 兼容（chat 为主）」）。
-	endpoint := strings.TrimRight(tgt.BaseURL, "/") + "/chat/completions"
+	// 拼 URL：路径由候选方言决定（opts.adapter.Name()），不是写死。
+	//
+	// 为什么必须按方言分：文本补全（FIM）是 /completions，对话是 /chat/completions，
+	// 两个路径在上游是不同资源；写死 chat 路径会让 FIM 请求打到 chat 端点，
+	// 得到"messages 必填"的 400 —— 错误现场漂到上游，排查成本极高。
+	// 官方 FIM 还在 beta 下（base_url 带 /beta），由上游行的 BaseURL 承载，
+	// 传输层不猜、不改写（地址是配置的职责）。
+	endpoint := strings.TrimRight(tgt.BaseURL, "/") + endpointPathFor(opts.adapter)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, &Error{Class: ErrBadRequest, Message: "构造出站请求失败: " + err.Error()}
@@ -123,6 +127,22 @@ func (t *HTTPTransport) Do(ctx context.Context, tgt Target, body []byte, opts ht
 		}
 	}
 	return resp.Body, resp.StatusCode, nil
+}
+
+// endpointPathFor 按方言给出出站路径。
+//
+// 默认 /chat/completions：这是"OpenAI 兼容"最广的形态，也是 relay 与
+// vendor 的既定口径（03-upstream.md §4）。
+func endpointPathFor(ad ir.Adapter) string {
+	if ad == nil {
+		return "/chat/completions"
+	}
+	switch ad.Name() {
+	case ir.ProtocolOpenAICompletion:
+		return "/completions"
+	default:
+		return "/chat/completions"
+	}
 }
 
 // readSnippet 读错误体的前 n 字节（错误体不是契约内容，仅排障日志用）。

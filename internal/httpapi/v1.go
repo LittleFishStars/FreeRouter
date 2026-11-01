@@ -17,6 +17,7 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
 	"github.com/LittleFishStars/FreeRouter/internal/ir/anthropic"
 	"github.com/LittleFishStars/FreeRouter/internal/ir/openai"
+	"github.com/LittleFishStars/FreeRouter/internal/ir/openai/completion"
 	"github.com/LittleFishStars/FreeRouter/internal/routing"
 )
 
@@ -63,13 +64,14 @@ var ErrModelNotFound = errors.New("v1: model_not_found")
 // AttemptFailure 是一次候选尝试的失败原因（2026-11-01：不可用台账的数据面）。
 //
 // 为什么 httpapi 只给「原因码 + 原始错误」而不自己做完整分类：
-//   分类的真值表在 internal/upstream/errors.go（ErrClass），而 httpapi 刻意
-//   **不 import** internal/upstream（依赖方向：上游层在 L3，协议面板在 L2）。
-//   所以这里只落两件事：
-//     - Kind：httpapi 自己能判的那部分（协议解析失败等），稳定码；
-//     - Err：上游返回的原始错误（不透明），由装配层用 errors.As(*upstream.Error)
-//       取 Class 完成最终分类。
-//   这条分工让「哪些失败算模型不可用」的策略留在装配层一处。
+//
+//	分类的真值表在 internal/upstream/errors.go（ErrClass），而 httpapi 刻意
+//	**不 import** internal/upstream（依赖方向：上游层在 L3，协议面板在 L2）。
+//	所以这里只落两件事：
+//	  - Kind：httpapi 自己能判的那部分（协议解析失败等），稳定码；
+//	  - Err：上游返回的原始错误（不透明），由装配层用 errors.As(*upstream.Error)
+//	    取 Class 完成最终分类。
+//	这条分工让「哪些失败算模型不可用」的策略留在装配层一处。
 type AttemptFailure struct {
 	// Kind 是 httpapi 侧能直接判定的原因码（见 AttemptFailure* 常量）；
 	// 空串表示「交给装配层按 Err 分类」。
@@ -623,8 +625,9 @@ func writeV1Trace(w http.ResponseWriter, ctx context.Context) {
 
 // adapters 全局缓存：Adapter() 零值可用，包级单例避免每请求分配。
 var adapters = map[ir.Protocol]ir.Adapter{
-	ir.ProtocolOpenAIChat: openai.Adapter(),
-	ir.ProtocolAnthropic:  anthropic.Adapter(),
+	ir.ProtocolOpenAIChat:       openai.Adapter(),
+	ir.ProtocolOpenAICompletion: completion.Adapter(),
+	ir.ProtocolAnthropic:        anthropic.Adapter(),
 }
 
 // adapterFor 按协议取适配器；responses 方言在 v1responses.go 里自解码。

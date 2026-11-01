@@ -19,6 +19,7 @@ import (
 
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
 	"github.com/LittleFishStars/FreeRouter/internal/ir/openai"
+	"github.com/LittleFishStars/FreeRouter/internal/ir/openai/completion"
 	"github.com/LittleFishStars/FreeRouter/internal/upstream/dshprovider"
 )
 
@@ -775,3 +776,24 @@ func TestContractRelayTransportValidationOrder(t *testing.T) {
 
 // lookPathNode / startFakeClient 在文末（与 dshprovider 测试同款基建，但独立维护
 // ——两个包的 fake 起停细节有差异，复制比跨包共享 test 代码干净）。
+
+// TestContractEndpointPathPerDialect：出站路径按方言分（FIM 是 /completions）。
+//
+// 为什么值得单独钉：路径写死 chat 会让补全请求打到 chat 端点，上游回
+// "messages 必填"的 400——请求失败在对的地方、原因指向错的地方。
+func TestContractEndpointPathPerDialect(t *testing.T) {
+	cases := []struct {
+		name    string
+		adapter ir.Adapter
+		want    string
+	}{
+		{"chat", openai.Adapter(), "/chat/completions"},
+		{"completion", completion.Adapter(), "/completions"},
+		{"nil", nil, "/chat/completions"}, // 未装配适配器时按最通用的 chat 兜底
+	}
+	for _, c := range cases {
+		if got := endpointPathFor(c.adapter); got != c.want {
+			t.Errorf("%s: endpointPathFor = %q，期望 %q", c.name, got, c.want)
+		}
+	}
+}

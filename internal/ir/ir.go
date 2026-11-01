@@ -279,7 +279,32 @@ type Request struct {
 	Format   *ResponseFormat // nil = 未指定
 	Effort   Effort
 	Stream   bool
-	Extra    RequestMeta
+	// Completion 非 nil 时，本次请求是**文本补全**（FIM）而不是对话：
+	// 入参是 prompt + suffix 而不是 messages，出参是纯文本而不是 parts。
+	//
+	// 为什么不让它和 Messages 混在一起：FIM 的 prompt 是"待续写的原文片段"，
+	// 没有角色、没有系统提示、不能有工具——把它塞进 messages[0].parts 会
+	// 逼着每个协议适配器去判"这条 user 消息其实是 FIM"，正是 IR 要消除的方言耦合。
+	// 二者互斥：Completion 非 nil 时 Messages 必须为空（Validate 会查）。
+	Completion *Completion
+	Extra      RequestMeta
+}
+
+// Completion 是文本补全（FIM）的入参语义。
+//
+// 对应 DeepSeek 官方 FIM Completion API（base_url 需带 /beta）：
+// prompt 是前缀、suffix 是后缀，模型补出中间那段。
+// 为什么 suffix 是核心字段而不是可选装饰：没有它就不是 FIM 而是普通续写，
+// 两者在上游走不同的模型路径；丢掉 suffix 会静默变成"续写"——语义完全变了。
+type Completion struct {
+	// Prompt 是补全点之前的文本（必填）。
+	Prompt string
+	// Suffix 是补全点之后的文本。空串表示"没有后缀"（普通续写），
+	// 与"没给 suffix"在上游语义相同，故用空串表示而不是指针。
+	Suffix string
+	// Echo 为 true 时要求响应带上原文（官方 echo）。官方限制：与 suffix
+	// 或 logprobs 不能同时使用——冲突由能力复核报 invalid_request，不静默取舍。
+	Echo bool
 }
 
 // StopReason 是结束原因。
@@ -367,6 +392,23 @@ func (e *Error) Error() string {
 func (r *Request) Validate() error {
 	if r == nil {
 		return &InvalidRequestError{Param: "request", Detail: "请求为空"}
+	}
+	// 文本补全（FIM）与对话互斥：二者的入参形状完全不同，同时给出意味着
+	// 客户端不确定自己要什么——报错比猜一个更诚实。
+	if r.Completion != nil {
+		if len(r.Messages) > 0 {
+			return &InvalidRequestError{Param: "messages",
+				Detail: "文本补全请求（prompt/suffix）不能同时携带 messages"}
+		}
+		if len(r.Tools) > 0 || r.Choice.Mode != "" {
+			return &InvalidRequestError{Param: "tools",
+				Detail: "文本补全请求不能携带 tools/tool_choice（协议不支持）"}
+		}
+		// 官方限制：echo 不能与 suffix 或 logprobs 同时使用。
+		if r.Completion.Echo && r.Completion.Suffix != "" {
+			return &InvalidRequestError{Param: "echo",
+				Detail: "echo 不能与 suffix 同时使用（官方限制）"}
+		}
 	}
 	seenCalls := make(map[string]int) // tool_call id → part 序号，用于配对与重复检测
 	for mi, msg := range r.Messages {

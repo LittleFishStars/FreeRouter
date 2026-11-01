@@ -124,6 +124,8 @@ func (s *Server) Handler() http.Handler {
 	// v1 协出面：仅在鉴权链就位时挂载（见上注）。
 	if s.authChain != nil {
 		r.Post("/v1/chat/completions", s.HandleV1Chat)
+		// 文本补全（FIM Beta）：与 chat 是两个协议（prompt/suffix vs messages）。
+		r.Post("/v1/completions", s.HandleV1Completions)
 		r.Post("/v1/messages", s.HandleV1Messages)
 		r.Post("/v1/responses", s.HandleV1Responses)
 		r.Get("/v1/models", s.HandleV1Models)

@@ -34,6 +34,8 @@
 | `/v1/chat/completions` | `Authorization: Bearer fr-xxxxxxxx…` | OpenAI 客户端默认形态 |
 | `/v1/messages` | `x-api-key: fr-xxxxxxxx…` | Anthropic 客户端默认形态 |
 | `/v1/messages` | `Authorization: Bearer fr-xxxxxxxx…` | 兼容形态，二者取其一 |
+| `/v1/completions` | `Authorization: Bearer fr-xxxxxxxx…` | 文本补全（FIM，Beta），见第 10 节 |
+| `/v1/responses` | `Authorization: Bearer fr-xxxxxxxx…` | OpenAI Responses 方言，见第 9 节 |
 | `/v1/models` | 同上游客户端形态 | 需要知道是哪个 Key，见 5.2 |
 
 `/v1/messages` 还接受 `anthropic-version` 头并回显它（见 3.3）。
@@ -447,5 +449,45 @@ x-fr-trace: real=dsh:deepseek-official/deepseek-flash; cred=cred_01J8; attempt=1
 > **待定**：`/v1/models` 在未鉴权时是否有必要提供一个 "仅名称、无能力细节"的公开列表？当前一律 401。
 
 > **待定**：`reasoning_effort` 在 Anthropic 路径上如何映射？ Anthropic 用 `thinking.budget_tokens`，OpenAI 用枚举档位， 两者的换算关系总纲未定义。
+
+## 10. `/v1/completions`（文本补全 / FIM，Beta）
+
+对齐 DeepSeek 官方 **FIM Completion API（Beta）**（`api-docs /api/create-completion`，
+官方要求 `base_url` 带 `/beta`）。它与 `/v1/chat/completions` 是**两个协议**，
+不是一个端点的别名：
+
+| 维度 | `/v1/chat/completions` | `/v1/completions` |
+|---|---|---|
+| 入参 | `messages[]` | `prompt`（必填）+ `suffix` |
+| 出参 | `choices[].message.content` | `choices[].text` |
+| 流式增量 | `choices[].delta.content` | `choices[].text` |
+| 思考/工具/图片 | 支持 | **协议无位置**（能力表为 false，带这些字段会 400 `capability_missing`）|
+
+```json
+{"model":"smart","prompt":"def add(a, b):\n","suffix":"\nreturn a + b",
+ "max_tokens":64,"temperature":0.2,"stop":["\n\n"],"stream":false}
+```
+
+**约束（官方口径，逐条落地）**：
+
+| 条件 | 行为 |
+|---|---|
+| `prompt` 为空 | 400，`param=prompt`（空 prompt 在 FIM 里没有意义）|
+| `echo` 与 `suffix` 同时给出 | 400，`param=echo`（官方限制）|
+| `echo` 与 `logprobs` 同时给出 | 400，`param=logprobs`（官方限制）|
+| `presence_penalty` / `frequency_penalty` | 忽略 + `warn`（官方已弃用）|
+| `logprobs` | 忽略 + `warn`（IR 不承载 token 级对数概率）|
+| `stop` 超过 16 个 | 400（与 chat 面同一上限）|
+| `finish_reason=insufficient_system_resource` / `aborted` | 归一到 `StopError`（**不是** `end_turn`——那是上游中断，伪装成"说完了"会误导审计与重试）|
+
+**为什么 `suffix` 不是可选装饰**：没有 `suffix` 就不是 FIM 而是普通续写，
+两者在上游走不同路径。丢掉它等于静默改变语义，因此在 IR 里 `Completion.Suffix`
+是核心字段（空串表示"没有后缀"，编码时省略该字段而不是发空串）。
+
+**为什么在非 `/v1/chat/completions` 的路径上**：官方 FIM 的路径就是 `/completions`。
+把它放在 chat 路径下会让客户端以为可以传 `messages`，而实际能力表会拒绝——
+错误出现在能力表而不是路径，排查成本更高。
+
+---
 
 > **待定**：`/v1/responses` 与 `generateContent`（P1）的 IR 映射细节， 是否需要在 MVP 的 IR 设计里预留（当前 IR 已含 `parts[]`， 但两个协议的输入结构差异较大）。

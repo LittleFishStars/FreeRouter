@@ -15,8 +15,13 @@ type Protocol string
 const (
 	ProtocolOpenAIChat      Protocol = "openai_chat"
 	ProtocolOpenAIResponses Protocol = "openai_responses"
-	ProtocolAnthropic       Protocol = "anthropic_messages"
-	ProtocolGemini          Protocol = "gemini_generate_content"
+	// ProtocolOpenAICompletion 是文本补全（FIM）方言：POST /completions，
+	// 入参 prompt/suffix、出参纯文本（DeepSeek 官方 FIM Beta）。
+	// 它与 openai_chat 是两个不同协议而不是同一个协议的选项：请求体、
+	// 响应体、流式帧三处形状都不同，混用一个协议常量会让能力表无法区分。
+	ProtocolOpenAICompletion Protocol = "openai_completion"
+	ProtocolAnthropic        Protocol = "anthropic_messages"
+	ProtocolGemini           Protocol = "gemini_generate_content"
 )
 
 // Capability 是"请求需要、候选不一定具备"的一项能力。
@@ -49,6 +54,13 @@ const (
 	CapFrequencyPenalty Capability = "frequency_penalty"
 	CapLogprobs         Capability = "logprobs"
 
+	// CapTextCompletion 表示协议支持文本补全（FIM：prompt/suffix → 中间文本）。
+	// 它是独立能力而不是 CapTools 的变体：只有 completions 方言具备，
+	// chat/messages 方言都不具备——请求带 Completion 时后两者必须被过滤/报错。
+	CapTextCompletion Capability = "text_completion"
+	// CapCompletionEcho：支持把 prompt 原文回显在响应里（FIM 的 echo 参数）。
+	CapCompletionEcho Capability = "completion_echo"
+
 	// CapImageOutput 与 CapImageToolResult 用于**响应方向**：模型产出图片、工具结果带图片。
 	// 请求方向的能力复核拦不住它们，必须在编码响应时再查一次。
 	CapImageOutput     Capability = "image_output"
@@ -78,6 +90,10 @@ type Capabilities struct {
 	Efforts map[Effort]bool
 	// MaxStopSequences 是停止词个数上限；0 表示不限。
 	MaxStopSequences int
+	// TextCompletion 表示该方言支持文本补全（FIM）。
+	TextCompletion bool
+	// CompletionEcho 表示该方言支持把 prompt 原文回显（FIM 的 echo）。
+	CompletionEcho bool
 }
 
 // Has 报告某个能力是否具备。
@@ -109,6 +125,10 @@ func (c Capabilities) Has(cap Capability) bool {
 		return c.Seed
 	case CapStreamUsage:
 		return c.StreamUsage
+	case CapTextCompletion:
+		return c.TextCompletion
+	case CapCompletionEcho:
+		return c.CompletionEcho
 	}
 	return false
 }
@@ -303,6 +323,21 @@ func (c Capabilities) Check(req *Request) ([]Warning, error) {
 					}
 				}
 			}
+		}
+	}
+
+	// 文本补全（FIM）：只有 completions 方言具备，Chat/Messages 都必须拒绝。
+	// 为什么必须在能力复核里查：Completion 非 nil 时 Messages 为空，
+	// 下面的工具/图片检查全部空转，忘了这一条就会把 FIM 请求编成一条
+	// "没有 messages 的 chat 请求"发出去——上游 400，错误现场漂到上游。
+	if req.Completion != nil {
+		if !c.TextCompletion {
+			return warns, &UnsupportedError{Capability: CapTextCompletion, Protocol: c.Protocol,
+				PartIndex: -1, Detail: "目标协议不支持文本补全（prompt/suffix）"}
+		}
+		if req.Completion.Echo && !c.CompletionEcho {
+			return warns, &UnsupportedError{Capability: CapCompletionEcho, Protocol: c.Protocol,
+				PartIndex: -1, Detail: "目标协议不支持 echo（回显 prompt 原文）"}
 		}
 	}
 
