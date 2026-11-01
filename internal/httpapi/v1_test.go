@@ -809,3 +809,42 @@ func TestContractV1ResponsesStream(t *testing.T) {
 		t.Fatalf("Responses 流式不应以 [DONE] 收尾（那是 Chat 的形状）；body=%s", body)
 	}
 }
+
+// TestContractV1ModelRetrieve：GET /v1/models/{id} 只认抽象模型，真实模型名 404。
+//
+// 为什么必须钉这条：SDK 常在正式请求前先 retrieve；缺端点会让它们第一步就失败。
+// 而"能查到真实模型名"会泄露池结构——两条红线互相拉扯，只能靠测试固定。
+func TestContractV1ModelRetrieve(t *testing.T) {
+	cs := &fakeCandidates{models: map[string][]Candidate{}}
+	s := newV1Server(t, &fakeUpstream{}, cs)
+	s.AttachV1Models(&fakeCatalog{ids: []string{"smart"}})
+
+	// 存在的抽象模型：200 且形状是 model 对象。
+	rec := httptest.NewRecorder()
+	r := v1Request("GET", "/v1/models/smart", "")
+	s.HandleV1ModelRetrieve(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200；body=%s", rec.Code, rec.Body.String())
+	}
+	var entry struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		OwnedBy string `json:"owned_by"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &entry); err != nil {
+		t.Fatalf("响应不是合法 JSON：%v", err)
+	}
+	if entry.ID != "smart" || entry.Object != "model" || entry.OwnedBy != "free-router" {
+		t.Errorf("条目形状错误：%+v", entry)
+	}
+
+	// 不存在的 id（含真实模型名）：404 且文案与"根本不存在"一致（不泄露池结构）。
+	rec2 := httptest.NewRecorder()
+	s.HandleV1ModelRetrieve(rec2, v1Request("GET", "/v1/models/deepseek-flash", ""))
+	if rec2.Code != http.StatusNotFound {
+		t.Fatalf("状态码 = %d，期望 404（真实/未知模型名一律不可见）", rec2.Code)
+	}
+	if !strings.Contains(rec2.Body.String(), "model_not_found") {
+		t.Errorf("错误码应为 model_not_found；body=%s", rec2.Body.String())
+	}
+}

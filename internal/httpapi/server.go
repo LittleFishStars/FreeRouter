@@ -129,6 +129,8 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/v1/messages", s.HandleV1Messages)
 		r.Post("/v1/responses", s.HandleV1Responses)
 		r.Get("/v1/models", s.HandleV1Models)
+		// retrieve 单模型：SDK 在正式请求前常先确认模型存在（OpenAI models.retrieve）。
+		r.Get("/v1/models/{id}", s.HandleV1ModelRetrieve)
 	}
 
 	// 兜底路由：注入了前端时，非 API 路径交给 SPA（HashRouter 也受益——

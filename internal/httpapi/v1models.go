@@ -14,6 +14,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -101,4 +102,60 @@ func (s *Server) HandleV1Models(w http.ResponseWriter, r *http.Request) {
 type modelsList struct {
 	Object string       `json:"object"`
 	Data   []ModelEntry `json:"data"`
+}
+
+// HandleV1ModelRetrieve 处理 GET /v1/models/{id}（OpenAI 的 retrieve model 形态）。
+//
+// 为什么值得单独提供：大量 SDK 在正式流式请求前会先 retrieve 一次模型确认存在
+// （OpenAI 官方 SDK 的 models.retrieve），缺了这个端点它们会在第一步就 404，
+// 而 `/v1/models` 列表本身是通的——那种"列表里有、单个查不到"的不一致最难解释。
+//
+// 红线同列表：只能查**抽象模型 id**。真实模型名必须 404（02-abstract §6.2：
+// 对外暴露真实模型名等于把池结构念给租户听）。
+func (s *Server) HandleV1ModelRetrieve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeV1Error(w, "invalid_request", "方法不允许", requestIDOf(r))
+		return
+	}
+	requestID := requestIDOf(r)
+	ensureHeaders(w, requestID)
+
+	if !hasAuthedAccount(r) {
+		s.writeV1Error(w, "invalid_api_key", "缺少有效的 API Key", requestID)
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/v1/models/")
+	if id == "" || strings.Contains(id, "/") {
+		// 空 id 或更深路径都不是合法资源：404（不引导客户端猜）。
+		s.writeV1Error(w, "model_not_found", "模型不存在", requestID)
+		return
+	}
+
+	cat := s.v1Catalog()
+	if cat == nil {
+		s.writeV1Error(w, "model_not_found", "模型不存在", requestID)
+		return
+	}
+	ids, err := cat.ListModelIDs(r.Context())
+	if err != nil {
+		s.log.Warn("v1 model retrieve catalog error", "request_id", requestID, "error", err)
+		s.writeV1Error(w, "internal_error", "模型目录不可用", requestID)
+		return
+	}
+	for _, mid := range ids {
+		if mid != id {
+			continue
+		}
+		writeJSON(w, http.StatusOK, ModelEntry{
+			ID:      mid,
+			Object:  "model",
+			Created: time.Now().Unix(),
+			OwnedBy: "free-router",
+		})
+		return
+	}
+	// 不存在（含真实模型名）：404 model_not_found，文案与列表外一切未知 id 一致——
+	// 不区分"是真实模型名"与"根本不存在"，否则等于确认了池结构。
+	s.writeV1Error(w, "model_not_found", "模型不存在", requestID)
 }
