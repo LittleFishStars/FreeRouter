@@ -75,6 +75,12 @@ func (a adapter) EncodeRequest(req *ir.Request, opt ir.EncodeOptions) ([]byte, [
 			out.Thinking = cfg
 			warns = append(warns, w...)
 		}
+		// 档位同时写进 output_config.effort：官方 Anthropic 兼容面只认这个字段来定档
+		// （api-docs：budget_tokens 被忽略、output_config 仅支持 effort）。
+		// 只发 budget_tokens 会让 effort 在官方上游完全失效，等于静默降档。
+		if effort, ok := encodeOutputEffort(req.Effort); ok {
+			out.OutputConfig = &outputConfig{Effort: effort}
+		}
 	}
 
 	body, err := json.Marshal(out)
@@ -82,6 +88,21 @@ func (a adapter) EncodeRequest(req *ir.Request, opt ir.EncodeOptions) ([]byte, [
 		return nil, warns, &ir.InvalidRequestError{Param: "body", Detail: "编码失败：" + err.Error()}
 	}
 	return body, warns, nil
+}
+
+// encodeOutputEffort 把 IR 档位编码成 output_config.effort 的官方取值。
+func encodeOutputEffort(e ir.Effort) (string, bool) {
+	switch e {
+	case ir.EffortOff:
+		return "none", true
+	case ir.EffortLow:
+		return "low", true
+	case ir.EffortHigh:
+		return "high", true
+	case ir.EffortMax:
+		return "max", true
+	}
+	return "", false
 }
 
 // defaultMaxTokens 是跨协议转来时补的输出上限。取一个"不至于截断正常回答、

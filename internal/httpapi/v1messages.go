@@ -46,15 +46,17 @@ func (s *Server) HandleV1Messages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Anthropic 形状的早期校验：max_tokens 必填（§6.1）。
-	// 为什么在 ir 解码前单独判：ir.Request.Sampling.MaxOutput 是「已归一」
-	// 字段，缺失语义在方言层；Anthropic 契约要求 400 的 param 指向
-	// max_tokens——方言层判才能给出准确错误位。
+	// max_tokens 不再强制（2026-11-02）：DeepSeek 官方 Anthropic 兼容面已把它改成
+	// 请求可选（api-docs /guides/anthropic_api：Optional in HTTP requests，默认与
+	// 有效上限取决于模型、思考模式与 effort）。以前在这里硬判会让官方 SDK
+	// 省略该字段的调用直接 400——这是把「上游放宽的契约」变成我们的硬错误。
+	// 缺失时由上游取默认值；我们不补默认（补默认值等于替用户定成本预算）。
 	var probe struct {
 		MaxTokens *int `json:"max_tokens"`
 	}
-	if err := json.Unmarshal(body, &probe); err == nil && probe.MaxTokens == nil {
-		s.writeV1AnthropicError(w, "invalid_request", "max_tokens 是必填字段", requestID)
+	if err := json.Unmarshal(body, &probe); err == nil && probe.MaxTokens != nil && *probe.MaxTokens <= 0 {
+		// 显式给了非正数才是非法：官方要求它是正整数上限。
+		s.writeV1AnthropicError(w, "invalid_request", "max_tokens 必须是正整数", requestID)
 		return
 	}
 
@@ -83,11 +85,10 @@ func (s *Server) HandleV1Messages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.proxyV1(r.Context(), w, proxyReq{
-		req:               *req,
-		inbound:           adapterFor(ir.ProtocolAnthropic),
-		anthropicShape:    true,
-		maxTokensRequired: true,
-		traceRequested:    wantsTrace(r),
-		endpoint:          "anthropic-messages", // 同上：词表受 CHECK 约束
+		req:            *req,
+		inbound:        adapterFor(ir.ProtocolAnthropic),
+		anthropicShape: true,
+		traceRequested: wantsTrace(r),
+		endpoint:       "anthropic-messages", // 同上：词表受 CHECK 约束
 	}, requestID)
 }

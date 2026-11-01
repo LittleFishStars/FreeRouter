@@ -88,6 +88,12 @@ func (a adapter) EncodeRequest(req *ir.Request, opt ir.EncodeOptions) ([]byte, [
 			return nil, warns, ir.NewUnsupported(ir.ProtocolOpenAIChat, ir.CapReasoningEffort, -1,
 				"档位 "+string(req.Effort)+" 无法编码")
 		}
+		// thinking 与 reasoning_effort 同时发出：官方语义是 thinking 切开关、
+		// effort 定档。只发 effort 已够（官方会让它决定模式），但显式 disabled
+		// 时必须带 thinking——否则部分兼容上游会把 effort=none 当成空字段忽略。
+		if req.Effort == ir.EffortOff {
+			out.Thinking = &thinkingParam{Type: "disabled"}
+		}
 		out.ReasoningEffort = ir.Ptr(effort)
 	}
 
@@ -113,7 +119,10 @@ func encodeEffort(e ir.Effort) (string, bool) {
 	case ir.EffortHigh:
 		return "high", true
 	case ir.EffortMax:
-		return "high", true // 只在候选声明了 max 时才会到；OpenAI 侧不存在该值，故降为 high
+		// 官方 Chat API 的 reasoning_effort 接受 max（api-docs /create-chat-completion）——
+		// 以前降为 high 是因为把它当「上游不存在该值」，现已不成立：降成 high 会
+		// 静默削弱用户要求的最高推理预算。原样透传，让上游决定。
+		return "max", true
 	}
 	return "", false
 }
@@ -187,8 +196,11 @@ func encodeMessages(msgs []ir.Message) ([]message, error) {
 					return nil, &ir.InvalidRequestError{Param: fmt.Sprintf("messages[%d]", mi),
 						Detail: "user 消息里不能有工具调用"}
 				case ir.ThinkingPart:
-					// 能力复核已经拦过；保留这个分支是为了将来 CapThinking 打开时编译器能提醒。
-					return nil, ir.NewUnsupported(ir.ProtocolOpenAIChat, ir.CapThinking, v.Idx, "")
+					// user 消息里的思考块没有承载位：reasoning_content 只存在于
+					// assistant 消息。翻译成文本会把它当成用户说的话（语义错位），
+					// 所以仍报能力缺失，不静默丢弃。
+					return nil, ir.NewUnsupported(ir.ProtocolOpenAIChat, ir.CapThinking, v.Idx,
+						"user 消息里的思考块无法编码（reasoning_content 只在 assistant 消息）")
 				}
 			}
 			_ = haveToolCall
@@ -204,6 +216,7 @@ func encodeMessages(msgs []ir.Message) ([]message, error) {
 
 		case ir.RoleAssistant:
 			var txt string
+			var reasoning string
 			var calls []toolCall
 			for _, p := range m.Parts {
 				switch v := p.(type) {
@@ -218,13 +231,18 @@ func encodeMessages(msgs []ir.Message) ([]message, error) {
 					return nil, ir.NewUnsupported(ir.ProtocolOpenAIChat, ir.CapImageOutput, v.Idx,
 						"OpenAI 的 assistant 消息不能携带图片")
 				case ir.ThinkingPart:
-					return nil, ir.NewUnsupported(ir.ProtocolOpenAIChat, ir.CapThinking, v.Idx, "")
+					// 历史里的思考内容编码为 reasoning_content（官方多轮指南：回传历史时
+					// 下一轮的 reasoning_content 可以被忽略，但带它不会错）。
+					// 带签名的回传已在能力复核拦下（ThinkingSignature=false）。
+					if v.Text != "" {
+						reasoning += v.Text
+					}
 				case ir.ToolResultPart:
 					return nil, &ir.InvalidRequestError{Param: fmt.Sprintf("messages[%d]", mi),
 						Detail: "assistant 消息里不能有工具结果"}
 				}
 			}
-			m2 := message{Role: "assistant", ToolCalls: calls}
+			m2 := message{Role: "assistant", ToolCalls: calls, ReasoningContent: reasoning}
 			if txt != "" {
 				b, _ := json.Marshal(txt)
 				m2.Content = b

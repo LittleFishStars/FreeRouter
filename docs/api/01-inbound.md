@@ -273,7 +273,13 @@ Link: </docs/models/smart>; rel="deprecation"
 |---|---|---|
 | system | 顶层 `system` 字段（不是 messages 里的一条） | `messages[0].role = "system"` |
 | 工具声明 | `name` / `description` / `input_schema` 平铺 | `type:"function"` + 嵌套 `function` |
-| 最大输出 | `max_tokens` **必填** | 可选 |
+| 最大输出 | `max_tokens` 可选（2026-11-02 起） | 可选 |
+
+> **2026-11-02 契约变更**：`max_tokens` 在 `/v1/messages` 上由"必填"改为"可选"。
+> 依据是 DeepSeek 官方 Anthropic 兼容面的现行说明（`api-docs /guides/anthropic_api`：
+> `max_tokens` 在 HTTP 请求里可选，默认与有效上限取决于模型、思考模式与 effort）。
+> 继续强制必填会把省略该字段的官方 SDK 调用挡在门外，属于把上游放宽的契约变成我们的硬错误。
+> **仍然不补默认值**：显式给出非正数才 400（`max_tokens 必须是正整数`）。
 
 **为什么 `max_tokens` 在 Anthropic 侧必填而在 OpenAI 侧可选**： 前者是协议规定，后者是协议允许省略。入站在 Anthropic 路径上 不做"帮你补一个默认值"的便利——补一个乐观的大值会让 `max_tokens` 超出候选上限从而触发一次本可避免的路由失败。
 

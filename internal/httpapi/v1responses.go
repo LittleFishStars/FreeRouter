@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
@@ -25,6 +26,14 @@ import (
 // ---------------------------------------------------------------------------
 // Responses wire → IR（02-ir.md §7.1 映射表的落地）
 // ---------------------------------------------------------------------------
+
+// applyPatchToolName 是官方唯一支持的 custom 工具（Codex 兼容面）。
+const applyPatchToolName = "apply_patch"
+
+// applyPatchSchema 把 apply_patch 的自由文本入参表达成单字段 JSON Schema。
+// 为什么这样声明：官方 custom 工具的 input 是一个字符串（不是 JSON 对象），
+// 而 IR 的工具定义只承载 JSON Schema；用单字符串字段是对该形状最小且无损的翻译。
+const applyPatchSchema = `{"type":"object","properties":{"__raw_text":{"type":"string","description":"完整的 apply_patch 文本补丁"}},"required":["__raw_text"]}`
 
 // responsesRequest 是入站 wire 形状（只列我们消费的字段；未知字段
 // 忽略——Responses 面很大，M5 只实现最小集，其余留白由后续版本补）。
@@ -63,8 +72,12 @@ type responsesInputItem struct {
 	CallID    string `json:"call_id"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
-	// function_call_output item：
-	Output string `json:"output"`
+	// function_call_output / custom_tool_call_output item：
+	// Output 用 RawMessage：官方允许它是字符串或 content part 数组
+	//（数组里可带 input_image，让工具把截图回喂给模型）。
+	Output json.RawMessage `json:"output"`
+	// custom_tool_call item 的入参是原始文本补丁（apply_patch），字段名是 input。
+	Input string `json:"input"`
 }
 
 type responsesTool struct {
@@ -136,20 +149,43 @@ func decodeResponsesRequest(body []byte) (*ir.Request, []ir.Warning, error) {
 
 	// tools：Responses 平铺 → ir.ToolDef。
 	for _, t := range raw.Tools {
-		if t.Type != "function" && t.Type != "" {
-			// web_search 等内置工具是 Responses 面的增值功能，M5 不做——
-			// 明确报错（C6 不静默降级）而非悄悄丢。
-			return nil, warns, &ir.UnsupportedError{
-				Capability: ir.CapTools,
-				Protocol:   ir.ProtocolOpenAIResponses,
-				Detail:     fmt.Sprintf("Responses 内置工具类型 %q 不支持（M5 仅支持 function 工具）", t.Type),
+		switch t.Type {
+		case "function", "":
+			req.Tools = append(req.Tools, ir.ToolDef{
+				Name:        t.Name,
+				Description: t.Description,
+				Schema:      string(t.Parameters),
+			})
+		case "custom":
+			// 官方只支持 name=apply_patch 这一种 custom 工具（Codex 兼容，api-docs
+			// /guides/responses_api）。它的入参是自由文本补丁而非 JSON Schema，
+			// 用 schema 声明成「一个字符串字段」才能在上游侧无损表达；
+			// 其余 custom 名字官方要求 400，我们照做。
+			if t.Name != applyPatchToolName {
+				return nil, warns, &ir.UnsupportedError{
+					Capability: ir.CapTools,
+					Protocol:   ir.ProtocolOpenAIResponses,
+					Detail:     fmt.Sprintf("custom 工具 %q 不支持（官方只接受 name=%s）", t.Name, applyPatchToolName),
+				}
 			}
+			req.Tools = append(req.Tools, ir.ToolDef{
+				Name:        t.Name,
+				Description: t.Description,
+				Schema:      applyPatchSchema,
+			})
+		case "web_search":
+			// web_search 是服务端工具：由上游自己执行（官方 deepseek-v4-pro 支持）。
+			// 它不是面向模型的函数调用，IR 没有服务端工具的表达位——按 §8.4 白名单
+			// 忽略并告警，而不是 400：官方明确「不支持的参数被静默忽略，
+			// 存量客户端无需改动就能接」。
+			warns = append(warns, ir.Warning{Param: "tools.web_search",
+				Message: "web_search 是服务端工具，网关不代为执行；如需联网请由客户端直接调用上游"})
+		default:
+			// file_search / code_interpreter / computer_use / mcp 等内置工具
+			// 官方同样「ignored」，我们跟随官方语义忽略并告警。
+			warns = append(warns, ir.Warning{Param: "tools." + t.Type,
+				Message: "Responses 内置工具类型 " + t.Type + " 已忽略（官方语义同样忽略）"})
 		}
-		req.Tools = append(req.Tools, ir.ToolDef{
-			Name:        t.Name,
-			Description: t.Description,
-			Schema:      string(t.Parameters),
-		})
 	}
 
 	// max_output_tokens → Sampling.MaxOutput；temperature/top_p 同理。
@@ -179,9 +215,125 @@ func decodeResponsesRequest(body []byte) (*ir.Request, []ir.Warning, error) {
 	return req, warns, nil
 }
 
+// reasoningItemText 取 reasoning item 的纯文本 content（官方只支持纯文本思考残留）。
+func reasoningItemText(item responsesInputItem) string {
+	var s string
+	if json.Unmarshal(item.Content, &s) == nil {
+		return s
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(item.Content, &parts) == nil {
+		var b strings.Builder
+		for _, p := range parts {
+			if p.Text != "" {
+				b.WriteString(p.Text)
+			}
+		}
+		return b.String()
+	}
+	return ""
+}
+
+// responsesOutputText 把 tool output 摊平成文本（自定义工具回执只需文本）。
+func responsesOutputText(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &parts) == nil {
+		var b strings.Builder
+		for _, p := range parts {
+			if p.Text != "" {
+				b.WriteString(p.Text)
+			}
+		}
+		return b.String()
+	}
+	return string(raw)
+}
+
+// responsesOutputParts 把 tool output 解成 IR parts：字符串 → 文本 part；
+// 数组 → 文本与图片 part（input_image 走与 Chat 同一套解析，规则不能两处各写一份）。
+func responsesOutputParts(raw json.RawMessage) []ir.Part {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return []ir.Part{ir.TextPart{Text: s}}
+	}
+	var parts []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL *struct {
+			URL string `json:"url"`
+		} `json:"image_url"`
+	}
+	if json.Unmarshal(raw, &parts) != nil {
+		return []ir.Part{ir.TextPart{Text: string(raw)}}
+	}
+	out := make([]ir.Part, 0, len(parts))
+	for _, p := range parts {
+		switch p.Type {
+		case "input_text", "output_text", "text":
+			out = append(out, ir.TextPart{Text: p.Text})
+		case "input_image":
+			if p.ImageURL == nil || p.ImageURL.URL == "" {
+				out = append(out, ir.TextPart{Text: "[图片输入缺失 image_url]"})
+				continue
+			}
+			img, err := openai.DecodeImageURL(p.ImageURL.URL)
+			if err != nil {
+				out = append(out, ir.TextPart{Text: "[图片输入无法解析: " + err.Error() + "]"})
+			} else {
+				out = append(out, img)
+			}
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, ir.TextPart{Text: string(raw)})
+	}
+	return out
+}
+
 // decodeResponsesItem 解单个 input item（message / function_call / output）。
 func decodeResponsesItem(req *ir.Request, item responsesInputItem) {
 	switch item.Type {
+	case "reasoning":
+		// 官方：input 里 type="reasoning" 的纯文本 content 合并进相邻 assistant 消息
+		// （api-docs /guides/responses_api）。summary 与 encrypted_content 不支持。
+		// 单独成 assistant 的 ThinkingPart，让多轮思考历史在跨协议转发时仍可见。
+		text := reasoningItemText(item)
+		if text != "" {
+			req.Messages = append(req.Messages, ir.Message{
+				Role:  ir.RoleAssistant,
+				Parts: []ir.Part{ir.ThinkingPart{Idx: 0, Text: text}},
+			})
+		}
+	case "custom_tool_call":
+		// apply_patch 的调用历史（官方 custom_tool_call item，call_id 配对）。
+		req.Messages = append(req.Messages, ir.Message{
+			Role: ir.RoleAssistant,
+			Parts: []ir.Part{ir.ToolCallPart{
+				ID:   item.CallID,
+				Name: applyPatchToolName,
+				// 官方 custom 调用的入参是原始文本（input 字段），IR 里统一按字符串承载。
+				Arguments: string(item.Input),
+			}},
+		})
+	case "custom_tool_call_output":
+		text := responsesOutputText(item.Output)
+		req.Messages = append(req.Messages, ir.Message{
+			Role: ir.RoleUser,
+			Parts: []ir.Part{ir.ToolResultPart{
+				ToolCallID: item.CallID,
+				Parts:      []ir.Part{ir.TextPart{Text: text}},
+			}},
+		})
 	case "function_call":
 		// §7.1：function_call item = 历史 assistant 工具调用。
 		req.Messages = append(req.Messages, ir.Message{
@@ -196,12 +348,14 @@ func decodeResponsesItem(req *ir.Request, item responsesInputItem) {
 		})
 	case "function_call_output":
 		// §7.1：function_call_output = 工具回执（user 消息，IR 契约）。
+		// output 可以是字符串，也可以是 content part 数组（官方支持 output 里带
+		// input_image，让工具能把截图回喂给模型）。两种形状都要解。
 		req.Messages = append(req.Messages, ir.Message{
 			Role: ir.RoleUser,
 			Parts: []ir.Part{
 				ir.ToolResultPart{
 					ToolCallID: item.CallID,
-					Parts:      []ir.Part{ir.TextPart{Text: item.Output}},
+					Parts:      responsesOutputParts(item.Output),
 				},
 			},
 		})

@@ -59,13 +59,17 @@ func (s *responsesStreamWriter) Write(ev ir.Event) error {
 		return nil
 
 	case ir.EvThinkingDelta:
-		// 透出有文本的思考增量（保持最小面，不展开摘要树）。
+		// 官方 Responses 流式事件表里，思考正文用 response.reasoning_text.delta
+		//（output_item.added/done 的 item 类型是 reasoning）。以前发的是
+		// reasoning_summary_text.delta —— 那是摘要面的事件，官方客户端按它渲染
+		// 出来的位置与正文不同，且 DeepSeek 官方明确「summary 被接受但不生成」。
+		// 所以正文思考必须走 reasoning_text.delta，delta 字段就是增量的原文。
 		if ev.Text == "" {
 			return nil
 		}
 		return s.writeMap(map[string]any{
-			"type":    "response.reasoning_summary_text.delta",
-			"summary": []string{ev.Text},
+			"type":  "response.reasoning_text.delta",
+			"delta": ev.Text,
 		})
 
 	case ir.EvTextDelta:

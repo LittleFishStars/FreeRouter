@@ -436,7 +436,10 @@ func TestContractCapabilityCheckUnsupported(t *testing.T) {
 		t.Fatalf("错误体缺能力/协议: %+v", ue)
 	}
 
-	// thinking 回传给不支持 thinking 的 OpenAI Chat：同样必须 400（§3.5）。
+	// thinking 回传在 OpenAI 侧的行为随官方协议变化而变：DeepSeek 官方 Chat API
+	// 把 reasoning_content 定为协议字段，所以**不带签名**的 ThinkingPart 是合法的、
+	// 应当编码成 reasoning_content 而不是报错；而**带签名**的 ThinkingPart 仍必须
+	// 报 400（OpenAI 侧无签名承载位，丢了它上游会怀疑上下文被篡改，§3.5）。
 	oa := openai.Adapter()
 	req2 := &ir.Request{
 		Model: "m",
@@ -445,7 +448,17 @@ func TestContractCapabilityCheckUnsupported(t *testing.T) {
 		}}},
 	}
 	if _, err := oa.Capabilities().Check(req2); err == nil {
-		t.Fatalf("OpenAI Chat 接受 thinking 回传——静默降级")
+		t.Fatalf("OpenAI Chat 接受带签名的 thinking 回传——签名会被静默丢弃")
+	}
+	// 不带签名的思考内容在 OpenAI 侧是合法的（reasoning_content）。
+	req2b := &ir.Request{
+		Model: "m",
+		Messages: []ir.Message{{Role: ir.RoleAssistant, Parts: []ir.Part{
+			ir.ThinkingPart{Text: "内部推理"},
+		}}},
+	}
+	if _, err := oa.Capabilities().Check(req2b); err != nil {
+		t.Fatalf("OpenAI Chat 应接受无签名的 thinking 回传（reasoning_content），得到 %v", err)
 	}
 	// top_k 是 §8.3 的唯一白名单例外：忽略但必须留痕。
 	req3 := &ir.Request{

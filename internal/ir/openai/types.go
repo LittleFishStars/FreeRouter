@@ -33,13 +33,18 @@ type request struct {
 	ReasoningEffort     *string         `json:"reasoning_effort,omitempty"`
 	Stream              bool            `json:"stream,omitempty"`
 	StreamOptions       *streamOptions  `json:"stream_options,omitempty"`
-	N                   *int            `json:"n,omitempty"`
-	PresencePenalty     *float64        `json:"presence_penalty,omitempty"`
-	FrequencyPenalty    *float64        `json:"frequency_penalty,omitempty"`
-	Logprobs            *bool           `json:"logprobs,omitempty"`
-	TopLogprobs         *int            `json:"top_logprobs,omitempty"`
-	ParallelToolCalls   *bool           `json:"parallel_tool_calls,omitempty"`
-	User                string          `json:"user,omitempty"`
+	// Thinking 是官方 Chat API 的思考开关（api-docs /create-chat-completion）：
+	// {"type":"enabled"|"disabled"}。官方语义：thinking.type 优先于 reasoning_effort，
+	// 后者只在 thinking 缺省时生效。把它当方言忽略会让 DeepSeek 官方客户端
+	// 的思考请求全部落进非思考档——这是静默改变行为，必须解码。
+	Thinking          *thinkingParam `json:"thinking,omitempty"`
+	N                 *int           `json:"n,omitempty"`
+	PresencePenalty   *float64       `json:"presence_penalty,omitempty"`
+	FrequencyPenalty  *float64       `json:"frequency_penalty,omitempty"`
+	Logprobs          *bool          `json:"logprobs,omitempty"`
+	TopLogprobs       *int           `json:"top_logprobs,omitempty"`
+	ParallelToolCalls *bool          `json:"parallel_tool_calls,omitempty"`
+	User              string         `json:"user,omitempty"`
 }
 
 type message struct {
@@ -49,6 +54,15 @@ type message struct {
 	ToolCallID string          `json:"tool_call_id,omitempty"`
 	Name       string          `json:"name,omitempty"`
 	Refusal    *string         `json:"refusal,omitempty"`
+	// ReasoningContent 是思考模式的思维链（官方 Chat API 响应字段，仅出站编码用）。
+	// 入站历史消息里即使客户端带了它也按白名单丢弃——官方多轮对话指南明确
+	// 下一轮不应回传 reasoning_content，透传只会污染上下文。
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+}
+
+// thinkingParam 是官方 Chat API 的思考开关（wire 类型）。
+type thinkingParam struct {
+	Type string `json:"type"` // enabled | disabled
 }
 
 // contentPart 是消息内容数组里的一个元素。只声明我们认识的类型；

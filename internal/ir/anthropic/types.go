@@ -30,6 +30,14 @@ type request struct {
 	Metadata      *metadata       `json:"metadata,omitempty"`
 	Stream        bool            `json:"stream,omitempty"`
 	Thinking      *thinkingConfig `json:"thinking,omitempty"`
+	// OutputConfig 是输出配置对象。官方 Anthropic 兼容面只支持其中的 effort
+	// （api-docs /guides/anthropic_api），因此只需要这一个字段位。
+	OutputConfig *outputConfig `json:"output_config,omitempty"`
+}
+
+// outputConfig 是 output_config 对象（wire 类型）。
+type outputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 type metadata struct {

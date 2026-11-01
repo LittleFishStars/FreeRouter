@@ -19,13 +19,16 @@ func (adapter) Name() ir.Protocol { return ir.ProtocolOpenAIChat }
 
 // Capabilities 是 Chat Completions 的能力自省。
 //
-// 为什么 thinking 为 false：这个协议**没有**承载思考块的字段位。部分上游私加
-// `reasoning_content`，但那是方言而非协议；把它当通用能力会让"回传 thinking 签名"在
-// 大多数上游上静默失败。需要 thinking 的请求应当被过滤到 Anthropic 系候选或明确 400。
+// thinking 现为 true：DeepSeek 官方 Chat API 把 `reasoning_content` 写进了协议
+// （响应体与流式 delta 都有），并新增 `thinking` 开关字段。所以思考内容不再是
+// 「上游方言」而是协议能力，客户端可安全依赖它。
+// 但 ThinkingSignature 仍为 false：OpenAI 侧没有承载思考签名的字段位，
+// 带 signature 的 ThinkingPart 回传仍必须报错（签名的用途是跨轮次校验，
+// 丢掉它会让上游怀疑上下文被算改——§3.5）。
 //
-// 为什么档位只有 off/low/high：OpenAI 的 `reasoning_effort` 可取 minimal/low/medium/high，
-// 与 IR 的 off/low/high/max 不是一一对应。只声明能无损表达的三档，是"缺能力就报错"而不是
-// "把 max 悄悄降成 high"——后者正是 C6 禁止的静默降级。
+// 档位覆盖 none/low/high/max：官方 `reasoning_effort` 的合法取值就是这四个，
+// 少声明 max 会让官方合法的 effort=max 请求被候选过滤掉并最终 503。
+// 官方另接受 minimal→low、medium/xhigh→high 的兼容写法，由 decodeEffort 归一旦记告警。
 func (adapter) Capabilities() ir.Capabilities {
 	return ir.Capabilities{
 		Protocol:          ir.ProtocolOpenAIChat,
@@ -34,16 +37,20 @@ func (adapter) Capabilities() ir.Capabilities {
 		Images:            true,
 		ImageURL:          true,
 		Prefill:           true,
-		Thinking:          false,
-		ThinkingSignature: false,
+		Thinking:          true,  // 官方 Chat API 的 reasoning_content 是协议字段，非方言
+		ThinkingSignature: false, // OpenAI 侧无签名承载位；带签名的回传仍在 Check 报错
 		JSONObject:        true,
 		JSONSchema:        true,
 		StopSequences:     true,
 		TopK:              false,
 		Seed:              true,
 		StreamUsage:       true,
-		Efforts:           map[ir.Effort]bool{ir.EffortOff: true, ir.EffortLow: true, ir.EffortHigh: true},
-		MaxStopSequences:  4,
+		// Efforts 覆盖官方四档（none/low/high/max）——官方 API 的
+		// reasoning_effort 明列 none/low/high/max，少声明 max 会让
+		// effort=max 的请求被候选过滤掉并最终 503，而它本就是官方合法参数。
+		Efforts: map[ir.Effort]bool{ir.EffortOff: true, ir.EffortLow: true, ir.EffortHigh: true, ir.EffortMax: true},
+		// MaxStopSequences 取官方上限 16（api-docs /create-chat-completion）。
+		MaxStopSequences: 16,
 	}
 }
 
@@ -63,27 +70,57 @@ func (a adapter) DecodeRequest(body []byte) (*ir.Request, []ir.Warning, error) {
 			fmt.Sprintf("n=%d 需要多条候选回复，IR 只表示单条", *raw.N))
 	}
 
-	// 这几个字段会改变采样行为，而 IR 没有表达位。丢弃它们等于静默改变生成结果，
-	// 所以按 §8.3 报 400；白名单（§8.4）里没有它们，就不该开这个口子。
+	// presence/frequency_penalty：官方已弃用（传了也不生效），但大量存量客户端仍会带——
+	// 按 §8.4 白名单忽略并告警，而不是把整条请求变成 400。
+	// logprobs / top_logprobs：官方支持（返回 token 级对数概率），IR 不承载该结果面；
+	// 忽略后行为退化但语义正确（客户端只少了一份诊断信息），同样入白名单。
+	// 为什么不报 Unsupported：那会把官方兼容客户端的正常参数变成硬错误，
+	// 与「支持 DeepSeek 官方 API 全集」的目标直接冲突。
 	if raw.PresencePenalty != nil {
-		return nil, warns, ir.NewUnsupported(ir.ProtocolOpenAIChat, ir.CapPresencePenalty, -1, "")
+		warns = append(warns, ir.Warning{Param: "presence_penalty",
+			Message: "已忽略（官方已弃用该参数，不影响生成结果）"})
 	}
 	if raw.FrequencyPenalty != nil {
-		return nil, warns, ir.NewUnsupported(ir.ProtocolOpenAIChat, ir.CapFrequencyPenalty, -1, "")
+		warns = append(warns, ir.Warning{Param: "frequency_penalty",
+			Message: "已忽略（官方已弃用该参数，不影响生成结果）"})
 	}
-	if raw.Logprobs != nil && *raw.Logprobs {
-		return nil, warns, ir.NewUnsupported(ir.ProtocolOpenAIChat, ir.CapLogprobs, -1, "")
-	}
-	if raw.TopLogprobs != nil {
-		return nil, warns, ir.NewUnsupported(ir.ProtocolOpenAIChat, ir.CapLogprobs, -1, "")
+	if (raw.Logprobs != nil && *raw.Logprobs) || raw.TopLogprobs != nil {
+		warns = append(warns, ir.Warning{Param: "logprobs",
+			Message: "已忽略（IR 不承载 token 级对数概率，响应里不会出现 logprobs 字段）"})
 	}
 	if raw.User != "" {
 		// §8.4 白名单：上游用它做滥用追踪，与模型行为无关。
 		warns = append(warns, ir.Warning{Param: "user", Message: "已忽略（不参与上游编码）"})
 	}
+	if raw.ParallelToolCalls != nil && !*raw.ParallelToolCalls {
+		// parallel_tool_calls=false 是行为开关，但 IR 没有表达位；官方对它的处置也是
+		// ignored（并行能力由上游决定）。白名单忽略 + 告警，不拒绝。
+		warns = append(warns, ir.Warning{Param: "parallel_tool_calls",
+			Message: "已忽略（并行工具调用由上游决定）"})
+	}
 	if raw.StreamOptions != nil && !raw.StreamOptions.IncludeUsage {
 		warns = append(warns, ir.Warning{Param: "stream_options.include_usage",
 			Message: "我们总是回 usage，忽略该开关"})
+	}
+
+	// thinking：官方 Chat API 的思考开关。官方语义是 thinking.type 优先于
+	// reasoning_effort（后者只在 thinking 缺省时生效），因此这里覆盖 req.Effort。
+	if raw.Thinking != nil {
+		switch strings.ToLower(raw.Thinking.Type) {
+		case "enabled":
+			req.Effort = ir.EffortHigh // 官方缺省 effort 即 high
+			warns = append(warns, ir.Warning{Param: "thinking.type",
+				Message: "thinking=enabled 映射为档位 high（官方缺省 effort，精确预算由 reasoning_effort 给出时以它为准）"})
+		case "disabled":
+			req.Effort = ir.EffortOff
+		case "":
+			// 官方契约：该对象出现时 type 必填。空串不猜，直接按非法请求拒绝。
+			return nil, warns, &ir.InvalidRequestError{Param: "thinking.type",
+				Detail: "thinking 对象必须给出 type（enabled/disabled）"}
+		default:
+			return nil, warns, &ir.InvalidRequestError{Param: "thinking.type",
+				Detail: "thinking.type 取值 " + raw.Thinking.Type + " 无法识别（允许 enabled/disabled）"}
+		}
 	}
 
 	msgs, w, err := decodeMessages(raw.Messages)
@@ -160,8 +197,20 @@ func (a adapter) DecodeRequest(body []byte) (*ir.Request, []ir.Warning, error) {
 		}
 	}
 
-	if raw.ReasoningEffort != nil {
-		req.Effort = decodeEffort(*raw.ReasoningEffort, &warns)
+	// reasoning_effort 与 thinking 的优先级是官方契约的一部分：thinking.type 优先，
+	// reasoning_effort 只在 thinking 缺省时决定模式。所以这里只能在 thinking
+	// 未给出时生效——反过来写会让 thinking=disabled 被 effort=high 覆盖成开启思考，
+	// 正是 C6 禁止的静默改变行为。
+	if raw.Thinking == nil {
+		if raw.ReasoningEffort != nil {
+			req.Effort = decodeEffort(*raw.ReasoningEffort, &warns)
+		}
+	} else if raw.ReasoningEffort != nil {
+		// thinking 已给出时，effort 仍可细调档位（官方：thinking 只切开关，effort 定档），
+		// 但 disabled 必须保持关闭——force off 不能被 effort 打开。
+		if req.Effort != ir.EffortOff {
+			req.Effort = decodeEffort(*raw.ReasoningEffort, &warns)
+		}
 	}
 
 	if len(raw.Messages) == 0 {

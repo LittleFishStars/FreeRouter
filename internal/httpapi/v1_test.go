@@ -308,18 +308,30 @@ func TestContractV1MessagesNonStream(t *testing.T) {
 	}
 }
 
-// TestContractV1MessagesMaxTokensRequired：max_tokens 缺失 400（§6.1 必填）。
-func TestContractV1MessagesMaxTokensRequired(t *testing.T) {
+// TestContractV1MessagesMaxTokensOptional：max_tokens 现为可选（2026-11-02 契约变更）。
+//
+// DeepSeek 官方 Anthropic 兼容面把 max_tokens 改成 HTTP 请求可选（默认与有效上限
+// 取决于模型、思考模式与 effort）。所以「缺失」必须放行（不能 400），只有显式给出
+// 非正数才是非法请求。这里的断言顺序刻意区分两者：缺失 → 不因 max_tokens 报 400；
+// 非正数 → 400 且错误信息指向 max_tokens。
+func TestContractV1MessagesMaxTokensOptional(t *testing.T) {
 	s := newV1Server(t, &fakeUpstream{}, &fakeCandidates{models: map[string][]Candidate{}})
 
+	// 缺 max_tokens：不得因 max_tokens 报 400（无候选时会 503，那是路由问题不是方言问题）。
 	rec := httptest.NewRecorder()
 	s.HandleV1Messages(rec, v1Request("POST", "/v1/messages", `{"model":"smart","messages":[{"role":"user","content":"你好"}]}`))
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("状态码 = %d，期望 400（max_tokens 必填）", rec.Code)
+	if rec.Code == http.StatusBadRequest && strings.Contains(rec.Body.String(), "max_tokens") {
+		t.Fatalf("max_tokens 缺失不该报 400；body=%s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "max_tokens") {
-		t.Fatalf("错误信息应指明 max_tokens；body=%s", rec.Body.String())
+
+	// 显式 max_tokens=0：非法，必须 400 且指明字段。
+	rec2 := httptest.NewRecorder()
+	s.HandleV1Messages(rec2, v1Request("POST", "/v1/messages", `{"model":"smart","max_tokens":0,"messages":[{"role":"user","content":"你好"}]}`))
+	if rec2.Code != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d，期望 400（max_tokens 非正数）", rec2.Code)
+	}
+	if !strings.Contains(rec2.Body.String(), "max_tokens") {
+		t.Fatalf("错误信息应指明 max_tokens；body=%s", rec2.Body.String())
 	}
 }
 

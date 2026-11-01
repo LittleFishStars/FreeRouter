@@ -77,5 +77,8 @@
   "thinking": {
     "type": "enabled",
     "budget_tokens": 2048
+  },
+  "output_config": {
+    "effort": "low"
   }
 }

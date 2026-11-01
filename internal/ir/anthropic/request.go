@@ -123,6 +123,20 @@ func (a adapter) DecodeRequest(body []byte) (*ir.Request, []ir.Warning, error) {
 		warns = append(warns, w...)
 	}
 
+	// output_config.effort 是官方决定思考档位的字段（Anthropic 兼容面明示只支持 effort）。
+	// 优先级：thinking 切开关，effort 定档——所以它会覆盖 budget_tokens 推出的档位，
+	// 但**不能**把 thinking.type=disabled 打开（关闭是更强的意图）。
+	if raw.OutputConfig != nil && raw.OutputConfig.Effort != "" {
+		if req.Effort == ir.EffortOff {
+			warns = append(warns, ir.Warning{Param: "output_config.effort",
+				Message: "thinking.type=disabled 已显式关闭思考，effort 被忽略"})
+		} else {
+			e, w := decodeOutputEffort(raw.OutputConfig.Effort)
+			req.Effort = e
+			warns = append(warns, w...)
+		}
+	}
+
 	if err := req.Validate(); err != nil {
 		return nil, warns, err
 	}
@@ -133,10 +147,41 @@ func (a adapter) DecodeRequest(body []byte) (*ir.Request, []ir.Warning, error) {
 //
 // 阈值是临时表（02-ir.md §7.1 待定项）：映射必然有信息损失，所以每次都记告警，
 // 让"档位是怎么来的"在审计里可查，而不是等真实上游分布校准完才发现没人记录。
+// decodeOutputEffort 把 output_config.effort 归一到 IR 档位。
+//
+// 官方取值与 OpenAI 的 reasoning_effort 同族（none/low/high/max），并接受
+// minimal→low、medium/xhigh→high 的兼容写法；不认识的值按 unknown 交给能力匹配，
+// 不猜成最近档位（那正是 C6 禁止的静默降级）。
+func decodeOutputEffort(s string) (ir.Effort, []ir.Warning) {
+	switch strings.ToLower(s) {
+	case "none", "off", "disabled":
+		return ir.EffortOff, nil
+	case "minimal":
+		return ir.EffortLow, []ir.Warning{{Param: "output_config.effort", Message: "minimal 归一到 low"}}
+	case "low":
+		return ir.EffortLow, nil
+	case "medium":
+		return ir.EffortHigh, []ir.Warning{{Param: "output_config.effort", Message: "medium 归一到 high"}}
+	case "high":
+		return ir.EffortHigh, nil
+	case "xhigh", "max":
+		return ir.EffortMax, nil
+	}
+	return ir.EffortUnknown, []ir.Warning{{Param: "output_config.effort",
+		Message: "未知档位 " + s + "，按 unknown 交给能力匹配"}}
+}
+
 func decodeThinking(tc *thinkingConfig) (ir.Effort, []ir.Warning) {
 	switch strings.ToLower(tc.Type) {
 	case "disabled":
 		return ir.EffortOff, nil
+	case "adaptive":
+		// 官方兼容说明：adaptive 按 enabled 处理（api-docs /guides/anthropic_api）。
+		// 以前落到 unknown 会被能力匹配过滤掉候选，最终 503——而它本是官方接受的取值。
+		return ir.EffortHigh, []ir.Warning{{
+			Param:   "thinking.type",
+			Message: "thinking.type=adaptive 按官方规则等价于 enabled，映射为档位 high",
+		}}
 	case "enabled":
 		budget := 0
 		if tc.BudgetTokens != nil {

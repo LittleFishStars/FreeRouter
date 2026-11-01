@@ -43,6 +43,13 @@ func (adapter) DecodeResponse(body []byte) (*ir.Response, error) {
 // decodeAssistantMessage 把 assistant 的 message 转成 IR parts。
 func decodeAssistantMessage(m message) ([]ir.Part, error) {
 	var parts []ir.Part
+	// reasoning_content 是官方 Chat API 在思考模式下返回的思维链字段。
+	// 为什么必须解成 ThinkingPart 而不是当文本：客户端（含官方客户端）靠它
+	// 渲染思考过程，并把它与 content 分开存储；排在所有正文 part 之前以保持
+	// 时间顺序（模型先想后答，§2.3）。
+	if m.ReasoningContent != "" {
+		parts = append(parts, ir.ThinkingPart{Idx: 0, Text: m.ReasoningContent})
+	}
 	if len(m.Content) > 0 {
 		sub, err := decodeContent(m.Content, 0)
 		if err != nil {
@@ -97,9 +104,13 @@ func (adapter) EncodeResponse(resp *ir.Response) ([]byte, error) {
 				Function: toolFunction{Name: v.Name, Arguments: v.Arguments},
 			})
 		case ir.ThinkingPart:
-			// 不把 thinking 当文本回显：会泄露模型内部状态并改变客户端行为（§3.5）。
-			return nil, ir.NewUnsupported(ir.ProtocolOpenAIChat, ir.CapThinking, v.Idx,
-				"响应里含思考内容，Chat Completions 无承载字段")
+			// reasoning_content 是官方 Chat API 的思维链承载字段（api-docs 响应体）：
+			// 它不叫 content，客户端不会把它当正文渲染，也不会污染下一轮上下文。
+			// 以前因「协议无承载字段」报错，但官方已把这个字段写进协议，
+			// 报错会让思考模式的响应在网关处 500。
+			if v.Text != "" {
+				msg.ReasoningContent = v.Text
+			}
 		case ir.ImagePart:
 			return nil, ir.NewUnsupported(ir.ProtocolOpenAIChat, ir.CapImageOutput, v.Idx, "")
 		}

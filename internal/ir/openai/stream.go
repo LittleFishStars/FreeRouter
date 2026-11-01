@@ -71,11 +71,16 @@ func (s *streamWriter) Write(ev ir.Event) error {
 		return nil
 
 	case ir.EvThinkingDelta:
-		// §7.2：Chat Completions 协议无思考内容的位置。
-		// 不输出但不报错的理由：能力复核已在请求阶段拒绝过 thinking 请求，走到这里说明是
-		// 上游自作主张多给了 reasoning 增量。丢掉它**不改变**客户端行为（本来就没有这个位），
-		// 所以不属于静默降级；但也不能算进可见内容，否则一次上游噪音就会把候选锁死。
-		return nil
+		// reasoning_content 是官方 Chat API 的思维链字段：按官方流式形状逐帧下发。
+		// 它必须排在正文之前——官方客户端的渲染器先开思考面板再收正文，
+		// 顺序反了会让正文先落地、思考永远显示在下面。
+		// 状态记账走 writeChunk→writeFrame→chunkToEvent，那里要把 reasoning_content
+		// 帧反推成 EvThinkingDelta（而不是 EvStart）：EncoderState.Visible 只认事件类型，
+		// 分类错了会让 C7 误判「还没吐任何东西」而在客户端已看到思考后换候选。
+		if ev.Text == "" {
+			return nil
+		}
+		return s.writeChunk(delta{ReasoningContent: ev.Text}, nil)
 
 	case ir.EvTextDelta:
 		if err := s.switchAwayFromTool(); err != nil {
@@ -221,6 +226,12 @@ func chunkToEvent(c chunk) ir.Event {
 		}
 		return ir.Event{Type: ir.EvToolCallStart}
 	}
+	// reasoning_content 帧反推成 EvThinkingDelta：EncoderState.Visible 只认事件类型，
+	// 若落进兜底的 EvStart，C7 会以为「还没吐任何东西」——客户端已经在看思考了，
+	// 此时换候选会让思考文本重复出现。
+	if d.ReasoningContent != "" {
+		return ir.Event{Type: ir.EvThinkingDelta, Text: d.ReasoningContent}
+	}
 	if d.Content != "" {
 		return ir.Event{Type: ir.EvTextDelta}
 	}
@@ -277,10 +288,13 @@ type chunkChoice struct {
 // delta 的字段全部 omitempty：空对象 {} 是合法的 delta（心跳），而带空字符串的字段会让
 // 某些严格客户端把空 content 当成"模型发了空消息"。
 type delta struct {
-	Role      string          `json:"role,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	ToolCalls []deltaToolCall `json:"tool_calls,omitempty"`
-	Refusal   string          `json:"refusal,omitempty"`
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+	// ReasoningContent 是官方 Chat API 在思考模式下逐帧下发的思维链增量
+	// （非 reasoning_content 的兼容方言，而是官方协议字段）。
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	ToolCalls        []deltaToolCall `json:"tool_calls,omitempty"`
+	Refusal          string          `json:"refusal,omitempty"`
 }
 
 type deltaToolCall struct {
@@ -409,11 +423,16 @@ func (s *streamReader) Next() (ir.Event, error) {
 			continue
 		}
 
+		// reasoning_content 是官方 Chat API 的思维链增量（api-docs 响应体明列）：
+		// 不转成 thinking_delta 会让思考内容在网关处凭空消失，客户端（含官方客户端
+		// 与 Claude Code 类工具）就看不到推理过程。它必须排在 content 之前 append——
+		// 思在答后，同一帧里两者都有时顺序反了，客户端会把答案当成思考的延续。
+		if ch.Delta.ReasoningContent != "" {
+			s.pending = append(s.pending, ir.Event{Type: ir.EvThinkingDelta, Text: ch.Delta.ReasoningContent})
+		}
 		if ch.Delta.Content != "" {
 			s.pending = append(s.pending, ir.Event{Type: ir.EvTextDelta, Text: ch.Delta.Content})
 		}
-		// 部分上游把 thinking 放在 reasoning_content；它不在协议里，所以只在
-		// 明确出现时才转成 thinking_delta，而不是假装它不存在。
 		for _, tc := range ch.Delta.ToolCalls {
 			idx := 0
 			if tc.Index != nil {
