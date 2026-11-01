@@ -3,24 +3,31 @@
 // 由 task-7 的 AddModelDialog（只支持追加）升级而来，收编了原独立候选集
 // 编辑页 /admin/abstract-models/:id/candidates 的全部职责：
 //
-//   - 三段布局：顶部「当前候选」横向芯片条（带序号 + ←→ 调序 + ✕ 移除 +
-//     点芯片展开渠道范围编辑）；中部左栏供应商 / 右栏模型卡网格（点卡加入/
-//     移出，不再锁定已存在候选）；底部「已改 N 处 + 取消 + 保存」。
+//   - 两段布局：上部左栏供应商 / 右栏模型卡网格（点卡加入/移出，不锁定已存在
+//     候选）；底部「候选 N 条 · 已改 N 处 + 取消 + 保存」。
 //   - 保存 = putCandidates(id, rows) 整表替换。有移除时保存按钮先切到内联
-//     二次确认态（再点一次才提交）；纯新增 / 纯调序直接保存。
+//     二次确认态（再点一次才提交）；纯新增直接保存。
 //   - 脏检测：rows 与初始 JSON 不等才允许保存；「已改 N 处」= 新增数 + 移除数
 //     + 调序数（简单近似）。
 //
-// 渠道范围编辑的连线语义（契约 §3.2，与旧候选集页逐字一致）：
-// channel_scope 在库里可能是字符串 `"all"`（旧界面留下的失效形状）或
-// `{mode:'include'|'exclude', channels:[]}`；读取按形状分支，写入只写
-// `{mode:'include', channels:[...]}`，一个都不选 = 删掉 channel_scope 键
-// （等价全部渠道），绝不写 mode:'any'；非 include 形状原样保留不解释，并
-// 给出「已有自定义约束」的提示行。这个形状由路由桥的 constraintJSON 决定，
-// 写错会静默失效。
+// ## 现状（2026-11-01）：本弹窗**不再负责顺序，也不再编辑渠道范围**
+//
+// 顶部原来有一条「当前候选（N）」横向芯片条（序号 + ←→ 调序 + ✕ 移除 + 点
+// 芯片展开 channel_scope 编辑）。它被整体删除，理由是**第二处真相**：
+//
+//   抽象模型列表的展开区已经用卡片展示了同一份候选与顺序，并且卡片本身就是
+//   拖动排序的载体。两处都能调序，改一处而忘另一处时，管理员无法判断哪边才
+//   是当前状态——而「顺序即使用序」是这套路由唯一的语义，它不能有两个编辑面。
+//
+// 于是这里的职责收窄成两件事：**加候选 / 撤候选**，以及提交这张表。
+// 顺序去列表展开区拖动即可（松手即保存，比这里点保存按钮更快）。
+//
+// channel_scope（渠道范围）的编辑面也随之消失。库里仍可能存在历史形状
+// （字符串 `"all"`、`{mode:'exclude',…}` 等），它们**原样保留、不被本界面
+// 改写**：rows 里只做增删，constraint 字段从原候选带过来不动。要改渠道范围
+// 目前只能走 API——这是这次收窄的已知代价，需要时再补一个独立入口。
 
 import { useEffect, useMemo, useState } from 'react'
-import { useDragReorder, moveItem } from '../../hooks/useDragReorder'
 import { useApi } from '../../hooks/useApi'
 import { ACTION_ICON } from '../../components/IconButtons'
 import {
@@ -36,15 +43,11 @@ import type {
 } from '../../api/types'
 import {
   IconCheck,
-  IconDelete,
-  IconDown,
   IconRefresh,
   IconSearch,
-  IconUp,
-  IconWarn
 } from '../../icons'
 import { EmptyState, FormError, LoadingBlock } from '../../components/ui'
-import { fmtNum, fmtTime, statusLabel } from '../../utils/format'
+import { fmtNum, statusLabel } from '../../utils/format'
 import { logoInfo } from '../../utils/providerLogo'
 
 // ── 协议徽标（契约 §1.2：只有 openai / anthropic 两个取值）──────────────
@@ -88,42 +91,6 @@ export function ProtocolDots({ protocols }: { protocols: string[] | undefined })
       ))}
     </span>
   )
-}
-
-// ── channel_scope 的读写（契约 §3.2，与后端 routing_bridge 的 constraintJSON 对齐）──
-
-/** 从 constraint 里读出本界面能编辑的 include 渠道集合（其它形状一律当作「读不出」）。 */
-function includeChannels(c: Candidate['constraint']): string[] {
-  const raw = c?.channel_scope
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return []
-  const scope = raw as { mode?: unknown; channels?: unknown }
-  if (scope.mode !== 'include' || !Array.isArray(scope.channels)) return []
-  return scope.channels.filter((ch): ch is string => typeof ch === 'string')
-}
-
-/** channel_scope 存在但不是 include 形状（exclude / 历史字符串 `"all"` / 其它）。 */
-function hasForeignScope(c: Candidate['constraint']): boolean {
-  const raw = c?.channel_scope
-  if (raw === undefined || raw === null) return false
-  if (typeof raw !== 'object' || Array.isArray(raw)) return true
-  return (raw as { mode?: unknown }).mode !== 'include'
-}
-
-/**
- * 合并写法：只重写 channel_scope，constraint 其余键一个不动；
- * 渠道集合为空 = **删掉** channel_scope 键（等价于任何渠道），而不写 mode:'any'。
- */
-function withChannels(c: Candidate['constraint'], channels: string[]): Candidate['constraint'] {
-  const next: Candidate['constraint'] = { ...(c ?? {}) }
-  if (channels.length === 0) delete next.channel_scope
-  else next.channel_scope = { mode: 'include', channels }
-  return next
-}
-
-function scopeSummary(c: Candidate['constraint']): string {
-  if (hasForeignScope(c)) return '已有自定义约束'
-  const chs = includeChannels(c)
-  return chs.length === 0 ? '全部渠道' : `仅 ${chs.join('、')}`
 }
 
 /** 左栏供应商名后的地区后缀（只在名字里没出现该后缀时才补）。 */
@@ -175,25 +142,6 @@ export function CandidateDialog({
   // 有移除时，保存按钮先切到内联确认态；arms=true 且再点一次才提交。
   const [confirmRemove, setConfirmRemove] = useState(false)
 
-  // 展开当前候选芯片的渠道范围编辑（null = 不展开）。
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null)
-
-  // 「当前候选」条的直接拖动排序（2026-11-01）：与 ↑/↓ 按钮等价，只是更快。
-  // 预览序直接写 rows（脏检测天然生效——rows 与 original 不等就会亮保存按钮）。
-  const drag = useDragReorder({
-    onPreview: (from, to) => {
-      setRows((cur) => moveItem(cur, from, to))
-      // 展开的渠道范围编辑跟着位次走，不然展开态会落在别的芯片上。
-      setExpandedIdx((cur) => {
-        if (cur === null) return null
-        return movedIndex(cur, from, to)
-      })
-    },
-    onEnd: () => {
-      // 排序不自动保存：与点 ↑/↓ 一致，由底部「保存」统一提交。
-      // 这里不需要任何动作——rows 已经是预览序。
-    }
-  })
 
   useEffect(() => {
     if (!candsQ.data) return
@@ -203,14 +151,6 @@ export function CandidateDialog({
     setConfirmRemove(false)
   }, [candsQ.data])
 
-  // ── 事实索引（real_model_id → 模型事实）──
-  const modelFacts = useMemo(() => {
-    const idx = new Map<string, AdminModelSourceModel>()
-    for (const s of sourcesQ.data?.sources ?? []) {
-      for (const m of s.models) if (!idx.has(m.real_model_id)) idx.set(m.real_model_id, m)
-    }
-    return idx
-  }, [sourcesQ.data])
 
   // real_model_id → 来源供应商（候选芯片标题下要显示「来自哪家」）。口径与
   // modelFacts 相同：目录里首见的来源获胜；目录里找不到（模型已被移除）时
@@ -223,7 +163,6 @@ export function CandidateDialog({
     return idx
   }, [sourcesQ.data])
 
-  const channels = sourcesQ.data?.channels ?? []
   const sources = sourcesQ.data?.sources ?? []
 
   // 已存在的候选 id 集合（用于判断「有移除」）。
@@ -293,35 +232,8 @@ export function CandidateDialog({
     })
   }
 
-  // movedIndex 算「from 挪到 to 之后，原索引 i 的元素新位次」。
-  // 展开的渠道编辑区跟着芯片走；被拖的那颗保持展开。
-  function movedIndex(i: number, from: number, to: number): number {
-    if (i === from) return to
-    if (from < to) {
-      if (i > from && i <= to) return i - 1
-      return i
-    }
-    if (i >= to && i < from) return i + 1
-    return i
-  }
 
-  function move(i: number, dir: -1 | 1) {
-    const j = i + dir
-    if (j < 0 || j >= rows.length) return
-    const next = [...rows]
-    ;[next[i], next[j]] = [next[j], next[i]]
-    setRows(next)
-  }
 
-  function removeRow(i: number) {
-    setRows(rows.filter((_, idx) => idx !== i))
-  }
-
-  function toggleChannel(i: number, channel: string) {
-    const current = includeChannels(rows[i].constraint)
-    const next = current.includes(channel) ? current.filter((c) => c !== channel) : [...current, channel]
-    setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, constraint: withChannels(r.constraint, next) } : r)))
-  }
 
   async function refresh() {
     setRefreshing(true)
@@ -476,93 +388,6 @@ export function CandidateDialog({
     )
   }
 
-  function curChip(r: Candidate, i: number, dp?: ReturnType<typeof drag.itemProps>) {
-    const fact = modelFacts.get(r.real_model_id)
-    const src = sourceOfReal.get(r.real_model_id)
-    const name = fact?.display_name ?? r.real_model_id
-    const srcName = src ? (src.name || src.upstream_name) : ''
-    return (
-      <div
-        key={r.real_model_id}
-        className="amd-cur-chip"
-        data-expanded={expandedIdx === i}
-        data-off={fact ? undefined : true}
-        {...dp}
-      >
-        <button type="button" className="amd-cur-chip-main" onClick={() => setExpandedIdx(expandedIdx === i ? null : i)}>
-          {/* 序号 = **使用位次**（2026-11-01 定案：手动排序，仅当前一个不可用
-              时才用下一个）。它不是「配置编号」，所以不可用的候选会带徽标提示
-              它虽然排在 N 位、实际会被跳过（除非前面都不在册）。 */}
-          <span className="amd-cur-chip-idx">{i + 1}</span>
-          <span className="amd-cur-chip-name">{name}</span>
-          <span className="amd-cur-chip-scope">{scopeSummary(r.constraint)}</span>
-          {r.unavailable && (
-            <span
-              className="amd-cur-chip-bad"
-              title={`已判定不可用${r.unavailable_reason ? `（${r.unavailable_reason}）` : ''}${
-                r.next_probe_at ? `；下次自动检测 ${fmtTime(r.next_probe_at)}` : ''
-              }${r.probe_attempts ? `；已连续 ${r.probe_attempts} 次` : ''}`}
-            >
-              <IconWarn size="xs" />不可用
-            </span>
-          )}
-        </button>
-        {/* 来源（2026-10-31 用户要求）：标题下标明这条候选来自哪家供应商；
-            同名模型在不同供应商下是不同候选，光看 display_name 分不出来 */}
-        <span
-          className="amd-cur-chip-src"
-          title={src ? `${srcName}（${KIND_LABEL[src.kind] ?? src.kind}）` : '目录里找不到这条真实模型（可能已被移除）'}
-        >
-          {srcName || '未知来源'}
-        </span>
-        <span className="amd-cur-chip-ops">
-          <button type="button" className="amd-cur-op" onClick={() => move(i, -1)} disabled={i === 0} aria-label="上移">
-            <IconUp size="xs" />
-          </button>
-          <button type="button" className="amd-cur-op" onClick={() => move(i, 1)} disabled={i === rows.length - 1} aria-label="下移">
-            <IconDown size="xs" />
-          </button>
-          <button type="button" className="amd-cur-op" onClick={() => removeRow(i)} aria-label="移除">
-            <IconDelete size="xs" />
-          </button>
-        </span>
-        {expandedIdx === i && (
-          <div className="amd-cur-edit" onClick={(e) => e.stopPropagation()}>
-            <span className="source-param-label">渠道范围</span>
-            <div className="source-chips">
-              {channels.length === 0 && <span className="muted">池内还没有任何渠道</span>}
-              {channels.map((ch) => {
-                const on = includeChannels(rows[i].constraint).includes(ch)
-                return (
-                  <button
-                    key={ch}
-                    type="button"
-                    className="source-chip"
-                    data-on={on}
-                    aria-pressed={on}
-                    onClick={() => toggleChannel(i, ch)}
-                  >
-                    {on && <IconCheck size="xs" />}
-                    {ch}
-                  </button>
-                )
-              })}
-            </div>
-            <span className="source-param-hint">
-              {hasForeignScope(rows[i].constraint)
-                ? '当前是可编辑范围之外的自定义约束（见下）；本界面只编辑渠道范围。'
-                : `${scopeSummary(rows[i].constraint)}；一个都不选 = 全部渠道（不写 channel_scope）`}
-            </span>
-            {hasForeignScope(rows[i].constraint) && (
-              <span className="source-param-hint">
-                已有自定义约束（本界面只编辑渠道范围）：一动芯片就按 include 形状重写，其它约束键原样保留。
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-    )
-  }
 
   return (
     <div className="dialog-overlay" onClick={onClose}>
@@ -601,29 +426,11 @@ export function CandidateDialog({
           </div>
         </div>
 
-        {/* 顶部：当前候选芯片条 */}
-        <div className="amd-cur">
-          <p className="amd-cur-title">
-            当前候选（{rows.length}）
-            {/* 2026-11-01 定案：这里的顺序就是**实际使用顺序**（手动排序），
-                仅当前一个不可用时才用下一个。把这句话放在标题位而不是帮助
-                文档里——管理员最容易误解的正是「顺序是配置还是使用序」。 */}
-            <span className="amd-cur-title-sub">
-              顺序即使用序：仅当前一个不可用时才用下一个；不可用的会被跳过但留在末尾兜底
-            </span>
-          </p>
-          {rows.length === 0 ? (
-            <p className="muted amd-cur-empty">no_candidate；请从下部模型区点卡片加入。</p>
-          ) : (
-            <div
-              className="amd-cur-row"
-              ref={drag.containerRef}
-              data-drag-active={drag.draggingKey !== null || undefined}
-            >
-              {rows.map((r, i) => curChip(r, i, rows.length > 1 ? drag.itemProps(r.real_model_id, i) : undefined))}
-            </div>
-          )}
-        </div>
+        {/* 说明：这里原来是「当前候选（N）」芯片条（含顺序说明与拖动排序）。
+            2026-11-01 用户要求去掉——抽象模型列表的展开区已经用卡片展示了同一
+            份候选与顺序，弹窗里再来一排就成了**第二处真相**：两处都能调序，
+            改一处忘另一处时管理员无法判断哪边是当前状态。
+            候选的增删仍由下部模型卡片负责（点卡片加入/移出），顺序在展开区排。 */}
 
         {/* 中部：左栏供应商 / 右栏模型卡网格 */}
         <div className="amd-split">
@@ -661,7 +468,10 @@ export function CandidateDialog({
 
         <div className="dialog-actions amd-footer">
           <span className="amd-selected-count">
-            已改 {changedCount} 处
+            {/* 候选条数必须留在这里：顶部的「当前候选」芯片条去掉后（2026-11-01
+                用户要求），这是弹窗里唯一还在说「现在一共几条候选」的地方——
+                少了它，管理员移出一条后无法确认到底还剩几条。 */}
+            候选 {rows.length} 条 · 已改 {changedCount} 处
             {hasRemoval && <span className="source-inst" data-tone="warn">含移除 {removedCount} 条</span>}
           </span>
           <button type="button" className="btn-ghost" onClick={onClose} disabled={busy}>
