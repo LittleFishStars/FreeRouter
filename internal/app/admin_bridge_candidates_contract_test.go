@@ -403,3 +403,75 @@ func TestContractRelaySourceDisplayName(t *testing.T) {
 		t.Errorf("UpstreamName 应保留机器名，得 %q", relay.UpstreamName)
 	}
 }
+
+// TestContractUnavailableCountSurvivesMissingCredentials 钉住一个实测踩到的不一致：
+// 候选在台账里，但该上游**没有任何 active 凭据**（instances = 0）时，
+// 「不可用条数」仍必须被数出来。
+//
+// 2026-11-01 端到端实测：候选列表里第一条标着 unavailable=true，
+// 而模型汇总却说 unavailable_candidate_count = 0 —— 原因是计数先按
+// 「凭据实例 <= 0 → continue」跳过，台账判定根本没机会跑。两个数的口径
+// 必须一致：**台账里有的就数，与有没有凭据无关**（凭据为 0 是另一种
+// 「不可用」，但它不是在等探测恢复）。
+func TestContractUnavailableCountSurvivesMissingCredentials(t *testing.T) {
+	a := newCandidateInstanceTestApp(t)
+	ctx := context.Background()
+
+	amID, rmID := seedCandidateChain(t, a, "ledger-counted", "m1")
+	// 故意不给该上游任何凭据：instances 恒为 0。
+
+	if err := a.store.Repos().Unavailability.MarkUnavailable(ctx, store.Unavailability{
+		RealModelID: rmID,
+		Reason:      "upstream_auth",
+		Detail:      "凭据失效",
+		FailedAt:    1761958800,
+		NextCheckAt: 1761962400,
+	}); err != nil {
+		t.Fatalf("写台账失败: %v", err)
+	}
+
+	mb := &modelsBridge{b: newAdminBridge(a.store)}
+
+	// 单条候选的响应字段。
+	items, err := mb.ListCandidates(ctx, amID)
+	if err != nil {
+		t.Fatalf("列候选失败: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("应有 1 条候选，得 %d", len(items))
+	}
+	if !items[0].Unavailable || items[0].UnavailableReason != "upstream_auth" {
+		t.Fatalf("候选应带不可用标记与原因码，实得 %+v", items[0])
+	}
+	if items[0].NextProbeAt == nil || *items[0].NextProbeAt != 1761962400 {
+		t.Fatalf("应带下次探测时刻，实得 %+v", items[0].NextProbeAt)
+	}
+	if items[0].ProbeAttempts != 1 {
+		t.Fatalf("应带连续判定次数 1，实得 %d", items[0].ProbeAttempts)
+	}
+
+	// 模型级汇总：不可用计数必须是 1（不是 0），可用计数是 0。
+	m, err := mb.GetAbstractModel(ctx, amID)
+	if err != nil {
+		t.Fatalf("读抽象模型失败: %v", err)
+	}
+	if m.UnavailableCandidateCount != 1 {
+		t.Fatalf("不可用计数应为 1（台账里有的就数，与凭据实例无关），实得 %d",
+			m.UnavailableCandidateCount)
+	}
+	if m.AvailableCandidateCount != 0 {
+		t.Fatalf("可用计数应为 0（既无凭据又在台账里），实得 %d", m.AvailableCandidateCount)
+	}
+
+	// 出册后回到「无凭据但不在台账」：可用仍是 0，不可用也回到 0。
+	if err := a.store.Repos().Unavailability.MarkAvailable(ctx, rmID); err != nil {
+		t.Fatalf("出册失败: %v", err)
+	}
+	m2, err := mb.GetAbstractModel(ctx, amID)
+	if err != nil {
+		t.Fatalf("复读抽象模型失败: %v", err)
+	}
+	if m2.UnavailableCandidateCount != 0 {
+		t.Fatalf("出册后不可用计数应回到 0，实得 %d", m2.UnavailableCandidateCount)
+	}
+}

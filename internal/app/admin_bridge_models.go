@@ -651,14 +651,16 @@ func (mb *modelsBridge) availableCandidates(ctx context.Context, cands []store.C
 		if err != nil {
 			continue
 		}
-		if insts[rm.UpstreamID] <= 0 {
-			continue // 没有可展开的凭据实例 = 不可用（与前一版口径一致）
-		}
+		// 台账判定**先于**凭据实例判定：两者是不同原因的不可用，而管理端的
+		// 「N 条在等探测恢复」只该数台账里的那些。若把凭据实例为 0 的候选
+		// 在这里先 skip 掉，会出现「候选列表里标着不可用、模型汇总却说 0 条」
+		// 的不一致（2026-11-01 端到端实测踩到）。
 		if _, bad := unavail[rm.ID]; bad {
-			// 「现在真的能用」的诚实计数：被判定不可用的不算可用，
-			// 单独计入 unavailable（管理端据此显示「有几条在等恢复」）。
 			unavailable++
 			continue
+		}
+		if insts[rm.UpstreamID] <= 0 {
+			continue // 没有可展开的凭据实例：它不可用，但不是在等探测恢复
 		}
 		available++
 	}
