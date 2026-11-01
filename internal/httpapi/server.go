@@ -68,6 +68,14 @@ type Server struct {
 	// latencySink 是每请求延迟采样出口（SetLatencySink 装配）。
 	// nil = 未装配：延迟样本丢弃（路由 speed 排序退回无样本垫底）。
 	latencySink LatencySink
+
+	// passthrough 是非推理端点（Files / Search & Fetch）的原样转发执行面
+	//（SetPassthrough 注入）。nil = 未装配：这些端点回 501 not_implemented。
+	//
+	// 为什么单独一个接口而不是复用 Upstream：透传的入参是原始 HTTP 请求
+	// 而不是 ir.Request——形状不同是设计目标（网关不解析这些端点），
+	// 见 v1passthrough.go 文件头。
+	passthrough PassthroughUpstream
 }
 
 // New 构造服务器。deps.Logger 为 nil 时使用默认 logger。
@@ -131,6 +139,19 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/v1/models", s.HandleV1Models)
 		// retrieve 单模型：SDK 在正式请求前常先确认模型存在（OpenAI models.retrieve）。
 		r.Get("/v1/models/{id}", s.HandleV1ModelRetrieve)
+
+		// 非推理端点：**原样转发**到上游（网关不解析、不改写）。
+		//
+		// 路径为什么给两套：官方 API 里 Files 是 `/files`（不带 /v1），
+		// Search & Fetch 是 `/v1/tools/*`。客户端把 base_url 指向我们时，
+		// 官方 SDK 会按这两种形状调用——只挂一套会让另一半 404。
+		// 所以两套都挂，指向同一个 handler（上游路径由 handler 显式给出）。
+		r.Post("/files", s.HandleV1FileUpload)
+		r.Get("/files", s.HandleV1FileList)
+		r.Get("/files/{id}", s.HandleV1FileRetrieve)
+		r.Delete("/files/{id}", s.HandleV1FileDelete)
+		r.Post("/v1/tools/search", s.HandleV1Search)
+		r.Post("/v1/tools/fetch", s.HandleV1Fetch)
 	}
 
 	// 兜底路由：注入了前端时，非 API 路径交给 SPA（HashRouter 也受益——

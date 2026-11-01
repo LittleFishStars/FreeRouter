@@ -157,6 +157,9 @@ func (a *App) newUpstreamShim() (upstreamShim, *realModelCandidates) {
 	// 无鉴权 selfhosted 是合法配置，凭据问题不该挡住整个进程。
 	a.auditCredentialWiring(context.Background())
 	http := upstream.NewHTTPTransport(nil, a.secretSource())
+	// 透传端点（Files/Search）与推理共用同一个 Transport：连接池的价值
+	// 就在复用，另建一个实例等于凭空多一份 fd 与 TLS 会话缓存。
+	a.upstreamHTTP = http
 	// relay 传输带凭据源（2026-10-31 qodercn 移植）：贡献凭据解密后单帧传给
 	// sidecar 的 adapter——relay 类上游不再依赖 DSH 账号池。
 	relay := upstream.NewRelayTransport(a.sidecar, a.credentialJSONSource(), a.credentialWriteBack())

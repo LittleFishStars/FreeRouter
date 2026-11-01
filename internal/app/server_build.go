@@ -89,6 +89,10 @@ func (a *App) buildServer() *httpapi.Server {
 	// 不注入时 v1 请求照常服务但不记账（测试与降级态）。
 	srv.SetSettler(a.newSettler())
 
+	// 透传执行面（Files / Search & Fetch）：网关不解析、不改写，
+	// 只选上游 + 换鉴权 + 原样搬运（2026-11-02 用户口径）。
+	srv.SetPassthrough(a.newPassthrough())
+
 	// 注册到 Server 的挂载点（Handler() 在 server.go 里逐条 r.Use）。
 	srv.SetAuthChain(
 		srv.MiddlewareKeyAuth(a.keyAuthn),

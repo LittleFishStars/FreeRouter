@@ -36,7 +36,9 @@
 | `/v1/messages` | `Authorization: Bearer fr-xxxxxxxx…` | 兼容形态，二者取其一 |
 | `/v1/completions` | `Authorization: Bearer fr-xxxxxxxx…` | 文本补全（FIM，Beta），见第 10 节 |
 | `/v1/responses` | `Authorization: Bearer fr-xxxxxxxx…` | OpenAI Responses 方言，见第 9 节 |
-| `/v1/models` | 同上游客户端形态 | 需要知道是哪个 Key，见 5.2 |
+| `/v1/models` | `Authorization: Bearer fr-xxxxxxxx…` | 需要知道是哪个 Key，见 5.2 |
+| `/files`（四个） | `Authorization: Bearer fr-xxxxxxxx…` | 原样转发，见第 11 节 |
+| `/v1/tools/*`（两个） | `Authorization: Bearer fr-xxxxxxxx…` | 原样转发，见第 11 节 |
 
 `/v1/messages` 还接受 `anthropic-version` 头并回显它（见 3.3）。
 
@@ -494,6 +496,49 @@ x-fr-trace: real=dsh:deepseek-official/deepseek-flash; cred=cred_01J8; attempt=1
 **为什么在非 `/v1/chat/completions` 的路径上**：官方 FIM 的路径就是 `/completions`。
 把它放在 chat 路径下会让客户端以为可以传 `messages`，而实际能力表会拒绝——
 错误出现在能力表而不是路径，排查成本更高。
+
+---
+
+## 11. 非推理端点：`/files` 与 `/v1/tools/*`（原样转发）
+
+这六个端点**不由网关处理**，直接把请求对接到上游供应商（2026-11-02 定案）：
+
+| 端点 | 上游路径 | 说明 |
+|---|---|---|
+| `POST /files` | `/files` | 上传图片（multipart，最大 64 MiB）|
+| `GET /files` | `/files` | 列出文件 |
+| `GET /files/{id}` | `/files/{id}` | 取回文件元数据 |
+| `DELETE /files/{id}` | `/files/{id}` | 删除文件 |
+| `POST /v1/tools/search` | `/v1/tools/search` | 联网搜索 |
+| `POST /v1/tools/fetch` | `/v1/tools/fetch` | 抓取网页内容 |
+
+**网关做的三件事（仅此三件）**：
+
+1. **鉴权**——客户端持 `fr-` Key；
+2. **选上游**——该账号**自有**的启用上游优先，退到平台自有；relay 类上游被排除
+   （它们没有可直连地址，Target.BaseURL 恒为空）；
+3. **搬运**——请求体/查询串/客户端头原样送出，**只有 `Authorization` 被换成上游凭据**；
+   上游响应（状态码/头/体）原样回给客户端。
+
+**网关明确不做的**：
+
+| 不做 | 为什么 |
+|---|---|
+| 解析/校验请求体 | multipart 边界、搜索运算符（`site:`、`-site:`、引号短语）都是上游语法；改写等于替用户改问题 |
+| 转换/缓冲文件 | 一读就把 64 MiB 图片变成常驻堆占用，而透传的价值就在"不碰它" |
+| 重排/过滤搜索结果 | `rerank_score` 是上游的排序信号，重排会让分数字段失真 |
+| 重新分类错误 | `file_not_found` 等码是上游 API 契约的一部分，客户端按它分支处理 |
+| 换候选重试 | 上传体是流、不可重放；重发会让上游产生两份文件副本 |
+
+**为什么 Files 优先走账号自有上游**：Files 是**有状态资源**——文件存在某个上游账号下，
+后续 chat 靠 `file_id` 引用它。上传用 A 的凭据、推理落到 B 时，`file_id` 在 B 不存在，
+模型会收到无效引用。账号自有优先是「上传与推理落在同一个供应商账号」的最直接落地。
+
+**路径为什么挂两套**：官方 Files 是 `/files`（不带 `/v1`），Search & Fetch 是 `/v1/tools/*`。
+客户端把 base_url 指向我们时，官方 SDK 会按这两种形状调用——只挂一套会让另一半 404。
+
+**未装配时的行为**：透传执行面未接线 → `503 no_candidate`（"现在不行，稍后重试"）。
+不新造错误码：码表是客户端 `switch` 的契约，凭空加一个码会让它们全部落到 default。
 
 ---
 

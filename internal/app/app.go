@@ -60,6 +60,12 @@ type App struct {
 	// nil = 未接线：探测循环静默跳过（业务路径同样不可用）。
 	upstreamCaller httpapi.Upstream
 
+	// upstreamHTTP 是 vendor/selfhosted 的 HTTP 传输（连接池 + 凭据源）。
+	// 为什么单独留一个引用：非推理端点（Files/Search）的原样转发要用它——
+	// 那类请求不经 IR、不进 Caller，但必须与推理共用同一个连接池。
+	// nil = 未接线：透传端点回 501。
+	upstreamHTTP *upstream.HTTPTransport
+
 	// unavailability 是不可用模型台账（2026-11-01）。候选源在它的
 	// Candidates/NotifyCandidateOutcome 里读写，后台探测循环复用它——
 	// 两者必须是**同一个实例**，否则内存视图分叉（记了一条、看不到另一条）。
