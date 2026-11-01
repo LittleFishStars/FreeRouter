@@ -63,7 +63,13 @@ const KIND_LABEL: Record<string, string> = {
 const PROTOCOL_BOUNDARY =
   '协议徽标只表达「该供应商提供哪种协议的端点」这一事实：本站出站链路当前只实现 OpenAI 兼容，A 徽标是「供应商具备、本站未接入」。'
 
-function ProtocolBadges({ protocols }: { protocols: string[] | undefined }) {
+/**
+ * ProtocolDots 是导出的协议圆点组（抽象模型列表的模型卡也用它）。
+ *
+ * 为什么导出而不是各写一份：协议 → 字母/颜色的映射必须与候选集里**完全**
+ * 一致，两处各写一份时新增一个协议只改一处、另一处静默少一枚圆点。
+ */
+export function ProtocolDots({ protocols }: { protocols: string[] | undefined }) {
   if (!protocols || protocols.length === 0) return null
   return (
     <span className="proto-badges">
@@ -374,7 +380,7 @@ export function CandidateDialog({
                     {s.name}
                     {regionSuffix(s)}
                   </span>
-                  <ProtocolBadges protocols={s.protocols} />
+                  <ProtocolDots protocols={s.protocols} />
                   <span className="source-count" title={`${s.model_count} 个模型`}>
                     {s.model_count}
                   </span>
@@ -463,7 +469,7 @@ export function CandidateDialog({
               })()}
               <span className="model-card-provider-name">{src?.name ?? '未知来源'}</span>
             </span>
-            <ProtocolBadges protocols={m.protocols} />
+            <ProtocolDots protocols={m.protocols} />
           </span>
         </div>
       </div>

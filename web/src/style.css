@@ -1890,6 +1890,118 @@ a.metric-link:hover {
   opacity: 0.72;
 }
 
+/* ── 展开区的候选卡片（2026-11-01 用户要求：胶囊改成卡片）──────────────
+   与候选集弹窗的 .model-card 同一形态（名字 / 分隔线 / 供应商+协议），
+   差别只在①这里是**可拖动**的 button（拖动排序落在卡片上）；②卡片比胶囊
+   宽得多，所以用网格而不是单行横滚——横滚会让管理员在几十条候选时只看到
+   两三条，而顺序正是这一排唯一的语义。 */
+.am-card-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11.5rem, 1fr));
+  gap: 0.55rem;
+  padding: 0.15rem 0;
+}
+
+.am-card-row[data-drag-active] {
+  cursor: grabbing;
+}
+
+/* 「+ 添加模型」保持胶囊形态：它是网格里的第 N+1 项，必须显式压住
+   grid 的 stretch（否则会被拉成一张和卡片一样大的空块）。 */
+.am-card-row .am-add-chip {
+  justify-self: start;
+  align-self: center;
+}
+
+.am-card {
+  /* button 复位：卡片是按钮（点击打开编辑器），但不能沿用 .am-chip 的胶囊样式 */
+  position: relative; /* 承载位次/警告两个角标（absolute） */
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.25rem;
+  min-height: 6.1rem;
+  padding: 0.7rem 0.85rem 0.6rem;
+  border: none;
+  border-radius: var(--fr-radius-xl);
+  background: var(--fr-block);
+  color: var(--fr-on-surface);
+  text-align: left;
+  font: inherit;
+  cursor: grab;
+  /* 卡片是纯展示面：给一层极轻的抬升，让它在区块底色上能立住 */
+  box-shadow: var(--fr-e1);
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+  /* 拖动时不要选中文本 */
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.am-card:hover {
+  background: var(--fr-primary-soft);
+}
+
+.am-card:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--fr-focus-ring);
+}
+
+.am-card[data-dragging] {
+  /* 浮起：抬高 + 阴影（阴影只给浮层），并压过相邻卡片 */
+  position: relative;
+  z-index: 2;
+  cursor: grabbing;
+  opacity: 0.92;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.34);
+}
+
+.am-card[data-unavailable] {
+  /* 不可用：整体降饱和，警告图标单独给状态色 */
+  opacity: 0.72;
+}
+
+/* 使用位次（第 N 个尝试）：胶囊时代靠排列位置隐含，卡片有固定形态后
+   必须显式标出来，否则「顺序即使用序」这条语义在卡片上看不见。 */
+.am-card-idx {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.05rem;
+  height: 1.05rem;
+  border-radius: var(--fr-radius-full);
+  background: var(--fr-inset);
+  color: var(--fr-on-surface-variant);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+/* 不可用角标：右上角一只警告图标（与位次错开左右两侧）。 */
+.am-card-bad {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.5rem;
+  display: inline-flex;
+  color: var(--fr-warn, #d29922);
+}
+
+/* 卡片里的模型名不再是 .model-card-name 的居中版：卡片左侧有角标，
+   居中会与角标打架，这里改成左对齐。 */
+.am-card .model-card-name {
+  text-align: left;
+  /* 给左上角的位次角标留出空间（角标是 absolute，不会自己撑开高度） */
+  margin-top: 1.15rem;
+  font-size: 0.88rem;
+}
+
+/* 卡片网格里各卡高度可能因名字长短不同而参差：网格行会按最高的对齐，
+   这里只保证底部供应商行贴底。 */
+.am-card .model-card-foot {
+  margin-top: auto;
+}
+
 .am-add-chip {
   /* 虚线感来自颜色而不是描边：比普通芯片浅一档，加号图标自带动手暗示 */
   color: var(--fr-primary);

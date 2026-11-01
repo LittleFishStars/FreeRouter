@@ -28,6 +28,7 @@ import {
 } from '../../api/endpoints'
 import type {
   AdminAbstractModel,
+  AdminModelSource,
   AdminModelSourceModel,
   Candidate,
   ConnectivityResult,
@@ -43,7 +44,7 @@ import {
   IconTest,
   IconWarn,
 } from '../../icons'
-import { CandidateDialog } from './CandidateDialog'
+import { CandidateDialog, ProtocolDots } from './CandidateDialog'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import {
   AsyncView,
@@ -59,6 +60,7 @@ import {
   StatusBadge
 } from '../../components/ui'
 import { fmtNum, statusLabel } from '../../utils/format'
+import { logoInfo } from '../../utils/providerLogo'
 import PageFrame from '../PageFrame'
 import type { PageProps } from '../../routes'
 
@@ -99,11 +101,20 @@ export function AbstractModelsPage({ def }: PageProps) {
 
   // real_model_id → 模型事实索引（外面已去重，越靠前的来源先占位）。
   const modelFacts = useRef(new Map<string, AdminModelSourceModel>())
+  // real_model_id → 来源（供应商）。卡片要显示「供应商 logo + 名字 + 协议圆点」，
+  // 而模型事实里只有模型自身字段——供应商是模型**所属**的来源，必须另存一份。
+  // 口径与 modelFacts 一致（首见来源获胜）：两处都按同一顺序扫描，否则同一个
+  // 模型在卡片上显示的供应商会与候选集弹窗里不一致。
+  const modelSourceOf = useRef(new Map<string, AdminModelSource>())
   const factsReady = sourcesQ.data !== undefined
   if (factsReady) {
     const idx = modelFacts.current
+    const src = modelSourceOf.current
     for (const s of sourcesQ.data?.sources ?? []) {
-      for (const m of s.models) if (!idx.has(m.real_model_id)) idx.set(m.real_model_id, m)
+      for (const m of s.models) {
+        if (!idx.has(m.real_model_id)) idx.set(m.real_model_id, m)
+        if (!src.has(m.real_model_id)) src.set(m.real_model_id, s)
+      }
     }
   }
 
@@ -236,6 +247,7 @@ export function AbstractModelsPage({ def }: PageProps) {
                   onToggle={() => toggle(m.id)}
                   detail={expandedId === m.id ? (details[m.id] ?? undefined) : undefined}
                   facts={modelFacts.current}
+                  sourceOf={modelSourceOf.current}
                   onAddSaved={handleCandidateSaved}
                 />
               ))}
@@ -255,6 +267,7 @@ function ModelRow({
   onToggle,
   detail,
   facts,
+  sourceOf,
   onAddSaved
 }: {
   m: AdminAbstractModel
@@ -262,6 +275,7 @@ function ModelRow({
   onToggle: () => void
   detail: ExpDetail | undefined
   facts: Map<string, AdminModelSourceModel>
+  sourceOf: Map<string, AdminModelSource>
   onAddSaved: (id: string) => void
 }) {
   const editTo = `/admin/abstract-models/${encodeURIComponent(m.id)}`
@@ -438,32 +452,70 @@ function ModelRow({
                       : '按住拖动可调整使用顺序（仅当前一个不可用时才用下一个）'}
                   </p>
                 )}
-                <div className="am-chip-row" {...dragProps}>
+                <div className="am-card-row" {...dragProps}>
                   {rows.length === 0 ? (
                     <span className="muted am-empty">尚未配置候选。</span>
                   ) : (
                     rows.map((c, i) => {
                       const fact = facts.get(c.real_model_id)
+                      const src = sourceOf.get(c.real_model_id)
                       const name = fact?.display_name ?? c.real_model_id
                       const supported = c.available_instances !== 0 && c.available_instances !== undefined
                       // 单条候选没有排序意义，退回纯点击；多条时挂拖动属性。
-                      const dp = rows.length > 1 ? drag.itemProps(c.real_model_id, i) : {}
+                      // 显式标类型：写成 `: {}` 会让联合类型退化成 never，
+                      // 下面展开属性时全部报索引错误（TS7053）。
+                      const dp: ReturnType<typeof drag.itemProps> | null =
+                        rows.length > 1 ? drag.itemProps(c.real_model_id, i) : null
+                      const logo = logoInfo(src?.provider_id ?? '', src?.name ?? name)
+                      // 「为什么点不开/为什么打不通」统一进 title：卡面只留三段
+                      // （名字 / 分隔线 / 供应商+协议），与候选集弹窗的模型卡同一形态。
+                      const tip = [
+                        c.unavailable ? `已判定不可用${c.unavailable_reason ? `（${c.unavailable_reason}）` : ''}` : '',
+                        supported ? '可用' : '无可用凭据',
+                        fact?.upstream_model_id ? `模型 ${fact.upstream_model_id}` : '',
+                        '点击打开候选集'
+                      ].filter(Boolean).join(' · ')
                       return (
                         <button
                           key={c.real_model_id}
                           type="button"
-                          className="am-chip"
+                          className="am-card model-card"
                           data-unavailable={c.unavailable || undefined}
+                          {...dp}
+                          title={tip}
                           onClick={() => {
                             // 拖动结束的松手也会合成一次 click；刚拖完就不打开编辑器。
                             // （state 守卫不可靠——React 批处理让 click 读到旧值。）
                             if (justDragged.current) return
                             setOpen(true)
                           }}
-                          {...dp}
                         >
-                          <span className="am-chip-name">{name}</span>
-                          {c.unavailable ? <IconWarn size="xs" /> : supported ? <IconCheck size="xs" /> : null}
+                          {/* 位次：手动排序下的使用位次（第 N 个尝试）。胶囊时代
+                              靠排列位置隐含，卡片有了固定形态后必须显式标出来。 */}
+                          <span className="am-card-idx">{i + 1}</span>
+                          {c.unavailable && (
+                            <span className="am-card-bad" aria-hidden>
+                              <IconWarn size="xs" />
+                            </span>
+                          )}
+                          <span className="model-card-name">{name}</span>
+                          <span className="model-card-divider" />
+                          <span className="model-card-foot">
+                            <span className="model-card-provider">
+                              <img
+                                className="model-card-logo"
+                                src={logo.url}
+                                data-fallback={logo.fallback || undefined}
+                                alt=""
+                                loading="lazy"
+                                draggable={false}
+                              />
+                              <span className="model-card-provider-name">
+                                {(src?.name) || '未知来源'}
+                              </span>
+                            </span>
+                            <ProtocolDots protocols={fact?.protocols} />
+                          </span>
                         </button>
                       )
                     })
