@@ -104,7 +104,36 @@
 
 `abstract_models.replacement_model_id` 的自环由 CHECK 拦，多跳成环由应用层
 在同一事务里做 visited 游走兜底。`abstract_candidates` 是 WITHOUT ROWID 的
-声明表：`weight` 已退役（恒 0），声明序看 `sort_order`（§5 的 0008）。
+声明表：`weight` 已退役（恒 0），声明序看 `sort_order`（§5 的 0008）——
+**`sort_order` 就是使用序**（迁移 0014 / 2026-11-01 定案：排序改为管理员手动序，
+`abstract_models.strategy` 列已被 DROP）。
+
+### 3.4.1 不可用模型台账
+
+`model_unavailability`（迁移 0014）
+
+```
+model_unavailability {
+  real_model_id,   -- 主键，REFERENCES real_models(id) ON DELETE CASCADE
+  reason,          -- 稳定原因码（上游错误类，如 upstream_auth / upstream_5xx）
+  detail,          -- 人读诊断（脱敏，仅供管理端）
+  failed_at,       -- 最近一次判定不可用时刻（Unix 秒）
+  attempts,        -- 连续判定次数（退避曲线的指数）
+  next_check_at    -- 下次探测时刻（Unix 秒），带索引
+}
+```
+
+**行在 = 该路径当前不可用**（恢复即删行），与「不设池 = 没有这一行」同一条
+存储哲学（§3.3）。作用域是 `real_models` 行（一条上游路径），与冷却账本同口径：
+同名模型可能挂在多个上游下，一条路径坏了不牵连其它。
+
+**为什么落库而不是进程内**：退避排期是小时级的，进程重启不该把排期清零重新
+从 1m 开始——那等于每次重启都白打一轮探测（打上游、花额度）。`attempts` 的
+自增放在 SQL 的 upsert 里：流量侧判定是并发的，读-改-写会丢计数，而丢计数
+直接让退避退化成「永远 1 分钟一次」。
+
+**外键 CASCADE 的语义**：模型行被删时台账随之消失（不留僵尸记录）。但「上游
+停用 / 排除出候选」不会删行——探测循环会主动出册（那是「不该用」不是「不可用」）。
 
 ### 3.5 上游与凭据
 

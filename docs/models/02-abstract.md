@@ -40,7 +40,7 @@ abstract_model {
   id,
   name,                  -- 对外名称，唯一
   display_name,          -- 管理端与租户端展示名
-  strategy,              -- 策略链，见 03-strategy.md
+                         -- 无 strategy 列：候选的声明序即使用序（迁移 0014 已 DROP COLUMN）
   capability_mode,       -- strict / filter，见第 5 节
   capabilities,          -- 对外能力声明，见第 4 节
   status,                -- active / deprecated / disabled，见 04-deprecation.md
@@ -54,7 +54,8 @@ abstract_candidate {
   abstract_model_id,
   real_model_id,         -- 指向 01-catalog.md 的真实模型
   constraint_json,       -- 约束（渠道范围 / 凭据范围 / 模态 / 档位），见第 3 节
-  weight                 -- 相对权重（历史字段）。内置四种排序策略已不读它，见 03-strategy 3.3.2
+  sort_order             -- 声明序 = **使用序**（手动排序，见 03-strategy 3.1）
+  weight                 -- 相对权重（历史字段，恒 0，无任何决策读者）
 }
 ```
 
@@ -93,7 +94,7 @@ candidate = {
     min_context:        <int>,
     require_efforts:    ["high", "max", ...]     -- 思考档位要求（可选）
   },
-  weight                 -- 同上：不参与排序，见 03-strategy 3.3.2
+  weight                 -- 同上：不参与任何决策
 }
 ```
 
@@ -173,7 +174,7 @@ candidate = {
 | 读者 | 看到 | 用途 |
 |---|---|---|
 | 租户 / 客户端 | 抽象模型的**声明值** | 决定要不要发图片、要不要开工具 |
-| 策略引擎 | 每个**候选**的真实能力 | 过滤与排序（[03-strategy.md](03-strategy.md)） |
+| 策略引擎 | 每个**候选**的真实能力 | 过滤与排位（[03-strategy.md](03-strategy.md)） |
 
 `capabilities` 只是给前者的摘要，**不作为路由依据**。路由必须按候选各自的真实能力判断，否则过滤模式（第 5 节）根本无法工作——它需要知道"哪个候选支持图片"。
 
@@ -265,7 +266,7 @@ candidate = {
 ```
 -- 抽象模型 CRUD（管理面）
 Create(model AbstractModel) -> (id, error)
-Update(id, patch AbstractModelPatch) -> error        -- 含能力模式、策略链、候选集
+Update(id, patch AbstractModelPatch) -> error        -- 含能力模式、候选集（候选数组顺序=使用序）
 SetStatus(id, status, replacement *id) -> error      -- 见 04-deprecation.md
 Delete(id) -> error                                  -- 仅限从未被引用
 

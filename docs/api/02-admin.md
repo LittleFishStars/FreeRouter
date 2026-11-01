@@ -54,7 +54,7 @@
 |---|---|---|
 | 账户面 | 禁用、合并（含回滚）、增删权限类、重置密码 | `PATCH /accounts/{id}`、`POST /accounts/{id}/merge`、`POST /accounts/{id}/merge/rollback`、`POST /accounts/{id}/password` |
 | 组面 | 改模型授权、改策略、增/移成员、设默认组、删组、重置池已用 | `PUT /groups/{id}/models`、`PUT /groups/{id}/policies`、成员增删、`PATCH /groups/{id}`、`DELETE /groups/{id}`、`POST /groups/{id}/pool/reset` |
-| 抽象模型面 | 改显示名/能力模式/能力声明/排序链、替换候选集、设 `disabled`、保存弃用配置 | `PATCH /abstract-models/{id}`、`PUT /abstract-models/{id}/candidates`、`PUT /abstract-models/{id}/deprecation` |
+| 抽象模型面 | 改显示名/能力模式/能力声明、替换候选集（**同时定义使用顺序**）、设 `disabled`、保存弃用配置 | `PATCH /abstract-models/{id}`、`PUT /abstract-models/{id}/candidates`、`PUT /abstract-models/{id}/deprecation` |
 | 上游与凭据 | 禁用上游、封禁凭据 | `PATCH /upstreams/{id}`、`POST /credentials/{id}/ban` |
 | 鉴定 | 人工改判 | `POST /verifications/{id}/override` |
 | 设置 | 关闭注册、全局熔断阈值、`TRUSTED_PROXIES`、开启正文记录、登录退避与锁定阈值 | `PATCH /settings` 的对应字段 |
@@ -302,7 +302,7 @@ bob,,grp_default,request,1000
 | `GET` | `/api/admin/abstract-models` | 列表（含候选数与可用候选数） | ➖ |
 | `GET` | `/api/admin/abstract-models/{id}` | 详情 | ➖ |
 | `POST` | `/api/admin/abstract-models` | 新建 | ➖ |
-| `PATCH` | `/api/admin/abstract-models/{id}` | 改显示名、能力模式、能力声明、排序链 | 🔒（改抽象模型） |
+| `PATCH` | `/api/admin/abstract-models/{id}` | 改显示名、能力模式、能力声明 | 🔒（改抽象模型） |
 | `PUT` | `/api/admin/abstract-models/{id}/candidates` | **替换**候选集 | 🔒（改抽象模型） |
 | `POST` | `/api/admin/abstract-models/{id}/dry-run` | 保存前干跑 | ➖ |
 | `GET` | `/api/admin/abstract-models/{id}/chain` | 替代链预览 | ➖ |
@@ -318,9 +318,9 @@ bob,,grp_default,request,1000
     "context_window": 128000, "max_output": 8192, "vision": true, "tool_calling": true,
     "json_mode": true
   },
-  "strategy": ["expiry-first", "balance"],
   "status": "active", "replacement": null, "deprecated_at": null, "sunset_at": null,
-  "candidate_count": 4, "available_candidate_count": 2, "chain": null
+  "candidate_count": 4, "available_candidate_count": 2, "unavailable_candidate_count": 1,
+  "chain": null
 }
 ```
 
@@ -328,8 +328,8 @@ bob,,grp_default,request,1000
 |---|---|---|
 | `name` | ➖ | 对外名，**创建后不可改** |
 | `capability_mode` | ✅ | `strict`（默认，取候选最小值）/ `filter`（取并集 + 路由前筛） |
-| `strategy` | ✅ | 有序数组，元素取自 `expiry-first` / `balance` / `speed` / `price`，可选把 `round-robin` 追加在末尾作平局决胜；默认 `["expiry-first","balance"]` |
-| `candidate_count` / `available_candidate_count` | ➖ | 后者是"声明式候选 → 可用凭据实例"的展开结果 |
+| ~~`strategy`~~ | ❌ **已移除** | 排序链随 2026-11-01 定案退役。候选的使用顺序由 `PUT …/candidates` 的**数组顺序**表达。载荷里再出现 `strategy` 会被 `DisallowUnknownFields` 拒成 400（刻意：静默忽略会让管理员以为改过的排序生效了） |
+| `candidate_count` / `available_candidate_count` / `unavailable_candidate_count` | ➖ | 第一个是声明的候选数；第二个是「既在册（有凭据实例）又不在不可用台账里」的**诚实可用数**；第三个是其中被判定不可用、正在等自动探测恢复的条数 |
 
 **为什么 `name` 创建后不可改**：契约的稳定性来自名字。 改名的正确手段是弃用 + 替代链（总纲 3.5），而不是原地改名。
 
@@ -343,19 +343,27 @@ bob,,grp_default,request,1000
     {
       "real_model_id": "<uuid>",
       "constraint": {"channel_scope": "all", "require": {"vision": true}},
-      "weight": 100, "available_instances": 2
+      "weight": 100, "available_instances": 2,
+      "unavailable": true, "unavailable_reason": "upstream_auth",
+      "unavailable_since": 1761958800, "next_probe_at": 1761960600, "probe_attempts": 3
     }
   ]
 }
 ```
 
-**为什么 `available_instances` 是响应字段而不是请求字段**： 它由运行时状态决定，不可写。放在响应里是为了让保存前的 预览能显示"这条候选实际上有没有凭据支撑"。
+**数组顺序就是使用顺序**（2026-11-01 定案）：`PUT` 的数组先后与 `abstract_candidates.sort_order`
+一一对应，也就是实际尝试的先后——仅当前一个不可用时才用下一个。
+
+**为什么 `available_instances` / `unavailable` / `next_probe_at` 都是响应字段**：
+它们由运行时状态决定，不可写（请求里给了也忽略）。放在响应里是为了让预览能显示
+"这条候选实际上有没有凭据支撑、是不是正在等探测恢复"。`probe_attempts` 是退避
+曲线已经翻了几倍（1m→2m→4m…封顶 1h）。
 
 ### 8.3 干跑
 
 ```json
 POST /api/admin/abstract-models/am_smart/dry-run
-{"strategy": ["expiry-first", "balance"], "sample_size": 200}
+{"sample_size": 200}
 ```
 
 ```json

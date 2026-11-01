@@ -19,7 +19,7 @@
 | 0.5 | **弃用替代链深度上限 5 跳**（跨册硬常量），配置时 + 运行时**双处环检测** | `security/04-authz.md:115`、`models/04-deprecation.md:52,81-82` | 超限或成环时**降级为「无替代」而不报错**（照样接受请求、回显旧名） |
 | 0.6 | **Key 默认额度 0、白名单默认空**，且每个 Key **强制**有日/月 token 上限与并发上限（未设时由全局默认兜底，不得理解为无限制） | `security/05-keys.md:35,82-83,98` | 默认值取「拒绝」。若你想让新建 Key 立刻可用，要改这里 + 建 Key 流程 |
 | 0.7 | **限定名格式 `dsh:<渠道>/<上游模型 id>`** | `models/01-catalog.md:24,29-31` | 一旦定了要改命名，目录/抽象/弃用/文档全要迁移 |
-| 0.8 | **默认排序链 `[expiry-first, round-robin]`** | `models/03-strategy.md:112,121` | 直接决定哪个下游账号先被限流。`expiry-first` 是你说的「临期优先」的延续；`round-robin` 是我加的平局决胜（否则同渠道多账号会总打同一个） |
+| 0.8 | **默认排序链 `[expiry-first, round-robin]`**（**2026-11-01 已改为管理员手动序，此条作废**） | `models/03-strategy.md` 3.1 | 直接决定哪个下游账号先被限流。`expiry-first` 是你说的「临期优先」的延续；`round-robin` 是我加的平局决胜（否则同渠道多账号会总打同一个） |
 | 0.9 | **对外错误码新造 4 个**：`model_retired`→410、`upstream_error`→502、`upstream_timeout`→504、`pool_exhausted`→429 | `api/03-errors.md:90-96` | 总纲只提到 `upstream_unavailable` 与「无候选 503」。这些名字一旦被客户端 SDK 硬编码就不好改 |
 | 0.10 | **自定 6 个 `x-ratelimit-*` 响应头**（`-limit-requests` / `-remaining-requests` / `-reset-requests` / `-limit-tokens` / `-remaining-tokens` / `-reset-tokens`） | `api/03-errors.md:243-248` | 直接照抄 OpenAI 命名，但字段集合是我定的 |
 | 0.11 | **管理端路由 19 条 + 租户前缀 `/usage` + `/contribute` 与 `/contributions` 拆两个路由** | `ui/01-ia.md:142-194` | 路由名是书签/文档/SEO 的同义词，改名成本高 |
@@ -203,7 +203,7 @@
 | 3.25 | 过滤后为空 → **503 + `no_candidate`**，并落「若放宽某一级还剩几条路径」诊断（建议只给分类不给数量与模型名） | `03-strategy.md:62-66` |
 | 3.26 | Q2 过滤阶段只是**预判**，权威判定是结算时的条件 UPDATE；预判**倾向不缓存** | `03-strategy.md:88-105` |
 | 3.27 | `quality-tier` 把鉴定判定（trusted > verified > unverified）与运行时成功率**合成**档位 | `03-strategy.md:154` |
-| 3.28 | 除 weighted/round-robin 外排序**必须确定性**；这两个必须带随机种子或游标快照进日志 | `03-strategy.md:160-166` |
+| 3.28 | 除 weighted/round-robin 外排序**必须确定性**（**手动序下此条自动成立**：没有比较器就没有不确定性） | `03-strategy.md` 3.5 |
 | 3.29 | `thinking_delta` 按「**算**作可见内容」处理（保守，客户端会渲染它） | `03-strategy.md:187-199` |
 | 3.30 | 非流式切换窗口 = 请求发出 → 收到完整响应之前 | `03-strategy.md:203` |
 | 3.31 | 切换次数与单请求总时长**都必须有上限**（具体数值待定） | `03-strategy.md:221-225` |
