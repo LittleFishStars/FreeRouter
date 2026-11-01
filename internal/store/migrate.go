@@ -188,6 +188,29 @@ func (s *Store) migrate(ctx context.Context) error {
 		slog.InfoContext(ctx, "迁移前备份完成", "path", path)
 	}
 
+	// 迁移期间关闭外键约束（2026-11-01）。SQLite 的官方重建流程就是这么做的：
+	// DROP 一张被别的表引用的表时，若外键开着，SQLite 会校验引用并在依赖不满足
+	// 时报错（no such table: main.X）——而重建迁移（0009）本来就是「按依赖逆序
+	// 全拆再全建」，中间态必然不满足引用关系。
+	//
+	// 为什么必须在这里修而不是改 0009：**已应用的迁移不可变**（下面的 checksum
+	// 校验会直接拒绝启动）。0013 把 key_model_allow 改名为 key_model_deny 后，
+	// 「删版本记录重跑 0009」（migrate_uuid_guard_test 的场景）就会撞上引用校验，
+	// 2026-11-01 生产实测：后端起不来。
+	//
+	// ⚠️ PRAGMA foreign_keys 在**事务内**设置是 no-op（SQLite 文档明确要求它在
+	// 事务外设置），所以在 BeginTx 之前、用连接级 Exec 设置；迁移结束（无论
+	// 成败）恢复成 1——外键约束是运行期契约，不能因为一次迁移就永久关掉。
+	if _, err := s.writeDB.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("store: 迁移前关闭外键约束失败: %w", err)
+	}
+	defer func() {
+		// 用独立 context：迁移失败时原 ctx 可能已取消，恢复外键不能跟着失败。
+		if _, err := s.writeDB.ExecContext(context.WithoutCancel(ctx), `PRAGMA foreign_keys = ON`); err != nil {
+			slog.WarnContext(ctx, "迁移后恢复外键约束失败（连接即将关闭，影响有限）", "err", err)
+		}
+	}()
+
 	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("store: 开启迁移事务失败: %w", err)
