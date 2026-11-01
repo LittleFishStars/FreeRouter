@@ -393,9 +393,17 @@ func (s *Server) handleAdminAbstractModelDetail(deps *AdminDeps) http.HandlerFun
 			mapAdminError(w, err, "候选集")
 			return
 		}
+		// blocked_abstract_ids：候选编辑弹窗要隐藏的那些抽象模型（会成环 +
+		// 它自己）。读失败不该让详情端点整体 500——它只是编辑辅助信息，
+		// 拿不到时前端按「没有拦项」展示（保存时仍会被桥拒绝，闸不止一道）。
+		blocked, berr := deps.Models.BlockedAbstractIDs(r.Context(), id)
+		if berr != nil {
+			blocked = []string{}
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"data":       renderAdminAbstractModel(row),
-			"candidates": cands,
+			"data":                 renderAdminAbstractModel(row),
+			"candidates":           cands,
+			"blocked_abstract_ids": blocked,
 		})
 	}
 }
@@ -586,6 +594,13 @@ func (s *Server) handleAdminAbstractCandidatesPut(deps *AdminDeps) http.HandlerF
 		for i := range *body.Candidates {
 			c := &(*body.Candidates)[i]
 			c.AvailableInstances = 0 // 响应字段归零，绝不让请求值穿透到桥
+			c.TargetName = ""        // 同上（服务端按 id 查库填）
+			kind, kerr := parseAdminCandidateKind(c.Kind)
+			if kerr != nil {
+				adminWriteParamErr(w, "candidates", fmt.Sprintf("第 %d 条候选：%v", i+1, kerr))
+				return
+			}
+			c.Kind = kind
 			if c.RealModelID != "" {
 				if _, err := idgen.Parse(c.RealModelID); err != nil {
 					adminWriteParamErr(w, "candidates", fmt.Sprintf("第 %d 条候选的 real_model_id 形状非法（期望 UUID）", i+1))
@@ -1295,4 +1310,19 @@ func normalizeModelSources(rows []AdminModelSource) []AdminModelSource {
 		}
 	}
 	return rows
+}
+
+// parseAdminCandidateKind 校验并归一请求里的 candidate_kind。
+//
+// 契约口径与桥（app.parseCandidateItemKind）同源：缺省/空串 = real，
+// 其余只认 real / abstract。放在 httpapi 的理由是**错误码**——非法枚举是
+// 请求参数错误（400 invalid_request），不该走到桥里再翻成 500。
+func parseAdminCandidateKind(raw string) (string, error) {
+	switch raw {
+	case "", "real":
+		return "real", nil
+	case "abstract":
+		return "abstract", nil
+	}
+	return "", fmt.Errorf("candidate_kind 取值非法 %q（只接受 real / abstract）", raw)
 }

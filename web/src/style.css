@@ -1563,6 +1563,14 @@ a.metric-link:hover {
   color: var(--fr-on-surface-variant);
 }
 
+/* 嵌套候选（抽象模型）的卡脚：没有供应商概念，用「嵌套」标签占 logo 位。
+   与供应商行同字号同色，只换图标语义（层级 = 一组候选的名字）。 */
+.model-card-provider-name[data-abstract] {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
 /* 选中角标：右上角一只 ✓（全站不用边框画状态，用图标 + 软底）。 */
 .model-card-check {
   position: absolute;

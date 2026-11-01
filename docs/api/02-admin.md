@@ -353,17 +353,41 @@ bob,,grp_default,request,1000
   "candidates": [
     {
       "real_model_id": "<uuid>",
+      "candidate_kind": "real",
       "constraint": {"channel_scope": "all", "require": {"vision": true}},
       "weight": 100, "available_instances": 2,
       "unavailable": true, "unavailable_reason": "upstream_auth",
       "unavailable_since": 1761958800, "next_probe_at": 1761960600, "probe_attempts": 3
+    },
+    {
+      "real_model_id": "<uuid-of-another-abstract-model>",
+      "candidate_kind": "abstract",
+      "target_name": "smart",
+      "weight": 0, "available_instances": 3
     }
-  ]
+  ],
+  "blocked_abstract_ids": ["<uuid>", "<uuid>"]
 }
 ```
 
 **数组顺序就是使用顺序**（2026-11-01 定案）：`PUT` 的数组先后与 `abstract_candidates.sort_order`
 一一对应，也就是实际尝试的先后——仅当前一个不可用时才用下一个。
+
+**嵌套候选（`candidate_kind: "abstract"`，2026-11-01）**：候选可以是**另一个抽象
+模型**。运行时把它自己的候选按声明序展开进来（分层回退：本模型前一条候选不可用
+时就退到它）。`real_model_id` 字段在此形态下存的是抽象模型 id（字段名沿用是
+历史契约，语义按 `candidate_kind` 分支解释）；`target_name` 是响应字段（服务端
+按 id 查库填，请求里给了被忽略）；`available_instances` 对嵌套候选的含义是
+「当前展开出的候选条数」。
+
+**循环依赖的三道闸**：
+
+1. **选择时隐藏**：详情端点回 `blocked_abstract_ids`——把哪个抽象模型加为
+   本模型的候选会形成循环依赖（含本模型自己）。候选编辑弹窗据此**不显示**那些项。
+2. **保存时拒绝**：即使绕过界面（直接调 API），成环的候选集会被 400 拒绝，
+   错误信息含成环路径（`会形成循环依赖：a → b → a`）。
+3. **运行时兜底**：手工改库绕过前两道闸时，路由展开按路径栈游走，成环的那条
+   嵌套候选被跳过（不报错、不连坐同层其它候选），详见 [docs/models/02-abstract.md](../models/02-abstract.md) §3.5。
 
 **为什么 `available_instances` / `unavailable` / `next_probe_at` 都是响应字段**：
 它们由运行时状态决定，不可写（请求里给了也忽略）。放在响应里是为了让预览能显示

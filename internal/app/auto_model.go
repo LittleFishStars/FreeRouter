@@ -115,7 +115,7 @@ func (a *App) alignAutoCandidates(ctx context.Context, abstractID string) error 
 		if r.ExcludedFromCandidates {
 			continue
 		}
-		desired = append(desired, store.Candidate{RealModelID: r.ID})
+		desired = append(desired, store.Candidate{TargetID: r.ID})
 	}
 	cur, err := a.store.Repos().Models.ListCandidates(ctx, abstractID)
 	if err != nil {
@@ -140,10 +140,10 @@ func candidateSetEqual(cur, desired []store.Candidate) bool {
 	}
 	seen := make(map[string]bool, len(cur))
 	for _, c := range cur {
-		seen[c.RealModelID] = true
+		seen[c.TargetID] = true
 	}
 	for _, c := range desired {
-		if !seen[c.RealModelID] {
+		if !seen[c.TargetID] {
 			return false
 		}
 	}

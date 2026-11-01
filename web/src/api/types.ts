@@ -358,7 +358,16 @@ export interface CandidateConstraint {
 }
 
 export interface Candidate {
+  /**
+   * 候选目标 id（2026-11-01 起按 candidate_kind 分支解释）：
+   * real → 真实模型 id；abstract → 抽象模型 id（嵌套候选）。
+   * 字段名保持 real_model_id 是后端契约的既定形状（后端注释里有同样的说明）。
+   */
   real_model_id: string
+  /** 候选类别：real（默认）= 真实模型；abstract = 另一个抽象模型（嵌套回退）。 */
+  candidate_kind?: 'real' | 'abstract'
+  /** 候选目标名（响应字段）：abstract 时是抽象模型名，real 时是真实模型显示名。 */
+  target_name?: string
   constraint?: CandidateConstraint
   weight: number
   /** 响应侧展开结果：声明式候选 → 当前可用凭据实例数（桥恒填 0，不能当事实用） */

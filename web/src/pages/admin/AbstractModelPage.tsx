@@ -38,6 +38,7 @@ import type {
 import {
   IconBack,
   IconCheck,
+  IconStack,
   IconChevronDown,
   IconPlus,
   IconRefresh,
@@ -73,7 +74,12 @@ const STATUS_OPTIONS = [
 
 type ExpDetail =
   | { state: 'loading' }
-  | { state: 'ready'; candidates: Candidate[] }
+  | {
+      state: 'ready'
+      candidates: Candidate[]
+      /** 会形成循环依赖的抽象模型 id（候选编辑弹窗据此隐藏那些项）。 */
+      blocked: string[]
+    }
   | { state: 'error' }
 
 export function AbstractModelsPage({ def }: PageProps) {
@@ -130,7 +136,10 @@ export function AbstractModelsPage({ def }: PageProps) {
     setDetails((d) => ({ ...d, [expandedId]: { state: 'loading' } }))
     getCandidates(expandedId)
       .then((r) => {
-        setDetails((d) => ({ ...d, [expandedId]: { state: 'ready', candidates: r.candidates } }))
+        setDetails((d) => ({
+          ...d,
+          [expandedId]: { state: 'ready', candidates: r.candidates, blocked: r.blocked }
+        }))
       })
       .catch(() => {
         setDetails((d) => ({ ...d, [expandedId]: { state: 'error' } }))
@@ -248,6 +257,7 @@ export function AbstractModelsPage({ def }: PageProps) {
                   detail={expandedId === m.id ? (details[m.id] ?? undefined) : undefined}
                   facts={modelFacts.current}
                   sourceOf={modelSourceOf.current}
+                  allModels={q.data?.data ?? []}
                   onAddSaved={handleCandidateSaved}
                 />
               ))}
@@ -268,6 +278,7 @@ function ModelRow({
   detail,
   facts,
   sourceOf,
+  allModels,
   onAddSaved
 }: {
   m: AdminAbstractModel
@@ -276,6 +287,8 @@ function ModelRow({
   detail: ExpDetail | undefined
   facts: Map<string, AdminModelSourceModel>
   sourceOf: Map<string, AdminModelSource>
+  /** 全部抽象模型（候选编辑弹窗的「抽象模型」分组数据源）。 */
+  allModels: AdminAbstractModel[]
   onAddSaved: (id: string) => void
 }) {
   const editTo = `/admin/abstract-models/${encodeURIComponent(m.id)}`
@@ -334,8 +347,12 @@ function ModelRow({
     setSavingOrder(true)
     setOrderNotice(null)
     try {
+      // candidate_kind 必须透传：abstract 行的 real_model_id 是抽象模型 id，
+      // 丢了 kind 保存会被当成一条不存在的真实模型候选（后端会拒绝，但界面
+      // 要先发对请求）。
       await putCandidates(m.id, chipRows.map((r) => ({
         real_model_id: r.real_model_id,
+        candidate_kind: r.candidate_kind,
         constraint: r.constraint,
         weight: 0
       })))
@@ -457,10 +474,19 @@ function ModelRow({
                     <span className="muted am-empty">尚未配置候选。</span>
                   ) : (
                     rows.map((c, i) => {
-                      const fact = facts.get(c.real_model_id)
-                      const src = sourceOf.get(c.real_model_id)
-                      const name = fact?.display_name ?? c.real_model_id
-                      const supported = c.available_instances !== 0 && c.available_instances !== undefined
+                      // 嵌套候选（kind=abstract）：名字来自 target_name（后端
+                      // 按 id 查库填）或页面已加载的抽象模型列表，没有才退 id。
+                      // facts（真实模型目录）里不会有它，不能用同一张表查。
+                      const isAbstract = c.candidate_kind === 'abstract'
+                      const absName = isAbstract
+                        ? (c.target_name ?? allModels.find((x) => x.id === c.real_model_id)?.display_name ?? c.real_model_id)
+                        : undefined
+                      const fact = isAbstract ? undefined : facts.get(c.real_model_id)
+                      const src = isAbstract ? undefined : sourceOf.get(c.real_model_id)
+                      const name = isAbstract ? (absName ?? c.real_model_id) : (fact?.display_name ?? c.real_model_id)
+                      const supported = isAbstract
+                        ? c.available_instances !== 0
+                        : c.available_instances !== 0 && c.available_instances !== undefined
                       // 单条候选没有排序意义，退回纯点击；多条时挂拖动属性。
                       // 显式标类型：写成 `: {}` 会让联合类型退化成 never，
                       // 下面展开属性时全部报索引错误（TS7053）。
@@ -471,7 +497,9 @@ function ModelRow({
                       // （名字 / 分隔线 / 供应商+协议），与候选集弹窗的模型卡同一形态。
                       const tip = [
                         c.unavailable ? `已判定不可用${c.unavailable_reason ? `（${c.unavailable_reason}）` : ''}` : '',
-                        supported ? '可用' : '无可用凭据',
+                        isAbstract
+                          ? `嵌套候选 · 展开 ${c.available_instances ?? 0} 条`
+                          : supported ? '可用' : '无可用凭据',
                         fact?.upstream_model_id ? `模型 ${fact.upstream_model_id}` : '',
                         '点击打开候选集'
                       ].filter(Boolean).join(' · ')
@@ -502,19 +530,29 @@ function ModelRow({
                           <span className="model-card-divider" />
                           <span className="model-card-foot">
                             <span className="model-card-provider">
-                              <img
-                                className="model-card-logo"
-                                src={logo.url}
-                                data-fallback={logo.fallback || undefined}
-                                alt=""
-                                loading="lazy"
-                                draggable={false}
-                              />
-                              <span className="model-card-provider-name">
-                                {(src?.name) || '未知来源'}
-                              </span>
+                              {isAbstract ? (
+                                // 嵌套候选没有「供应商」概念（它是一组候选的
+                                // 名字），用层级图标 + 「嵌套」标签替代 logo 位。
+                                <span className="model-card-provider-name" data-abstract>
+                                  <IconStack size="xs" aria-hidden /> 嵌套
+                                </span>
+                              ) : (
+                                <>
+                                  <img
+                                    className="model-card-logo"
+                                    src={logo.url}
+                                    data-fallback={logo.fallback || undefined}
+                                    alt=""
+                                    loading="lazy"
+                                    draggable={false}
+                                  />
+                                  <span className="model-card-provider-name">
+                                    {(src?.name) || '未知来源'}
+                                  </span>
+                                </>
+                              )}
                             </span>
-                            <ProtocolDots protocols={fact?.protocols} />
+                            <ProtocolDots protocols={isAbstract ? undefined : fact?.protocols} />
                           </span>
                         </button>
                       )
@@ -533,6 +571,8 @@ function ModelRow({
         <CandidateDialog
           modelId={m.id}
           modelName={m.name}
+          blocked={detail?.state === 'ready' ? detail.blocked : []}
+          allModels={allModels}
           onClose={() => setOpen(false)}
           onSaved={onAddSaved}
         />
@@ -559,6 +599,13 @@ export function AbstractModelDetailPage({ def }: PageProps) {
   const [dry, setDry] = useState<DryRunResult | null>(null)
   const [dryBusy, setDryBusy] = useState(false)
   const [candOpen, setCandOpen] = useState(false)
+  // 候选弹窗的拦截集合（会成环的抽象模型在选择列表里隐藏，2026-11-01）。
+  // 打开弹窗时才真发请求（未打开时 resolve null，不发）：blocked 是
+  // 「现在把谁加进来会成环」的瞬时事实，常驻拉取是白打。
+  const blockedQ = useApi(
+    () => (candOpen ? getCandidates(model?.id ?? id) : Promise.resolve(null)),
+    [id, model?.id, candOpen]
+  )
 
   useEffect(() => {
     if (!model) return
@@ -779,6 +826,8 @@ export function AbstractModelDetailPage({ def }: PageProps) {
         <CandidateDialog
           modelId={model.id}
           modelName={model.name}
+          blocked={blockedQ.data?.blocked ?? []}
+          allModels={[]}
           onClose={() => setCandOpen(false)}
           onSaved={() => q.reload()}
         />

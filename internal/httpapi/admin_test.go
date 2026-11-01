@@ -385,11 +385,13 @@ func (f *groupsFake) ReplaceGroupPolicies(ctx context.Context, id string, doc js
 
 // modelsFake 是模型面假体（能力/链数据由测试直接摆）。
 type modelsFake struct {
-	audit      *adminAuditFake
-	realByID   map[string]*AdminRealModel
-	absByID    map[string]*AdminAbstractModel
-	absByName  map[string]string
-	cands      map[string][]AdminCandidateItem
+	audit     *adminAuditFake
+	realByID  map[string]*AdminRealModel
+	absByID   map[string]*AdminAbstractModel
+	absByName map[string]string
+	cands     map[string][]AdminCandidateItem
+	// blocked 是 BlockedAbstractIDs 的返回值（默认空 = 无拦项）。
+	blocked    []string
 	caps       map[string]json.RawMessage
 	excluded   map[string]bool
 	deprecated []AdminDeprecationUpdate
@@ -578,6 +580,12 @@ func (m *modelsFake) ReplaceCandidates(ctx context.Context, id string, cands []A
 
 func (m *modelsFake) ReferencingGroups(_ context.Context, name string) ([]AdminGroup, error) {
 	return []AdminGroup{{ID: "00000020-0000-4000-8000-000000000001", Name: "默认组", IsDefault: true}}, nil
+}
+
+// BlockedAbstractIDs 契约 fake：默认无拦项（blocked 为空）。需要模拟
+// 「会成环的项」的测试直接写 m.blocked。
+func (m *modelsFake) BlockedAbstractIDs(_ context.Context, _ string) ([]string, error) {
+	return m.blocked, nil
 }
 
 func (m *modelsFake) CapabilitySnapshot(_ context.Context) (map[string]json.RawMessage, error) {

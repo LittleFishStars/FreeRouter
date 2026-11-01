@@ -463,11 +463,13 @@ export function patchAbstractModel(
  * 候选挂在抽象模型详情的 `candidates` 字段上（与 data 并列）。这里读详情，
  * 让页面在「只有详情端点」的版本上也能工作。
  */
-export async function getCandidates(id: string): Promise<{ candidates: Candidate[] }> {
-  const env = await getEnvelope<{ data: AdminAbstractModel; candidates?: Candidate[] }>(
+export async function getCandidates(
+  id: string
+): Promise<{ candidates: Candidate[]; blocked: string[] }> {
+  const env = await getEnvelope<{ data: AdminAbstractModel; candidates?: Candidate[]; blocked_abstract_ids?: string[] }>(
     `${PATHS.adminAbstractModels}/${seg(id)}`
   )
-  return { candidates: env.candidates ?? [] }
+  return { candidates: env.candidates ?? [], blocked: env.blocked_abstract_ids ?? [] }
 }
 
 /**

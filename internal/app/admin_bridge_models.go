@@ -360,26 +360,6 @@ func (mb *modelsBridge) CreateAbstractModel(ctx context.Context, in httpapi.Admi
 	return newID, auditID, nil
 }
 
-// putCandidates 翻候选载荷并整表写入。
-func (mb *modelsBridge) putCandidates(ctx context.Context, models *store.ModelRepo, abstractID string, cands []httpapi.AdminCandidateItem) error {
-	out := make([]store.Candidate, 0, len(cands))
-	for _, c := range cands {
-		rid, err := decodeID(c.RealModelID)
-		if err != nil {
-			return fmt.Errorf("候选 real_model_id %q 非法: %w", c.RealModelID, err)
-		}
-		// 声明序由 SetCandidates 按**入参切片顺序**编号，所以这里不能传
-		// weight（已退役，恒写 0）也不能自己编 sort_order——入参顺序就是
-		// 管理员在界面上排的顺序。
-		sc := store.Candidate{AbstractModelID: abstractID, RealModelID: rid}
-		if len(c.Constraint) > 0 {
-			sc.ConstraintJSON = adminStrPtr(string(c.Constraint))
-		}
-		out = append(out, sc)
-	}
-	return models.SetCandidates(ctx, abstractID, out)
-}
-
 func (mb *modelsBridge) UpdateAbstractModel(ctx context.Context, id string, patch map[string]json.RawMessage, _ json.RawMessage, audit httpapi.AdminAuditEntry) (*httpapi.AdminAbstractModel, string, error) {
 	aid, err := decodeID(id)
 	if err != nil {
@@ -538,7 +518,33 @@ func (mb *modelsBridge) ListCandidates(ctx context.Context, abstractModelID stri
 
 	out := make([]httpapi.AdminCandidateItem, 0, len(cands))
 	for _, c := range cands {
-		rm, err := mb.b.repos.Models.GetRealModel(ctx, c.RealModelID)
+		if c.Kind == store.KindAbstract {
+			// 嵌套候选（抽象模型作为候选）：它没有「所属上游」，凭据实例数
+			// 换成「当前展开出的叶子候选数」——语义对管理员等价（这一条候选
+			// 背后有几条可用的上游路径）。抽象模型行不存在（被手工删库）时
+			// 记 0 并保留行——跳过会让候选行数与库里对不上。
+			leaves := int64(0)
+			name := ""
+			if m, gerr := mb.b.repos.Models.GetAbstractModel(ctx, c.TargetID); gerr == nil && m != nil {
+				name = m.Name
+				if n, ok := nestedLeafStats(ctx, mb.b.repos.Models, m.ID); ok {
+					leaves = n
+				}
+			}
+			item := httpapi.AdminCandidateItem{
+				RealModelID:        c.TargetID,
+				Kind:               candidateItemKind(c.Kind),
+				TargetName:         name,
+				Weight:             0, // 已退役，恒 0（字段位只为 DTO 形状）
+				AvailableInstances: leaves,
+			}
+			if c.ConstraintJSON != nil {
+				item.Constraint = json.RawMessage(*c.ConstraintJSON)
+			}
+			out = append(out, item)
+			continue
+		}
+		rm, err := mb.b.repos.Models.GetRealModel(ctx, c.TargetID)
 		inst := int64(0)
 		if err != nil {
 			// 悬空的 real_model_id（外键不在）：给 0 而不是跳过这条候选——跳过会让
@@ -548,15 +554,19 @@ func (mb *modelsBridge) ListCandidates(ctx context.Context, abstractModelID stri
 			inst = insts[rm.UpstreamID]
 		}
 		item := httpapi.AdminCandidateItem{
-			RealModelID: c.RealModelID,
+			RealModelID: c.TargetID,
+			Kind:        candidateItemKind(c.Kind),
 			// Weight 恒 0（已退役）：字段位留着只为不破坏 DTO 形状。
 			Weight:             0,
 			AvailableInstances: inst,
 		}
+		if rm != nil {
+			item.TargetName = rm.DisplayName
+		}
 		if c.ConstraintJSON != nil {
 			item.Constraint = json.RawMessage(*c.ConstraintJSON)
 		}
-		if u, ok := unavailBy[c.RealModelID]; ok {
+		if u, ok := unavailBy[c.TargetID]; ok {
 			since := u.FailedAt
 			next := u.NextCheckAt
 			item.Unavailable = true
@@ -632,7 +642,15 @@ func (mb *modelsBridge) availableCandidates(ctx context.Context, cands []store.C
 		}
 	}
 	for _, c := range cands {
-		rm, err := mb.b.repos.Models.GetRealModel(ctx, c.RealModelID)
+		if c.Kind == store.KindAbstract {
+			// 嵌套候选按「展开出的叶子数」判可用（与 ListCandidates 的
+			// available_instances 同口径）：叶子 > 0 即可用。
+			if n, ok := nestedLeafStats(ctx, mb.b.repos.Models, c.TargetID); ok && n > 0 {
+				available++
+			}
+			continue
+		}
+		rm, err := mb.b.repos.Models.GetRealModel(ctx, c.TargetID)
 		if err != nil {
 			continue
 		}
@@ -663,7 +681,8 @@ func (mb *modelsBridge) ReplaceCandidates(ctx context.Context, abstractModelID s
 		if prev, err := tx.Models.ListCandidates(ctx, aid); err == nil {
 			for _, c := range prev {
 				item := httpapi.AdminCandidateItem{
-					RealModelID: c.RealModelID,
+					RealModelID: c.TargetID,
+					Kind:        candidateItemKind(c.Kind),
 					// Weight 恒 0（已退役）。
 					Weight: 0,
 				}
@@ -690,6 +709,19 @@ func (mb *modelsBridge) ReplaceCandidates(ctx context.Context, abstractModelID s
 		old = []httpapi.AdminCandidateItem{}
 	}
 	return old, auditID, nil
+}
+
+// BlockedAbstractIDs 见 admin_bridge_nested.go 的 blockedAbstractIDs。
+func (mb *modelsBridge) BlockedAbstractIDs(ctx context.Context, abstractModelID string) ([]string, error) {
+	aid, err := decodeID(abstractModelID)
+	if err != nil {
+		return nil, errAdminNotImplemented
+	}
+	ids, err := blockedAbstractIDs(ctx, mb.b.repos.Models, aid)
+	if err != nil {
+		return nil, mapStoreErr(err)
+	}
+	return ids, nil
 }
 
 func (mb *modelsBridge) ReferencingGroups(ctx context.Context, name string) ([]httpapi.AdminGroup, error) {

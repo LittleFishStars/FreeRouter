@@ -72,7 +72,7 @@ func TestContractAutoModelSync(t *testing.T) {
 		t.Fatalf("auto 应已创建：%v", err)
 	}
 	cands, err := a.store.Repos().Models.ListCandidates(ctx, m.ID)
-	if err != nil || len(cands) != 1 || cands[0].RealModelID != good {
+	if err != nil || len(cands) != 1 || cands[0].TargetID != good {
 		t.Fatalf("候选集应只含可路由模型，得 %d 条（want %s）", len(cands), good)
 	}
 	for _, g := range []string{gid, otherID} {

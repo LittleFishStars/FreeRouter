@@ -164,7 +164,7 @@ func TestContractCreateRealModelSurvivesRefresh(t *testing.T) {
 	// 对外 id 就是行 id 本身（UUID），不再需要解 rm_<n>（2026-10-26 改造）。
 	rmNum := row.ID
 	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
-		{AbstractModelID: amID, RealModelID: rmNum},
+		{AbstractModelID: amID, TargetID: rmNum},
 	}); err != nil {
 		t.Fatalf("设候选失败: %v", err)
 	}

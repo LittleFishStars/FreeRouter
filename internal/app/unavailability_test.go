@@ -242,8 +242,8 @@ func TestContractUnavailableGoesToTailButKept(t *testing.T) {
 	}
 	// 声明序：A 在前、B 在后（这就是手动排序的唯一表达）。
 	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
-		{AbstractModelID: amID, RealModelID: rmA},
-		{AbstractModelID: amID, RealModelID: rmB},
+		{AbstractModelID: amID, TargetID: rmA},
+		{AbstractModelID: amID, TargetID: rmB},
 	}); err != nil {
 		t.Fatalf("设候选失败: %v", err)
 	}

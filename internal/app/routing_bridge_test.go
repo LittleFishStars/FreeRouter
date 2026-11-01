@@ -70,7 +70,7 @@ func seedModel(t *testing.T, a *App, abstractName, upstreamModel string, ctxWin 
 		cj = &constraint
 	}
 	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
-		{AbstractModelID: amID, RealModelID: rmID, ConstraintJSON: cj},
+		{AbstractModelID: amID, TargetID: rmID, ConstraintJSON: cj},
 	}); err != nil {
 		t.Fatalf("设候选失败: %v", err)
 	}
@@ -171,8 +171,8 @@ func TestContractRoutingCooldownMovesToEnd(t *testing.T) {
 		t.Fatalf("建抽象模型失败: %v", err)
 	}
 	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
-		{AbstractModelID: amID, RealModelID: rmA},
-		{AbstractModelID: amID, RealModelID: rmB},
+		{AbstractModelID: amID, TargetID: rmA},
+		{AbstractModelID: amID, TargetID: rmB},
 	}); err != nil {
 		t.Fatalf("设候选失败: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestContractRoutingToolsUnknownFailsOpen(t *testing.T) {
 		t.Fatalf("建抽象模型失败: %v", err)
 	}
 	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
-		{AbstractModelID: amID, RealModelID: rm},
+		{AbstractModelID: amID, TargetID: rm},
 	}); err != nil {
 		t.Fatalf("设候选失败: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestContractRoutingImageNeedFiltersOut(t *testing.T) {
 		Name: "imgless", DisplayName: "imgless", Status: store.ModelActive, CapabilityMode: "strict",
 	})
 	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
-		{AbstractModelID: amID, RealModelID: rm},
+		{AbstractModelID: amID, TargetID: rm},
 	}); err != nil {
 		t.Fatalf("设候选失败: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestContractRoutingChannelPrefersModelColumn(t *testing.T) {
 	// 约束要求的是模型级派生渠道 "deepseek"，两者必然分道扬镳。
 	amID, rmID := seedModel(t, a, "chan", "deepseek/deepseek-chat", &win, "")
 	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
-		{AbstractModelID: amID, RealModelID: rmID,
+		{AbstractModelID: amID, TargetID: rmID,
 			ConstraintJSON: pstr(`{"channel_scope":{"mode":"include","channels":["deepseek"]}}`)},
 	}); err != nil {
 		t.Fatalf("设候选失败: %v", err)
@@ -423,7 +423,7 @@ func TestContractRoutingAggregateExcludedRegardlessOfChannel(t *testing.T) {
 		t.Fatalf("建抽象模型失败: %v", err)
 	}
 	if err := models.SetCandidates(ctx, amPlain, []store.Candidate{
-		{AbstractModelID: amPlain, RealModelID: rmPlain},
+		{AbstractModelID: amPlain, TargetID: rmPlain},
 	}); err != nil {
 		t.Fatalf("设候选失败: %v", err)
 	}

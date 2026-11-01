@@ -555,7 +555,25 @@ func renderAdminAbstractModel(m *AdminAbstractModel) AdminAbstractModelOut {
 // 数组的**顺序**就是声明序（排序条件次序相同时按它决定先后）——所以
 // 整表替换的入参顺序不是随意的，PUT 收到的数组顺序会被原样保存。
 type AdminCandidateItem struct {
+	// RealModelID 是候选目标 id（2026-11-01 起按 candidate_kind 分支解释）：
+	//   - kind=real（默认/缺省）→ real_models.id；
+	//   - kind=abstract → abstract_models.id（抽象模型作为候选，嵌套回退）。
+	//
+	// 为什么不改名：realtree 的请求/响应契约里有这个字段名（admin_test 与
+	// 前端 putCandidates 都在用），改名等于同时破坏两处客户端的兼容性，
+	// 而 candidate_kind + 注释已经能把语义说清。Go 侧新增 Kind 字段承载类别。
 	RealModelID string `json:"real_model_id"`
+	// Kind 是候选类别（"real" / "abstract"；缺省 = "real"）。
+	//
+	// 语义（2026-11-01 用户需求）：抽象模型的候选集可以加入**其他抽象模型**，
+	// 运行时把它的候选按声明序展开进来（分层回退）。会形成循环依赖的项在
+	// 保存时被拒绝、在详情端点的 blocked_abstract_ids 里被列出，前端在选择
+	// 列表里隐藏它们。
+	Kind string `json:"candidate_kind,omitempty"`
+	// TargetName 是响应字段：kind=abstract 时是那个抽象模型的对外名
+	// （kind=real 时是真实模型的 display_name）。请求里给了会被忽略——
+	// 它由服务端按 id 查库填，写入侧不接受文本。
+	TargetName string `json:"target_name,omitempty"`
 	// Constraint 是候选级约束原文（渠道范围等），透传给路由层解释；
 	// 管理面不解释它的内容（声明是不透明 JSON，读时解释）。
 	Constraint json.RawMessage `json:"constraint,omitempty"`
@@ -631,6 +649,12 @@ type AdminModelStore interface {
 	ListCandidates(ctx context.Context, abstractModelID string) ([]AdminCandidateItem, error)
 	// ReplaceCandidates 整表替换（PUT 全量语义）；旧集合进审计 Detail。
 	ReplaceCandidates(ctx context.Context, abstractModelID string, cands []AdminCandidateItem, audit AdminAuditEntry) (old []AdminCandidateItem, auditID string, err error)
+
+	// BlockedAbstractIDs 返回「作为该抽象模型的候选会形成循环依赖」的抽象
+	// 模型 id（含它自己）。候选编辑弹窗据此把那批项**隐藏**（2026-11-01
+	// 用户要求「在选择时就隐藏会循环依赖的项」），而不是让人点下去再吃一次
+	// 保存失败。判据与保存时的拒绝同源（同一份 graph 游走）。
+	BlockedAbstractIDs(ctx context.Context, abstractModelID string) ([]string, error)
 
 	// ReferencingGroups 返回把该抽象模型（按名）授权进了集合的组。
 	ReferencingGroups(ctx context.Context, name string) ([]AdminGroup, error)

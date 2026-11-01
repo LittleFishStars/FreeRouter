@@ -76,7 +76,7 @@ func ctx() context.Context { return context.Background() }
 func TestContractResolveActive(t *testing.T) {
 	st := newFakeStore()
 	st.addModel(&AbstractModel{ID: "am1", Name: "smart", Status: StatusActive})
-	st.cands["am1"] = []CandidateDecl{{RealModelID: "rm10"}}
+	st.cands["am1"] = []CandidateDecl{{TargetID: "rm10"}}
 	st.real["rm10"] = mkReal("rm10", "deepseek-official", "deepseek-flash")
 
 	r, rerr, err := NewResolver(st).Resolve(ctx(), "smart")
@@ -112,7 +112,7 @@ func TestContractResolveUnknownName(t *testing.T) {
 func TestContractResolveRealModel404(t *testing.T) {
 	st := newFakeStore()
 	st.addModel(&AbstractModel{ID: "am1", Name: "smart", Status: StatusActive})
-	st.cands["am1"] = []CandidateDecl{{RealModelID: "rm10"}}
+	st.cands["am1"] = []CandidateDecl{{TargetID: "rm10"}}
 	st.real["rm10"] = mkReal("rm10", "deepseek-official", "deepseek-flash")
 	res := NewResolver(st)
 
@@ -146,7 +146,7 @@ func TestContractDeprecationChain(t *testing.T) {
 	st.addModel(&AbstractModel{ID: "am1", Name: "a", Status: StatusDeprecated, ReplacementModelID: ptrStr("am2")})
 	st.addModel(&AbstractModel{ID: "am2", Name: "b", Status: StatusDeprecated, ReplacementModelID: ptrStr("am3")})
 	st.addModel(&AbstractModel{ID: "am3", Name: "c", Status: StatusActive})
-	st.cands["am3"] = []CandidateDecl{{RealModelID: "rm30"}}
+	st.cands["am3"] = []CandidateDecl{{TargetID: "rm30"}}
 	st.real["rm30"] = mkReal("rm30", "cline", "big-model")
 
 	r, rerr, err := NewResolver(st).Resolve(ctx(), "a")
@@ -175,7 +175,7 @@ func TestContractDeprecationCycleRejected(t *testing.T) {
 	// 直接改库口径：a→b、b→a 互相指向（状态机正常路径写不出来）。
 	st.addModel(&AbstractModel{ID: "am1", Name: "a", Status: StatusDeprecated, ReplacementModelID: ptrStr("am2")})
 	st.addModel(&AbstractModel{ID: "am2", Name: "b", Status: StatusDeprecated, ReplacementModelID: ptrStr("am1")})
-	st.cands["am1"] = []CandidateDecl{{RealModelID: "rm10"}}
+	st.cands["am1"] = []CandidateDecl{{TargetID: "rm10"}}
 	st.real["rm10"] = mkReal("rm10", "deepseek-official", "deepseek-flash")
 
 	r, rerr, err := NewResolver(st).Resolve(ctx(), "a")
@@ -199,7 +199,7 @@ func TestContractDeprecationCycleRejected(t *testing.T) {
 func TestContractNoCandidate(t *testing.T) {
 	st := newFakeStore()
 	st.addModel(&AbstractModel{ID: "am1", Name: "empty", Status: StatusActive})
-	st.cands["am1"] = []CandidateDecl{{RealModelID: "rm99"}} // real 行不存在
+	st.cands["am1"] = []CandidateDecl{{TargetID: "rm99"}} // real 行不存在
 
 	_, rerr, err := NewResolver(st).Resolve(ctx(), "empty")
 	if err != nil {
@@ -220,7 +220,7 @@ func TestContractNoCandidate(t *testing.T) {
 func TestContractAggregateExcluded(t *testing.T) {
 	st := newFakeStore()
 	st.addModel(&AbstractModel{ID: "am1", Name: "smart", Status: StatusActive})
-	st.cands["am1"] = []CandidateDecl{{RealModelID: "rm10"}, {RealModelID: "rm11"}, {RealModelID: "rm12"}, {RealModelID: "rm13"}}
+	st.cands["am1"] = []CandidateDecl{{TargetID: "rm10"}, {TargetID: "rm11"}, {TargetID: "rm12"}, {TargetID: "rm13"}}
 	st.real["rm10"] = mkReal("rm10", "aggregate", "agg-model") // 闸①：标志命中
 	st.real["rm10"].ExcludedFromCandidates = true
 	st.real["rm11"] = mkReal("rm11", "deepseek-official", "flash") // 正常
@@ -517,7 +517,7 @@ func TestContractSwitchBudget(t *testing.T) {
 func TestContractTraceStructure(t *testing.T) {
 	st := newFakeStore()
 	st.addModel(&AbstractModel{ID: "am1", Name: "smart", Status: StatusActive})
-	st.cands["am1"] = []CandidateDecl{{RealModelID: "rm10"}, {RealModelID: "rm11"}}
+	st.cands["am1"] = []CandidateDecl{{TargetID: "rm10"}, {TargetID: "rm11"}}
 	st.real["rm10"] = mkReal("rm10", "a", "m1")
 	st.real["rm11"] = mkReal("rm11", "b", "m2")
 

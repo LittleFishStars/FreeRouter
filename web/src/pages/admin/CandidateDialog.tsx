@@ -33,16 +33,19 @@ import { ACTION_ICON } from '../../components/IconButtons'
 import {
   getCandidates,
   getModelSources,
+  listAbstractModels,
   putCandidates,
   refreshRealModels
 } from '../../api/endpoints'
 import type {
+  AdminAbstractModel,
   AdminModelSource,
   AdminModelSourceModel,
   Candidate
 } from '../../api/types'
 import {
   IconCheck,
+  IconStack,
   IconRefresh,
   IconSearch,
 } from '../../icons'
@@ -106,10 +109,15 @@ function instancesText(v: number | null | undefined): string {
 }
 
 
-/** 声明字段：保存时只带真实模型 + 约束 + weight（weight 已退役但 DTO 还带，恒写 0）。 */
+/**
+ * 声明字段：保存时只带「目标 id + 类别 + 约束」+ weight（weight 已退役但 DTO
+ * 还带，恒写 0）。candidate_kind 必须随行透传：abstract 行的 real_model_id 里
+ * 存的是抽象模型 id，丢了 kind 它会被当成一条不存在的真实模型候选。
+ */
 function toPayload(rows: Candidate[]): Candidate[] {
   return rows.map((r) => ({
     real_model_id: r.real_model_id,
+    candidate_kind: r.candidate_kind,
     constraint: r.constraint,
     weight: 0
   }))
@@ -118,16 +126,24 @@ function toPayload(rows: Candidate[]): Candidate[] {
 export function CandidateDialog({
   modelId,
   modelName,
+  blocked = [],
+  allModels = [],
   onClose,
   onSaved
 }: {
   modelId: string
   modelName: string
+  /** 会形成循环依赖的抽象模型 id（后端按「加进去会成环」计算，含本模型自己）。 */
+  blocked?: string[]
+  /** 抽象模型列表（父页面已加载时直接传入，避免弹窗里再拉一遍）。 */
+  allModels?: AdminAbstractModel[]
   onClose: () => void
   onSaved: (id: string) => void
 }) {
   const sourcesQ = useApi(() => getModelSources(), [])
   const candsQ = useApi(() => getCandidates(modelId), [modelId])
+  // 父页面没传全量抽象模型时兜底拉一份（详情页入口）。
+  const absQ = useApi(() => (allModels.length > 0 ? Promise.resolve(null) : listAbstractModels({ limit: 200 })), [])
 
   // 本地编辑副本（声明序 = 数组序）。
   const [rows, setRows] = useState<Candidate[]>([])
@@ -164,6 +180,21 @@ export function CandidateDialog({
   }, [sourcesQ.data])
 
   const sources = sourcesQ.data?.sources ?? []
+
+  // ── 抽象模型候选（2026-11-01）：嵌套回退 ──────────────────────────────
+  //
+  // 后端已把「会形成循环依赖的项」算好放在 blocked 里（含本模型自己）：
+  // 加进去会成环的抽象模型**不渲染**——用户要求「在选择时就隐藏会循环依赖
+  // 的项」。运行时还有一道路径栈兜底（routing.expandDepth），保存时还有
+  // assertNoCycle 拒绝，这里是第三道（体验）闸。
+  const absAll = allModels.length > 0 ? allModels : (absQ.data?.data ?? [])
+  const blockedSet = useMemo(() => new Set(blocked), [blocked])
+  // 会成环的不显示、停用的不显示（disabled 模型不服务，运行时也会跳过它）；
+  // 已经在候选集里的正常显示（显示为已选中，可点击移出）。
+  const absCandidates = useMemo(
+    () => absAll.filter((m) => m.status !== 'disabled' && !blockedSet.has(m.id)),
+    [absAll, blockedSet]
+  )
 
   // 已存在的候选 id 集合（用于判断「有移除」）。
   const originalIds = useMemo(() => new Set(original.map((c) => c.real_model_id)), [original])
@@ -222,6 +253,17 @@ export function CandidateDialog({
       (m) => `${m.display_name} ${m.upstream_model_id}`.toLowerCase().includes(mq)
     )
   }, [active, mq])
+
+  /** 加入/移出一个嵌套候选（抽象模型）。行形态与真实候选一致，靠 kind 区分。 */
+  function toggleAbstract(m: AdminAbstractModel) {
+    setRows((rs) => {
+      const i = rs.findIndex((r) => r.candidate_kind === 'abstract' && r.real_model_id === m.id)
+      if (i === -1) {
+        return [...rs, { real_model_id: m.id, candidate_kind: 'abstract' as const, constraint: {}, weight: 0 }]
+      }
+      return rs.filter((_, idx) => idx !== i)
+    })
+  }
 
   function toggleModel(m: AdminModelSourceModel) {
     if (m.excluded_from_candidates || m.status !== 'active') return
@@ -435,6 +477,46 @@ export function CandidateDialog({
         {/* 中部：左栏供应商 / 右栏模型卡网格 */}
         <div className="amd-split">
           <div className="amd-rail">
+            <div className="amd-group">
+              <p className="amd-group-title">
+                抽象模型
+                <span className="source-group-count">{absCandidates.length}</span>
+              </p>
+              {absCandidates.length === 0 ? (
+                <p className="muted amd-group-empty">（没有可加入的）</p>
+              ) : (
+                <ul className="amd-source-list">
+                  {absCandidates.map((m) => {
+                    const selected = rows.some(
+                      (r) => r.candidate_kind === 'abstract' && r.real_model_id === m.id
+                    )
+                    return (
+                      <li key={m.id}>
+                        <button
+                          type="button"
+                          className={'amd-source-row' + (selected ? ' amd-source-row-active' : '')}
+                          title={`${m.display_name}（${m.candidate_count} 条候选）\n${
+                            selected ? '点击移出候选集' : '点击加入候选集（嵌套回退）'
+                          }`}
+                          onClick={() => toggleAbstract(m)}
+                        >
+                          <span className="amd-source-row-name">
+                            <IconStack size="xs" aria-hidden />
+                            {m.display_name}
+                          </span>
+                          <span className="source-count" title={`${m.candidate_count} 条候选`}>
+                            {m.candidate_count}
+                          </span>
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+              <p className="muted amd-group-empty">
+                会形成循环依赖的模型已隐藏。
+              </p>
+            </div>
             {railGroup('反代供应商', relaySources)}
             {railGroup('API 供应商', apiSources)}
             {vendorQuery && relaySources.length === 0 && apiSources.length === 0 && (

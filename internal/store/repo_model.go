@@ -99,12 +99,48 @@ type RealModel struct {
 // 只为不破坏既有 DTO 形状与历史数据，写入时恒 0。
 type Candidate struct {
 	AbstractModelID string
-	RealModelID     string // UUID
-	ConstraintJSON  *string
-	Weight          int64
+	// TargetID 是候选目标 id（UUID）：Kind=real 时是 real_models.id，
+	// Kind=abstract 时是 abstract_models.id。
+	//
+	// 历史沿革（容易踩）：本字段原来是 RealModelID，只表达真实模型。
+	// 2026-11-01 加嵌套候选后同一列在库里有两种含义（见迁移 0015），
+	// 所以 Go 侧也改名——留着 RealModelID 这个名字会让「往 real_models
+	// 里 Get 一个抽象 id」的错误读起来像是正常的。
+	TargetID string
+	// Kind 是候选类别（KindReal / KindAbstract）。零值 = KindReal：
+	// 存量代码构造 Candidate{} 时不写它，语义必须仍是「真实模型」，
+	// 否则一次忘记赋值就会把真实模型写成抽象既选（脏数据）。
+	Kind           CandidateKind
+	ConstraintJSON *string
+	Weight         int64
 	// SortOrder 是声明序：管理员在候选集编辑器里排列的次序。排序条件
 	// 次序相同时按它决定先后。写入时由 SetCandidates 按入参顺序编号。
 	SortOrder int64
+}
+
+// CandidateKind 是候选的类别（迁移 0015 的 candidate_kind 列）。
+//
+// 为什么需要两态：抽象模型的候选集可以放**其他抽象模型**——分层回退
+// （A 里排第一的都不行就退到 B）比手工把 B 的候选抄进 A 更可靠，抄副本
+// 会在 B 改配置后悄悄失真。
+type CandidateKind string
+
+const (
+	// KindReal 候选是真实模型（默认；零值即它，见 Candidate.Kind 注释）。
+	KindReal CandidateKind = "real"
+	// KindAbstract 候选是另一个抽象模型（嵌套路由）。
+	KindAbstract CandidateKind = "abstract"
+)
+
+// normalize 把零值归一成 KindReal，并拒绝未知取值。
+func (k CandidateKind) normalize() (CandidateKind, bool) {
+	switch k {
+	case "", KindReal:
+		return KindReal, true
+	case KindAbstract:
+		return KindAbstract, true
+	}
+	return "", false
 }
 
 // ModelRepo 是模型目录（抽象模型、候选、真实模型）的仓储。
@@ -313,10 +349,16 @@ func (r *ModelRepo) SetCandidates(ctx context.Context, abstractModelID string, c
 	// 声明序：按入参切片顺序编号（0 起）。权重已退役（03-strategy §3.3.2），
 	// 恒写 0 —— 保留字段位只为兼容历史数据与人工备注，不再参与任何决策。
 	for i, c := range cands {
+		kind, ok := c.Kind.normalize()
+		if !ok {
+			// 未知 kind 在写库前拒绝：CHECK 约束也会拒，但错误信息只有
+			// "constraint failed"，管理员看不出是自己塞了脏枚举。
+			return fmt.Errorf("store: 候选 kind %q 非法（只接受 real/abstract）", string(c.Kind))
+		}
 		if _, err := r.db.ExecContext(ctx,
-			`INSERT INTO abstract_candidates(abstract_model_id, real_model_id, constraint_json, weight, sort_order)
-			 VALUES(?,?,?,?,?)`,
-			abstractModelID, c.RealModelID, c.ConstraintJSON, 0, i); err != nil {
+			`INSERT INTO abstract_candidates(abstract_model_id, real_model_id, candidate_kind, constraint_json, weight, sort_order)
+			 VALUES(?,?,?,?,?,?)`,
+			abstractModelID, c.TargetID, kind, c.ConstraintJSON, 0, i); err != nil {
 			return fmt.Errorf("store: 写候选失败: %w", err)
 		}
 	}
@@ -336,7 +378,7 @@ func (r *ModelRepo) SetCandidates(ctx context.Context, abstractModelID string, c
 // 读出的 Weight 恒为 0（写入时恒写 0）：字段位留着只为不破坏既有 DTO 形状。
 func (r *ModelRepo) ListCandidates(ctx context.Context, abstractModelID string) ([]Candidate, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT abstract_model_id, real_model_id, constraint_json, weight, sort_order
+		`SELECT abstract_model_id, real_model_id, candidate_kind, constraint_json, weight, sort_order
 		   FROM abstract_candidates
 		  WHERE abstract_model_id = ?
 		  ORDER BY sort_order, real_model_id`, abstractModelID)
@@ -348,9 +390,11 @@ func (r *ModelRepo) ListCandidates(ctx context.Context, abstractModelID string) 
 	var out []Candidate
 	for rows.Next() {
 		var c Candidate
-		if err := rows.Scan(&c.AbstractModelID, &c.RealModelID, &c.ConstraintJSON, &c.Weight, &c.SortOrder); err != nil {
+		var kind string
+		if err := rows.Scan(&c.AbstractModelID, &c.TargetID, &kind, &c.ConstraintJSON, &c.Weight, &c.SortOrder); err != nil {
 			return nil, fmt.Errorf("store: 扫描候选失败: %w", err)
 		}
+		c.Kind = CandidateKind(kind)
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {

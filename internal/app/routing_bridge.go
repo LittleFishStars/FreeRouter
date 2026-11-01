@@ -110,8 +110,9 @@ func (b *abstractModelBridge) ListCandidates(ctx context.Context, abstractModelI
 	out := make([]routing.CandidateDecl, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, routing.CandidateDecl{
-			RealModelID: r.RealModelID,
-			Constraint:  parseConstraint(r.ConstraintJSON),
+			TargetID:   r.TargetID,
+			TargetKind: routing.CandidateKind(candidateItemKind(r.Kind)),
+			Constraint: parseConstraint(r.ConstraintJSON),
 			// Weight 已退役（03-strategy.md §3.3.2）：内置四种策略全不读它，
 			// 界面的输入框也已删除。平局按**声明序**决定，而声明序就是
 			// ListCandidates 的读序（sort_order 升序）——排序层用
@@ -330,29 +331,16 @@ func (c *routingCandidates) NotifyCandidateOutcome(cand httpapi.Candidate, fail 
 
 // pathsOf 把展开后的候选配上门声明约束与能力面。
 //
-// 为什么要再查一次 ListCandidates：routing.Resolved.Candidates 只带
-// RealModelInfo（不含约束——约束是声明层数据，决策层只在 FilterPaths 里
-// 经 Path.Constraint 消费）。同一请求内两次读取同一批行是刻意的取舍：
-// 让 routing 的读面保持「无未使用字段」（多带一个 Constraint 字段会让
-// 声明/运行时两个概念在同一个结构里混淆）。
+// 约束来自 Resolved.Constraints（展开时顺手收集的「叶子真实模型 → 它的候选
+// 声明约束」）。为什么不再查一次 ListCandidates：嵌套候选之后，叶子可能来自
+// **别的**抽象模型的候选集——只查终点模型的声明会漏掉它们的约束，而那些约束
+// （渠道范围等）同样是管理员声明的一部分。展开时收集是唯一能拿全的位置。
 func (c *routingCandidates) pathsOf(ctx context.Context, resolved *routing.Resolved) []routing.Path {
-	decls, err := c.bridge.ListCandidates(ctx, resolved.Terminal.ID)
-	if err != nil {
-		// 读不到约束不等于没候选：继续走下去（约束全零=any，放行）——
-		// 一次读失败不该让整池 503，日志留痕供排障。
-		c.app.log.Warn("routing: 读取候选声明失败，按无约束继续",
-			"model", resolved.Model.Name, "error", err)
-	}
-	byModel := make(map[string]routing.Constraint, len(decls))
-	for _, d := range decls {
-		byModel[d.RealModelID] = d.Constraint
-	}
-
 	paths := make([]routing.Path, 0, len(resolved.Candidates))
 	for _, rm := range resolved.Candidates {
 		paths = append(paths, routing.Path{
 			RealModel:  rm,
-			Constraint: byModel[rm.ID],
+			Constraint: resolved.Constraints[rm.ID],
 			Caps:       capsOf(rm),
 			// 排位只有一个输入（2026-11-01 定案）：这条路径在不在不可用台账里。
 			// 原此处的五个排序键（到期/余额/TTFT/总耗时/价格乘数）随四种自动

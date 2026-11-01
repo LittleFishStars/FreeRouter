@@ -72,10 +72,27 @@ type Constraint struct {
 	RequireEfforts []string
 }
 
+// CandidateKind 是候选类别（迁移 0015 的 candidate_kind 列）。
+//
+// real = 候选是真实模型；abstract = 候选是另一个抽象模型（嵌套回退）。
+type CandidateKind string
+
+const (
+	// KindReal 候选是真实模型（零值即它，见 CandidateDecl.Kind）。
+	KindReal CandidateKind = "real"
+	// KindAbstract 候选是抽象模型。
+	KindAbstract CandidateKind = "abstract"
+)
+
 // CandidateDecl 是 abstract_candidates 一行的读面（声明，非运行态）。
+//
+// 2026-11-01：TargetKind/TargetID 取代原 RealModelID——抽象模型的候选集
+// 可以放**其他抽象模型**（分层回退：A 里排第一的都不行就退到 B）。同一列
+// 在两种 kind 下指向两张表（迁移 0015），所以字段名按「目标」而非「真实模型」。
 type CandidateDecl struct {
-	RealModelID string // UUID
-	Constraint  Constraint
+	TargetID   string // UUID：Kind=real 时是 real_models.id，abstract 时是 abstract_models.id
+	TargetKind CandidateKind
+	Constraint Constraint
 	// Weight 历史字段：内置四种策略已不读它（03-strategy.md §3.3.2）。
 	// 保留字段位只为让装配层搬运行时不丢信息，注释必须写明否则下一个
 	// 实现者会以为它是活的。
@@ -149,6 +166,14 @@ type Resolved struct {
 	Chain []string
 	// Candidates 是展开后的候选（已过保存级校验的声明展开；排序前的原始序）。
 	Candidates []RealModelInfo
+	// Constraints 是「真实模型 id → 它那条候选声明的约束」。
+	//
+	// 为什么单独一张表而不是塞进 RealModelInfo：声明（约束）与运行态（能力面、
+	// 上游）是两个概念，塞进同一个结构会让「读半截配置」的歧义回来
+	// （AbstractModel 的注释里有同一条纪律）。但展开是递归的（嵌套候选），
+	// 叶子可能来自别的抽象模型的候选集——只查终点模型的声明会漏掉它们的约束，
+	// 所以约束在展开时顺手收集，装配层直接用这张表，不再回查一次。
+	Constraints map[string]Constraint
 	// CycleBroken 为 true 时表示链解析遇到环，已降级为「无替代」
 	//（04-deprecation.md §2.5：降级不报错 + 告警信号）。
 	CycleBroken bool
@@ -213,7 +238,7 @@ func (res *Resolver) Resolve(ctx context.Context, name string) (*Resolved, *Reso
 	}
 
 	// 候选展开：链终点（未弃用时就是本模型）的候选集。
-	cands, rerr, err := res.expandCandidates(ctx, terminal)
+	cands, cons, rerr, err := res.expandCandidates(ctx, terminal)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -226,6 +251,7 @@ func (res *Resolver) Resolve(ctx context.Context, name string) (*Resolved, *Reso
 		Terminal:    terminal,
 		Chain:       chain,
 		Candidates:  cands,
+		Constraints: cons,
 		CycleBroken: cycle,
 	}, nil, nil
 }
@@ -284,16 +310,121 @@ func (res *Resolver) resolveChain(ctx context.Context, m *AbstractModel) (*Abstr
 //   - 上游 disabled → 剔除（F4 渠道未禁用）；
 //   - aggregate/* 排除（01-catalog.md §5：上游自己的策略层与我们重叠后
 //     无法归因——两层策略只留我们这层）。
-func (res *Resolver) expandCandidates(ctx context.Context, m *AbstractModel) ([]RealModelInfo, *ResolveError, error) {
+func (res *Resolver) expandCandidates(ctx context.Context, m *AbstractModel) ([]RealModelInfo, map[string]Constraint, *ResolveError, error) {
+	raw, err := res.expandDepth(ctx, m, nil, nil)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	out := &expandResult{
+		decl:         raw.decl,
+		nestedHidden: raw.nestedHidden,
+		cands:        dedupeByID(raw.cands),
+		constraints:  raw.constraints,
+	}
+	if len(out.cands) == 0 {
+		// 空候选集 → no_candidate（503）而非 500（02-abstract.md §6.5）。
+		return nil, nil, &ResolveError{
+			Code:    "no_candidate",
+			Message: "该模型当前无可用候选",
+			Detail:  fmt.Sprintf("abstract=%s 声明候选 %d 条，展开后 0 条", m.Name, out.decl),
+		}, nil
+	}
+	return out.cands, out.constraints, nil, nil
+}
+
+// expandResult 是一次递归展开的统计（诊断用：detail 要说清「声明几条、展开几条」）。
+type expandResult struct {
+	cands []RealModelInfo
+	decl  int // 本次展开消费的声明条数（不含嵌套模型内部的声明）
+	// constraints 收集叶子候选的声明约束（见 Resolved.Constraints）。
+	constraints map[string]Constraint
+	// nestedHidden 是被剔除的嵌套候选（会成环 / 嵌套模型不存在 / 它自己展开为空）。
+	nestedHidden []string
+}
+
+// expandDepth 递归展开一个抽象模型的候选集。
+//
+// 嵌套语义（2026-11-01 用户需求）：候选里若是**抽象模型**，就把它自己的
+// 候选（再递归）按声明序插进结果里——等价于「把 B 的候选抄进 A 的尾部」，
+// 但 B 改配置时自动跟随，不产生失真副本。递归不设深度上限：环由路径栈挡掉，
+// 上限只会让「合法但很深的分层」静默丢候选。
+//
+// 防环用**路径栈**（onStack）而不是全局 visited：菱形依赖（A→B、A→C、
+// B→D、C→D）完全合法，D 展开两次是对的（同一真实模型出现两次由
+// dedupeByID 收口，不会真的重复尝试）；只有「同一条路径上又回到自己」
+// 才是环。
+//
+// 环的处理（用户要求「选择时隐藏会循环依赖的项」）：走到一个已在路径上的
+// 抽象模型**跳过该条**，不报错、不中断——与弃用链的降级哲学一致
+// （04-deprecation.md §2.5：坏配置降级，不变成用户可见的 500）。保存路径另有
+// 一道拒绝（管理桥 putCandidates 成环校验），这里只兜「手工改库绕过了保存」。
+//
+// 为什么读不到就跳过而不报错：这三类失败（抽象模型行不存在、已停用、自己
+// 展开为空）都是「这一条候选不成立」，不该连坐同层的其它候选——后面的真实
+// 模型候选还可能是可用的。
+func (res *Resolver) expandDepth(ctx context.Context, m *AbstractModel, onStack map[string]bool, stack []string) (*expandResult, error) {
+	if onStack == nil {
+		onStack = map[string]bool{}
+	}
+	// 进入即入栈、返回时出栈（defer）。出栈是必须的：兄弟分支不共享路径，
+	// 漏掉出栈会把合法的菱形依赖误判成环。
+	onStack[m.ID] = true
+	defer delete(onStack, m.ID)
+	// stack 只用于诊断文案（「A → B → A」比「有环」有用得多）。拷贝而非
+	// 追加到共享切片：兄弟分支的路径不能混进彼此的成因描述。
+	path := append(append([]string(nil), stack...), m.Name)
+
 	decls, err := res.store.ListCandidates(ctx, m.ID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("routing: 查询候选声明 %s: %w", m.ID, err)
+		return nil, fmt.Errorf("routing: 查询候选声明 %s: %w", m.ID, err)
 	}
-	var out []RealModelInfo
+	out := &expandResult{decl: len(decls), constraints: map[string]Constraint{}}
 	for _, d := range decls {
-		rm, err := res.store.GetRealModel(ctx, d.RealModelID)
+		if d.TargetKind == KindAbstract {
+			if onStack[d.TargetID] {
+				// 成环：这条候选展开会绕回自己，跳过。
+				out.nestedHidden = append(out.nestedHidden,
+					fmt.Sprintf("%s（%s → %s 成环，已跳过该条）",
+						d.TargetID, strings.Join(path, " → "), nameOf(res, ctx, d.TargetID)))
+				continue
+			}
+			sub, err := res.store.GetAbstractModel(ctx, d.TargetID)
+			if err != nil {
+				return nil, fmt.Errorf("routing: 查询嵌套候选抽象模型 %s: %w", d.TargetID, err)
+			}
+			if sub == nil {
+				out.nestedHidden = append(out.nestedHidden,
+					fmt.Sprintf("%s（嵌套候选的抽象模型行不存在）", d.TargetID))
+				continue
+			}
+			// 嵌套目标自己 disabled → 跳过（与「disabled 抽象模型对外 404」
+			// 一致：它当前不服务，也就不能作为回退目标）。
+			if sub.Status == StatusDisabled {
+				out.nestedHidden = append(out.nestedHidden,
+					fmt.Sprintf("%s（嵌套候选 %s 已停用）", d.TargetID, sub.Name))
+				continue
+			}
+			inner, err := res.expandDepth(ctx, sub, onStack, path)
+			if err != nil {
+				return nil, err
+			}
+			// 空的嵌套候选不算错误，但一定要留痕：否则管理员看到「配了 B
+			// 却一条候选都没多」时无从判断是 B 空还是展开失败。
+			if len(inner.cands) == 0 {
+				out.nestedHidden = append(out.nestedHidden,
+					fmt.Sprintf("%s（嵌套候选 %s 展开后为空）", d.TargetID, sub.Name))
+			}
+			out.cands = append(out.cands, inner.cands...)
+			out.nestedHidden = append(out.nestedHidden, inner.nestedHidden...)
+			for id, cst := range inner.constraints {
+				out.constraints[id] = cst
+			}
+			continue
+		}
+
+		rm, err := res.store.GetRealModel(ctx, d.TargetID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("routing: 查询真实模型 %s: %w", d.RealModelID, err)
+			return nil, fmt.Errorf("routing: 查询真实模型 %s: %w", d.TargetID, err)
 		}
 		// status 值域以存储 DDL 为准（05-storage.md §4：
 		// CHECK (status IN ('active','missing','disabled'))）；01-catalog.md
@@ -319,15 +450,42 @@ func (res *Resolver) expandCandidates(ctx context.Context, m *AbstractModel) ([]
 		if ch, _, ok := strings.Cut(rm.UpstreamModelID, "/"); ok && ch == aggregateChannel {
 			continue
 		}
-		out = append(out, *rm)
+		out.cands = append(out.cands, *rm)
+		out.constraints[rm.ID] = d.Constraint
 	}
-	if len(out) == 0 {
-		// 空候选集 → no_candidate（503）而非 500（02-abstract.md §6.5）。
-		return nil, &ResolveError{
-			Code:    "no_candidate",
-			Message: "该模型当前无可用候选",
-			Detail:  fmt.Sprintf("abstract=%s 声明候选 %d 条，展开后 0 条", m.Name, len(decls)),
-		}, nil
+	return out, nil
+}
+
+// dedupeByID 按真实模型行 id 去重，保留**首见位置**（声明序即使用序）。
+//
+// 为什么必须去重：嵌套候选让同一个真实模型能从多条路径进来（菱形依赖
+// A→B、A→C 两边都含 D，或 A 自己直接挂了 D 又嵌套了含 D 的 B）。不去重的话
+// 同一条上游路径会被连续尝试两次——第一次刚因冷却/不可用被排到末尾，第二次
+// 又原样重试，纯粹浪费一次上游调用。
+//
+// 为什么保留首见而不是「深度优先序」：首见位置就是管理员写在候选集里的
+// 第一个能找到它的地方，与手抄副本的直觉一致。
+func dedupeByID(in []RealModelInfo) []RealModelInfo {
+	if len(in) < 2 {
+		return in
 	}
-	return out, nil, nil
+	seen := make(map[string]bool, len(in))
+	out := make([]RealModelInfo, 0, len(in))
+	for _, rm := range in {
+		if seen[rm.ID] {
+			continue
+		}
+		seen[rm.ID] = true
+		out = append(out, rm)
+	}
+	return out
+}
+
+// nameOf 取抽象模型的对外名（诊断文案用）；查不到就回 id，绝不猜。
+func nameOf(res *Resolver, ctx context.Context, id string) string {
+	m, err := res.store.GetAbstractModel(ctx, id)
+	if err != nil || m == nil {
+		return id
+	}
+	return m.Name
 }

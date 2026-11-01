@@ -69,7 +69,7 @@ func TestContractCandidateDeclarationOrderRoundTrip(t *testing.T) {
 	saveOrder := []string{ids[1], ids[0], ids[2]}
 	cands := make([]Candidate, 0, len(saveOrder))
 	for _, id := range saveOrder {
-		cands = append(cands, Candidate{AbstractModelID: amID, RealModelID: id})
+		cands = append(cands, Candidate{AbstractModelID: amID, TargetID: id})
 	}
 	if err := models.SetCandidates(ctx, amID, cands); err != nil {
 		t.Fatalf("设候选失败: %v", err)
@@ -83,9 +83,9 @@ func TestContractCandidateDeclarationOrderRoundTrip(t *testing.T) {
 		t.Fatalf("应有 3 条候选，得 %d", len(got))
 	}
 	for i, want := range saveOrder {
-		if got[i].RealModelID != want {
+		if got[i].TargetID != want {
 			t.Fatalf("第 %d 条候选应是保存顺序里的 %s，实得 %s（读序变成了 id 序，说明声明序没落库）",
-				i, want, got[i].RealModelID)
+				i, want, got[i].TargetID)
 		}
 	}
 	// sort_order 应是 0,1,2（声明序的显式载体）。
@@ -114,15 +114,15 @@ func TestContractCandidateOrderSurvivesRewrite(t *testing.T) {
 
 	// 第一次：a, b
 	if err := models.SetCandidates(ctx, amID, []Candidate{
-		{AbstractModelID: amID, RealModelID: ids[0]},
-		{AbstractModelID: amID, RealModelID: ids[1]},
+		{AbstractModelID: amID, TargetID: ids[0]},
+		{AbstractModelID: amID, TargetID: ids[1]},
 	}); err != nil {
 		t.Fatalf("首次设候选失败: %v", err)
 	}
 	// 第二次（整表替换）：c, a —— 顺序应完全按新入参
 	if err := models.SetCandidates(ctx, amID, []Candidate{
-		{AbstractModelID: amID, RealModelID: ids[2]},
-		{AbstractModelID: amID, RealModelID: ids[0]},
+		{AbstractModelID: amID, TargetID: ids[2]},
+		{AbstractModelID: amID, TargetID: ids[0]},
 	}); err != nil {
 		t.Fatalf("二次设候选失败: %v", err)
 	}
@@ -134,8 +134,8 @@ func TestContractCandidateOrderSurvivesRewrite(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("整表替换后应剩 2 条，得 %d", len(got))
 	}
-	if got[0].RealModelID != ids[2] || got[1].RealModelID != ids[0] {
-		t.Fatalf("替换后顺序应按新入参（c, a），实得 %s, %s", got[0].RealModelID, got[1].RealModelID)
+	if got[0].TargetID != ids[2] || got[1].TargetID != ids[0] {
+		t.Fatalf("替换后顺序应按新入参（c, a），实得 %s, %s", got[0].TargetID, got[1].TargetID)
 	}
 	// 编号必须重排（0,1）而不是沿用旧的（1,2）——否则首条会缺一个 0，
 	// 排序时 0 与 1 的相对关系仍对，但缺口说明编号没被重写。
@@ -164,7 +164,7 @@ func TestContractCandidateWeightIsRetired(t *testing.T) {
 		t.Fatalf("建抽象模型失败: %v", err)
 	}
 	if err := models.SetCandidates(ctx, amID, []Candidate{
-		{AbstractModelID: amID, RealModelID: ids[0], Weight: 999},
+		{AbstractModelID: amID, TargetID: ids[0], Weight: 999},
 	}); err != nil {
 		t.Fatalf("设候选失败: %v", err)
 	}

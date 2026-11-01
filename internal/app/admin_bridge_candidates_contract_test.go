@@ -78,7 +78,7 @@ func seedCandidateChain(t *testing.T, a *App, abstractName, upstreamModel string
 		t.Fatalf("建抽象模型失败: %v", err)
 	}
 	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
-		{AbstractModelID: amID, RealModelID: rmID, Weight: 100},
+		{AbstractModelID: amID, TargetID: rmID, Weight: 100},
 	}); err != nil {
 		t.Fatalf("设候选失败: %v", err)
 	}

@@ -109,6 +109,7 @@ export const IconNavPassword = glyph(TB.IconLock)
 /* ── 通用动作 ───────────────────────────────────────────────────── */
 
 export const IconRefresh = glyph(TB.IconRefresh)
+export const IconStack = glyph(TB.IconStack2)
 export const IconPlus = glyph(TB.IconPlus)
 export const IconEdit = glyph(TB.IconPencil)
 export const IconDelete = glyph(TB.IconTrash)
