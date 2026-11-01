@@ -1115,9 +1115,10 @@ func (r *ModelRepo) getUpstreamByID(ctx context.Context, id string) (*Upstream, 
 //
 // 校验与 CreateAbstractModel 同源（同一套枚举与「display_name 非空」判据）：
 // 两处各写一份必然漂移，而漂移的表现是「创建时拒的值更新时收下」。
-// strategy 是逗号分隔的策略链（02-routing 的顺序语义），这里只保证非空，
+// 2026-11-01 定案：strategy 列已被迁移 0014 DROP COLUMN（排序改为管理员手动序），
+// 本方法不再接受它——传一个指向不存在列的参数只会让 UPDATE 静默失败。
 // 链的合法性由调用方（管理面 handler）按策略名表校验——存储层不认识策略名。
-func (r *ModelRepo) SetAbstractModelProfile(ctx context.Context, id string, displayName, strategy, capabilityMode *string, note *string) error {
+func (r *ModelRepo) SetAbstractModelProfile(ctx context.Context, id string, displayName, capabilityMode, note *string) error {
 	sets := []string{}
 	args := []any{}
 	if displayName != nil {
@@ -1126,13 +1127,6 @@ func (r *ModelRepo) SetAbstractModelProfile(ctx context.Context, id string, disp
 		}
 		sets = append(sets, "display_name = ?")
 		args = append(args, *displayName)
-	}
-	if strategy != nil {
-		if strings.TrimSpace(*strategy) == "" {
-			return errors.New("store: 策略链不得为空（候选选择没有兜底顺序）")
-		}
-		sets = append(sets, "strategy = ?")
-		args = append(args, *strategy)
 	}
 	if capabilityMode != nil {
 		switch *capabilityMode {

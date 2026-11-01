@@ -41,8 +41,11 @@ const (
 )
 
 // AbstractModel 是抽象模型行的读面（02-abstract.md §2.2 的子集——只取
-// 路由需要的字段；strategy/capabilities 等管理字段由策略链参数直接传入，
-// 不藏在模型行里，避免「读半截配置」的歧义）。
+// 路由需要的字段；capabilities 等管理字段不藏在模型行里，避免「读半截
+// 配置」的歧义）。
+//
+// 2026-11-01 定案：原来的 Strategy []string（排序策略链）已随迁移 0014
+// 退役——候选的使用顺序来自候选集的手动声明序，不再有「策略链参数」。
 type AbstractModel struct {
 	ID             string // UUID（对外 id 与库内主键同值，2026-10-26 改造）
 	Name           string // 对外名称，唯一，禁止含 ':'（02-abstract.md §2.3）

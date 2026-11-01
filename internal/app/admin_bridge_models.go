@@ -3,7 +3,7 @@
 // 桥要点：
 //   - 真实模型/抽象模型 id 出入站走 idgen 形状校验（前缀体系已废弃）。
 //   - 抽象模型的 capabilities 没有存储列（0001 的 abstract_models 只有
-//     strategy/capability_mode/note 等）——能力声明存在 note 列里的
+//     capability_mode/note 等）——能力声明存在 note 列里的
 //     JSON 文档（前缀标记 admin_caps:{}）。为什么用 note 而不是新列：
 //     不越界改 store 是本任务铁律；note 本就是自由文本元数据位，
 //     桥读侧解析失败时按「无能力声明」处理（02-abstract §4.3 未知=不支持
@@ -22,7 +22,7 @@
 //      UpsertRealModel 整行替换可用（桥按「读-改-写」组合，走 WithTx）；
 //   ② SetRealModelExcluded / SetRealModelSource（人工改写翻 override）——
 //      同样经 UpsertRealModel 组合；
-//   ③ abstract_models 的 PATCH（display_name/capability_mode/strategy）——
+//   ③ abstract_models 的 PATCH（display_name/capability_mode）——
 //      无单列 UPDATE，用「读-改-写 CreateAbstractModel 不行（会 INSERT）」，
 //      退化为仅支持 status/弃用/候选集，其余字段返回占位错误。
 
@@ -386,9 +386,10 @@ func (mb *modelsBridge) UpdateAbstractModel(ctx context.Context, id string, patc
 		return nil, "", errAdminNotImplemented
 	}
 	// store 已落 SetAbstractModelProfile（列级 UPDATE，nil 列不动）。
-	// 这里把 PATCH 载荷翻成列值：strategy 存成 JSON 数组（与创建路径同源），
-	// capabilities 仍按 note 前缀编码（存储无 capabilities 列，见文件头）。
-	var displayName, strategy, mode, note *string
+	// 这里把 PATCH 载荷翻成列值：capabilities 按 note 前缀编码（存储无
+	// capabilities 列，见文件头）。strategy 已退役（迁移 0014），不在可写集里
+	// ——真正的拦截在 httpapi 的白名单上，这里的「翻」也就不再存在。
+	var displayName, mode, note *string
 	if raw, has := patch["display_name"]; has {
 		var v string
 		if err := json.Unmarshal(raw, &v); err != nil {
@@ -402,22 +403,6 @@ func (mb *modelsBridge) UpdateAbstractModel(ctx context.Context, id string, patc
 			return nil, "", fmt.Errorf("capability_mode 必须是字符串: %w", err)
 		}
 		mode = &v
-	}
-	if raw, has := patch["strategy"]; has {
-		// 载荷是数组（["expiry-first","balance"]），存成 JSON 文本。
-		strategy = new(string)
-		var arr []string
-		if err := json.Unmarshal(raw, &arr); err == nil {
-			b, _ := json.Marshal(arr)
-			*strategy = string(b)
-		} else {
-			var single string
-			if err2 := json.Unmarshal(raw, &single); err2 != nil {
-				return nil, "", fmt.Errorf("strategy 必须是策略名数组: %w", err)
-			}
-			b, _ := json.Marshal([]string{single})
-			*strategy = string(b)
-		}
 	}
 	if raw, has := patch["capabilities"]; has {
 		// 能力文档写进 note（带 capsNotePrefix，与创建路径同一编码）。
@@ -433,8 +418,8 @@ func (mb *modelsBridge) UpdateAbstractModel(ctx context.Context, id string, patc
 	}
 	var auditID string
 	err = mb.b.st.WithTx(ctx, func(tx *store.Repos) error {
-		if displayName != nil || strategy != nil || mode != nil || note != nil {
-			if err := tx.Models.SetAbstractModelProfile(ctx, aid, displayName, strategy, mode, note); err != nil {
+		if displayName != nil || mode != nil || note != nil {
+			if err := tx.Models.SetAbstractModelProfile(ctx, aid, displayName, mode, note); err != nil {
 				return err
 			}
 		}
