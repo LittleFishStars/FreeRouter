@@ -150,6 +150,10 @@ export function CandidateDialog({
   const [original, setOriginal] = useState<Candidate[]>([])
 
   const [activeId, setActiveId] = useState<string | null>(null)
+  // 左栏选中分类：abstract（抽象模型）/ provider（供应商）。抽象模型是独立
+  // 分类（2026-11-01 用户要求），选中后右栏显示抽象模型卡片网格，点卡片
+  // 加入/移出——与供应商卡片同一交互形态，不再挤在左栏列表里。
+  const [railTab, setRailTab] = useState<'provider' | 'abstract'>('provider')
   const [vendorQuery, setVendorQuery] = useState('')
   const [modelQuery, setModelQuery] = useState('')
   const [busy, setBusy] = useState(false)
@@ -189,9 +193,10 @@ export function CandidateDialog({
   // assertNoCycle 拒绝，这里是第三道（体验）闸。
   const absAll = allModels.length > 0 ? allModels : (absQ.data?.data ?? [])
   const blockedSet = useMemo(() => new Set(blocked), [blocked])
-  // 会成环的不显示、停用的不显示（disabled 模型不服务，运行时也会跳过它）；
-  // 已经在候选集里的正常显示（显示为已选中，可点击移出）。
-  const absCandidates = useMemo(
+  // 基础可见集：会成环的不显示、停用的不显示（disabled 模型不服务，运行时
+  // 也会跳过它）；已经在候选集里的正常显示（显示为已选中，可点击移出）。
+  // 查询词过滤在 absCandidates（分类被选中时才用到）。
+  const absCandidatesBase = useMemo(
     () => absAll.filter((m) => m.status !== 'disabled' && !blockedSet.has(m.id)),
     [absAll, blockedSet]
   )
@@ -254,6 +259,17 @@ export function CandidateDialog({
     )
   }, [active, mq])
 
+  // 抽象模型分类（与供应商同形态）：查询词命中 display_name / 对外名；
+  // 会成环的（blocked）与停用的不显示——用户要求「在选择时就隐藏会循环
+  // 依赖的项」，一个永远保存不成功的选择项是纯噪声。已在候选集里的正常
+  // 显示为已选中（可点击移出）。
+  const absCandidates = useMemo(() => {
+    if (!mq) return absCandidatesBase
+    return absCandidatesBase.filter(
+      (m) => `${m.display_name} ${m.name}`.toLowerCase().includes(mq)
+    )
+  }, [absCandidatesBase, mq])
+
   /** 加入/移出一个嵌套候选（抽象模型）。行形态与真实候选一致，靠 kind 区分。 */
   function toggleAbstract(m: AdminAbstractModel) {
     setRows((rs) => {
@@ -311,6 +327,54 @@ export function CandidateDialog({
     void submit()
   }
 
+  /** 抽象模型卡片：与 modelCard 同一卡面形态，卡脚用「嵌套」标签替代供应商位。 */
+  function abstractCard(m: AdminAbstractModel) {
+    const selected = rows.some((r) => r.candidate_kind === 'abstract' && r.real_model_id === m.id)
+    const detail = [
+      `候选 ${m.candidate_count} 条`,
+      `状态 ${statusLabel(m.status)}`,
+      selected ? '点击移出候选集' : '点击加入候选集（嵌套回退）'
+    ].join(' · ')
+    return (
+      <div className="source-card model-card" key={m.id} data-selected={selected}>
+        <div
+          className="source-card-hit model-card-hit"
+          role="checkbox"
+          aria-checked={selected}
+          tabIndex={0}
+          title={detail}
+          onClick={() => toggleAbstract(m)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              toggleAbstract(m)
+            }
+          }}
+        >
+          {selected && (
+            <span className="model-card-check" aria-hidden>
+              <IconCheck size="sm" />
+            </span>
+          )}
+          <span className="model-card-name" title={m.name}>
+            {m.display_name}
+          </span>
+          <span className="model-card-divider" />
+          <span className="model-card-foot">
+            <span className="model-card-provider">
+              <span className="model-card-provider-name" data-abstract>
+                <IconStack size="xs" aria-hidden /> 嵌套
+              </span>
+            </span>
+            <span className="source-count" title={`${m.candidate_count} 条候选`}>
+              {m.candidate_count}
+            </span>
+          </span>
+        </div>
+      </div>
+    )
+  }
+
   function railGroup(title: string, list: AdminModelSource[]) {
     return (
       <div className="amd-group">
@@ -328,7 +392,7 @@ export function CandidateDialog({
                   type="button"
                   className={'amd-source-row' + (s.id === activeId ? ' amd-source-row-active' : '')}
                   data-off={!s.enabled}
-                  onClick={() => setActiveId(s.id)}
+                  onClick={() => { setRailTab('provider'); setActiveId(s.id) }}
                 >
                   <span className="amd-source-row-name">
                     {s.name}
@@ -474,48 +538,35 @@ export function CandidateDialog({
             改一处忘另一处时管理员无法判断哪边是当前状态。
             候选的增删仍由下部模型卡片负责（点卡片加入/移出），顺序在展开区排。 */}
 
-        {/* 中部：左栏供应商 / 右栏模型卡网格 */}
+        {/* 中部：左栏分类（抽象模型 / 供应商）/ 右栏卡片网格 */}
         <div className="amd-split">
           <div className="amd-rail">
+            {/* 抽象模型分类（2026-11-01 用户要求单独分类）：与其他分类同一
+                交互形态——点分类行，右侧出卡片网格，点卡片加入/移出。
+                会成环的项在 absCandidatesBase 里就被滤掉（不显示）。 */}
             <div className="amd-group">
               <p className="amd-group-title">
                 抽象模型
-                <span className="source-group-count">{absCandidates.length}</span>
+                <span className="source-group-count">{absCandidatesBase.length}</span>
               </p>
-              {absCandidates.length === 0 ? (
-                <p className="muted amd-group-empty">（没有可加入的）</p>
-              ) : (
-                <ul className="amd-source-list">
-                  {absCandidates.map((m) => {
-                    const selected = rows.some(
-                      (r) => r.candidate_kind === 'abstract' && r.real_model_id === m.id
-                    )
-                    return (
-                      <li key={m.id}>
-                        <button
-                          type="button"
-                          className={'amd-source-row' + (selected ? ' amd-source-row-active' : '')}
-                          title={`${m.display_name}（${m.candidate_count} 条候选）\n${
-                            selected ? '点击移出候选集' : '点击加入候选集（嵌套回退）'
-                          }`}
-                          onClick={() => toggleAbstract(m)}
-                        >
-                          <span className="amd-source-row-name">
-                            <IconStack size="xs" aria-hidden />
-                            {m.display_name}
-                          </span>
-                          <span className="source-count" title={`${m.candidate_count} 条候选`}>
-                            {m.candidate_count}
-                          </span>
-                        </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
-              <p className="muted amd-group-empty">
-                会形成循环依赖的模型已隐藏。
-              </p>
+              <ul className="amd-source-list">
+                <li>
+                  <button
+                    type="button"
+                    className={'amd-source-row' + (railTab === 'abstract' ? ' amd-source-row-active' : '')}
+                    title="把其他抽象模型加为候选（嵌套回退）；会形成循环依赖的模型已隐藏"
+                    onClick={() => { setRailTab('abstract'); setActiveId(null) }}
+                  >
+                    <span className="amd-source-row-name">
+                      <IconStack size="xs" aria-hidden />
+                      全部抽象模型
+                    </span>
+                    <span className="source-count" title="可加入的抽象模型数">
+                      {absCandidatesBase.length}
+                    </span>
+                  </button>
+                </li>
+              </ul>
             </div>
             {railGroup('反代供应商', relaySources)}
             {railGroup('API 供应商', apiSources)}
@@ -525,10 +576,29 @@ export function CandidateDialog({
           </div>
 
           <div className="amd-detail">
-            {!active ? (
+            {railTab === 'abstract' ? (
+              <>
+                <div className="amd-head">
+                  <span className="amd-head-name">抽象模型</span>
+                  <span className="amd-head-tag">嵌套回退</span>
+                </div>
+                <p className="muted amd-head-note">
+                  点卡片把另一个抽象模型加为候选：它自己的候选会按声明序展开在本模型里。
+                  会形成循环依赖的模型已隐藏（含本模型自己）。
+                </p>
+                {absCandidates.length === 0 ? (
+                  <EmptyState
+                    title="没有可加入的抽象模型"
+                    hint="其余抽象模型要么会与本模型形成循环依赖（已隐藏），要么已停用。"
+                  />
+                ) : (
+                  <div className="source-grid amd-grid">{absCandidates.map(abstractCard)}</div>
+                )}
+              </>
+            ) : !active ? (
               <EmptyState
-                title="先从左侧选一个供应商"
-                hint="左栏按「反代供应商 / API 供应商」分组；选中后这里显示它的模型卡片，点卡片即加入或移出候选集。"
+                title="先从左侧选一个分类"
+                hint="左栏是「抽象模型 / 反代供应商 / API 供应商」三类；选中后这里显示对应卡片，点卡片即加入或移出候选集。"
               />
             ) : (
               <>
