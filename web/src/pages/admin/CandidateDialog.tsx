@@ -43,8 +43,9 @@ import {
   IconUp,
   IconWarn
 } from '../../icons'
-import { EmptyState, FormError, LoadingBlock, StatusBadge } from '../../components/ui'
+import { EmptyState, FormError, LoadingBlock } from '../../components/ui'
 import { fmtNum, fmtTime, statusLabel } from '../../utils/format'
+import { logoInfo } from '../../utils/providerLogo'
 
 // ── 协议徽标（契约 §1.2：只有 openai / anthropic 两个取值）──────────────
 const AM_PROTOCOL_GLYPH: Record<string, { letter: string; label: string }> = {
@@ -67,7 +68,15 @@ function ProtocolBadges({ protocols }: { protocols: string[] | undefined }) {
   return (
     <span className="proto-badges">
       {protocols.map((p) => (
-        <span key={p} className="proto-badge" title={AM_PROTOCOL_GLYPH[p]?.label ?? p}>
+        // 圆形 + 协议各自的品牌色（2026-11-01 用户给定样式）：O = 青、A = 橙。
+        // 为什么给协议配色而不是全用中性色：卡片右下角这一对圆点是这张卡里
+        // 唯一"一眼可区分"的信号，中性色会让两枚看起来像同一个东西。
+        <span
+          key={p}
+          className="proto-dot"
+          data-proto={p}
+          title={AM_PROTOCOL_GLYPH[p]?.label ?? p}
+        >
           {AM_PROTOCOL_GLYPH[p]?.letter ?? p}
         </span>
       ))}
@@ -123,10 +132,6 @@ function instancesText(v: number | null | undefined): string {
   return v === 0 ? '无凭据' : fmtNum(v)
 }
 
-function instancesTone(v: number | null | undefined): string {
-  if (v === null || v === undefined) return 'muted'
-  return v === 0 ? 'warn' : 'ok'
-}
 
 /** 声明字段：保存时只带真实模型 + 约束 + weight（weight 已退役但 DTO 还带，恒写 0）。 */
 function toPayload(rows: Candidate[]): Candidate[] {
@@ -391,11 +396,23 @@ export function CandidateDialog({
         : m.status !== 'active'
           ? `状态为「${statusLabel(m.status)}」，不能加入候选集`
           : ''
-    const title = blocked || (selected ? '点击移出候选集' : '点击加入候选集')
+    const src = sourceOfReal.get(m.real_model_id)
+    // 管理细节收进 title：卡片要保持「一眼可扫」的形态，塞满文字就失去意义。
+    // 但**不能丢**——不可加入的原因（已排除/状态异常）必须优先占位，否则
+    // 管理员只看到一张灰卡却不知道为什么。
+    const detail = [
+      `模型 ${m.upstream_model_id}`,
+      `状态 ${statusLabel(m.status)}`,
+      `可用实例 ${instancesText(m.available_instances)}`,
+      `上下文 ${fmtNum(m.context_window)}`,
+      m.channel ? `渠道 ${m.channel}` : '',
+      m.excluded_from_candidates ? '已排除出候选' : ''
+    ].filter(Boolean).join(' · ')
+    const title = blocked ? `${blocked}\n${detail}` : `${selected ? '点击移出候选集' : '点击加入候选集'}\n${detail}`
     return (
-      <div className="source-card" key={m.real_model_id} data-selected={selected} data-blocked={blocked !== ''}>
+      <div className="source-card model-card" key={m.real_model_id} data-selected={selected} data-blocked={blocked !== ''}>
         <div
-          className="source-card-hit"
+          className="source-card-hit model-card-hit"
           role="checkbox"
           aria-checked={selected}
           aria-disabled={blocked !== ''}
@@ -413,23 +430,40 @@ export function CandidateDialog({
               : undefined
           }
         >
-          <span className="source-card-title">
-            <span className="source-card-name">{m.display_name}</span>
-            {selected && <IconCheck size="sm" />}
-          </span>
-          <span className="source-card-sub">{m.upstream_model_id}</span>
-          <span className="source-card-meta">
-            <ProtocolBadges protocols={m.protocols} />
-            <StatusBadge status={m.status} label={statusLabel(m.status)} />
-            <span className="source-inst" data-tone={instancesTone(m.available_instances)}>
-              {m.available_instances === 0 && <IconWarn size="xs" />}
-              可用实例 {instancesText(m.available_instances)}
+          {/* 卡片形态（2026-11-01 用户给定样式）：
+              ① 模型名居中；
+              ② 一条分隔线（用填充色阶画，不画边框）；
+              ③ 底部一行：左「供应商 logo + 供应商名」，右「协议圆点」。
+              选中态用主色软底 + 右上角 ✓（全站不用边框画状态）。
+              状态/实例/上下文这些管理细节收进 title 提示——卡片本身要能
+              一眼扫过几十张，塞满文字就失去卡片的意义了。 */}
+          {selected && (
+            <span className="model-card-check" aria-hidden>
+              <IconCheck size="sm" />
             </span>
+          )}
+          <span className="model-card-name" title={m.upstream_model_id}>
+            {m.display_name}
           </span>
-          <span className="source-card-meta">
-            <span className="muted">上下文 {fmtNum(m.context_window)}</span>
-            {m.channel && <span className="muted">渠道 {m.channel}</span>}
-            {m.excluded_from_candidates && <span className="muted">已排除</span>}
+          <span className="model-card-divider" />
+          <span className="model-card-foot">
+            <span className="model-card-provider">
+              {(() => {
+                const logo = logoInfo(src?.provider_id ?? '', src?.name ?? m.upstream_model_id)
+                return (
+                  <img
+                    className="model-card-logo"
+                    src={logo.url}
+                    data-fallback={logo.fallback || undefined}
+                    alt=""
+                    loading="lazy"
+                    draggable={false}
+                  />
+                )
+              })()}
+              <span className="model-card-provider-name">{src?.name ?? '未知来源'}</span>
+            </span>
+            <ProtocolBadges protocols={m.protocols} />
           </span>
         </div>
       </div>

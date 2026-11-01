@@ -1,0 +1,14 @@
+vendors/*.svg 的来源与许可
+==========================
+
+这批供应商图标提取自 @lobehub/icons-static-svg（版本 1.95.1），
+映射表沿用 Tingly Box（github.com/tingly-dev/tingly-box）前端
+frontend/src/components/ProviderIcon.tsx 的 provider id → 图标对应关系。
+
+许可证：MIT（见 @lobehub/icons-static-svg 的 package.json）。
+文件名 = internal/apidir/catalog.json 的 provider id（fam-<family>.svg
+是 vendor_family 聚合名，供前端按厂商族兜底）。
+
+新增供应商时：在上方 npm 包里找对应 SVG（优先 *-color.svg），
+按 catalog id 命名拷入本目录即可；没有的会回落成字母图标
+（web/src/utils/providerLogo.ts），不会 404。

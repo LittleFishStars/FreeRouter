@@ -39,6 +39,7 @@ import { useApi } from '../hooks/useApi'
 import { ACTION_ICON } from '../components/IconButtons'
 import { IconBack } from '../icons'
 import OneTimeSecret from '../components/OneTimeSecret'
+import { logoURL } from '../utils/providerLogo'
 import {
   AsyncView,
   Banner,
@@ -78,44 +79,6 @@ function findCategory<K extends ContributionCategoryId>(
 }
 
 /** flow → 「用户在供应商侧要做什么」的措辞。未知 flow 原样显示，不猜。 */
-/** 国际版变体复用主品牌的图标（hub 只给主品牌一份 logo）。 */
-const LOGO_ALIAS: Record<string, string> = {
-  minimaxintl: 'minimax',
-  autoclawintl: 'autoclaw',
-}
-
-function logoFor(id: string): string {
-  return `/logos/${LOGO_ALIAS[id] ?? id}.svg`
-}
-
-/** API 型供应商的字母图标（首字母 + 按 id hash 的底色）——内联 SVG data
- * URL，CSP data: 允许。样式与反代卡片的字母占位一致（圆角块 + 白字）。 */
-const API_ICON_HUES = [212, 262, 330, 18, 42, 96, 152, 190]
-
-// vendored 官方 favicon（web/public/logos/api/<id>.ico，构建期内嵌）——
-// import.meta.glob 让 vite 静态枚举，缺的 id 不在清单 → 字母兜底。
-const API_VENDORED = import.meta.glob('/public/logos/api/*.ico', {
-  eager: true,
-  query: '?url',
-  import: 'default'
-}) as Record<string, string>
-const API_VENDORED_BY_ID: Record<string, string> = {}
-for (const [file, url] of Object.entries(API_VENDORED)) {
-  const m = file.match(/api\/([a-z0-9-]+)\.ico$/)
-  if (m) API_VENDORED_BY_ID[m[1]] = url
-}
-
-function apiIconFor(id: string, name: string): string {
-  let hash = 0
-  for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
-  const hue = API_ICON_HUES[hash % API_ICON_HUES.length]
-  const vendored = API_VENDORED_BY_ID[id]
-  if (vendored) return vendored
-  const letter = (name.trim()[0] ?? '?').toUpperCase()
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect width="48" height="48" rx="10" fill="hsl(${hue} 62% 46%)"/><text x="24" y="33" font-family="system-ui,sans-serif" font-size="26" font-weight="700" fill="#fff" text-anchor="middle">${letter}</text></svg>`
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
-}
-
 const FLOW_LABELS: Record<string, string> = {
   browser: '网页授权',
   browser_callback: '网页授权',
@@ -341,22 +304,11 @@ export default function ContributePage({ def }: PageProps) {
                               title={`授权 ${p.name}`}
                             >
                               <img
-                                src={logoFor(p.id)}
+                                src={logoURL(p.id, p.name)}
                                 alt=""
                                 width={22}
                                 height={22}
                                 className="provider-logo"
-                                onError={(ev) => {
-                                  // svg 缺失时 png 变体兜底（qoder/qodercn/cline 等
-                                  // 是位图）；都没有就隐藏图标位（onerror 只触发一次）
-                                  const img = ev.currentTarget
-                                  if (!img.dataset.fallback) {
-                                    img.dataset.fallback = '1'
-                                    img.src = `/logos/${p.id}.png`
-                                  } else {
-                                    img.style.display = 'none'
-                                  }
-                                }}
                               />
                               {p.name}
                             </Link>
@@ -552,7 +504,7 @@ export default function ContributePage({ def }: PageProps) {
                                   }}
                                 >
                                   <img
-                                    src={apiIconFor(p.id, p.name)}
+                                    src={logoURL(p.id, p.name)}
                                     alt=""
                                     width={30}
                                     height={30}

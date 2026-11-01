@@ -1323,6 +1323,36 @@ a.metric-link:hover {
   gap: 0.15rem;
 }
 
+/* 协议圆点（2026-11-01 用户给定样式）：实心圆 + 白字，O=青 / A=橙。
+   与旧 .proto-badge（方形中性底）并存：前者用于模型卡的角标，后者的
+   方形版仍在别处（候选集以外的界面）作为紧凑标记。 */
+.proto-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: var(--fr-radius-full);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.proto-dot[data-proto='openai'] {
+  background: #0b7285; /* 青：OpenAI 兼容端点的品牌色 */
+}
+
+.proto-dot[data-proto='anthropic'] {
+  background: #b4522c; /* 橙：Anthropic 原生端点的品牌色 */
+}
+
+/* 未知协议：中性填充（不硬套品牌色，避免"未知"看起来像已知）。 */
+.proto-dot[data-proto]:not([data-proto='openai']):not([data-proto='anthropic']) {
+  background: var(--fr-inset);
+  color: var(--fr-on-surface-variant);
+}
+
 .proto-badge {
   display: inline-flex;
   align-items: center;
@@ -1451,6 +1481,95 @@ a.metric-link:hover {
   font-size: 0.92rem;
   font-weight: 600;
   color: var(--fr-on-surface);
+}
+
+/* ── 模型卡（2026-11-01 用户给定样式）─────────────────────────────
+   卡面三段：模型名居中 → 分隔线 → 底部「供应商 logo+名 / 协议圆点」。
+   分隔线用填充色阶画（不用 border），符合全站「用色阶画层级」的口径。 */
+.model-card {
+  position: relative;
+  /* 卡片是纯展示面：给一层极轻的抬升，让它在区块底色上能立住 */
+  box-shadow: var(--fr-e1);
+  /* 网格里各卡高度齐平：模型名长短不同，不拉齐会让底部的供应商行错位。 */
+  min-height: 6.1rem;
+}
+
+.model-card-hit {
+  gap: 0.4rem;
+  padding: 0.85rem 0.9rem 0.65rem;
+}
+
+.model-card-name {
+  align-self: stretch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--fr-on-surface);
+}
+
+.model-card-divider {
+  /* 分隔线撑满卡片内宽：.source-card-hit 是 flex column，子项的默认宽度是
+     内容宽（stretch 只在交叉轴生效），不写 width:100% 会缩成一小段居中的线
+     （2026-11-01 截图实测）。 */
+  align-self: stretch;
+  width: 100%;
+  height: 1px;
+  flex: none;
+  /* 用当前文字色的低透明度：跟着主题走，不写死灰色 */
+  background: color-mix(in srgb, var(--fr-on-surface) 14%, transparent);
+  margin: 0.35rem 0 0.45rem;
+}
+
+.model-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  min-width: 0;
+  align-self: stretch;
+}
+
+.model-card-provider {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.model-card-logo {
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 4px;
+  object-fit: contain;
+  flex: none;
+  /* 深色主题下有些 .ico/.png 是浅底，给一点点容器色避免"白块"突兀。
+     字母兜底的内联 SVG 自带底色圆角块，这层容器色会与它叠色 —— 所以
+     兜底图在 <img> 上标 data-fallback，那一档不加底色。 */
+  background: var(--fr-inset);
+}
+
+.model-card-logo[data-fallback] {
+  background: none;
+}
+
+.model-card-provider-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  color: var(--fr-on-surface-variant);
+}
+
+/* 选中角标：右上角一只 ✓（全站不用边框画状态，用图标 + 软底）。 */
+.model-card-check {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.4rem;
+  display: inline-flex;
+  color: var(--fr-primary);
 }
 
 .source-card-sub {
