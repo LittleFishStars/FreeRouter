@@ -102,6 +102,13 @@ func (o Options) stderrLines() int {
 	return o.StderrLines
 }
 
+func (o Options) startupTimeout() time.Duration {
+	if o.StartupTimeout <= 0 {
+		return defaultStartupTimeout
+	}
+	return o.StartupTimeout
+}
+
 // methodTimeout 按方法取超时。写在客户端而不是调用方：
 // 超时是**通道语义**的一部分（登录轮询必须比 models.list 更快失败），
 // 让每个调用点自己传一个数字，第一个忘记传的人就会把整条链路挂住。
@@ -179,6 +186,21 @@ type Client struct {
 	deps     []Dependency
 	readonly bool
 	since    time.Time
+
+	// —— 自愈重启状态（04-sidecar.md 5.2）——
+	// 规格原文：sidecar 退出后按「1s → 2s → 5s → 15s → 30s → 60s（上限）」退避重启；
+	// 连续 5 次启动失败进入 degraded 并停止重启，等管理员干预。
+	//
+	// 为什么这件事必须做在客户端里：一问一答契约下超时要杀进程（见 Call 的注释），
+	// 而 sidecar 是所有 relay 上游的唯一推理通道——杀掉之后如果没人把它拉起来，
+	// 全部模型会**永久**返回 upstream_unavailable，直到有人手工 systemctl restart。
+	// 这正是 2026-11-01 线上那次「模型全不可用」的成因。
+	restartMu  sync.Mutex
+	restarting bool      // 正在重启（防止并发重启）
+	restartSeq int       // 连续启动失败次数（成功握手后清零）
+	restartAt  time.Time // 上次尝试启动的时刻，用于退避判定
+	degraded   bool      // 连续失败达到上限，停止重启
+	closedFlag bool      // Close 之后不再自愈（进程正在退出）
 }
 
 type statusState int
@@ -516,6 +538,8 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 					reason += "：" + werr.Error()
 				}
 				c.markDown(reason)
+				// sidecar 自己退出（panic / OOM / 外部 kill）：同样自愈。
+				c.scheduleRestart(reason)
 				return nil, &Error{Code: CodeProtocol, Method: method, Retryable: true, Message: reason}
 			}
 
@@ -550,11 +574,17 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 				timeout := c.opts.methodTimeout(method)
 				c.kill()
 				c.markDown("sidecar 调用超时后被终止（" + method + "）")
+				// 自愈：杀掉之后必须安排重启，否则全部 relay 上游永久不可用
+				//（2026-11-01 线上「模型全不可用」的根因）。退避完成后下一个请求自然走通。
+				c.scheduleRestart(fmt.Sprintf("调用超时（%s，%s）", method, timeout))
 				return nil, &Error{Code: CodeTimeout, Method: method, Retryable: true,
 					Message: fmt.Sprintf("等待 sidecar 应答超过 %s（%s）", timeout, method)}
 			}
 			c.kill()
 			c.markDown("sidecar 调用被取消后被终止（" + method + "）")
+			// ctx 取消多为调用方放弃（客户端断连 / 候选切换）。sidecar 本身未必坏，
+			// 但一问一答契约下被放弃的那一帧已无人认领，同样只能杀进程重来。
+			c.scheduleRestart("调用被取消")
 			return nil, &Error{Code: CodeProtocol, Method: method,
 				Message: "调用被取消：" + ctx.Err().Error()}
 		}
@@ -591,6 +621,9 @@ func (c *Client) finish(method string, resp response) (json.RawMessage, error) {
 func (c *Client) protocolBail(method, why string) error {
 	c.kill()
 	c.markDown("sidecar 协议违规：" + why)
+	// 规格（04-sidecar.md 5.2）：「连续 3 次协议违规视为 sidecar 失能，主动重启它」
+	// ——重启正是本方法存在的意义，杀完不拉起等于只做了一半。
+	c.scheduleRestart("协议违规：" + why)
 	return &Error{Code: CodeProtocol, Method: method, Retryable: true, Message: why}
 }
 
@@ -640,6 +673,159 @@ func (c *Client) markDown(reason string) {
 	c.log.Warn("sidecar 不可用：贡献功能降级（不影响转发）", "reason", reason)
 }
 
+// —— 自愈重启（04-sidecar.md 5.2）——
+
+// restartBackoff 是退避表（秒），最后一项是上限。
+// 规格原文 1s → 2s → 5s → 15s → 30s → 60s（上限）。
+//
+// 为什么不是指数：前几档要快（一次瞬时超时不应该让服务空窗一分钟），
+// 后几档要慢（确定性失败时不能把日志刷爆）。
+var restartBackoff = []time.Duration{
+	1 * time.Second,
+	2 * time.Second,
+	5 * time.Second,
+	15 * time.Second,
+	30 * time.Second,
+	60 * time.Second,
+}
+
+// restartMaxFailures 是「连续 5 次启动失败」的阈值（规格 5.2）。
+// 达到后进入 degraded：停止重启，等管理员干预。
+const restartMaxFailures = 5
+
+// backoffFor 取第 n 次失败（0 起）应等待的时长；超出表长则用最后一项。
+func backoffFor(n int) time.Duration {
+	if n < 0 {
+		n = 0
+	}
+	if n >= len(restartBackoff) {
+		return restartBackoff[len(restartBackoff)-1]
+	}
+	return restartBackoff[n]
+}
+
+// scheduleRestart 在 sidecar 死亡后安排一次自愈重启。
+//
+// 为什么异步：调用方（Call）正持着 callMu，重启的握手本身又要发一次 Call——
+// 同步重启会自锁。故只做「标记 + 起一个 goroutine」，调用方立刻返回错误，
+// 下一个请求会在重启完成后自然走通。
+//
+// 为什么必须在 kill 之后调用：kill 只是杀死进程，frames 通道会被 readLoop 关掉，
+// 若无人重建，之后每一次 Call 都会写进已断的 stdin 并立刻失败。
+func (c *Client) scheduleRestart(reason string) {
+	if c == nil {
+		return
+	}
+	c.restartMu.Lock()
+	if c.closedFlag {
+		// Close 已经在跑：进程要退出了，也不要再拉起新 sidecar。
+		c.restartMu.Unlock()
+		return
+	}
+	if c.degraded {
+		c.restartMu.Unlock()
+		return
+	}
+	if c.restarting {
+		// 已有一次重启在途：本次死亡不重复排队。
+		c.restartMu.Unlock()
+		return
+	}
+	seq := c.restartSeq
+	c.restarting = true
+	c.restartAt = time.Now()
+	c.restartMu.Unlock()
+
+	go c.restartLoop(seq, reason)
+}
+
+// restartLoop 等待退避时长后重新拉起 sidecar 并重新握手。
+//
+// 退避等待放在 goroutine 里而不是让下一个 Call 干等：等待期间调用方应立刻拿到
+// E_SIDECAR_DOWN 并按 06-runtime.md 换候选，而不是被挂住 N 秒。
+func (c *Client) restartLoop(seq int, reason string) {
+	wait := backoffFor(seq)
+	c.log.Warn("sidecar 将在退避后自愈重启",
+		"reason", reason, "attempt", seq+1, "backoff", wait.String())
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	<-timer.C
+
+	c.restartMu.Lock()
+	if c.closedFlag || c.degraded {
+		c.restarting = false
+		c.restartMu.Unlock()
+		return
+	}
+	c.restarting = false
+	c.restartMu.Unlock()
+
+	if err := c.tryRestart(); err != nil {
+		c.restartMu.Lock()
+		c.restartSeq++
+		seqNow := c.restartSeq
+		if seqNow >= restartMaxFailures {
+			c.degraded = true
+		}
+		c.restartMu.Unlock()
+
+		c.markDown(fmt.Sprintf("sidecar 自愈重启失败（连续 %d 次）：%v", seqNow, err))
+		if seqNow >= restartMaxFailures {
+			c.log.Error("sidecar 连续启动失败达到上限，进入 degraded，停止自愈（需管理员干预）",
+				"attempts", seqNow)
+			return
+		}
+		// 链式重排下一轮：本轮没成功就继续按下一档退避重试。
+		c.scheduleRestart("上一轮自愈重启失败")
+		return
+	}
+
+	c.restartMu.Lock()
+	c.restartSeq = 0
+	c.restartMu.Unlock()
+	c.log.Info("sidecar 自愈重启成功")
+}
+
+// tryRestart 重新拉起进程并做一次 health 握手。
+//
+// 与 Start 的差别：这里*必须*在失败时把 c.cmd/stdin/frames 清理干净，
+// 否则下一轮 spawn 会把上一轮已死的管道留在结构体里（Call 会写进死管道）。
+func (c *Client) tryRestart() error {
+	ctx, cancel := context.WithTimeout(context.Background(),
+		c.opts.startupTimeout())
+	defer cancel()
+
+	// 先回收上一轮的残留：kill 之后 waitCh 可能还没关，稍等即可（不等也不会泄漏，
+	// Wait goroutine 自己会关）。
+	c.callMu.Lock()
+	c.cmd = nil
+	c.stdin = nil
+	c.frames = make(chan inbound, 8)
+	c.nextID = 0
+	c.callMu.Unlock()
+
+	// 状态必须复位成 unknown 再握手：Call 的门禁会拦 stateDown（1.1），
+	// 而上一轮死掉的 sidecar 留下的正是 stateDown——不复位的话自愈的
+	// health 握手会被自己的门禁拦死（首轮测试实测踩到）。
+	// unknown 的语义就是「尚未握手」，与 Start 的初始状态一致。
+	c.stateMu.Lock()
+	c.state = stateUnknown
+	c.stateMu.Unlock()
+
+	if err := c.spawn(); err != nil {
+		return fmt.Errorf("重新 spawn 失败：%w", err)
+	}
+	h, err := c.Health(ctx)
+	if err != nil {
+		// 起了但不健康：杀掉再来，留着只会让下一轮 spawn 撞上一个孤儿进程。
+		c.kill()
+		return fmt.Errorf("重启后 health 握手失败：%w", err)
+	}
+	c.markReady(h)
+	return nil
+}
+
 // availability 是唯一读状态的地方，所有公开方法都经过它。
 func (c *Client) availability() Status {
 	if c == nil {
@@ -684,6 +870,10 @@ func (c *Client) Close(ctx context.Context) error {
 	if c == nil || c.cmd == nil {
 		return nil
 	}
+	c.restartMu.Lock()
+	c.closedFlag = true // 进程正在退出：不再自愈
+	c.restartMu.Unlock()
+
 	c.callMu.Lock()
 	if c.stateIsReady() {
 		line, _ := json.Marshal(request{ID: c.nextID + 1, Method: methodShutdown})

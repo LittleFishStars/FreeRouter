@@ -319,6 +319,58 @@ func TestContractTimeout(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────
+// ⑤b 超时自愈：超时杀进程后必须自动拉起新 sidecar，下一个调用能成功。
+//
+// 回归背景（2026-11-01 线上事故）：老实现超时后只 kill 不重启，sidecar 一死
+// 全部 relay 模型永久 502，直到有人手工重启服务。本用例钉住「杀完必须拉起来」。
+// ────────────────────────────────────────────────────────────────
+func TestContractTimeoutAutoRestart(t *testing.T) {
+	// 静默计数落文件（跨进程可见）：首个进程第 1 次调用静默 → 超时被杀 →
+	// 自愈重启后新进程读到计数已满 → 正常应答。
+	countFile := filepath.Join(t.TempDir(), "silent-count")
+	c := startFake(t, "silent_then_ok", func(o *Options) {
+		o.Timeout = 300 * time.Millisecond
+		o.Env = append(o.Env,
+			"FAKE_SILENT_TIMES=1",
+			"FAKE_SILENT_COUNT_FILE="+countFile,
+		)
+	})
+	// 第一次调用：fake 静默 → 超时 → 杀进程 → 安排自愈（1s 退避）。
+	if _, err := c.ProvidersList(context.Background()); err == nil {
+		t.Fatal("静默模式下首次调用必须失败")
+	}
+	if c.Available() {
+		t.Fatal("超时后必须先标不可用")
+	}
+	// 等自愈完成（退避 1s + node 冷启动 + 握手，10s 足够宽裕）。
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.Available() {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !c.Available() {
+		t.Fatalf("自愈重启没有发生或没有成功：reason=%q stderr=%v",
+			c.Status().Reason, c.StderrTail(10))
+	}
+	// 第二次调用必须成功：自愈拉起的新进程过了静默窗（800ms）后正常应答。
+	// health 在 fake 的静默检查**之前**应答，所以 ready 不代表窗口已过——
+	// 轮询到成功为止（deadline 5s 远大于静默窗 + 往返）。
+	pollDeadline := time.Now().Add(5 * time.Second)
+	for {
+		_, perr := c.ProvidersList(context.Background())
+		if perr == nil {
+			break
+		}
+		if time.Now().After(pollDeadline) {
+			t.Fatalf("自愈后调用必须成功，得 %v（stderr=%v）", perr, c.StderrTail(10))
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// ────────────────────────────────────────────────────────────────
 // ⑥ 并发串行化：8 个 goroutine 同时调，通道仍严格一问一答（假 sidecar 作证）。
 // ────────────────────────────────────────────────────────────────
 func TestContractConcurrentSerialized(t *testing.T) {

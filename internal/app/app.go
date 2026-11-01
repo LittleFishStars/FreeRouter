@@ -219,6 +219,14 @@ func (a *App) sidecarOptions() dshprovider.Options {
 			// 15s 默认值不够；与 app.checkin 的 CheckinCallTimeout 同值
 			//（04-sidecar.md 5.3 的 credits.claim 行）。
 			"credits.claim": CheckinCallTimeout,
+			// credits.query：04-sidecar.md 5.3 写的是 15s，但 sidecar 内部那趟
+			// fetch 自己的超时是 30s（sidecar/providers/credits.mjs 的
+			// REQUEST_TIMEOUT_MS）。Go 侧先到点就意味着**永远**在上游还在正常
+			// 响应时把它判死，然后 kill 整个 sidecar——2026-11-01 线上事故正是
+			// 这条：一次余额查询慢于 15s，sidecar 被杀，全部模型随即 502。
+			// 取 32s：比 sidecar 自己的 30s 多给 2s，让「谁的锅」由 sidecar 判定
+			//（它超时会返回结构化错误，我们仍然能拿到有意义的失败原因）。
+			"credits.query": 32 * time.Second,
 		},
 	}
 }

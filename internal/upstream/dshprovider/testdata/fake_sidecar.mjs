@@ -16,6 +16,7 @@
 //   CONCURRENT <id> ... 上一个请求还没回完就来了下一个 → 说明 Go 侧没串行化
 //   BAD_FRAME ...       收到不是 JSON 的行
 
+import { readFileSync, writeFileSync } from 'node:fs';
 import process from 'node:process';
 
 const mode = process.env.FAKE_MODE || 'ok';
@@ -83,6 +84,25 @@ function handleLine(line) {
   }
 
   if (mode === 'silent') return; // 不回、不退 —— 让 Go 侧超时
+  if (mode === 'silent_then_ok') {
+    // 跨进程计数：前 FAKE_SILENT_TIMES 次（全部进程加起来）静默，之后正常。
+    // 为什么必须落文件：每次重启都是**新进程**，内存计数会归零——「每个进程
+    // 前 N 次都静默」会形成杀→重启→又静默→又杀的死循环（首轮实测）。
+    // 计数文件由测试创建并经 FAKE_SILENT_COUNT_FILE 传入。
+    const n = Number(process.env.FAKE_SILENT_TIMES || '1');
+    const file = process.env.FAKE_SILENT_COUNT_FILE;
+    let done = 0;
+    if (file) {
+      try { done = Number(readFileSync(file, 'utf8').trim()) || 0; } catch {}
+    }
+    if (done < n) {
+      if (file) {
+        try { writeFileSync(file, String(done + 1)); } catch {}
+      }
+      return; // 静默：让 Go 侧超时
+    }
+    // 计满后落入正常应答路径。
+  }
   if (mode === 'exit_on_call') process.exit(3);
   if (mode === 'unknown_code') {
     return reply(errFrame(req, 'E_SOMETHING_BRAND_NEW', '未来版本新增的错误码', true));
