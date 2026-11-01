@@ -1734,6 +1734,43 @@ a.metric-link:hover {
   background: var(--fr-primary-soft);
 }
 
+/* ── 候选芯片条的拖动排序（2026-11-01）─────────────────────────────
+   手动排序的界面化：拖动中的芯片浮起（阴影只给浮层），其余芯片实时让位
+   （让位来自 React 的预览序重排，不是 CSS 动画伪装）。 */
+.am-chip-hint {
+  margin: 0 0 0.1rem;
+  font-size: 0.72rem;
+  color: var(--fr-on-surface-variant);
+}
+
+.am-chip-hint[data-saving] {
+  color: var(--fr-primary);
+}
+
+.am-chip[data-dragging] {
+  /* 浮起：抬高 + 阴影 + 半透明（能看见它覆盖的位置）。z-index 让它压过
+     相邻芯片而不被裁切；transform 由 GPU 合成，不触发整条重排。 */
+  position: relative;
+  z-index: 2;
+  box-shadow: var(--fr-e1);
+  opacity: 0.92;
+  /* 按住后禁止选中文字（拖动时选区乱跳的经典问题）。 */
+  user-select: none;
+  /* 芯片是 button：浏览器默认会把 pointerdown 视为点击预备，这里显式关掉
+     拖动中的 hover 提亮，避免视觉上「两颗都浮起」。 */
+  pointer-events: none;
+}
+
+.am-chip-row[data-drag-active] {
+  cursor: grabbing;
+}
+
+.am-chip[data-unavailable] {
+  /* 不可用候选：芯片本体降低饱和度（状态色只给图标——该芯片的警告图标
+     已经是黄色，整颗变黄会变成「到处画色块」）。 */
+  opacity: 0.72;
+}
+
 .am-add-chip {
   /* 虚线感来自颜色而不是描边：比普通芯片浅一档，加号图标自带动手暗示 */
   color: var(--fr-primary);
@@ -2143,6 +2180,19 @@ button.am-add-chip {
   gap: 0.5rem;
   overflow-x: auto;
   padding-bottom: 0.1rem;
+}
+
+.amd-cur-row[data-drag-active] {
+  cursor: grabbing;
+}
+
+.amd-cur-chip[data-dragging] {
+  position: relative;
+  z-index: 2;
+  box-shadow: var(--fr-e1);
+  opacity: 0.92;
+  user-select: none;
+  pointer-events: none;
 }
 
 .amd-cur-chip {

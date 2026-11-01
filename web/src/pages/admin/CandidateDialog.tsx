@@ -20,6 +20,7 @@
 // 写错会静默失效。
 
 import { useEffect, useMemo, useState } from 'react'
+import { useDragReorder, moveItem } from '../../hooks/useDragReorder'
 import { useApi } from '../../hooks/useApi'
 import { ACTION_ICON } from '../../components/IconButtons'
 import {
@@ -166,6 +167,23 @@ export function CandidateDialog({
   // 展开当前候选芯片的渠道范围编辑（null = 不展开）。
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null)
 
+  // 「当前候选」条的直接拖动排序（2026-11-01）：与 ↑/↓ 按钮等价，只是更快。
+  // 预览序直接写 rows（脏检测天然生效——rows 与 original 不等就会亮保存按钮）。
+  const drag = useDragReorder({
+    onPreview: (from, to) => {
+      setRows((cur) => moveItem(cur, from, to))
+      // 展开的渠道范围编辑跟着位次走，不然展开态会落在别的芯片上。
+      setExpandedIdx((cur) => {
+        if (cur === null) return null
+        return movedIndex(cur, from, to)
+      })
+    },
+    onEnd: () => {
+      // 排序不自动保存：与点 ↑/↓ 一致，由底部「保存」统一提交。
+      // 这里不需要任何动作——rows 已经是预览序。
+    }
+  })
+
   useEffect(() => {
     if (!candsQ.data) return
     const list = candsQ.data.candidates ?? []
@@ -262,6 +280,18 @@ export function CandidateDialog({
       if (i === -1) return [...rs, { real_model_id: m.real_model_id, constraint: {}, weight: 0 }]
       return rs.filter((_, idx) => idx !== i)
     })
+  }
+
+  // movedIndex 算「from 挪到 to 之后，原索引 i 的元素新位次」。
+  // 展开的渠道编辑区跟着芯片走；被拖的那颗保持展开。
+  function movedIndex(i: number, from: number, to: number): number {
+    if (i === from) return to
+    if (from < to) {
+      if (i > from && i <= to) return i - 1
+      return i
+    }
+    if (i >= to && i < from) return i + 1
+    return i
   }
 
   function move(i: number, dir: -1 | 1) {
@@ -406,13 +436,19 @@ export function CandidateDialog({
     )
   }
 
-  function curChip(r: Candidate, i: number) {
+  function curChip(r: Candidate, i: number, dp?: ReturnType<typeof drag.itemProps>) {
     const fact = modelFacts.get(r.real_model_id)
     const src = sourceOfReal.get(r.real_model_id)
     const name = fact?.display_name ?? r.real_model_id
     const srcName = src ? (src.name || src.upstream_name) : ''
     return (
-      <div key={r.real_model_id} className="amd-cur-chip" data-expanded={expandedIdx === i} data-off={fact ? undefined : true}>
+      <div
+        key={r.real_model_id}
+        className="amd-cur-chip"
+        data-expanded={expandedIdx === i}
+        data-off={fact ? undefined : true}
+        {...dp}
+      >
         <button type="button" className="amd-cur-chip-main" onClick={() => setExpandedIdx(expandedIdx === i ? null : i)}>
           {/* 序号 = **使用位次**（2026-11-01 定案：手动排序，仅当前一个不可用
               时才用下一个）。它不是「配置编号」，所以不可用的候选会带徽标提示
@@ -539,8 +575,12 @@ export function CandidateDialog({
           {rows.length === 0 ? (
             <p className="muted amd-cur-empty">no_candidate；请从下部模型区点卡片加入。</p>
           ) : (
-            <div className="amd-cur-row">
-              {rows.map(curChip)}
+            <div
+              className="amd-cur-row"
+              ref={drag.containerRef}
+              data-drag-active={drag.draggingKey !== null || undefined}
+            >
+              {rows.map((r, i) => curChip(r, i, rows.length > 1 ? drag.itemProps(r.real_model_id, i) : undefined))}
             </div>
           )}
         </div>

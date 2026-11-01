@@ -10,6 +10,7 @@
 // 因此本页不再有排序策略选择器；位次与不可用状态都挪到候选集编辑弹窗里。
 
 import { useEffect, useRef, useState } from 'react'
+import { useDragReorder, moveItem } from '../../hooks/useDragReorder'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApi } from '../../hooks/useApi'
 import { ACTION_ICON, ToolButton } from '../../components/IconButtons'
@@ -23,6 +24,7 @@ import {
   getReferences,
   listAbstractModels,
   patchAbstractModel,
+  putCandidates,
 } from '../../api/endpoints'
 import type {
   AdminAbstractModel,
@@ -265,10 +267,73 @@ function ModelRow({
   const editTo = `/admin/abstract-models/${encodeURIComponent(m.id)}`
   const [open, setOpen] = useState(false)
 
+  // 展开区芯片条的拖动排序（2026-11-01）：候选的使用顺序就是这里的排列，
+  // 所以直接在芯片条上拖，不用进弹窗。松手才保存（拖动中只是预览序）。
+  const [chipRows, setChipRows] = useState<Candidate[] | null>(null)
+  const [savingOrder, setSavingOrder] = useState(false)
+  const [orderNotice, setOrderNotice] = useState<string | null>(null)
+  // 「刚拖完」标记：pointerup（hook onEnd）与浏览器合成的 click 是两个事件，
+  // 但 click 里读 state 拿到的可能是批处理前的旧值——ref 的写入在两次事件
+  // 之间同步可见，这才是可靠的守卫（state 守卫实测会漏：拖完仍会打开弹窗）。
+  const justDragged = useRef(false)
+  // 预览序的初始值来自当前渲染的声明序（detail.candidates）——必须在这里
+  // 拿到，不能等 setChipRows 自己从 null 长出来：第一帧 preview 时 chipRows
+  // 还是 null，`cur ? … : cur` 会原样返回 null，拖动看起来毫无反应
+  //（2026-11-01 实测踩到这个空转）。
+  // 拖动起始快照：每次 preview 都从它出发重排，而不是在当前预览序上再挪一次。
+  //
+  // 为什么必须从快照出发：from/to 是**相对拖动开始时的索引空间**（hook 冻结
+  // 了几何快照，fromIndex 也是那时算的）。若在已重排过的列表上再 apply 一次
+  // moveItem，位移会被叠加两次，顺序在两三个状态间来回跳（实测：x 每走一步
+  // 顺序就反转一次）。
+  const dragOrigin = useRef<Candidate[] | null>(null)
+  const drag = useDragReorder({
+    onPreview: (from, to) => {
+      if (!dragOrigin.current) {
+        dragOrigin.current = detail?.state === 'ready' ? detail.candidates : []
+      }
+      setChipRows(moveItem(dragOrigin.current, from, to))
+    },
+    onEnd: (moved) => {
+      dragOrigin.current = null
+      if (!moved) {
+        setChipRows(null)
+        return
+      }
+      justDragged.current = true
+      // click 在 pointerup 之后同一轮宏任务里派发；用宏任务边界复位，
+      // 保证「拖完的那次 click」被吞、「下一次真点击」放行。
+      setTimeout(() => { justDragged.current = false }, 0)
+      void saveOrder()
+    }
+  })
+
   // 连通性检验（2026-10-31）：逐候选实时探测出站路径，结果芯片条挂在行头下
   const [conn, setConn] = useState<ConnectivityResult | null>(null)
   const [connBusy, setConnBusy] = useState(false)
   const [connError, setConnError] = useState<string | null>(null)
+
+  // 把预览序写回（整表替换；约束与不可用标记由后端透传语义决定，这里只换顺序）。
+  // chipRows 为 null 时说明没有拖动过，不该触发。
+  async function saveOrder() {
+    if (!chipRows || savingOrder) return
+    setSavingOrder(true)
+    setOrderNotice(null)
+    try {
+      await putCandidates(m.id, chipRows.map((r) => ({
+        real_model_id: r.real_model_id,
+        constraint: r.constraint,
+        weight: 0
+      })))
+      setChipRows(null)
+      onAddSaved(m.id) // 复用候选保存后的刷新信号（列表计数 + 展开缓存重拉）
+    } catch (e) {
+      setChipRows(null)
+      setOrderNotice(e instanceof Error ? `顺序保存失败：${e.message}` : '顺序保存失败')
+    } finally {
+      setSavingOrder(false)
+    }
+  }
 
   async function runConnectivity() {
     setConnBusy(true)
@@ -323,6 +388,7 @@ function ModelRow({
         </span>
       </div>
       {connError && <div className="am-explain" data-tone="warn">检验失败：{connError}</div>}
+      {orderNotice && <div className="am-explain" data-tone="warn">{orderNotice}</div>}
       {conn && (
         <div className="am-conn">
           <span className="am-conn-sum" data-tone={conn.ok ? 'ok' : 'warn'}>
@@ -357,28 +423,58 @@ function ModelRow({
           {detail === undefined && <div className="am-explain">展开候选…</div>}
           {detail?.state === 'loading' && <div className="am-loading"><LoadingBlock rows={1} /></div>}
           {detail?.state === 'error' && <div className="am-error muted">候选加载失败，请重试。</div>}
-          {detail?.state === 'ready' && (
-            <div className="am-chip-row">
-              {detail.candidates.length === 0 ? (
-                <span className="muted am-empty">尚未配置候选。</span>
-              ) : (
-                detail.candidates.map((c) => {
-                  const fact = facts.get(c.real_model_id)
-                  const name = fact?.display_name ?? c.real_model_id
-                  const supported = c.available_instances !== 0 && c.available_instances !== undefined
-                  return (
-                    <button key={c.real_model_id} type="button" className="am-chip" onClick={() => setOpen(true)}>
-                      <span className="am-chip-name">{name}</span>
-                      {supported && <IconCheck size="xs" />}
-                    </button>
-                  )
-                })
-              )}
-              <button type="button" className="am-add-chip" onClick={() => setOpen(true)}>
-                <IconPlus size="xs" /> 添加模型
-              </button>
-            </div>
-          )}
+          {detail?.state === 'ready' && (() => {
+            // 预览序：拖动中用 chipRows（拖动实时让位），否则用加载到的声明序。
+            const rows = chipRows ?? detail.candidates
+            const dragProps = rows.length > 1
+              ? { ref: drag.containerRef, 'data-drag-active': drag.draggingKey !== null || undefined }
+              : {}
+            return (
+              <>
+                {rows.length > 1 && (
+                  <p className="am-chip-hint" data-saving={savingOrder || undefined}>
+                    {savingOrder
+                      ? '正在保存顺序…'
+                      : '按住拖动可调整使用顺序（仅当前一个不可用时才用下一个）'}
+                  </p>
+                )}
+                <div className="am-chip-row" {...dragProps}>
+                  {rows.length === 0 ? (
+                    <span className="muted am-empty">尚未配置候选。</span>
+                  ) : (
+                    rows.map((c, i) => {
+                      const fact = facts.get(c.real_model_id)
+                      const name = fact?.display_name ?? c.real_model_id
+                      const supported = c.available_instances !== 0 && c.available_instances !== undefined
+                      // 单条候选没有排序意义，退回纯点击；多条时挂拖动属性。
+                      const dp = rows.length > 1 ? drag.itemProps(c.real_model_id, i) : {}
+                      return (
+                        <button
+                          key={c.real_model_id}
+                          type="button"
+                          className="am-chip"
+                          data-unavailable={c.unavailable || undefined}
+                          onClick={() => {
+                            // 拖动结束的松手也会合成一次 click；刚拖完就不打开编辑器。
+                            // （state 守卫不可靠——React 批处理让 click 读到旧值。）
+                            if (justDragged.current) return
+                            setOpen(true)
+                          }}
+                          {...dp}
+                        >
+                          <span className="am-chip-name">{name}</span>
+                          {c.unavailable ? <IconWarn size="xs" /> : supported ? <IconCheck size="xs" /> : null}
+                        </button>
+                      )
+                    })
+                  )}
+                  <button type="button" className="am-add-chip" onClick={() => setOpen(true)}>
+                    <IconPlus size="xs" /> 添加模型
+                  </button>
+                </div>
+              </>
+            )
+          })()}
         </div>
       )}
       {open && (
