@@ -330,6 +330,9 @@ func TestContractTimeoutAutoRestart(t *testing.T) {
 	countFile := filepath.Join(t.TempDir(), "silent-count")
 	c := startFake(t, "silent_then_ok", func(o *Options) {
 		o.Timeout = 300 * time.Millisecond
+		// health 单独放宽：业务超时 300ms 是用例的一部分，但 node 冷启动
+		// 偶尔超过 300ms（-race 下更慢），握手被误杀会让测试偶发红。
+		o.Timeouts = map[string]time.Duration{"health": 3 * time.Second}
 		o.Env = append(o.Env,
 			"FAKE_SILENT_TIMES=1",
 			"FAKE_SILENT_COUNT_FILE="+countFile,

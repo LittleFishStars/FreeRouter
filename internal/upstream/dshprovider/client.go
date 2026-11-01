@@ -300,19 +300,34 @@ func (c *Client) spawn() error {
 		return fmt.Errorf("exec 失败：%w", err)
 	}
 
+	// 装配段整体持 callMu：Call 读 c.stdin/c.frames 都持同一把锁，
+	// 不加锁的话「Call 正在写旧 stdin / 读旧 frames」与「spawn 换新」就是数据竞争
+	//（线上实测：自愈重启后所有请求仍写旧管道，报 file already closed）。
+	c.callMu.Lock()
+	defer c.callMu.Unlock()
+	frames := make(chan inbound, 8)
+	waitCh := make(chan struct{})
 	c.cmd = cmd
 	c.stdin = stdin
-	c.waitCh = make(chan struct{})
+	c.frames = frames
+	c.waitCh = waitCh
+	// waitErr 有自己的锁（Call 的 EOF 路径经 waitError() 持 waitMu 读它），
+	// 这里换代也必须持同一把锁，否则 spawn 换代与旧进程 Wait 写回就是竞态
+	//（-race 实测抓到）。
+	c.waitMu.Lock()
+	c.waitErr = nil
+	c.waitMu.Unlock()
+	c.nextID = 0
 	go func() {
 		// Wait 必须有人调用：否则子进程退化成僵尸。
 		err := cmd.Wait()
 		c.waitMu.Lock()
 		c.waitErr = err
 		c.waitMu.Unlock()
-		close(c.waitCh)
+		close(waitCh)
 	}()
 
-	go c.readLoop(stdout)
+	go c.readLoop(stdout, frames)
 	go c.drainStderr(stderr)
 	return nil
 }
@@ -320,8 +335,11 @@ func (c *Client) spawn() error {
 // readLoop 是唯一的 stdout 读者。把行读成帧后投给 frames；
 // EOF 时关掉 frames —— 这正是「stdio 而非 socket」的值：
 // sidecar 一死，读循环立刻结束，调用方**不需要额外探活**就知道它没了。
-func (c *Client) readLoop(stdout io.Reader) {
-	defer close(c.frames)
+func (c *Client) readLoop(stdout io.Reader, frames chan inbound) {
+	// frames 由参数传入：本 goroutine 退出时只关**自己这一代**的 channel。
+	// 关共享字段的话，重启换代后旧 readLoop 的退出会把新一代 channel 关掉，
+	// 新进程的应答永远投不进来（线上实测踩到）。
+	defer close(frames)
 	br := bufio.NewReaderSize(stdout, readBufSize)
 	for {
 		line, err := br.ReadString('\n')
@@ -520,7 +538,10 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 
 	// 写失败 = 管道已断 = 子进程已死。这条路径必须比读超时更快地给出答案。
 	if _, err := c.stdin.Write(line); err != nil {
-		c.markDown(fmt.Sprintf("sidecar stdin 写入失败（进程已退出）：%v", err))
+		reason := fmt.Sprintf("sidecar stdin 写入失败（进程已退出）：%v", err)
+		c.markDown(reason)
+		// 进程已死同样要自愈：不拉起的话这个状态会一直持续（线上实测踩到）。
+		c.scheduleRestart(reason)
 		return nil, &Error{Code: CodeProtocol, Method: method, Retryable: true,
 			Message: "sidecar 进程已退出：" + err.Error()}
 	}
@@ -796,14 +817,10 @@ func (c *Client) tryRestart() error {
 		c.opts.startupTimeout())
 	defer cancel()
 
-	// 先回收上一轮的残留：kill 之后 waitCh 可能还没关，稍等即可（不等也不会泄漏，
-	// Wait goroutine 自己会关）。
-	c.callMu.Lock()
-	c.cmd = nil
-	c.stdin = nil
-	c.frames = make(chan inbound, 8)
-	c.nextID = 0
-	c.callMu.Unlock()
+	// 上一轮的残留（旧 cmd/stdin/frames）由 spawn 在 callMu 内整体覆盖换代；
+	// 这里不再手动置 nil——「置 nil」与「spawn 赋新值」之间的窗口里，
+	// 并发 Call 会读到 nil stdin 而 panic（线上实测踩到）。nextID 也一并
+	// 交给 spawn 换代后从 0 重新计数（新进程不认识旧 id）。
 
 	// 状态必须复位成 unknown 再握手：Call 的门禁会拦 stateDown（1.1），
 	// 而上一轮死掉的 sidecar 留下的正是 stateDown——不复位的话自愈的
