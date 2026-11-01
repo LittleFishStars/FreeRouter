@@ -43,7 +43,7 @@ import {
   IconWarn
 } from '../../icons'
 import { EmptyState, FormError, LoadingBlock, StatusBadge } from '../../components/ui'
-import { fmtNum, statusLabel } from '../../utils/format'
+import { fmtNum, fmtTime, statusLabel } from '../../utils/format'
 
 // ── 协议徽标（契约 §1.2：只有 openai / anthropic 两个取值）──────────────
 const AM_PROTOCOL_GLYPH: Record<string, { letter: string; label: string }> = {
@@ -414,9 +414,22 @@ export function CandidateDialog({
     return (
       <div key={r.real_model_id} className="amd-cur-chip" data-expanded={expandedIdx === i} data-off={fact ? undefined : true}>
         <button type="button" className="amd-cur-chip-main" onClick={() => setExpandedIdx(expandedIdx === i ? null : i)}>
+          {/* 序号 = **使用位次**（2026-11-01 定案：手动排序，仅当前一个不可用
+              时才用下一个）。它不是「配置编号」，所以不可用的候选会带徽标提示
+              它虽然排在 N 位、实际会被跳过（除非前面都不在册）。 */}
           <span className="amd-cur-chip-idx">{i + 1}</span>
           <span className="amd-cur-chip-name">{name}</span>
           <span className="amd-cur-chip-scope">{scopeSummary(r.constraint)}</span>
+          {r.unavailable && (
+            <span
+              className="amd-cur-chip-bad"
+              title={`已判定不可用${r.unavailable_reason ? `（${r.unavailable_reason}）` : ''}${
+                r.next_probe_at ? `；下次自动检测 ${fmtTime(r.next_probe_at)}` : ''
+              }${r.probe_attempts ? `；已连续 ${r.probe_attempts} 次` : ''}`}
+            >
+              <IconWarn size="xs" />不可用
+            </span>
+          )}
         </button>
         {/* 来源（2026-10-31 用户要求）：标题下标明这条候选来自哪家供应商；
             同名模型在不同供应商下是不同候选，光看 display_name 分不出来 */}
@@ -516,6 +529,12 @@ export function CandidateDialog({
         <div className="amd-cur">
           <p className="amd-cur-title">
             当前候选（{rows.length}）
+            {/* 2026-11-01 定案：这里的顺序就是**实际使用顺序**（手动排序），
+                仅当前一个不可用时才用下一个。把这句话放在标题位而不是帮助
+                文档里——管理员最容易误解的正是「顺序是配置还是使用序」。 */}
+            <span className="amd-cur-title-sub">
+              顺序即使用序：仅当前一个不可用时才用下一个；不可用的会被跳过但留在末尾兜底
+            </span>
           </p>
           {rows.length === 0 ? (
             <p className="muted amd-cur-empty">no_candidate；请从下部模型区点卡片加入。</p>

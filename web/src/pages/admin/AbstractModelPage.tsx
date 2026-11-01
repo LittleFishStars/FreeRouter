@@ -3,13 +3,16 @@
 // 对外名创建后不可改：契约的稳定性来自名字，改名等于把旧名字的所有客户端
 // 一次性打断；正确手段是弃用 + 替代链。
 //
-// 能力模式、排序链与能力声明都属于「改抽象模型」危险写：保存前必须走
-// 统一二次确认框。排序策略只有四种 + 链末 round-robin 平局决胜。
+// 能力模式与能力声明属于「改抽象模型」危险写：保存前必须走统一二次确认框。
+//
+// 2026-11-01 定案：**排序链已退役**。候选的使用顺序就是管理员在候选集编辑器
+// 里排列的顺序（PUT /candidates 的数组顺序），仅当前一个不可用时才用下一个。
+// 因此本页不再有排序策略选择器；位次与不可用状态都挪到候选集编辑弹窗里。
 
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApi } from '../../hooks/useApi'
-import { ACTION_ICON, TableAction, TableActions, ToolButton } from '../../components/IconButtons'
+import { ACTION_ICON, ToolButton } from '../../components/IconButtons'
 import {
   checkAbstractModelConnectivity,
   createAbstractModel,
@@ -33,12 +36,9 @@ import {
   IconBack,
   IconCheck,
   IconChevronDown,
-  IconDelete,
-  IconDown,
   IconPlus,
   IconRefresh,
   IconTest,
-  IconUp,
   IconWarn,
 } from '../../icons'
 import { CandidateDialog } from './CandidateDialog'
@@ -65,13 +65,6 @@ const STATUS_OPTIONS = [
   ['active', '可用'],
   ['deprecated', '已弃用'],
   ['disabled', '已停用']
-] as const
-
-const STRATEGIES = [
-  ['expiry-first', 'expiry-first（最快作废的先烧）'],
-  ['balance', 'balance（余额最少的先用）'],
-  ['speed', 'speed（更快）'],
-  ['price', 'price（更便宜）']
 ] as const
 
 type ExpDetail =
@@ -155,8 +148,7 @@ export function AbstractModelsPage({ def }: PageProps) {
       const r = await createAbstractModel({
         name: name.trim(),
         display_name: displayName.trim() || name.trim(),
-        capability_mode: mode,
-        strategy: ['expiry-first', 'balance']
+        capability_mode: mode
       })
       setCreating(false)
       setName('')
@@ -306,7 +298,11 @@ function ModelRow({
         <span className="am-row-cell am-row-mode">
           {m.capability_mode === 'strict' ? '严格' : '过滤'}
         </span>
-        <span className="am-row-chain">{(m.strategy ?? []).join(' → ') || '—'}</span>
+        {/* 行头原显示排序链；策略链退役后改为显示「不可用候选数」——
+            它才是管理员在这个位置真正要看的信号（有几条在等探测恢复）。 */}
+        <span className="am-row-chain">
+          {m.unavailable_candidate_count ? `${fmtNum(m.unavailable_candidate_count)} 条不可用` : ''}
+        </span>
         <span className="am-row-ops" onClick={(e) => e.stopPropagation()}>
           {/* 行头不放「候选集」按钮：展开区的「+ 添加模型」与候选芯片都打开
               同一个编辑弹窗，行头只留低频的「弃用」入口。 */}
@@ -408,7 +404,6 @@ export function AbstractModelDetailPage({ def }: PageProps) {
   const [displayName, setDisplayName] = useState('')
   const [mode, setMode] = useState('strict')
   const [capabilities, setCapabilities] = useState<ModelCapabilities>({})
-  const [strategy, setStrategy] = useState<string[]>([])
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
@@ -422,7 +417,6 @@ export function AbstractModelDetailPage({ def }: PageProps) {
     setDisplayName(model.display_name)
     setMode(model.capability_mode)
     setCapabilities(model.capabilities ?? {})
-    setStrategy((model.strategy ?? []) as string[])
   }, [model])
 
   if (!model) {
@@ -433,39 +427,18 @@ export function AbstractModelDetailPage({ def }: PageProps) {
     )
   }
 
-  const strategyChanged =
-    JSON.stringify(strategy) !== JSON.stringify((model.strategy ?? []) as string[])
   const changed =
     displayName !== model.display_name ||
     mode !== model.capability_mode ||
-    JSON.stringify(capabilities) !== JSON.stringify(model.capabilities ?? {}) ||
-    strategyChanged
-
-  function addStrategy(s: string) {
-    if (s === 'round-robin') {
-      if (strategy.includes('round-robin')) return
-      setStrategy([...strategy.filter((x) => x !== 'round-robin'), 'round-robin'])
-      return
-    }
-    if (strategy.includes(s)) return
-    // round-robin 只能留在链末
-    setStrategy([...strategy.filter((x) => x !== 'round-robin'), s, ...(strategy.includes('round-robin') ? ['round-robin'] : [])])
-  }
-
-  function move(i: number, dir: -1 | 1) {
-    const j = i + dir
-    if (j < 0 || j >= strategy.length) return
-    const next = [...strategy]
-    ;[next[i], next[j]] = [next[j], next[i]]
-    setStrategy(next)
-  }
+    JSON.stringify(capabilities) !== JSON.stringify(model.capabilities ?? {})
 
   async function runDryRun() {
     if (!model) return
     setDryBusy(true)
     setError(null)
     try {
-      const r = await dryRunAbstractModel(model.id, { strategy, sample_size: 200 })
+      // 策略链已退役（2026-11-01）：干跑载荷只剩采样量。
+      const r = await dryRunAbstractModel(model.id, { sample_size: 200 })
       setDry(r.data)
     } catch (e) {
       setError(e)
@@ -482,8 +455,7 @@ export function AbstractModelDetailPage({ def }: PageProps) {
       await patchAbstractModel(model.id, {
         display_name: displayName,
         capability_mode: mode,
-        capabilities,
-        strategy
+        capabilities
       })
       setNotice('已保存（审计会记录旧值与新值）')
       setConfirming(false)
@@ -525,6 +497,12 @@ export function AbstractModelDetailPage({ def }: PageProps) {
             { label: '模型 ID', value: <code>{model.id}</code> },
             { label: '状态', value: <StatusBadge status={model.status} label={statusLabel(model.status)} /> },
             { label: '候选 / 可用', value: `${fmtNum(model.candidate_count)} / ${fmtNum(model.available_candidate_count)}` },
+            {
+              label: '不可用',
+              value: model.unavailable_candidate_count
+                ? `${fmtNum(model.unavailable_candidate_count)} 条（等待自动探测恢复）`
+                : '0'
+            },
             { label: '替代目标', value: model.replacement ?? '—' }
           ]}
         />
@@ -571,51 +549,18 @@ export function AbstractModelDetailPage({ def }: PageProps) {
         </div>
       </Section>
 
-      <Section title="排序链" hint="默认 [expiry-first, balance]：先烧最快作废的额度，再用余额最少的账号。round-robin 只能追加在链末作平局决胜。">
-        <ol className="strategy-chain">
-          {strategy.map((s, i) => (
-            <li key={s}>
-              <code>{s}</code>
-              {/* 策略链每行都重复这三个动作：只给图标，名字走 tooltip */}
-              <TableActions>
-                <TableAction
-                  icon={<IconUp size={ACTION_ICON} />}
-                  label="上移"
-                  disabled={i === 0}
-                  onClick={() => move(i, -1)}
-                />
-                <TableAction
-                  icon={<IconDown size={ACTION_ICON} />}
-                  label="下移"
-                  disabled={i === strategy.length - 1}
-                  onClick={() => move(i, 1)}
-                />
-                <TableAction
-                  icon={<IconDelete size={ACTION_ICON} />}
-                  label="从链中移除"
-                  tone="danger"
-                  onClick={() => setStrategy(strategy.filter((_, idx) => idx !== i))}
-                />
-              </TableActions>
-            </li>
-          ))}
-          {strategy.length === 0 && <li className="muted">链为空：使用默认链 [expiry-first, balance]。</li>}
-        </ol>
-        <div className="field-row">
-          {STRATEGIES.map(([v, l]) => (
-            <button key={v} type="button" className="btn-ghost" onClick={() => addStrategy(v)} disabled={strategy.includes(v)}>
-              添加 {l}
-            </button>
-          ))}
-          <button
-            type="button"
-            className="btn-ghost"
-            onClick={() => addStrategy('round-robin')}
-            disabled={strategy.includes('round-robin') || strategy.length === 0}
-          >
-            加平局决胜 round-robin
-          </button>
-        </div>
+      <Section
+        title="候选使用顺序"
+        hint="顺序就是候选集编辑器里排列的顺序（手动排序，2026-11-01 定案）：仅当前一个不可用时才用下一个，不可用的排到末尾但不是被剔除。改顺序请到「候选集」。"
+      >
+        <p className="muted">
+          排序链（expiry-first / balance / speed / price / round-robin）已退役：
+          自动排序的输入（余额/到期/延迟）都是近似值，同一份配置在不同测量状态下
+          会给出不同顺序，故障反而更难复现。手动序是唯一「配置即事实」的表达。
+        </p>
+        <button type="button" className="btn-ghost" onClick={() => setCandOpen(true)}>
+          编辑候选集（顺序 / 增删 / 渠道范围）
+        </button>
       </Section>
 
       <Section title="保存前干跑" hint="用历史请求回放验证候选可达；策略配错会导致全站 no_candidate，干跑是保存路径上的强制步骤。">
@@ -670,7 +615,6 @@ export function AbstractModelDetailPage({ def }: PageProps) {
         title={`确认修改抽象模型 ${model.name}`}
         impact={[
           mode !== model.capability_mode ? `能力模式：${model.capability_mode} → ${mode}` : '',
-          strategyChanged ? `排序链：${(model.strategy ?? []).join(' → ') || '默认'} → ${strategy.join(' → ') || '默认'}` : '',
           `候选数：${model.candidate_count}（可用 ${model.available_candidate_count}）`,
           '保存后立即影响所有指向该模型的客户端'
         ].filter(Boolean)}

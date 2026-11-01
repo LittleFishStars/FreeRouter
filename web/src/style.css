@@ -1113,18 +1113,6 @@ a.metric-link:hover {
   padding-bottom: 0.4rem;
 }
 
-.strategy-chain {
-  padding-left: 1.15rem;
-}
-
-.strategy-chain li {
-  display: flex;
-  gap: 0.45rem;
-  align-items: center;
-  flex-wrap: wrap;
-  margin-bottom: 0.35rem;
-}
-
 .chain-preview {
   font-size: 1.02rem;
 }
@@ -2203,6 +2191,32 @@ button.am-add-chip {
 
 .amd-cur-chip-name {
   font-weight: 600;
+}
+
+/* 标题副行（顺序即使用序的说明）：2026-11-01 定案后这是管理员最容易误解的点，
+   所以它在标题旁而不是藏在帮助文档里。 */
+.amd-cur-title-sub {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.74rem;
+  font-weight: 400;
+  color: var(--fr-on-surface-variant);
+}
+
+/* 不可用徽标（填充色阶 + 只给状态色，不画描边）。
+   为什么用警告色而不是错误色：不可用是「等待恢复」的中间态，不是终态失败；
+   错误色会把「已经有 N 条在等探测恢复」读成「这个模型坏了」。 */
+.amd-cur-chip-bad {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: var(--fr-radius-full);
+  background: var(--fr-warn-container, rgba(255, 193, 7, 0.16));
+  color: var(--fr-on-warn-container, #8a6100);
+  font-size: 0.68rem;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .amd-cur-chip-scope {

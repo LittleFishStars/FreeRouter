@@ -56,7 +56,6 @@ import type {
   PendingAccount,
   RecoveryCodeState,
   SettingsDoc,
-  StrategyName,
   UpstreamKind,
   UsageLog,
   UsageStats,
@@ -439,7 +438,7 @@ export function createAbstractModel(body: {
   display_name: string
   capability_mode?: string
   capabilities?: ModelCapabilities
-  strategy?: StrategyName[]
+  // 说明：strategy（排序链）已退役（2026-11-01）——顺序由候选数组表达。
   candidates?: Candidate[]
 }) {
   return postWrite<AdminAbstractModel>(PATHS.adminAbstractModels, body)
@@ -451,7 +450,6 @@ export function patchAbstractModel(
     display_name?: string
     capability_mode?: string
     capabilities?: ModelCapabilities
-    strategy?: string[]
     /** 停用 / 恢复（弃用走 /deprecation，单向） */
     status?: 'active' | 'disabled'
   }
@@ -487,9 +485,10 @@ export function putCandidates(id: string, candidates: Candidate[]) {
   )
 }
 
+/** 保存前干跑。策略链已退役（2026-11-01），载荷只剩采样量。 */
 export function dryRunAbstractModel(
   id: string,
-  body: { strategy: string[]; sample_size?: number }
+  body: { sample_size?: number }
 ) {
   return postWrite<DryRunResult>(`${PATHS.adminAbstractModels}/${seg(id)}/dry-run`, body)
 }

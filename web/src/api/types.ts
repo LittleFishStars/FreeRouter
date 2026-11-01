@@ -301,8 +301,6 @@ export interface AdminModelSourcesResponse {
 // ── 管理面：抽象模型 ───────────────────────────────────────────────────
 
 export type CapabilityMode = 'strict' | 'filter'
-export type StrategyName = 'expiry-first' | 'balance' | 'speed' | 'price' | 'round-robin'
-
 export interface ModelCapabilities {
   context_window?: number
   max_output?: number
@@ -319,7 +317,8 @@ export interface AdminAbstractModel {
   display_name: string
   capability_mode: CapabilityMode | string
   capabilities?: ModelCapabilities
-  strategy: StrategyName[] | string[]
+  // 说明：strategy（排序链）已随 2026-11-01 定案退役——候选的使用顺序就是
+  // 候选集里排列的声明序，模型行上不再有排序配置。后端也不再返回该字段。
   status: 'active' | 'deprecated' | 'disabled' | string
   /** 替代目标（对外名） */
   replacement: string | null
@@ -328,7 +327,10 @@ export interface AdminAbstractModel {
   migration_doc?: string
   note?: string
   candidate_count: number
+  /** 既在册（有凭据实例）又不在不可用台账里的候选数（真正现在能用的） */
   available_candidate_count: number
+  /** 其中被判定为不可用、正在等自动探测恢复的条数（2026-11-01） */
+  unavailable_candidate_count: number
   chain: string[] | null
 }
 
@@ -361,6 +363,17 @@ export interface Candidate {
   weight: number
   /** 响应侧展开结果：声明式候选 → 当前可用凭据实例数（桥恒填 0，不能当事实用） */
   available_instances?: number
+  // ── 不可用台账（2026-11-01，全部是响应字段，请求里给了会被忽略）──
+  /** 该候选当前不在不可用台账里 = false；true 表示它被判定不可用、正在等探测恢复 */
+  unavailable?: boolean
+  /** 记账原因码（上游错误类，如 upstream_auth / upstream_5xx） */
+  unavailable_reason?: string
+  /** 最近一次判定不可用的时刻（Unix 秒） */
+  unavailable_since?: number
+  /** 下次自动探测时刻（Unix 秒）——退避曲线的当前落点 */
+  next_probe_at?: number
+  /** 连续判定不可用的次数（退避已翻了几倍） */
+  probe_attempts?: number
 }
 
 export interface ChainPreview {
