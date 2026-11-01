@@ -495,17 +495,19 @@ func renderAdminRealModel(m *AdminRealModel) AdminRealModelOut {
 
 // AdminAbstractModel 是抽象模型行（§8.1）。
 //
-// Strategy 与 Capabilities 保持 JSON 原文：存储侧 strategy 是 TEXT 列
-// （数组还是逗号分隔由桥定），API 层进出都是 JSON 数组；能力声明同理。
+// Capabilities 保持 JSON 原文（能力声明的形状由桥与分册决定）。
 // Name 创建后不可改（§8.1 定案，PATCH 载荷里出现 name 由
 // DisallowUnknownFields 直接 400）。
+//
+// 2026-11-01 定案：Strategy（排序链）字段**已从本结构删除**。候选的使用
+// 顺序改由候选集的手动声明序表达（PUT /abstract-models/{id}/candidates
+// 的数组顺序），因此模型行上不再有任何排序配置可以读或写。
 type AdminAbstractModel struct {
 	ID              string          `json:"id"`
 	Name            string          `json:"name"`
 	DisplayName     string          `json:"display_name"`
 	CapabilityMode  string          `json:"capability_mode"` // strict / filter
 	Capabilities    json.RawMessage `json:"capabilities,omitempty"`
-	Strategy        json.RawMessage `json:"strategy"`
 	Status          string          `json:"status"` // active/deprecated/disabled
 	ReplacementName *string         `json:"replacement"`
 	DeprecatedAt    *int64          `json:"-"`
@@ -515,8 +517,16 @@ type AdminAbstractModel struct {
 
 	// 计数是响应侧字段（§8.1：都不可写；available_candidate_count 是
 	// "声明式候选 → 可用凭据实例"的展开结果）。
-	CandidateCount          int64 `json:"candidate_count"`
+	CandidateCount int64 `json:"candidate_count"`
+	// AvailableCandidateCount 是「既在册（有凭据实例）又不在不可用台账里」
+	// 的候选数（2026-11-01 起把不可用台账纳入统计）：它是「现在真的能用」
+	// 的诚实计数，而不是「配置了几条候选」。
 	AvailableCandidateCount int64 `json:"available_candidate_count"`
+	// UnavailableCandidateCount 是其中被判定为不可用（在台账里）的条数。
+	// 与上一个字段的关系：declared = available + unavailable（在同一条
+	// 上游下且凭据实例够的前提下）——单列出来是为了让管理端一眼看到
+	// 「有几条在等探测恢复」。
+	UnavailableCandidateCount int64 `json:"unavailable_candidate_count"`
 }
 
 // AdminAbstractModelOut 是抽象模型的对外渲染形状。
@@ -553,6 +563,17 @@ type AdminCandidateItem struct {
 	// AvailableInstances 是运行时展开的可用凭据实例数——**响应字段，
 	// 请求里给了也忽略**（§8.2：它由运行时状态决定，不可写）。
 	AvailableInstances int64 `json:"available_instances"`
+	// Unavailable 是「该候选当前在不可用台账里」（2026-11-01）——响应字段，
+	// 请求里给了同样忽略。管理端据此显示「已标记不可用 · 下次检测 …」。
+	Unavailable bool `json:"unavailable"`
+	// UnavailableReason 是记账的原因码（如 upstream_auth / upstream_5xx）。
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
+	// UnavailableSince 是最近一次判定不可用的时刻（Unix 秒）。
+	UnavailableSince *int64 `json:"unavailable_since,omitempty"`
+	// NextProbeAt 是下次自动探测时刻（Unix 秒）——退避曲线的当前落点。
+	NextProbeAt *int64 `json:"next_probe_at,omitempty"`
+	// ProbeAttempts 是连续判定不可用的次数（退避曲线已翻了几倍）。
+	ProbeAttempts int64 `json:"probe_attempts,omitempty"`
 }
 
 // AdminDeprecationUpdate 是 PUT /abstract-models/{id}/deprecation 的载荷。

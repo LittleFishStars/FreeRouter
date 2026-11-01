@@ -44,11 +44,12 @@ const (
 // 路由需要的字段；strategy/capabilities 等管理字段由策略链参数直接传入，
 // 不藏在模型行里，避免「读半截配置」的歧义）。
 type AbstractModel struct {
-	ID                 string // UUID（对外 id 与库内主键同值，2026-10-26 改造）
-	Name               string // 对外名称，唯一，禁止含 ':'（02-abstract.md §2.3）
-	Status             AbstractModelStatus
-	Strategy           []string // 排序策略链，空 = 默认链 [expiry-first, balance]
-	CapabilityMode     CapabilityMode
+	ID             string // UUID（对外 id 与库内主键同值，2026-10-26 改造）
+	Name           string // 对外名称，唯一，禁止含 ':'（02-abstract.md §2.3）
+	Status         AbstractModelStatus
+	CapabilityMode CapabilityMode
+	// 原 Strategy []string（排序策略链）已退役（2026-11-01 定案）：
+	// 候选的使用顺序改由候选集的手动声明序决定，模型行上不再有排序配置。
 	ReplacementModelID *string // deprecated 时指向替代目标（只能指向 active）
 	DeprecatedAt       *time.Time
 	SunsetAt           *time.Time

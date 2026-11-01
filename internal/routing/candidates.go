@@ -1,8 +1,8 @@
 // candidates.go —— 候选集：声明展开 × 请求能力过滤（02-abstract.md §3、§5；
 // 03-strategy.md §2 F1/F2）。
 //
-// 本文件回答「这次请求面前，哪些候选是可用路径」；排序与切换是
-// strategy.go 的事——三段式各段职责不混合（03-strategy.md §1 归因要求）。
+// 本文件回答「这次请求面前，哪些候选是可用路径」；排位与切换是
+// order.go 的事——三段式各段职责不混合（03-strategy.md §1 归因要求）。
 package routing
 
 import (
@@ -55,22 +55,17 @@ type Path struct {
 	// Caps 该路径的能力面（探针/目录归一结果）。
 	Caps Capabilities
 
-	// —— 排序键（03-strategy.md §3.1 四种策略的数据面，全部可测量外部事实） ——
+	// —— 排位标记（2026-11-01 定案：不再有排序键，只有「在不在册」） ——
+	//
+	// 原此处的五个排序键（ExpiresAt / Balance / BalanceKnown / TTFTMs /
+	// TotalMs / PriceMultiplier）随四种自动排序策略一起退役：候选次序就是
+	// 管理员手动排的声明序，没有任何可测量量参与比较。
 
-	// ExpiresAt 额度作废时间（expiry-first 升序键）；零值 = 无到期概念
-	//（纯 API Key）→ 排最后（用不掉的浪费无从谈起，先花有期限的）。
-	ExpiresAt int64
-	// Balance 余额（balance 升序键）；负数 = 上游不报余额 → 视为 +∞ 排最后。
-	Balance float64
-	// BalanceKnown Balance 是否已知（false 时 Balance 字段无意义）。
-	BalanceKnown bool
-	// TTFTMs 最近 TTFT 毫秒（speed 升序键）；-1 = 无样本 → 排最后。
-	TTFTMs int64
-	// TotalMs 最近总耗时毫秒（speed 次级键，抓 TTFT 快但吐字慢的模型）。
-	TotalMs int64
-	// PriceMultiplier Credits 价格乘数（price 升序键）；表里没有默认 1
-	//（03-strategy.md §2.5.2：默认 1 = 按基准价的「不被惩罚中间态」）。
-	PriceMultiplier float64
+	// Unavailable 该路径当前**不可用**（上游侧失败判定在册——装配层从
+	// model_unavailability 读，见 internal/store/repo_unavailability.go）。
+	// 语义是「跳过但保留兜底」：排到手动序末尾，前面还有在册路径时不用它；
+	// 全池都不在册时才轮到它——一次误判不该让整个池子 503。
+	Unavailable bool
 
 	// CooledDown 冷却中（cooldown.go 写入——排末尾不剔除）。
 	CooledDown bool

@@ -411,7 +411,7 @@ func (m *modelsFake) putAbs(name, status string, replacement *string, caps json.
 	row := &AdminAbstractModel{
 		ID: id, Name: name, DisplayName: name, Status: status,
 		ReplacementName: replacement, CapabilityMode: "strict",
-		Capabilities: caps, Strategy: json.RawMessage(`["expiry-first","balance"]`),
+		Capabilities: caps,
 	}
 	m.absByID[id] = row
 	m.absByName[name] = id
@@ -536,9 +536,6 @@ func (m *modelsFake) UpdateAbstractModel(ctx context.Context, id string, patch m
 	if v, has := patch["capabilities"]; has {
 		a.Capabilities = v
 		m.caps[a.Name] = v
-	}
-	if v, has := patch["strategy"]; has {
-		a.Strategy = v
 	}
 	cp := *a
 	auditID, err := m.audit.Append(ctx, audit)
@@ -1731,8 +1728,9 @@ func TestContractDryRunStaticVerdict(t *testing.T) {
 		{RealModelID: "00000060-0000-4000-8000-000000000001", AvailableInstances: 2},
 		{RealModelID: "00000060-0000-4000-8000-000000000002", AvailableInstances: 0},
 	}
+	// 2026-11-01 定案：策略链已退役，干跑载荷只剩 sample_size。
 	w := h.req(t, http.MethodPost, "/api/admin/abstract-models/"+a.ID+"/dry-run", tok,
-		`{"strategy":["expiry-first","balance"],"sample_size":200}`)
+		`{"sample_size":200}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("干跑应 200，实得 %d %s", w.Code, w.Body.String())
 	}

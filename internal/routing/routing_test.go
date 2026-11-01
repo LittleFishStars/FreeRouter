@@ -320,97 +320,103 @@ func TestContractFilterConstraint(t *testing.T) {
 	}
 }
 
-// ============ 3. 排序 ============
+// ============ 3. 排位（2026-11-01 定案：管理员手动排序） ============
 
-// TestContractRankDefaultChain 默认链 [expiry-first, balance]（03-strategy.md
-// §3.2：先按到期时间升序，同到期再按余额升序——两问合起来破
-// 「每次都打同一个账号」的并列）。
-func TestContractRankDefaultChain(t *testing.T) {
+// TestContractManualOrderKeepDeclared 候选的使用序就是声明序，一个字符都不重排。
+//
+// 这是手动排序的**定义性**契约：入参切片的先后 = 管理員在候选集编辑器里
+// 排的先后，Order 不比较任何东西（没有比较器就没有「稳定排序」这回事）。
+// 曾存在的四种自动策略（expiry-first/balance/speed/price）已整体退役。
+func TestContractManualOrderKeepDeclared(t *testing.T) {
 	paths := []Path{
-		{RealModel: *mkReal("rm10", "a", "m1"), ExpiresAt: 2000, BalanceKnown: true, Balance: 5},
-		{RealModel: *mkReal("rm11", "b", "m2"), ExpiresAt: 1000, BalanceKnown: true, Balance: 50},
-		{RealModel: *mkReal("rm12", "c", "m3"), ExpiresAt: 1000, BalanceKnown: true, Balance: 3},
-		{RealModel: *mkReal("rm13", "d", "m4"), ExpiresAt: 0, BalanceKnown: false}, // 双无键
+		{RealModel: *mkReal("rm10", "a", "m1")},
+		{RealModel: *mkReal("rm11", "b", "m2")},
+		{RealModel: *mkReal("rm12", "c", "m3")},
+		{RealModel: *mkReal("rm13", "d", "m4")},
 	}
-	out := Rank(paths, nil, nil) // 空链 → 默认链
-	got := []string{out[0].RealModel.ID, out[1].RealModel.ID, out[2].RealModel.ID, out[3].RealModel.ID}
-	// 12（最早到期+余额最少）→ 11（同到期、余额大）→ 10（更晚到期）→ 13（无键垫底）。
-	want := []string{"rm12", "rm11", "rm10", "rm13"}
+	out := Order(paths)
+	want := []string{"rm10", "rm11", "rm12", "rm13"}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("默认链顺序错误: got=%v want=%v", got, want)
+		if out[i].RealModel.ID != want[i] {
+			t.Fatalf("声明序被改动: got[%d]=%s want=%s（全序列：%v）",
+				i, out[i].RealModel.ID, want[i], idsOf(out))
 		}
 	}
 }
 
-// TestContractRankRoundRobinTieBreak round-robin 平局决胜（03-strategy.md
-// §3.2：仅显式配置时追加链尾；§3.4 游标快照——决策可追溯）。
-func TestContractRankRoundRobinTieBreak(t *testing.T) {
-	// 三个完全同键的路径（同到期同余额）——默认链下是平局组。
+// TestContractManualOrderUnavailableTail 不可用路径排末尾而非剔除。
+//
+// 「跳过但保留兜底」是用户定案的原话：不可用的候选不该占用首选位次，但
+// 也**不能**消失——一次误判（上游抖动/临时 401）不该让整个池子 503。
+func TestContractManualOrderUnavailableTail(t *testing.T) {
 	paths := []Path{
-		{RealModel: *mkReal("rm10", "a", "m1"), ExpiresAt: 1000, BalanceKnown: true, Balance: 5},
-		{RealModel: *mkReal("rm11", "b", "m2"), ExpiresAt: 1000, BalanceKnown: true, Balance: 5},
+		{RealModel: *mkReal("rm10", "a", "m1"), Unavailable: true},
+		{RealModel: *mkReal("rm11", "b", "m2")},
+		{RealModel: *mkReal("rm12", "c", "m3"), Unavailable: true},
+		{RealModel: *mkReal("rm13", "d", "m4")},
 	}
-	rr := &RoundRobinCursor{}
-	// 无 round-robin：稳定序（声明序）。
-	out1 := Rank(paths, []string{StrategyExpiryFirst, StrategyBalance}, nil)
-	if out1[0].RealModel.ID != "rm10" {
-		t.Fatalf("无决胜应稳定序: %v", out1[0].RealModel.ID)
-	}
-	// 显式配置 round-robin：游标推进应翻转同键对的次序。
-	gotFirst := []string{}
-	for i := 0; i < 4; i++ {
-		out := Rank(paths, []string{StrategyExpiryFirst, StrategyRoundRobin}, rr)
-		gotFirst = append(gotFirst, out[0].RealModel.ID)
-	}
-	// 交替 10/11 才证明均摊生效（固定值=没轮转）。
-	if gotFirst[0] == gotFirst[1] || gotFirst[0] != gotFirst[2] {
-		t.Fatalf("round-robin 应轮转: %v", gotFirst)
-	}
-	if rr.Calls != 4 {
-		t.Fatalf("游标应记录推进 4 次: %d", rr.Calls)
+	out := Order(paths)
+	// 在册的保持声明序在前；不可用的保持声明序在后（不剔除）。
+	want := []string{"rm11", "rm13", "rm10", "rm12"}
+	if got := idsOf(out); !equalIDs(got, want) {
+		t.Fatalf("不可用排末尾错误: got=%v want=%v", got, want)
 	}
 }
 
-// TestContractRankDeterminism 确定性（03-strategy.md §3.4：同样输入必须
-// 同样输出——干跑可回放、故障可复现的前提）。
-func TestContractRankDeterminism(t *testing.T) {
+// TestContractManualOrderAllUnavailableStillRoutes 全池不可用时**仍然返回全部**。
+//
+// 这是「保留兜底」的极限情形：全部候选都在不可用台账里时，Order 仍要给出
+// 完整序列（依次试一遍），而不是返回空切片。返回空 = no_candidate(503)，
+// 而「全都不在册」恰恰是最该试一次的场合（台账可能已经过时）。
+func TestContractManualOrderAllUnavailableStillRoutes(t *testing.T) {
 	paths := []Path{
-		{RealModel: *mkReal("rm10", "a", "m1"), ExpiresAt: 3000, BalanceKnown: true, Balance: 1},
-		{RealModel: *mkReal("rm11", "b", "m2"), ExpiresAt: 1000, BalanceKnown: true, Balance: 9},
-		{RealModel: *mkReal("rm12", "c", "m3"), ExpiresAt: 2000, BalanceKnown: true, Balance: 5},
+		{RealModel: *mkReal("rm10", "a", "m1"), Unavailable: true},
+		{RealModel: *mkReal("rm11", "b", "m2"), Unavailable: true},
 	}
-	var first []string
+	out := Order(paths)
+	if len(out) != 2 {
+		t.Fatalf("全不可用时应保留全部候选做兜底，实得 %d 条", len(out))
+	}
+	if got := idsOf(out); !equalIDs(got, []string{"rm10", "rm11"}) {
+		t.Fatalf("全不可用时仍按声明序: got=%v", got)
+	}
+}
+
+// TestContractManualOrderDeterminism 确定性：同样输入必须同样输出。
+//
+// 手动序的确定性是**结构性**的（没有比较器、没有测量输入），这条测试是
+// 那个性质的照妖镜：任何人后来往 Order 里塞一个「按延迟微调」的比较器，
+// 这里就会因为后台样本变化而漂移。
+func TestContractManualOrderDeterminism(t *testing.T) {
+	paths := []Path{
+		{RealModel: *mkReal("rm10", "a", "m1")},
+		{RealModel: *mkReal("rm11", "b", "m2"), Unavailable: true},
+		{RealModel: *mkReal("rm12", "c", "m3")},
+	}
+	first := idsOf(Order(paths))
 	for i := 0; i < 5; i++ {
-		out := Rank(paths, nil, nil)
-		if i == 0 {
-			for _, p := range out {
-				first = append(first, p.RealModel.ID)
-			}
-		} else {
-			for j, p := range out {
-				if p.RealModel.ID != first[j] {
-					t.Fatalf("第 %d 次排序漂移: %v vs %v", i, p.RealModel.ID, first[j])
-				}
-			}
+		if got := idsOf(Order(paths)); !equalIDs(got, first) {
+			t.Fatalf("第 %d 次排位漂移: %v vs %v", i, got, first)
 		}
 	}
 }
 
-// TestContractValidateChain 策略链校验（03-strategy.md §5：重复项拒绝、
-// 未知策略拒绝；空链=默认链在 Rank 内展开）。
-func TestContractValidateChain(t *testing.T) {
-	if err := ValidateChain([]string{StrategyExpiryFirst, StrategyBalance}); err != nil {
-		t.Fatalf("默认链应合法: %v", err)
+// TestContractManualOrderNoAliasing 返回副本：改返回值不能污染入参。
+//
+// 调用方手里的 paths 还会被 trace/诊断复用；若 Order 返回同一段底层数组，
+// 「排位前」与「排位后」就变成同一个观察点，日志再也回答不了「它本来在哪」。
+func TestContractManualOrderNoAliasing(t *testing.T) {
+	paths := []Path{
+		{RealModel: *mkReal("rm10", "a", "m1")},
+		{RealModel: *mkReal("rm11", "b", "m2"), Unavailable: true},
 	}
-	if err := ValidateChain([]string{StrategyExpiryFirst, StrategyExpiryFirst}); err == nil {
-		t.Fatalf("重复项应拒绝")
+	out := Order(paths)
+	out[0].RealModel.ID = "mutated"
+	if paths[0].RealModel.ID == "mutated" {
+		t.Fatal("Order 返回了入参的别名（改返回值污染了调用方数据）")
 	}
-	if err := ValidateChain([]string{"cheap-first"}); err == nil {
-		t.Fatalf("未知策略应拒绝（旧名已被删，见 §3.3.1）")
-	}
-	if err := ValidateChain(nil); err != nil {
-		t.Fatalf("空链=默认链应合法: %v", err)
+	if len(paths) != 2 || paths[0].RealModel.ID != "rm10" {
+		t.Fatalf("入参被就地改动: %+v", paths)
 	}
 }
 
@@ -518,14 +524,15 @@ func TestContractTraceStructure(t *testing.T) {
 	res, _, _ := NewResolver(st).Resolve(ctx(), "smart")
 	cw := int64(65536)
 	paths := []Path{
-		{RealModel: *st.real["rm10"], Caps: Capabilities{ContextWindow: &cw, Modalities: []string{"text"}}, ExpiresAt: 2000, BalanceKnown: true, Balance: 5},
-		{RealModel: *st.real["rm11"], Caps: Capabilities{ContextWindow: &cw, Modalities: []string{"text"}}, ExpiresAt: 1000, BalanceKnown: true, Balance: 3},
+		{RealModel: *st.real["rm11"], Caps: Capabilities{ContextWindow: &cw, Modalities: []string{"text"}}},
+		{RealModel: *st.real["rm10"], Caps: Capabilities{ContextWindow: &cw, Modalities: []string{"text"}}},
 	}
 	profile := RequestProfile{EstInputTokens: 10, MaxOutputTokens: 10}
 	filtered, outs := FilterPaths(profile, paths)
-	ordered := Rank(filtered, nil, nil)
+	// 手动序：入参切片的先后就是管理员的声明序（这里宣告 rm11 在前）。
+	ordered := Order(filtered)
 
-	tr := BuildTrace(res, filtered, outs, ordered, nil)
+	tr := BuildTrace(res, filtered, outs, ordered)
 	if tr.RequestedModel != "smart" {
 		t.Fatalf("trace 应记请求模型名: %v", tr.RequestedModel)
 	}
@@ -533,10 +540,10 @@ func TestContractTraceStructure(t *testing.T) {
 		t.Fatalf("应有 resolve/filter/order 三阶段: %+v", tr.Stages)
 	}
 	if len(tr.Order) != 2 || tr.Order[0].RealModelID != "rm11" || tr.SelectedID != "rm11" {
-		t.Fatalf("排序后最终选择应为 rm11: %+v sel=%s", tr.Order, tr.SelectedID)
+		t.Fatalf("手动序的第一位应为 rm11: %+v sel=%s", tr.Order, tr.SelectedID)
 	}
-	if len(tr.Strategy) != 2 || tr.Strategy[0] != StrategyExpiryFirst {
-		t.Fatalf("空链应展开默认链: %v", tr.Strategy)
+	if tr.OrderMode != OrderModeManual {
+		t.Fatalf("排位模式必须是 manual（策略链已退役）: %q", tr.OrderMode)
 	}
 	// 头编码可往返。
 	hv, err := tr.HeaderValue()
@@ -557,7 +564,7 @@ func TestContractTraceNoLeak(t *testing.T) {
 		Stages:         []TraceStage{{Stage: "order", In: 1, Out: 1}},
 		Order:          []TraceOrder{{RealModelID: "rm10", Channel: "deepseek-official", UpstreamModelID: "deepseek-flash"}},
 		SelectedID:     "rm10",
-		Strategy:       DefaultChain,
+		OrderMode:      OrderModeManual,
 	}
 	hv, err := tr.HeaderValue()
 	if err != nil {
@@ -572,23 +579,49 @@ func TestContractTraceNoLeak(t *testing.T) {
 	}
 }
 
-// TestContractPathShape Path 携带的排序键面（03-strategy.md §3.1 四种策略
-// 的数据面——全部可测量外部事实，无键路径的排位语义）。
+// TestContractPathShape Path 的手动序面（2026-11-01 定案后不再有排序键）。
+//
+// 这条钉住的是「Path 只有排位标记，没有可测量量」：Unavailable 是唯一
+// 影响位次的字段，且它只改变位次、不改变成员（跳过但保留兜底）。
 func TestContractPathShape(t *testing.T) {
-	// speed 无样本（TTFTMs<0）排最后；price 恒有键（默认乘数 1）。
 	paths := []Path{
-		{RealModel: *mkReal("rm10", "a", "m1"), TTFTMs: -1, PriceMultiplier: 1},
-		{RealModel: *mkReal("rm11", "b", "m2"), TTFTMs: 300, PriceMultiplier: 1},
+		{RealModel: *mkReal("rm10", "a", "m1")},
+		{RealModel: *mkReal("rm11", "b", "m2"), Unavailable: true},
 	}
-	out := Rank(paths, []string{StrategySpeed}, nil)
-	if out[0].RealModel.ID != "rm11" {
-		t.Fatalf("有样本在前: %v", out[0].RealModel.ID)
-	}
-	out = Rank(paths, []string{StrategyPrice}, nil)
+	out := Order(paths)
 	if len(out) != 2 {
-		t.Fatalf("price 应全有键: %+v", out)
+		t.Fatalf("不可用不剔除: %d", len(out))
+	}
+	if out[0].RealModel.ID != "rm10" || !out[1].Unavailable {
+		t.Fatalf("在册在前、不可用在后: %+v", out)
+	}
+	// 空切片安全。
+	if got := Order(nil); got != nil {
+		t.Fatalf("空入参应返回 nil: %+v", got)
 	}
 }
 
 // 帮手：fmt 引用保活（红actScan 用 strings；本行防 import 被裁）。
 var _ = fmt.Sprintf
+
+// idsOf 取序列的 real_model 行 id（排位断言用）。
+func idsOf(paths []Path) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, p.RealModel.ID)
+	}
+	return out
+}
+
+// equalIDs 逐位比较两个 id 序列。
+func equalIDs(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}

@@ -33,7 +33,6 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
 	"github.com/LittleFishStars/FreeRouter/internal/routing"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
-	"github.com/LittleFishStars/FreeRouter/internal/upstream"
 )
 
 // upstreamSnapshotTTL 是上游表快照的有效期。
@@ -93,7 +92,6 @@ func convertAbstractModel(m *store.AbstractModel, err error) (*routing.AbstractM
 		ID:                 m.ID,
 		Name:               m.Name,
 		Status:             routing.AbstractModelStatus(m.Status),
-		Strategy:           parseStringList(m.Strategy),
 		CapabilityMode:     routing.CapabilityMode(m.CapabilityMode),
 		ReplacementModelID: m.ReplacementModelID,
 		DeprecatedAt:       unixTime(m.DeprecatedAt),
@@ -207,22 +205,24 @@ type routingCandidates struct {
 	bridge   *abstractModelBridge
 	resolver *routing.Resolver
 	cd       *routing.Cooldowns
-	// balance 是后台余额探测（balance 排序键）。nil = 未装配。
-	balance *BalanceLoop
-
-	mu  sync.Mutex
-	rrs map[string]*routing.RoundRobinCursor // 按抽象模型持有游标（03-strategy §3.4）
+	// unavail 是不可用模型台账（2026-11-01）。nil = 未装配（测试 fake 场景），
+	// 此时全部候选按在册处理。
+	unavail *unavailabilityLedger
 }
 
 func newRoutingCandidates(app *App) *routingCandidates {
 	b := newAbstractModelBridge(app)
+	// 台账实例挂在 App 上（探测循环与候选源共用同一个内存视图；各建一个
+	// 会让「流量记的不可用」与「探测看到的状态」分叉）。
+	if app.unavailability == nil {
+		app.unavailability = newUnavailabilityLedger(app)
+	}
 	return &routingCandidates{
 		app:      app,
 		bridge:   b,
 		resolver: routing.NewResolver(b),
 		cd:       routing.NewCooldowns(),
-		balance:  app.balanceLoop,
-		rrs:      map[string]*routing.RoundRobinCursor{},
+		unavail:  app.unavailability,
 	}
 }
 
@@ -249,12 +249,15 @@ func (c *routingCandidates) Candidates(ctx context.Context, model string, req ir
 	profile := profileFromRequest(req)
 	paths := c.pathsOf(ctx, resolved)
 	kept, outs := routing.FilterPaths(profile, paths)
-	chain := resolved.Model.Strategy
-	ordered := routing.Rank(kept, chain, c.cursorOf(resolved.Model.ID))
+	// 第②段：管理员手动排序（2026-11-01 定案——策略链已退役）。
+	// Order 保持 pathsOf 构造出来的声明序（AbstractModel bridge 按
+	// sort_order 升序读候选），只把不可用的挪到末尾。
+	ordered := routing.Order(kept)
+	// 第②段后半：冷却/不可用的末尾分区（同一条纪律：跳过但不剔除）。
 	ordered = c.cd.Apply(ordered)
 
 	// 诊断回填：无论有没有候选都写（「为什么 503」的答案就在这里）。
-	httpapi.FillV1Trace(ctx, routing.BuildTrace(resolved, kept, outs, ordered, chain))
+	httpapi.FillV1Trace(ctx, routing.BuildTrace(resolved, kept, outs, ordered))
 
 	if len(ordered) == 0 {
 		// 剔除原因逐条打出（2026-10-30 排查 no_candidate 时只能靠读源码——不能这样）。
@@ -289,27 +292,40 @@ func (c *routingCandidates) Candidates(ctx context.Context, model string, req ir
 	return out, nil
 }
 
-// NotifyCandidateFailure 回填冷却账本（httpapi 在候选失败后调用）。
+// NotifyCandidateOutcome 回填冷却账本与不可用台账（httpapi 在每次尝试后调用）。
 //
-// 只记 real_models 行 ID：冷却的作用域是「这条上游路径」，不是模型名——
+// 两件事按同一份事实记账，但**判定口径不同**：
+//   - 冷却：一律记（短窗 30s，它的作用是「别立刻再打刚失败的」）；
+//   - 不可用台账：只记「够格算上游不可用」的失败（classifyAttemptFailure），
+//     并同步删掉恢复的那些行（成功即出册）。
+//
+// 只记 real_models 行 ID：两者的作用域都是「这条上游路径」，不是模型名——
 // 同名模型可能有多条路径，一条坏了不该牵连其它（cooldown.go 实体=路径）。
-func (c *routingCandidates) NotifyCandidateFailure(cand httpapi.Candidate) {
+func (c *routingCandidates) NotifyCandidateOutcome(cand httpapi.Candidate, fail *httpapi.AttemptFailure) {
 	if cand.ID == "" {
-		return // 来源不提供行 ID（测试 fake/旧源）：跳过冷却。
+		// 来源不提供行 ID（测试 fake/旧源）：无从记账。
+		return
 	}
+	if fail == nil {
+		// 成功：出册 + 清冷却（两者都是「它现在能用」的直接后果）。
+		// 不可用台账靠真实流量恢复做到「立刻生效」而不是等后台探测。
+		c.cd.Clear(cand.ID)
+		if c.unavail != nil {
+			c.unavail.MarkAvailable(cand.ID)
+		}
+		return
+	}
+	// 冷却一律记（与不可用判定无关）。
 	c.cd.MarkFailure(cand.ID, 0)
-}
-
-// cursorOf 取（或创建）抽象模型的 round-robin 游标。
-func (c *routingCandidates) cursorOf(abstractModelID string) *routing.RoundRobinCursor {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	rr, ok := c.rrs[abstractModelID]
-	if !ok {
-		rr = &routing.RoundRobinCursor{}
-		c.rrs[abstractModelID] = rr
+	if c.unavail == nil {
+		return
 	}
-	return rr
+	reason, detail, ok := classifyAttemptFailure(fail)
+	if !ok {
+		// 请求侧问题（能力缺失/方言冲突）不该让模型背锅：换一次请求就好了。
+		return
+	}
+	c.unavail.MarkUnavailable(cand.ID, reason, detail)
 }
 
 // pathsOf 把展开后的候选配上门声明约束与能力面。
@@ -338,18 +354,11 @@ func (c *routingCandidates) pathsOf(ctx context.Context, resolved *routing.Resol
 			RealModel:  rm,
 			Constraint: byModel[rm.ID],
 			Caps:       capsOf(rm),
-			// 排序键：TTFT/TotalMs 来自 latencySampler，Balance/ExpiresAt 来自
-			// balanceLoop（均为各自的后台测量，无样本时保持 -1/零值垫底）。
-			//
-			// 注意 TTFTMs 无样本时必须 -1：speed 键判 <0 为无样本垫底，
-			// 零值 0 会被读成「TTFT 0 毫秒的极速模型」排到最前。
-			ExpiresAt:       c.expiresAtOf(rm.UpstreamID),
-			Balance:         c.balanceOf(rm.UpstreamID),
-			BalanceKnown:    c.balanceKnown(rm.UpstreamID),
-			TTFTMs:          c.ttftMs(rm),
-			TotalMs:         c.totalMs(rm),
-			PriceMultiplier: 1,     // 无价格数据时取基线 1（03-strategy §2.5.2）
-			CooledDown:      false, // 冷却由 Cooldowns.Apply 统一标注
+			// 排位只有一个输入（2026-11-01 定案）：这条路径在不在不可用台账里。
+			// 原此处的五个排序键（到期/余额/TTFT/总耗时/价格乘数）随四种自动
+			// 排序策略一起退役——候选次序就是管理员在候选集里排的声明序。
+			Unavailable: c.unavail != nil && c.unavail.Unavailable(rm.ID),
+			CooledDown:  false, // 冷却由 Cooldowns.Apply 统一标注
 		})
 	}
 	return paths
@@ -422,20 +431,6 @@ func profileFromRequest(req ir.Request) routing.RequestProfile {
 
 // ============ 小工具 ============
 
-// parseStringList 解析 strategy 列的 JSON 数组（坏数据 → 空链 = 默认链）。
-func parseStringList(raw string) []string {
-	if strings.TrimSpace(raw) == "" {
-		return nil
-	}
-	var out []string
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		// 保存级校验拦配置；运行时遇坏数据退化默认链而不是 500
-		//（与 FilterPaths 对未知模式的容错同一哲学）。
-		return nil
-	}
-	return out
-}
-
 // parseJSONList 解析 *string 形式的 JSON 数组（modalities/efforts）。
 func parseJSONList(raw *string) []string {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
@@ -497,105 +492,4 @@ func containsString(list []string, v string) bool {
 		}
 	}
 	return false
-}
-
-// latencySyncBridge 把 httpapi 的「按 realModelID 记样本」转成采样器的
-// 「按 (UpstreamID, RealModel) 存」。realModelID → 行信息的查表这里用
-// store 读 API，不缓存（调用频率低，且依赖 real_models 变更即时可见）。
-//
-// 为什么需要单独一个类型而不是直接复用 upstream.LatencySampler：
-// httpapi.LatencySink 的入参是 realModelID（real_models 行 id），而采样器
-// 的键是 (UpstreamID, RealModel)——routing 的 RealModelInfo 带后两者。
-// 中间这层翻译就是本类型；若直接改采样器键为 realModelID 也行，但那样
-// routing 读的时候还得反查，反而多一次反查。
-type latencyDefaultSink struct {
-	sampler *upstream.LatencySampler
-	bridge  *abstractModelBridge
-}
-
-// RecordLatency 实现 httpapi.LatencySink。
-func (l latencyDefaultSink) RecordLatency(ctx context.Context, realModelID string, ttftMs, totalMs int64) {
-	if l.sampler == nil || realModelID == "" {
-		return
-	}
-	// 查 real_model → (UpstreamID, RealModel)。查询失败按未知行丢弃，
-	// 不中断请求（采样是旁路）。
-	upID, modelID, ok := l.resolveReal(ctx, realModelID)
-	if !ok {
-		return
-	}
-	l.sampler.RecordSuccess(ctx, upstream.SamplerKey{
-		UpstreamID: upID,
-		RealModel:  modelID,
-	}, float64(ttftMs), float64(totalMs), time.Now())
-}
-
-// resolveReal 解析 realModelID → (UpstreamID, RealModel)。ok=false 表示未知行。
-func (l latencyDefaultSink) resolveReal(ctx context.Context, realModelID string) (string, string, bool) {
-	if l.bridge == nil {
-		return "", "", false
-	}
-	info, err := l.bridge.GetRealModel(ctx, realModelID)
-	if err != nil || info == nil {
-		return "", "", false
-	}
-	return info.UpstreamID, info.UpstreamModelID, true
-}
-
-// ttftMs / totalMs 从采样器读某候选的平滑 TTFT/总耗时（毫秒）。
-//
-// 无采样器（参数装配层没建）或无样本时返回 -1（无样本垫底）。
-func (c *routingCandidates) ttftMs(rm routing.RealModelInfo) int64 {
-	return c.latencyMs(rm, true)
-}
-
-func (c *routingCandidates) totalMs(rm routing.RealModelInfo) int64 {
-	return c.latencyMs(rm, false)
-}
-
-func (c *routingCandidates) latencyMs(rm routing.RealModelInfo, ttft bool) int64 {
-	if c.app == nil || c.app.latencySampler == nil {
-		return -1
-	}
-	snap := c.app.latencySampler.Latency(upstream.SamplerKey{
-		UpstreamID: rm.UpstreamID,
-		RealModel:  rm.UpstreamModelID,
-	})
-	if ttft {
-		return int64(snap.TTFTMs)
-	}
-	return int64(snap.TotalMs)
-}
-
-// balanceOf 返回某上游的余额（weight 量级未知时为 0）。
-func (c *routingCandidates) balanceOf(upstreamID string) float64 {
-	if c.balance == nil {
-		return 0
-	}
-	br, ok := c.balance.BalanceOfUpstream(context.Background(), upstreamID)
-	if !ok {
-		return 0
-	}
-	return br.Balance
-}
-
-// balanceKnown 报告该上游的余额是否已知（未知则 balanceOf 无意义）。
-func (c *routingCandidates) balanceKnown(upstreamID string) bool {
-	if c.balance == nil {
-		return false
-	}
-	_, ok := c.balance.BalanceOfUpstream(context.Background(), upstreamID)
-	return ok
-}
-
-// expiresAtOf 返回该上游的到期时间（无则 0）。
-func (c *routingCandidates) expiresAtOf(upstreamID string) int64 {
-	if c.balance == nil {
-		return 0
-	}
-	br, ok := c.balance.BalanceOfUpstream(context.Background(), upstreamID)
-	if !ok || br.ExpiresAt.IsZero() {
-		return 0
-	}
-	return br.ExpiresAt.Unix()
 }

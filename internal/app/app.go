@@ -55,14 +55,15 @@ type App struct {
 	// 否则两处刷新会争同一条 sidecar 串行管道。
 	modelRefresher *upstream.ModelRefresher
 
-	// latencySampler 是每请求延迟采样器（speed 排序键的数据源）。
-	// buildServer 里创建一次，同时注入 httpapi.SetLatencySink 与 routingCandidates。
-	// nil = 未装配：TTFT 采样丢弃，speed 排序退回无样本垫底。
-	latencySampler *upstream.LatencySampler
+	// upstreamCaller 是出站面板（httpapi.Upstream 的实参）：不可用模型探测
+	// 与业务流量打同一条链路（2026-11-01）。buildServer 里构造一次。
+	// nil = 未接线：探测循环静默跳过（业务路径同样不可用）。
+	upstreamCaller httpapi.Upstream
 
-	// balanceLoop 是后台余额探测循环（balance 排序键数据源）。
-	// server_build 里由 startBalanceProbe 创建；routing 读它填 Path.Balance。
-	balanceLoop *BalanceLoop
+	// unavailability 是不可用模型台账（2026-11-01）。候选源在它的
+	// Candidates/NotifyCandidateOutcome 里读写，后台探测循环复用它——
+	// 两者必须是**同一个实例**，否则内存视图分叉（记了一条、看不到另一条）。
+	unavailability *unavailabilityLedger
 
 	// HTTP 服务器（装配好全部中间件与路由的）。
 	server *httpapi.Server
@@ -157,11 +158,9 @@ func Setup(ctx context.Context, opts Options) (*App, error) {
 	if !opts.DisableBackgroundLoops {
 		a.startModelRefresh(bgCtx)
 	}
-	// 余额探测后台任务（balance 排序键数据源）。必须放在 startModelRefresh
-	// 之后：relay 上游由自举写入，先刷新才有 provider 可探测。
-	if !opts.DisableBackgroundLoops {
-		a.startBalanceProbe(bgCtx)
-	}
+	// 说明：原「余额探测后台循环」（balance 排序键的数据源）随自动排序策略
+	// 一同退役（2026-11-01）。余额查询本身保留在凭据池页与定时余额刷新
+	// （balance_sync.go）——那是**展示**能力，与候选排序无关。
 	// 定时签到（2026-10-31）：放在余额探测之后——两者都依赖 sidecar，且
 	// 签到自身带 30s 启动延迟，不会抢装配窗口的资源。管理面端点在
 	// buildAdminDeps 里另建一个无状态的 checkinBridge（两者只共享落库）。
@@ -184,7 +183,25 @@ func Setup(ctx context.Context, opts Options) (*App, error) {
 	}
 	// 第 6 步：HTTP（装配中间件链 + 路由 + v1 面板注入）。
 	a.server = a.buildServer()
+
+	// 第 7 步：不可用模型的退避探测（2026-11-01）。**必须在 buildServer
+	// 之后**——它要用的出站面板（a.upstreamCaller）在那里才被赋值。
+	a.startUnavailabilityProbe(bgCtx)
 	return a, nil
+}
+
+// startUnavailabilityProbe 启动不可用模型的指数退避探测循环。
+//
+// 依赖顺序（唯一容易出错的地方）：出站面板 a.upstreamCaller 由 buildServer
+// 赋值，所以本函数必须在它之后调用。测试态（DisableBackgroundLoops）不启动
+// ——要测探测行为本身的用例直接调 probe.runDue。
+func (a *App) startUnavailabilityProbe(ctx context.Context) {
+	if a.unavailability == nil {
+		// 台账未装配（无路由环境）：没有可探测的对象，静默跳过。
+		return
+	}
+	p := newUnavailabilityProbe(a, a.unavailability)
+	go p.Run(ctx)
 }
 
 // sidecarOptions 把 config 翻译成 dshprovider.Options。
@@ -282,53 +299,4 @@ func (a *App) Close() error {
 		return a.store.Close()
 	}
 	return nil
-}
-
-// startBalanceProbe 启动后台余额探测循环（balance 排序键的数据源）。
-//
-// 只探测 relay 上游（base_url = sidecar://<provider>），因为只有它们走
-// sidecar 的账号池、余额口径一致可比较。vendor/selfhosted 用自己的凭据、
-// 额度语义各异，不参与 balance 排序——那条上游的余额本来就是未知。
-//
-// sidecar 不可用 / 无 relay 上游时静默空转（探测是旁路，不阻塞启动）。
-func (a *App) startBalanceProbe(ctx context.Context) {
-	if a.sidecar == nil {
-		return
-	}
-	a.balanceLoop = NewBalanceLoop(
-		upstream.NewQuotaProbe(a.sidecar),
-		balanceSource{
-			relayUpstreams: func(c context.Context) (map[string]string, error) {
-				return a.relayProviders(c)
-			},
-			providerOfUpstream: func(c context.Context, upstreamID string) string {
-				// 每次反查重读上游行：relay 上游数量少，且余额排序不需要强一致。
-				u, err := a.store.Repos().Models.GetUpstreamByID(c, upstreamID)
-				if err != nil || u == nil || u.Kind != "relay" {
-					return ""
-				}
-				return providerFromSidecarURL(u.BaseURL)
-			},
-		},
-		60*time.Second,
-	)
-	go a.balanceLoop.Run(ctx)
-}
-
-// relayProviders 列出所有 relay 上游 (upstreamID → provider)，从 base_url 解析。
-func (a *App) relayProviders(ctx context.Context) (map[string]string, error) {
-	ups, err := a.store.Repos().Models.ListUpstreams(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]string{}
-	for _, u := range ups {
-		if u.Kind != "relay" {
-			continue
-		}
-		if p := providerFromSidecarURL(u.BaseURL); p != "" {
-			out[u.ID] = p
-		}
-	}
-	return out, nil
 }

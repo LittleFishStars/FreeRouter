@@ -400,38 +400,6 @@ func (s *Server) handleAdminAbstractModelDetail(deps *AdminDeps) http.HandlerFun
 	}
 }
 
-// adminStrategyValues 是排序链元素闭集合（§8.1）：round-robin 只允许
-// 作末位平局决胜。
-var adminStrategyValues = map[string]bool{
-	"expiry-first": true, "balance": true, "speed": true, "price": true,
-}
-
-// adminValidStrategy 校验排序链（表驱动，新增策略只改这里一处）。
-func adminValidStrategy(raw json.RawMessage) error {
-	if len(raw) == 0 {
-		return nil // 没给 = 不动 / 新建用默认
-	}
-	var arr []string
-	if err := json.Unmarshal(raw, &arr); err != nil {
-		return fmt.Errorf("strategy 必须是字符串数组")
-	}
-	if len(arr) == 0 {
-		return fmt.Errorf("strategy 不能为空数组（默认 [\"expiry-first\",\"balance\"]）")
-	}
-	for i, v := range arr {
-		if v == "round-robin" {
-			if i != len(arr)-1 {
-				return fmt.Errorf("round-robin 只能追加在末位作平局决胜")
-			}
-			continue
-		}
-		if !adminStrategyValues[v] {
-			return fmt.Errorf("strategy 含未知策略 %q（expiry-first/balance/speed/price，round-robin 仅限末位）", v)
-		}
-	}
-	return nil
-}
-
 func (s *Server) handleAdminAbstractModelCreate(deps *AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if deps == nil || !deps.need(w, "模型存储", deps.Models != nil) {
@@ -446,7 +414,6 @@ func (s *Server) handleAdminAbstractModelCreate(deps *AdminDeps) http.HandlerFun
 			DisplayName    string               `json:"display_name"`
 			CapabilityMode string               `json:"capability_mode,omitempty"`
 			Capabilities   json.RawMessage      `json:"capabilities,omitempty"`
-			Strategy       json.RawMessage      `json:"strategy,omitempty"`
 			Note           string               `json:"note,omitempty"`
 			Candidates     []AdminCandidateItem `json:"candidates,omitempty"`
 		}
@@ -467,17 +434,10 @@ func (s *Server) handleAdminAbstractModelCreate(deps *AdminDeps) http.HandlerFun
 			adminWriteParamErr(w, "capability_mode", "capability_mode 须为 strict/filter")
 			return
 		}
-		if err := adminValidStrategy(body.Strategy); err != nil {
-			adminFail(w, "strategy", err)
-			return
-		}
-		if len(body.Strategy) == 0 {
-			body.Strategy = json.RawMessage(`["expiry-first","balance"]`)
-		}
 		m := AdminAbstractModel{
 			Name: body.Name, DisplayName: body.DisplayName,
 			CapabilityMode: body.CapabilityMode, Capabilities: body.Capabilities,
-			Strategy: body.Strategy, Status: "active",
+			Status: "active",
 		}
 		if body.Note != "" {
 			m.Note = strPtr(body.Note)
@@ -497,7 +457,11 @@ func (s *Server) handleAdminAbstractModelCreate(deps *AdminDeps) http.HandlerFun
 // SetAbstractStatus 受控迁移，name 创建后不可改）。
 var abstractPatchKeys = map[string]bool{
 	"display_name": true, "capability_mode": true, "capabilities": true,
-	"strategy": true, "status": true, "note": true, "dry_run": true,
+	"status": true, "note": true, "dry_run": true,
+	// 2026-11-01 定案：strategy（排序链）已退役，不在可写集里——
+	// 排序改由候选集的手动声明序表达（PUT /candidates）。
+	// 旧客户端仍发 strategy 会拿到 400「字段 strategy 不可写」，这是
+	// 刻意的：静默忽略会让管理员以为改过的排序生效了。
 }
 
 func (s *Server) handleAdminAbstractModelPatch(deps *AdminDeps) http.HandlerFunc {
@@ -576,12 +540,6 @@ func (s *Server) handleAdminAbstractModelPatch(deps *AdminDeps) http.HandlerFunc
 			_ = json.Unmarshal(cm, &v)
 			if v != "strict" && v != "filter" {
 				adminWriteParamErr(w, "capability_mode", "capability_mode 须为 strict/filter")
-				return
-			}
-		}
-		if strat, has := probe["strategy"]; has {
-			if err := adminValidStrategy(strat); err != nil {
-				adminFail(w, "strategy", err)
 				return
 			}
 		}
@@ -784,14 +742,21 @@ func (s *Server) handleAdminAbstractConnectivity(deps *AdminDeps) http.HandlerFu
 				}
 				attempt.LatencyMs = time.Since(start).Milliseconds()
 				attempts = append(attempts, attempt)
+				// 结果回传冷却账本与不可用台账——与 v1 流量同源同口径。
+				// 注意「检验连通性」是**管理员显式触发**的诊断动作：把它的
+				// 失败也记进台账是对的（它打的是同一条真实链路），但成功
+				// 同样要回传（恢复的第一现场）。
+				if nf, nOk := cs.(CandidateOutcomeNotifier); nOk {
+					if attempt.OK {
+						nf.NotifyCandidateOutcome(cand, nil)
+					} else {
+						nf.NotifyCandidateOutcome(cand, &AttemptFailure{Err: callErr, Detail: attempt.Reason})
+					}
+				}
 				if attempt.OK {
 					okTotal = true
 					latency = attempt.LatencyMs
 					break
-				}
-				// 失败回传冷却账本——与 v1 流量同源同口径。
-				if nf, nOk := cs.(CandidateFailureNotifier); nOk {
-					nf.NotifyCandidateFailure(cand)
 				}
 			}
 		}
@@ -832,18 +797,16 @@ func (s *Server) handleAdminAbstractDryRun(deps *AdminDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		// 干跑payload 只剩 sample_size（策略链已退役，2026-11-01）。
+		// 旧客户端发的 strategy 会被 adminDecodeBoth 的 DisallowUnknownFields
+		// 拒成 400——与 PATCH 同一口径：不静默忽略配置。
 		var body struct {
-			Strategy   json.RawMessage `json:"strategy,omitempty"`
-			SampleSize int             `json:"sample_size,omitempty"`
+			SampleSize int `json:"sample_size,omitempty"`
 		}
 		if r.ContentLength > 0 {
 			if _, ok := adminDecodeBoth(w, r, &body); !ok {
 				return
 			}
-		}
-		if err := adminValidStrategy(body.Strategy); err != nil {
-			adminFail(w, "strategy", err)
-			return
 		}
 		ctx := r.Context()
 		m, err := deps.Models.GetAbstractModel(ctx, id)

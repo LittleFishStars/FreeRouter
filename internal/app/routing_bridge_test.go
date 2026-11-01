@@ -183,7 +183,7 @@ func TestContractRoutingCooldownMovesToEnd(t *testing.T) {
 		t.Fatalf("期望 2 条候选（err=%v, got %d）", err, len(before))
 	}
 	first := before[0]
-	cs.NotifyCandidateFailure(first) // 首条失败 → 进冷却
+	cs.NotifyCandidateOutcome(first, &httpapi.AttemptFailure{}) // 首条失败 → 进冷却
 
 	after, err := cs.Candidates(ctx, "dual", ir.Request{})
 	if err != nil || len(after) != 2 {

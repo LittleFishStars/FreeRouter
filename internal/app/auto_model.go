@@ -41,8 +41,8 @@ const (
 	autoModelName       = "auto"
 	autoModelDisplay    = "自动路由"
 	autoModelSyncPeriod = time.Minute
-	autoModelStrategy   = `["expiry-first","balance"]`
-	autoModelNote       = "系统自动维护：候选集每分钟与全池可路由模型对齐（2026-10-31 定案）。" +
+
+	autoModelNote = "系统自动维护：候选集每分钟与全池可路由模型对齐（2026-10-31 定案）。" +
 		"手工编辑候选集会被覆盖；要下线请「停用」而不是删除——删除会在下一轮同步重建。"
 )
 
@@ -82,7 +82,6 @@ func (a *App) syncAutoModel(ctx context.Context) error {
 		id, cerr := a.store.Repos().Models.CreateAbstractModel(ctx, store.AbstractModel{
 			Name:        autoModelName,
 			DisplayName: autoModelDisplay,
-			Strategy:    autoModelStrategy,
 			Note:        &note,
 		})
 		if cerr != nil {

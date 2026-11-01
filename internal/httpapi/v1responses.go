@@ -402,7 +402,7 @@ func (s *Server) HandleV1Responses(w http.ResponseWriter, r *http.Request) {
 		// proxyResponsesStreamOnce 逐帧写 SSE；所有上游候选失败时 onExhausted
 		// 输出 response.failed 事件帧（此刻头可能已按流式发出，不能写 JSON 体）。
 		s.setSSEOnce(w)
-		s.runCandidates(r.Context(), w, requestID, cs, cands, func(cand Candidate) bool {
+		s.runCandidates(r.Context(), w, requestID, cs, cands, func(cand Candidate) (bool, *AttemptFailure) {
 			return s.proxyResponsesStreamOnce(r.Context(), w, *req, cand, requestID)
 		}, func() {
 			s.writeResponsesStreamError(w, requestID, "全部上游候选失败")
@@ -411,7 +411,7 @@ func (s *Server) HandleV1Responses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 非流式走 proxyOnce 逐候选；出站编码是 Responses 形状。
-	s.runCandidates(r.Context(), w, requestID, cs, cands, func(cand Candidate) bool {
+	s.runCandidates(r.Context(), w, requestID, cs, cands, func(cand Candidate) (bool, *AttemptFailure) {
 		return s.proxyResponsesOnce(r.Context(), w, *req, cand, requestID)
 	}, func() {
 		s.writeV1Error(w, "upstream_unavailable", "所有上游候选均失败", requestID)
@@ -419,41 +419,42 @@ func (s *Server) HandleV1Responses(w http.ResponseWriter, r *http.Request) {
 }
 
 // proxyResponsesOnce 单候选非流式代理（Responses 出站编码版 proxyOnce）。
-func (s *Server) proxyResponsesOnce(ctx context.Context, w http.ResponseWriter, req ir.Request, cand Candidate, reqID string) bool {
+func (s *Server) proxyResponsesOnce(ctx context.Context, w http.ResponseWriter, req ir.Request, cand Candidate, reqID string) (bool, *AttemptFailure) {
 	upOpt := ir.EncodeOptions{UpstreamModel: cand.UpstreamModelID, RequestID: reqID}
 	_, warns, err := cand.Adapter.EncodeRequest(&req, upOpt)
 	if err != nil {
-		return false
+		return false, &AttemptFailure{Kind: AttemptFailureRequest, Err: err,
+			Detail: "请求编码失败（能力缺失/方言冲突）"}
 	}
 	for _, warn := range warns {
 		s.log.Warn("v1 responses upstream encode warning", "request_id", reqID, "param", warn.Param, "message", warn.Message)
 	}
 	call, err := s.v1Upstream().Call(ctx, cand, req, false)
 	if err != nil || call == nil {
-		return false
+		return false, &AttemptFailure{Err: err, Detail: "上游调用未返回结果"}
 	}
 	defer call.Body.Close()
 	if call.Err != nil {
-		return false
+		return false, &AttemptFailure{Err: call.Err, Detail: "上游返回失败"}
 	}
 	raw, err := io.ReadAll(call.Body)
 	if err != nil {
-		return false
+		return false, &AttemptFailure{Err: err, Detail: "读取上游响应体失败"}
 	}
 	resp, err := cand.Adapter.DecodeResponse(raw)
 	if err != nil {
-		return false
+		return false, &AttemptFailure{Kind: AttemptFailureProtocol, Err: err, Detail: "上游响应体不可解析"}
 	}
 	// §4.1：出站 model 恒为抽象名（与 proxyOnce 同规则——防泄露池结构）。
 	resp.Model = req.Model
 	out, err := encodeResponsesResponse(resp, reqID)
 	if err != nil {
-		return false
+		return false, &AttemptFailure{Kind: AttemptFailureRequest, Err: err, Detail: "响应转码失败"}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
-	return true
+	return true, nil
 }
 
 // proxyResponsesStreamOnce 单候选流式代理（Responses 出站编码版 streamOnce）。
@@ -462,24 +463,25 @@ func (s *Server) proxyResponsesOnce(ctx context.Context, w http.ResponseWriter, 
 // 具名事件流（proxyResponsesStreamWriter，见 internal/ir/openai/responses_stream.go）。
 //
 // 返回 true = 已写出可见内容（C7 不可再换候选）；false = 该候选可跳过（换下一个）。
-func (s *Server) proxyResponsesStreamOnce(ctx context.Context, w http.ResponseWriter, req ir.Request, cand Candidate, reqID string) bool {
+func (s *Server) proxyResponsesStreamOnce(ctx context.Context, w http.ResponseWriter, req ir.Request, cand Candidate, reqID string) (bool, *AttemptFailure) {
 	// 起时点用于 TTFT：必须在编码/上游握手前取，否则首包延迟被低估（同 streamOnce）。
 	start := time.Now()
 	upOpt := ir.EncodeOptions{UpstreamModel: cand.UpstreamModelID, RequestID: reqID}
 	_, warns, err := cand.Adapter.EncodeRequest(&req, upOpt)
 	if err != nil {
-		return false
+		return false, &AttemptFailure{Kind: AttemptFailureRequest, Err: err,
+			Detail: "请求编码失败（能力缺失/方言冲突）"}
 	}
 	for _, warn := range warns {
 		s.log.Warn("v1 responses stream encode warning", ttftLogField, reqID, "param", warn.Param, "message", warn.Message)
 	}
 	call, err := s.v1Upstream().Call(ctx, cand, req, true)
 	if err != nil || call == nil {
-		return false
+		return false, &AttemptFailure{Err: err, Detail: "上游调用未返回结果"}
 	}
 	defer call.Body.Close()
 	if call.Err != nil {
-		return false
+		return false, &AttemptFailure{Err: call.Err, Detail: "上游返回失败"}
 	}
 
 	// 上游 Chat 流事件 → IR 事件 → Responses 出站 writer。
@@ -515,7 +517,8 @@ func (s *Server) proxyResponsesStreamOnce(ctx context.Context, w http.ResponseWr
 	}
 	_ = ttft
 	_ = writer.Close()
-	return true
+	// 已开流即成功（与 streamOnce 同一口径：中途断开可能是客户端，不记不可用）。
+	return true, nil
 }
 
 // setSSEOnce 给流式响应立头。幂等：多次调用只第一次设（WriteHeader 后改无效）。

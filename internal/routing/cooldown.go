@@ -151,6 +151,27 @@ func (c *Cooldowns) SyncFromHealth(view HealthView, entityIDs []string, duration
 	}
 }
 
+// Clear 清掉某实体的冷却记录（**一次真实成功**即复位）。
+//
+// 为什么成功要清：冷却是「它刚失败过，别立刻再打」的喘息窗口，而一次成功
+// 恰恰证明它现在能用。不清的后果是「恢复了的候选仍被压在末尾 30 秒」——
+// 在不可用台账已经出册的情况下，这会让管理员看到「台账里没有它，但它还在
+// 最后一位」，两个状态对不上。
+//
+// 只清 failure 驱动的记录：health_cooling/health_degraded 是上游层健康状态
+// 的镜像，由下一次 SyncFromHealth 覆盖或到期自然消失——在这里清会跟
+// upstream 状态机打架（upstream 仍 cooling 而我们清了）。
+func (c *Cooldowns) Clear(entityID string) {
+	if c == nil || entityID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[entityID]; ok && e.Reason == "failure" {
+		delete(c.entries, entityID)
+	}
+}
+
 // Cooling 报告实体当前是否在冷却窗口内（过期记录惰性清除）。
 func (c *Cooldowns) Cooling(entityID string) bool {
 	c.mu.Lock()
@@ -170,7 +191,15 @@ func (c *Cooldowns) Cooling(entityID string) bool {
 // 冷却时若剔除会 no_candidate，而「冷却」恰恰意味着「它失败过但可能恢复」，
 // 排末尾让它在没有更好选择时仍然顶上；503 与「还能试冷的」之间永远选后者）。
 //
-// 同在冷却的内部保持原相对序（稳定分区——确定性要求 03-strategy.md §3.4）。
+// 2026-11-01 补充：**不可用的路径同样排末尾**（Path.Unavailable，由装配层从
+// 不可用台账读入）。两者语义一致但成因不同，所以两段分区各自保持原相对序：
+//
+//	在册且不冷却 → 冷却中 → 不可用（最末尾）
+//
+// 为什么不可用排得比冷却更后：冷却是「几十秒内别急着重试」，不可用是「探测
+// 确认过它坏了」——后者更该最后才碰。两者都不剔除（跳过但保留兜底）。
+//
+// 各分区内部保持原相对序（稳定分区——手动声明序是唯一次序来源）。
 // 返回新切片（不修改入参）；同时把 CooledDown 标志写进路径（trace 用）。
 func (c *Cooldowns) Apply(paths []Path) []Path {
 	c.mu.Lock()
@@ -189,13 +218,22 @@ func (c *Cooldowns) Apply(paths []Path) []Path {
 
 	out := make([]Path, 0, len(paths))
 	cold := make([]Path, 0)
+	unavailable := make([]Path, 0)
 	for _, p := range paths {
-		if cooling[p.RealModel.ID] {
+		switch {
+		case p.Unavailable:
+			// 不可用的最末尾（即已在册又冷却的，也算不可用——判定更硬）。
+			if cooling[p.RealModel.ID] {
+				p.CooledDown = true
+			}
+			unavailable = append(unavailable, p)
+		case cooling[p.RealModel.ID]:
 			p.CooledDown = true
 			cold = append(cold, p)
-		} else {
+		default:
 			out = append(out, p)
 		}
 	}
-	return append(out, cold...)
+	out = append(out, cold...)
+	return append(out, unavailable...)
 }

@@ -48,6 +48,8 @@ type TraceOrder struct {
 	UpstreamModelID string `json:"upstream_model_id"`
 	// CooledDown 是否冷却中（排末尾的标记）。
 	CooledDown bool `json:"cooled_down,omitempty"`
+	// Unavailable 是否在不可用台账里（排到手动序末尾的标记，2026-11-01）。
+	Unavailable bool `json:"unavailable,omitempty"`
 }
 
 // Trace 是一次路由决策的完整记录。
@@ -68,8 +70,11 @@ type Trace struct {
 	// SelectedID 最终选中的 RealModel.ID（Order 非空时等于 Order[0].RealModelID；
 	// 单列字段让消费方不必做空切片判断）。
 	SelectedID string `json:"selected_id,omitempty"`
-	// Strategy 实际生效的策略链（含默认链展开）。
-	Strategy []string `json:"strategy"`
+	// OrderMode 是排位模式（2026-11-01 定案后恒为 "manual"）。
+	// 保留这个字段而不删：trace 消费方（管理端界面/排障脚本）需要知道
+	// 「这份次序是谁决定的」。值恒 "manual" 意味着「管理员在候选集里排的顺序」，
+	// 而不再是某条策略链的输出——旧 trace 里的 strategy 数组因此彻底消失。
+	OrderMode string `json:"order_mode"`
 }
 
 // BuildTrace 从三段式的中间产物构造 trace（纯函数——确定性要求
@@ -78,15 +83,11 @@ type Trace struct {
 // 参数：
 //   - resolved：Resolve 的产物（模型/链/候选）；
 //   - filtered/outs：FilterPaths 的产物；
-//   - ordered：Rank+Cooldowns.Apply 之后的最终序列；
-//   - chain：实际生效的策略链（空 = 默认链，这里展开记录）。
-func BuildTrace(resolved *Resolved, filtered []Path, outs []FilterOut, ordered []Path, chain []string) *Trace {
+//   - ordered：Order+Cooldowns.Apply 之后的最终序列。
+func BuildTrace(resolved *Resolved, filtered []Path, outs []FilterOut, ordered []Path) *Trace {
 	t := &Trace{
-		Stages:   make([]TraceStage, 0, 3),
-		Strategy: chain,
-	}
-	if len(t.Strategy) == 0 {
-		t.Strategy = DefaultChain
+		Stages:    make([]TraceStage, 0, 3),
+		OrderMode: OrderModeManual,
 	}
 	if resolved != nil {
 		t.RequestedModel = resolved.Model.Name
@@ -132,6 +133,7 @@ func BuildTrace(resolved *Resolved, filtered []Path, outs []FilterOut, ordered [
 			Channel:         normalizeChannel(p.RealModel.Channel),
 			UpstreamModelID: p.RealModel.UpstreamModelID,
 			CooledDown:      p.CooledDown,
+			Unavailable:     p.Unavailable,
 		})
 	}
 	if len(ordered) > 0 {

@@ -16,7 +16,6 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
 	"github.com/LittleFishStars/FreeRouter/internal/meter"
-	"github.com/LittleFishStars/FreeRouter/internal/upstream"
 	"github.com/LittleFishStars/FreeRouter/internal/webui"
 )
 
@@ -57,6 +56,9 @@ func (a *App) buildServer() *httpapi.Server {
 	// 独立测试对象与回退参考（不再进生产路径）。
 	shim, _ := a.newUpstreamShim()
 	srv.AttachV1(shim, vis.candidates) // 候选源过第 5 步闸
+	// 出站面板另存一份到 App：不可用模型的探测循环要用它打真实推理
+	// （与业务流量同一条链路，2026-11-01）。
+	a.upstreamCaller = shim
 
 	// 鉴权/限速/配额中间件的参数构造：
 	//   keyAuthBridge —— store 两读 → auth.KeyAuthStore；
@@ -86,15 +88,6 @@ func (a *App) buildServer() *httpapi.Server {
 	// 终态结算出口（M1）：一次请求恰一次，额度面 + requests/usage_daily。
 	// 不注入时 v1 请求照常服务但不记账（测试与降级态）。
 	srv.SetSettler(a.newSettler())
-
-	// 每请求延迟采样（speed 排序键 TTFT/TotalMs 的测量面）。
-	// 采样器建在 App 上：settle 侧（下两行）写入，routing 侧（routing_bridge
-	// 的 pathsOf）读同一个实例。未注入时 speed 排序退回无样本垫底。
-	a.latencySampler = upstream.NewLatencySampler(upstream.DefaultAlpha)
-	srv.SetLatencySink(latencyDefaultSink{
-		sampler: a.latencySampler,
-		bridge:  newAbstractModelBridge(a),
-	})
 
 	// 注册到 Server 的挂载点（Handler() 在 server.go 里逐条 r.Use）。
 	srv.SetAuthChain(

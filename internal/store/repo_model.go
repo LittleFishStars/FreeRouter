@@ -37,10 +37,11 @@ const aggregateChannel = "aggregate"
 
 // AbstractModel 是对外暴露的抽象模型。
 type AbstractModel struct {
-	ID                 string // UUID
-	Name               string
-	DisplayName        string
-	Strategy           string
+	ID          string // UUID
+	Name        string
+	DisplayName string
+	// Strategy 已退役（迁移 0014，2026-11-01 定案）：候选的使用顺序就是
+	// 声明序（abstract_candidates.sort_order），排序链不再存在。
 	CapabilityMode     string
 	Status             ModelStatus
 	ReplacementModelID *string
@@ -129,31 +130,26 @@ func (r *ModelRepo) CreateAbstractModel(ctx context.Context, m AbstractModel) (s
 	if mode == "" {
 		mode = "strict"
 	}
-	strategy := m.Strategy
-	if strategy == "" {
-		strategy = "expiry-first"
-	}
-
 	// id 由 store 生成（TEXT 主键无自增兜底；调用方各生成必漏，见 05-storage §2）。
 	id := idgen.New()
 	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO abstract_models(id, name, display_name, strategy, capability_mode, status,
+		`INSERT INTO abstract_models(id, name, display_name, capability_mode, status,
 		                            replacement_model_id, deprecated_at, sunset_at, note)
-		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		id, m.Name, m.DisplayName, strategy, mode, string(status),
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
+		id, m.Name, m.DisplayName, mode, string(status),
 		m.ReplacementModelID, m.DeprecatedAt, m.SunsetAt, m.Note); err != nil {
 		return "", fmt.Errorf("store: 创建抽象模型失败: %w", err)
 	}
 	return id, nil
 }
 
-const abstractModelColumns = `id, name, display_name, strategy, capability_mode, status,
+const abstractModelColumns = `id, name, display_name, capability_mode, status,
                               replacement_model_id, deprecated_at, sunset_at, note`
 
 func scanAbstractModel(sc interface{ Scan(...any) error }) (*AbstractModel, error) {
 	var m AbstractModel
 	var status string
-	if err := sc.Scan(&m.ID, &m.Name, &m.DisplayName, &m.Strategy, &m.CapabilityMode,
+	if err := sc.Scan(&m.ID, &m.Name, &m.DisplayName, &m.CapabilityMode,
 		&status, &m.ReplacementModelID, &m.DeprecatedAt, &m.SunsetAt, &m.Note); err != nil {
 		return nil, err
 	}

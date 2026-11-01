@@ -48,7 +48,7 @@ func TestContractAutoModelSync(t *testing.T) {
 		t.Fatalf("建第二组失败：%v", err)
 	}
 	manual, err := a.store.Repos().Models.CreateAbstractModel(ctx, store.AbstractModel{
-		Name: "deepseek-v4.1-flash", DisplayName: "DS-V41-F", Strategy: `["expiry-first","balance"]`,
+		Name: "deepseek-v4.1-flash", DisplayName: "DS-V41-F",
 	})
 	if err != nil {
 		t.Fatalf("建手工模型失败：%v", err)

@@ -95,10 +95,6 @@ func absModelToAdmin(m *store.AbstractModel) *httpapi.AdminAbstractModel {
 		DeprecatedAt:   m.DeprecatedAt,
 		SunsetAt:       m.SunsetAt,
 	}
-	if m.Strategy != "" {
-		// 存储侧是 TEXT（逗号分隔或 JSON 都可能——归一成 JSON 数组输出）。
-		out.Strategy = normalizeStrategyJSON(m.Strategy)
-	}
 	if m.ReplacementModelID != nil && modelsLookup != nil {
 		// 替代目标按 id 存，对外回名字（§8.1 replacement 是名字形态）。
 		if rep, err := modelsLookup(*m.ReplacementModelID); err == nil && rep != "" {
@@ -125,25 +121,6 @@ func (mb *modelsBridge) replacementNameOf(id string) (string, error) {
 		return "", err
 	}
 	return rep.Name, nil
-}
-
-// normalizeStrategyJSON 把存储的 strategy 文本归一成 JSON 数组。
-// 存的是逗号分隔（store 默认 'expiry-first'）——拆分后转 JSON；
-// 已经是 JSON 数组形状则原样。
-func normalizeStrategyJSON(s string) json.RawMessage {
-	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "[") {
-		return json.RawMessage(s)
-	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	b, _ := json.Marshal(out)
-	return json.RawMessage(b)
 }
 
 func (mb *modelsBridge) ListRealModels(ctx context.Context, status string, hidden *bool, source, upstreamID string, limit, offset int) ([]httpapi.AdminRealModel, int64, error) {
@@ -305,7 +282,7 @@ func (mb *modelsBridge) ListAbstractModels(ctx context.Context, limit, offset in
 		am := absModelToAdmin(&m)
 		if cands, err := mb.b.repos.Models.ListCandidates(ctx, m.ID); err == nil {
 			am.CandidateCount = int64(len(cands))
-			am.AvailableCandidateCount = mb.availableCandidates(ctx, cands)
+			am.AvailableCandidateCount, am.UnavailableCandidateCount = mb.availableCandidates(ctx, cands)
 		}
 		out = append(out, *am)
 	}
@@ -324,7 +301,7 @@ func (mb *modelsBridge) GetAbstractModel(ctx context.Context, id string) (*httpa
 	out := absModelToAdmin(m)
 	if cands, err := mb.b.repos.Models.ListCandidates(ctx, aid); err == nil {
 		out.CandidateCount = int64(len(cands))
-		out.AvailableCandidateCount = mb.availableCandidates(ctx, cands)
+		out.AvailableCandidateCount, out.UnavailableCandidateCount = mb.availableCandidates(ctx, cands)
 	}
 	return out, nil
 }
@@ -337,7 +314,7 @@ func (mb *modelsBridge) GetAbstractModelByName(ctx context.Context, name string)
 	out := absModelToAdmin(m)
 	if cands, err := mb.b.repos.Models.ListCandidates(ctx, m.ID); err == nil {
 		out.CandidateCount = int64(len(cands))
-		out.AvailableCandidateCount = mb.availableCandidates(ctx, cands)
+		out.AvailableCandidateCount, out.UnavailableCandidateCount = mb.availableCandidates(ctx, cands)
 	}
 	return out, nil
 }
@@ -348,14 +325,9 @@ func (mb *modelsBridge) CreateAbstractModel(ctx context.Context, in httpapi.Admi
 	if len(in.Capabilities) > 0 {
 		note = capsNotePrefix + string(in.Capabilities)
 	}
-	strategy := string(in.Strategy)
-	if strategy == "" {
-		strategy = `["expiry-first","balance"]`
-	}
 	m := store.AbstractModel{
 		Name:           in.Name,
 		DisplayName:    in.DisplayName,
-		Strategy:       strategy,
 		CapabilityMode: in.CapabilityMode,
 		Status:         store.ModelStatus(in.Status),
 	}
@@ -566,6 +538,19 @@ func (mb *modelsBridge) ListCandidates(ctx context.Context, abstractModelID stri
 	if err != nil {
 		return nil, err
 	}
+	// 不可用台账（2026-11-01）：一次 List 拿到全部记录，按下标即可——
+	// 台账行数是个位数，逐条查询只会白打几十次主键读。
+	unavail, err := mb.b.repos.Unavailability.List(ctx)
+	if err != nil {
+		// 台账读失败不该让候选集端点整体 500：不可用是**增强信息**，
+		// 拿不到就按「全部在册」展示（管理员仍能编辑候选集）。
+		unavail = nil
+	}
+	unavailBy := make(map[string]store.Unavailability, len(unavail))
+	for _, u := range unavail {
+		unavailBy[u.RealModelID] = u
+	}
+
 	out := make([]httpapi.AdminCandidateItem, 0, len(cands))
 	for _, c := range cands {
 		rm, err := mb.b.repos.Models.GetRealModel(ctx, c.RealModelID)
@@ -585,6 +570,15 @@ func (mb *modelsBridge) ListCandidates(ctx context.Context, abstractModelID stri
 		}
 		if c.ConstraintJSON != nil {
 			item.Constraint = json.RawMessage(*c.ConstraintJSON)
+		}
+		if u, ok := unavailBy[c.RealModelID]; ok {
+			since := u.FailedAt
+			next := u.NextCheckAt
+			item.Unavailable = true
+			item.UnavailableReason = u.Reason
+			item.UnavailableSince = &since
+			item.NextProbeAt = &next
+			item.ProbeAttempts = u.Attempts
 		}
 		out = append(out, item)
 	}
@@ -640,22 +634,35 @@ func (mb *modelsBridge) candidateInstances(ctx context.Context) (map[string]int6
 // 读不出凭据事实时（仓储报错）返回 0：这是「我不知道」与「没有」的差别，
 // 但这个字段在列表页只是给管理员一个量级参考，0 会让列表页的徽标变黄
 // （"0 / 4"），而真出错时那次请求本身会失败并被上层看到。
-func (mb *modelsBridge) availableCandidates(ctx context.Context, cands []store.Candidate) int64 {
+func (mb *modelsBridge) availableCandidates(ctx context.Context, cands []store.Candidate) (available, unavailable int64) {
 	insts, err := mb.candidateInstances(ctx)
 	if err != nil {
-		return 0
+		return 0, 0
 	}
-	var n int64
+	// 不可用台账（2026-11-01）：一次 List 拿到全部记录（行数是个位数）。
+	unavail := map[string]struct{}{}
+	if rows, uerr := mb.b.repos.Unavailability.List(ctx); uerr == nil {
+		for _, u := range rows {
+			unavail[u.RealModelID] = struct{}{}
+		}
+	}
 	for _, c := range cands {
 		rm, err := mb.b.repos.Models.GetRealModel(ctx, c.RealModelID)
 		if err != nil {
 			continue
 		}
-		if insts[rm.UpstreamID] > 0 {
-			n++
+		if insts[rm.UpstreamID] <= 0 {
+			continue // 没有可展开的凭据实例 = 不可用（与前一版口径一致）
 		}
+		if _, bad := unavail[rm.ID]; bad {
+			// 「现在真的能用」的诚实计数：被判定不可用的不算可用，
+			// 单独计入 unavailable（管理端据此显示「有几条在等恢复」）。
+			unavailable++
+			continue
+		}
+		available++
 	}
-	return n
+	return available, unavailable
 }
 
 func (mb *modelsBridge) ReplaceCandidates(ctx context.Context, abstractModelID string, cands []httpapi.AdminCandidateItem, audit httpapi.AdminAuditEntry) ([]httpapi.AdminCandidateItem, string, error) {

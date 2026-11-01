@@ -90,6 +90,9 @@ type Repos struct {
 	Secrets *SecretRepo
 	// Settings 运行时开关的 key→JSON 原文（M10 设置页）。
 	Settings *SettingsRepo
+	// Unavailability 是不可用模型台账（迁移 0014，2026-11-01）：
+	// 流量判定不可用 → 落账 + 路由跳过；后台按退避检测恢复。
+	Unavailability *UnavailabilityRepo
 }
 
 // Open 打开主库：建目录 → 打开写池 → 设 PRAGMA → 迁移 → 打开读池 → 载入主密钥。
@@ -366,6 +369,7 @@ func newRepos(s *Store) *Repos {
 	r.Inbox = &InboxRepo{db: conn, s: s}
 	r.Secrets = &SecretRepo{db: conn, s: s}
 	r.Settings = &SettingsRepo{s: s}
+	r.Unavailability = &UnavailabilityRepo{db: conn, s: s}
 	return r
 }
 

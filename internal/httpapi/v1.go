@@ -60,12 +60,48 @@ type CandidateSource interface {
 // errors.Is 一条判定最短路径，不需要为它养一个结构化错误类型。
 var ErrModelNotFound = errors.New("v1: model_not_found")
 
-// CandidateFailureNotifier 是候选源的可选扩展：上游调用失败（未吐内容、
-// 将切换下一候选）时回传该候选，供实现方记冷却（routing.Cooldowns）。
+// AttemptFailure 是一次候选尝试的失败原因（2026-11-01：不可用台账的数据面）。
+//
+// 为什么 httpapi 只给「原因码 + 原始错误」而不自己做完整分类：
+//   分类的真值表在 internal/upstream/errors.go（ErrClass），而 httpapi 刻意
+//   **不 import** internal/upstream（依赖方向：上游层在 L3，协议面板在 L2）。
+//   所以这里只落两件事：
+//     - Kind：httpapi 自己能判的那部分（协议解析失败等），稳定码；
+//     - Err：上游返回的原始错误（不透明），由装配层用 errors.As(*upstream.Error)
+//       取 Class 完成最终分类。
+//   这条分工让「哪些失败算模型不可用」的策略留在装配层一处。
+type AttemptFailure struct {
+	// Kind 是 httpapi 侧能直接判定的原因码（见 AttemptFailure* 常量）；
+	// 空串表示「交给装配层按 Err 分类」。
+	Kind string
+	// Err 是上游/编码环节返回的原始错误（可 nil）。可能含 base_url 主机名，
+	// **只允许进管理端台账与日志，绝不出现在对外响应**。
+	Err error
+	// Detail 是人读诊断（脱敏，进台账）。
+	Detail string
+}
+
+// httpapi 侧可直接判定的失败原因码（其余交给装配层按 ErrClass 分类）。
+const (
+	// AttemptFailureProtocol 上游响应不可解析（流/JSON 形状不符）。
+	AttemptFailureProtocol = "protocol"
+	// AttemptFailureRequest 请求本身的问题（能力缺失/编码失败）——不是
+	// 上游不可用，**不该**把模型记成不可用（换一次请求就好了）。
+	AttemptFailureRequest = "request"
+)
+
+// CandidateOutcomeNotifier 是候选源的可选扩展：每次尝试结束（成功或失败）
+// 回传结果，供实现方维护冷却账本与不可用模型台账（2026-11-01）。
+//
+// 为什么成功也要回传（而不是只在失败时叫）：不可用台账需要在「模型恢复」
+// 时删行，而恢复的第一现场就是一次真实流量成功——只靠后台探测恢复会让
+// 台账至少滞后一个探测周期（最长 1 小时）。
+//
 // 接口断言可选而不是并入 CandidateSource：M5 的 realModelCandidates
 // 不需要它，强制实现会污染所有测试 fake。
-type CandidateFailureNotifier interface {
-	NotifyCandidateFailure(cand Candidate)
+type CandidateOutcomeNotifier interface {
+	// NotifyCandidateOutcome 报告一次尝试结果：fail 为 nil 表示成功。
+	NotifyCandidateOutcome(cand Candidate, fail *AttemptFailure)
 }
 
 // traceSink 是 x-fr-trace 的诊断通道（M6 接线）：CandidateSource 实现
@@ -277,7 +313,7 @@ func classifyErr(err error) errPayload {
 // 所有候选耗尽后——单候选失败不向客户端吐任何字节（C7：未吐可见内容才可切）。
 // 为什么带 obs：终态结算需要本次尝试的 usage / 总耗时 / 候选行 id。
 // obs 可能为 nil（未来只关心成败的调用点）——写入前一律判空。
-func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyReq, cand Candidate, reqID string, obs *attemptObs) bool {
+func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyReq, cand Candidate, reqID string, obs *attemptObs) (bool, *AttemptFailure) {
 	start := time.Now()
 	// 出站给客户端的编码永远用入站方言：客户端说的是 Chat 就回 Chat
 	// （跨方言转换在 IR 层完成，HTTP 层不做二次翻译）。
@@ -299,7 +335,10 @@ func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyR
 		// openai_chat 的候选能力面相同）；让调用方决定是否终止整个请求。
 		// body 已无意义但保留变量以免下面 warns 循环引用悬空。
 		_ = body
-		return false
+		// request 类失败**不**把模型记成不可用：换一次请求就好了，把它
+		// 出册是在替上游背锅，而且下次同样的请求会再撞一次。
+		return false, &AttemptFailure{Kind: AttemptFailureRequest, Err: err,
+			Detail: "请求编码失败（能力缺失/方言冲突）"}
 	}
 	for _, warn := range warns {
 		s.log.Warn("v1 upstream encode warning", "request_id", reqID, "param", warn.Param, "message", warn.Message)
@@ -307,24 +346,28 @@ func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyR
 
 	call, err := s.v1Upstream().Call(ctx, cand, pr.req, pr.req.Stream)
 	if err != nil || call == nil {
-		return false
+		return false, &AttemptFailure{Err: err, Detail: "上游调用未返回结果"}
 	}
 	// Err 检查必须先于 defer Close：上游失败（401/超时/连接错）时 shim 返回
 	// Body=nil + Err——先 defer 会对 nil 接口调 Close 直接 panic（2026-10-30
 	// 生产实测：候选切换路径第一次真实跑通就祏在这个顺序上）。
 	if call.Err != nil {
-		return false // 上游已判失败（连接层），换候选
+		// 上游客判失败（连接层/协议层）：原始错误带 ErrClass，交给装配层
+		// 决定它够不够格把模型记成不可用。
+		return false, &AttemptFailure{Err: call.Err, Detail: "上游返回失败"}
 	}
 	defer call.Body.Close()
 	// 非流式：整读上游响应体→DecodeResponse→EncodeResponse（入站方言出站）。
 	raw, err := io.ReadAll(call.Body)
 	if err != nil {
-		return false
+		// 读响应体失败：传输层在已经把头 200 给出之后断了——这属于这条
+		// 路径坏了（不是请求的错），应该记进不可用台账。
+		return false, &AttemptFailure{Err: err, Detail: "读取上游响应体失败"}
 	}
 	resp, err := cand.Adapter.DecodeResponse(raw)
 	if err != nil {
 		// 上游给了无法解析的响应体：协议违规，换候选。
-		return false
+		return false, &AttemptFailure{Kind: AttemptFailureProtocol, Err: err, Detail: "上游响应体不可解析"}
 	}
 	// §4.1：model 恒为请求里的抽象模型名——上游响应里的真实模型名
 	// （deepseek-chat 等）在出站前覆盖（防泄露池结构）。
@@ -332,8 +375,9 @@ func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyR
 	out, err := pr.inbound.EncodeResponse(resp)
 	if err != nil {
 		// 入站方言编码失败（如 Anthropic 响应含 openai 方言没有的字段）——
-		// 这是本请求不可恢复的冲突，向上抛给调用方终止。
-		return false
+		// 这是本请求不可恢复的冲突，向上抛给调用方终止。请求侧问题，
+		// 不记不可用。
+		return false, &AttemptFailure{Kind: AttemptFailureRequest, Err: err, Detail: "响应转码失败"}
 	}
 	// 终态结算的可观测产物：成功候选才写 Usage 与 RealModelID
 	// （换过候选时，失败的尝试不该把它们的 usage/行 id 带进账）。
@@ -346,7 +390,7 @@ func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyR
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
-	return true
+	return true, nil
 }
 
 // streamOnce 对单个候选执行一次流式代理。
@@ -354,7 +398,7 @@ func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyR
 // 返回 false 表示失败且未吐任何可见内容（可安全换候选）。
 // 为什么带 obs：流式的终态 usage 只在事件里出现一次（I4），
 // 不在循环里留就会丢；TTFT 也只有这里能测准（首段可见内容时刻）。
-func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxyReq, cand Candidate, reqID string, obs *attemptObs) bool {
+func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxyReq, cand Candidate, reqID string, obs *attemptObs) (bool, *AttemptFailure) {
 	// 起点用于 TTFT 计算：必须在编码/上游握手之前取，否则首包延迟被低估。
 	start := time.Now()
 	upOpt := ir.EncodeOptions{
@@ -363,7 +407,8 @@ func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxy
 	}
 	body, warns, err := cand.Adapter.EncodeRequest(&pr.req, upOpt)
 	if err != nil {
-		return false
+		return false, &AttemptFailure{Kind: AttemptFailureRequest, Err: err,
+			Detail: "请求编码失败（能力缺失/方言冲突）"}
 	}
 	_ = body // 上游调用方拿的是 body 字节；此处保留以防误删后误取 nil
 	for _, warn := range warns {
@@ -371,11 +416,11 @@ func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxy
 	}
 	call, err := s.v1Upstream().Call(ctx, cand, pr.req, true)
 	if err != nil || call == nil {
-		return false
+		return false, &AttemptFailure{Err: err, Detail: "上游调用未返回结果"}
 	}
 	// 同 proxyOnce：Err 检查先于 defer Close（失败路径 Body 为 nil）。
 	if call.Err != nil {
-		return false
+		return false, &AttemptFailure{Err: call.Err, Detail: "上游返回失败"}
 	}
 	defer call.Body.Close()
 
@@ -446,7 +491,10 @@ func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxy
 		}
 	}
 	_ = writer.Close() // 幂等：补收尾帧（[DONE] / message_stop）
-	return true
+	// 已开流即算成功（哪怕中途 streamErr 断了）——此时不该把模型记成
+	// 不可用：可能是客户端断开（写失败）或单次抖动，而不是上游坏了。
+	// 失败判定只走「未吐可见内容」那条分支（与 C7 同一边界）。
+	return true, nil
 }
 
 // v1SwitchBudgetMs 是候选切换的总时长预算（M6 接线）。
@@ -454,7 +502,7 @@ func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxy
 // 为什么 5s：与 routing.DefaultMaxSwitches=3 同属「一批候选同时坏」的
 // 防御——次数上限限制打击面，时长上限避免用户干等（客户端重试比我们
 // 内部慢慢换路体验好）。数字写在装配层（本包）：routing 明确把
-// MaxDurationMs 定为装配参数（strategy.go 注释），协议语义层不养第二个常量。
+// MaxDurationMs 定为装配参数（order.go 注释），协议语义层不养第二个常量。
 const v1SwitchBudgetMs = 5000
 
 // proxyV1 是三端点共享的编排入口。
@@ -525,23 +573,25 @@ func (s *Server) proxyV1(ctx context.Context, w http.ResponseWriter, pr proxyReq
 	// 返回 true = 已写出响应（成功或已吐内容），不再写错误体。
 	// 候选循环的终局响应统一由骨架写（成功走 attempt、失败走 onExhausted）——
 	// 调用点是无条件顺序调用，见 runCandidates 的注释。
-	s.runCandidates(ctx, w, requestID, cs, cands, func(cand Candidate) bool {
+	s.runCandidates(ctx, w, requestID, cs, cands, func(cand Candidate) (bool, *AttemptFailure) {
 		st.attempts++
 		if pr.req.Stream {
-			if s.streamOnce(ctx, w, pr, cand, requestID, &st.obs) {
+			if ok, fail := s.streamOnce(ctx, w, pr, cand, requestID, &st.obs); ok {
 				st.status, st.httpStatus, st.errorCode = "ok", 200, ""
-				return true // 已开流：成功或已吐内容，不切
+				return true, nil // 已开流：成功或已吐内容，不切
+			} else {
+				// 未吐可见内容：换下一个候选（C7 唯一切换窗口）
+				s.log.Info("v1 stream candidate failed, switching", "request_id", requestID, "candidate", cand.Display)
+				return false, fail
 			}
-			// 未吐可见内容：换下一个候选（C7 唯一切换窗口）
-			s.log.Info("v1 stream candidate failed, switching", "request_id", requestID, "candidate", cand.Display)
-			return false
 		}
-		if s.proxyOnce(ctx, w, pr, cand, requestID, &st.obs) {
+		if ok, fail := s.proxyOnce(ctx, w, pr, cand, requestID, &st.obs); ok {
 			st.status, st.httpStatus, st.errorCode = "ok", 200, ""
-			return true
+			return true, nil
+		} else {
+			s.log.Info("v1 candidate failed, switching", "request_id", requestID, "candidate", cand.Display)
+			return false, fail
 		}
-		s.log.Info("v1 candidate failed, switching", "request_id", requestID, "candidate", cand.Display)
-		return false
 	}, func() {
 		// 全部候选失败（或预算耗尽）且未吐内容：对外 502 upstream_unavailable
 		//（03-errors.md：上游都不可用；客户端可重试）。
@@ -673,10 +723,10 @@ func writeV1ErrorSafe(w http.ResponseWriter, code, message, requestID string) {
 // 骨架据此终止循环。cands 为空不写任何东西——空候选由调用方写
 // no_candidate（它需要自己的错误形状：anthropic 形态与 OpenAI 形态不同）。
 func (s *Server) runCandidates(ctx context.Context, w http.ResponseWriter, requestID string,
-	cs CandidateSource, cands []Candidate, attempt func(Candidate) bool, onExhausted func()) {
+	cs CandidateSource, cands []Candidate, attempt func(Candidate) (bool, *AttemptFailure), onExhausted func()) {
 	start := time.Now()
-	var notifier CandidateFailureNotifier
-	if n, ok := cs.(CandidateFailureNotifier); ok {
+	var notifier CandidateOutcomeNotifier
+	if n, ok := cs.(CandidateOutcomeNotifier); ok {
 		notifier = n
 	}
 	budget := routing.SwitchBudget{MaxDurationMs: v1SwitchBudgetMs}
@@ -690,11 +740,14 @@ func (s *Server) runCandidates(ctx context.Context, w http.ResponseWriter, reque
 				return
 			}
 		}
-		if attempt(cand) {
+		if ok, fail := attempt(cand); ok {
+			// 成功也要回传：不可用台账靠「一次真实成功」删行（恢复的第一现场）。
+			if notifier != nil {
+				notifier.NotifyCandidateOutcome(cand, nil)
+			}
 			return
-		}
-		if notifier != nil {
-			notifier.NotifyCandidateFailure(cand)
+		} else if notifier != nil {
+			notifier.NotifyCandidateOutcome(cand, fail)
 		}
 	}
 	onExhausted()

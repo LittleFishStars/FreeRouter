@@ -129,6 +129,18 @@ func (c gatedCandidates) Candidates(ctx context.Context, model string, req ir.Re
 	return c.inner.Candidates(ctx, model, req)
 }
 
+// NotifyCandidateOutcome 透传结果通知（不可用台账 / 冷却账本）。
+//
+// 为什么这个装饰器必须实现它：httpapi 用**接口断言**取通知器
+// （cs.(CandidateOutcomeNotifier)），而 AttachV1 拿到的是本装饰器。
+// 漏掉这层透传，台账与冷却就完全收不到任何流量事件——路由会永远认为
+// 「全部在册」，而那是最难查的一类失效（功能静默无效，日志无异常）。
+func (c gatedCandidates) NotifyCandidateOutcome(cand httpapi.Candidate, fail *httpapi.AttemptFailure) {
+	if inner, ok := c.inner.(httpapi.CandidateOutcomeNotifier); ok {
+		inner.NotifyCandidateOutcome(cand, fail)
+	}
+}
+
 // visibilityDeps 打包 buildServer 需要的两个装饰器（避免 wireVisibility
 // 与 server_build.go 的 AttachV1 时序耦合）。
 type visibilityDeps struct {
