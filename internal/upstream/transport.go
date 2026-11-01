@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -88,7 +89,7 @@ func (t *HTTPTransport) Do(ctx context.Context, tgt Target, body []byte, opts ht
 	// 得到"messages 必填"的 400 —— 错误现场漂到上游，排查成本极高。
 	// 官方 FIM 还在 beta 下（base_url 带 /beta），由上游行的 BaseURL 承载，
 	// 传输层不猜、不改写（地址是配置的职责）。
-	endpoint := strings.TrimRight(tgt.BaseURL, "/") + endpointPathFor(opts.adapter)
+	endpoint := strings.TrimRight(tgt.BaseURL, "/") + endpointPathFor(tgt.BaseURL, opts.adapter)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, &Error{Class: ErrBadRequest, Message: "构造出站请求失败: " + err.Error()}
@@ -133,16 +134,39 @@ func (t *HTTPTransport) Do(ctx context.Context, tgt Target, body []byte, opts ht
 //
 // 默认 /chat/completions：这是"OpenAI 兼容"最广的形态，也是 relay 与
 // vendor 的既定口径（03-upstream.md §4）。
-func endpointPathFor(ad ir.Adapter) string {
+func endpointPathFor(baseURL string, ad ir.Adapter) string {
 	if ad == nil {
 		return "/chat/completions"
 	}
 	switch ad.Name() {
 	case ir.ProtocolOpenAICompletion:
-		return "/completions"
+		// 官方 FIM 只在 /beta 下提供（api-docs：base_url="https://api.deepseek.com/beta"）。
+		// 管理员填的是"上游地址"而不是"某个端点的地址"，让他为同一台上游维护两个
+		// base_url（一个给 chat、一个给 FIM）既多余又容易错。
+		// 所以这里按 base_url 的路径段决定：已含 beta 段 → /completions；
+		// 不含 → 补 /beta/completions。这是把官方硬约束落到路径上，不是猜地址。
+		if strings.Contains(strings.ToLower(baseURLPath(baseURL)), "beta") {
+			return "/completions"
+		}
+		return "/beta/completions"
 	default:
 		return "/chat/completions"
 	}
+}
+
+// baseURLPath 取 base_url 的路径部分（去掉协议与主机）。
+//
+// 为什么要单独取路径而不是直接对整串做 Contains：主机名里也可能出现 "beta"
+// （如 beta.example.com），那会让路径判定被主机名污染。
+func baseURLPath(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u == nil {
+		return raw
+	}
+	if u.Path == "" {
+		return "/"
+	}
+	return u.Path
 }
 
 // readSnippet 读错误体的前 n 字节（错误体不是契约内容，仅排障日志用）。

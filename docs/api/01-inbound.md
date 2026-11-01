@@ -484,6 +484,13 @@ x-fr-trace: real=dsh:deepseek-official/deepseek-flash; cred=cred_01J8; attempt=1
 两者在上游走不同路径。丢掉它等于静默改变语义，因此在 IR 里 `Completion.Suffix`
 是核心字段（空串表示"没有后缀"，编码时省略该字段而不是发空串）。
 
+**上游路径（`/beta`）由网关补齐**：官方要求 FIM 的 `base_url` 带 `/beta`。
+管理员只需要填**一个**上游地址（`https://api.deepseek.com`），网关按方言自动补成
+`/beta/completions`；若填的地址已含 `beta` 段（`…/beta`），则直接用 `/completions`，
+不重复补。主机名里出现 `beta`（如 `beta.example.com`）不参与判定——只看路径段。
+**为什么这么处理**：让管理员为同一台上游维护两个 base_url（chat 一个、FIM 一个）
+既多余又容易配错，而"配错了打到 404"的故障现场在上游、原因在配置，排查成本最高。
+
 **为什么在非 `/v1/chat/completions` 的路径上**：官方 FIM 的路径就是 `/completions`。
 把它放在 chat 路径下会让客户端以为可以传 `messages`，而实际能力表会拒绝——
 错误出现在能力表而不是路径，排查成本更高。

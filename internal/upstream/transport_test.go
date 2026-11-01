@@ -784,15 +784,21 @@ func TestContractRelayTransportValidationOrder(t *testing.T) {
 func TestContractEndpointPathPerDialect(t *testing.T) {
 	cases := []struct {
 		name    string
+		baseURL string
 		adapter ir.Adapter
 		want    string
 	}{
-		{"chat", openai.Adapter(), "/chat/completions"},
-		{"completion", completion.Adapter(), "/completions"},
-		{"nil", nil, "/chat/completions"}, // 未装配适配器时按最通用的 chat 兜底
+		{"chat", "https://api.example.com", openai.Adapter(), "/chat/completions"},
+		// 官方 FIM 只在 /beta 下：base_url 不含 beta 时由网关补，管理员只需维护
+		// 一个上游地址（否则同一台上游要填两个 base_url，容易配错）。
+		{"completion_no_beta", "https://api.deepseek.com", completion.Adapter(), "/beta/completions"},
+		{"completion_with_beta", "https://api.deepseek.com/beta", completion.Adapter(), "/completions"},
+		// 主机名里的 beta 不能污染路径判定。
+		{"completion_host_beta", "https://beta.example.com/v1", completion.Adapter(), "/beta/completions"},
+		{"nil", "https://api.example.com", nil, "/chat/completions"},
 	}
 	for _, c := range cases {
-		if got := endpointPathFor(c.adapter); got != c.want {
+		if got := endpointPathFor(c.baseURL, c.adapter); got != c.want {
 			t.Errorf("%s: endpointPathFor = %q，期望 %q", c.name, got, c.want)
 		}
 	}
