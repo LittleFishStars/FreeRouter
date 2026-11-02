@@ -107,11 +107,35 @@ jobs:
           path: payload
 
       - name: Stage payload
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           # staging 是 ghrunner 与 root 之间的交接区：runner 只能写这里，
           # 安装动作全部收敛到 root 受控脚本（install-update.sh）里执行。
           mkdir -p /opt/freerouter/staging
-          rsync -aO --no-owner --no-group --delete payload/ /opt/freerouter/staging/
+          stage() {
+            rsync -aO --no-owner --no-group --delete payload/ /opt/freerouter/staging/
+          }
+          stage
+
+          # 完整性闸（2026-11-02 实测事故）：这个 24MB 的 artifact 在自托管
+          # runner 上曾下载了 16 分钟，最终只解出 98/248 个文件——而
+          # actions/download-artifact 仍报成功。缺的正好是控制台产物
+          # （internal/webui/dist/index.html 与 logos/），于是
+          # install-update.sh 在校验阶段拒绝安装，整轮部署白等。
+          # 这里在暂存后立刻判，缺则重新下载一次（截断多为单次网络抖动）。
+          NEED=/opt/freerouter/staging/internal/webui/dist/index.html
+          if [ ! -f "$NEED" ]; then
+            echo "::warning::payload 不完整（缺 index.html），重新下载 artifact"
+            rm -rf payload
+            gh run download "$GITHUB_RUN_ID" -n freerouter-dist -D payload
+            stage
+          fi
+          if [ ! -f "$NEED" ]; then
+            echo "::error::重下后仍缺 $NEED——artifact 传输链路异常，拒绝进入安装"
+            ls -la /opt/freerouter/staging/internal/webui/dist/ 2>/dev/null || true
+            exit 1
+          fi
           find /opt/freerouter/staging -type f | wc -l
 
       - name: Install & restart services
