@@ -365,25 +365,61 @@ export async function listModels({ provider, credentialRef, apiKey }) {
 // 为什么需要这一层：adapter 收的是 DSH 的 IR 形状（messages 是 block 数组），
 // 而不是线上 OpenAI 形状——这层翻译是「Go 编码成 OpenAI、sidecar 再解回 IR」的代价，
 // 比让 Go 侧直接产出 IR JSON 更稳（IR 形状是 DSH 内部契约，随版本漂移）。
-function openaiBodyToGenerateOptions(provider, model, body) {
+export function openaiBodyToGenerateOptions(provider, model, body) {
+  // ⚠️ 消息必须翻译成 **DSH IR 块形状**，而不是原样透传 OpenAI wire 形状。
+  //
+  // 2026-11-03 事故：之前这里把 OpenAI 形状（assistant.tool_calls / role:'tool'）
+  // 原样塞给 adapter，而 adapter（openai-compat.serializeMessages）期望的是
+  // IR 块（type:'tool-call' / type:'tool-result'）。形状不匹配 ⇒
+  // resolveToolPairing 把工具历史整体剔除 ⇒ 模型每轮都看不到自己上一轮跑过
+  // 什么命令 ⇒ 无限重复同一条诊断（用户实测：同一批命令重复数十遍）。
+  // 串行工具调用（"先跑命令→看结果→再跑下一条"）对此最敏感：丢掉工具结果
+  // 等于让模型失忆，它只会一遍遍重新开始。
   const msgs = Array.isArray(body.messages) ? body.messages : [];
-  const messages = msgs.map((m) => {
+  const messages = [];
+  for (const m of msgs) {
+    const role = m?.role;
+    if (role === 'tool') {
+      // OpenAI 的 role:'tool' → IR 的 user 消息携带 tool-result 块
+      //（adapter 的 serializeMessages 会把它展开回 role:'tool' 上游形状）。
+      const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
+      messages.push({
+        role: 'user',
+        content: [{ type: 'tool-result', toolCallId: String(m.tool_call_id ?? ''), content: [{ type: 'text', text }] }],
+      });
+      continue;
+    }
+    if (role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+      // assistant.tool_calls → IR 的 assistant 消息携带 tool-call 块 + 文本。
+      const blocks = m.tool_calls.map((tc) => ({
+        type: 'tool-call',
+        id: String(tc?.id ?? ''),
+        name: String(tc?.function?.name ?? ''),
+        arguments: typeof tc?.function?.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc?.function?.arguments ?? {}),
+      }));
+      const txt = typeof m.content === 'string' ? m.content : '';
+      if (txt) blocks.unshift({ type: 'text', text: txt });
+      messages.push({ role: 'assistant', content: blocks });
+      continue;
+    }
     const content = m && m.content;
     if (typeof content === 'string') {
-      return { role: m.role, content: [{ type: 'text', text: content }] };
+      messages.push({ role: role, content: [{ type: 'text', text: content }] });
+      continue;
     }
     if (Array.isArray(content)) {
-      return {
-        role: m.role,
+      messages.push({
+        role: role,
         content: content.map((part) => {
           if (part && part.type === 'text') return { type: 'text', text: String(part.text ?? '') };
           // 图片等富模态：保留原始片段，交给 adapter 自己判能力（不在这里丢字段）
           return part;
         }),
-      };
+      });
+      continue;
     }
-    return { role: m.role, content: [] };
-  });
+    messages.push({ role: role, content: [] });
+  }
   const opts = { provider, model, messages };
   if (typeof body.temperature === 'number') opts.temperature = body.temperature;
   if (typeof body.max_tokens === 'number') opts.maxTokens = body.max_tokens;

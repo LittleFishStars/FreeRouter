@@ -198,6 +198,39 @@ await test('infer.stream / listModels：无可用 adapter 时如实拒绝', asyn
     (e) => e.code === 'E_NOT_IMPLEMENTED');
 });
 
+await test('openaiBodyToGenerateOptions：工具历史必须翻译成 IR 块形状', async () => {
+  if (!hubOK) throw Object.assign(new Error('hub 不在本机'), { skip: true });
+  const { openaiBodyToGenerateOptions } = await import('./hub.mjs');
+  const body = {
+    messages: [
+      { role: 'system', content: '你是助手' },
+      { role: 'user', content: '查一下 8080 端口' },
+      { role: 'assistant', content: '', tool_calls: [
+        { id: 'call_1', type: 'function', function: { name: 'bash', arguments: '{"cmd":"ss -tlnp"}' } },
+      ] },
+      { role: 'tool', tool_call_id: 'call_1', content: 'LISTEN 0.0.0.0:8080' },
+    ],
+    tools: [{ type: 'function', function: { name: 'bash', description: 'run', parameters: {} } }],
+  };
+  const opts = openaiBodyToGenerateOptions('qoder', 'm', body);
+  // assistant 的 tool_calls 必须变成 IR 的 tool-call 块
+  const asst = opts.messages.find((m) => m.role === 'assistant');
+  assert.ok(asst, 'assistant 消息丢失');
+  const call = (asst.content ?? []).find((b) => b.type === 'tool-call');
+  assert.ok(call, 'assistant 的 tool_calls 未翻译成 tool-call 块——adapter 会把整段工具历史剔除');
+  assert.equal(call.id, 'call_1');
+  assert.equal(call.name, 'bash');
+  // role:'tool' 必须变成 IR 的 user 消息携带 tool-result 块
+  const toolMsg = opts.messages.find((m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool-result'));
+  assert.ok(toolMsg, "role:'tool' 未翻译成 tool-result 块");
+  const result = toolMsg.content.find((b) => b.type === 'tool-result');
+  assert.equal(result.toolCallId, 'call_1');
+  assert.match(result.content[0].text, /8080/);
+  // 工具定义仍保留
+  assert.equal(opts.tools.length, 1);
+  assert.equal(opts.tools[0].name, 'bash');
+});
+
 await test('lastUsage：三家拼写归一 + 缺失不发', async () => {
   if (!hubOK) throw Object.assign(new Error('hub 不在本机'), { skip: true });
   const { lastUsage } = await import('./hub.mjs');
