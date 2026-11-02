@@ -198,6 +198,33 @@ await test('infer.stream / listModels：无可用 adapter 时如实拒绝', asyn
     (e) => e.code === 'E_NOT_IMPLEMENTED');
 });
 
+await test('lastUsage：三家拼写归一 + 缺失不发', async () => {
+  if (!hubOK) throw Object.assign(new Error('hub 不在本机'), { skip: true });
+  const { lastUsage } = await import('./hub.mjs');
+  // DSH 的 TokenUsage 形状（camelCase）
+  const a = lastUsage([{ type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } }]);
+  assert.equal(a.prompt_tokens, 10);
+  assert.equal(a.completion_tokens, 5);
+  assert.equal(a.total_tokens, 15, '缺 total 时应由 in+out 推出');
+  // 官方 OpenAI 形状（snake_case）+ 明细
+  const b = lastUsage([{ type: 'usage', usage: {
+    prompt_tokens: 100, completion_tokens: 20, total_tokens: 120,
+    cached_tokens: 30, reasoning_tokens: 7,
+  } }]);
+  assert.equal(b.prompt_tokens_details.cached_tokens, 30);
+  assert.equal(b.completion_tokens_details.reasoning_tokens, 7);
+  // 多次上报取最后一次
+  const c = lastUsage([
+    { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } },
+    { type: 'usage', usage: { inputTokens: 99, outputTokens: 42 } },
+  ]);
+  assert.equal(c.prompt_tokens, 99);
+  // 没有任何 usage chunk → undefined（关键：不能伪造成 0）
+  assert.equal(lastUsage([{ type: 'text-delta', text: 'hi' }, { type: 'finish', reason: 'stop' }]), undefined);
+  // 有 usage chunk 但一个 token 字段都没有 → 同样 undefined
+  assert.equal(lastUsage([{ type: 'usage', usage: {} }]), undefined);
+});
+
 fs.rmSync(tmp, { recursive: true, force: true });
 
 const failed = results.filter((r) => !r.ok);

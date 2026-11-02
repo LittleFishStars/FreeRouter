@@ -424,8 +424,61 @@ function chunksToSSE(model, chunks) {
   }
   const last = [...chunks].reverse().find((c) => c.type === 'finish');
   frame({}, last ? (last.reason === 'stop' ? 'stop' : String(last.reason)) : (sawText ? 'stop' : 'stop'));
+  // usage 帧必须发：否则 Go 侧的 relay 解码器拿不到任何 usage，
+  // requests.in_tokens/out_tokens 恒为 NULL，仪表盘按 token 聚合的图
+  // 永远是平的（2026-11-02 用户报「今天明明有调用，但仪表盘没有显示」）。
+  // OpenAI 的约定是 include_usage 时**最后**一个 chunk 独占 usage、
+  // choices 为空数组——Go 侧 openai 解码器按这个形状读。
+  const usage = lastUsage(chunks);
+  if (usage !== undefined) {
+    out += 'data: ' + JSON.stringify({
+      id, object: 'chat.completion.chunk', created, model,
+      choices: [], usage,
+    }) + '\n\n';
+  }
   out += 'data: [DONE]\n\n';
   return out;
+}
+
+/**
+ * 从 chunk 流里取最后一次上报的 token 用量，转成 OpenAI 的 usage 形状。
+ *
+ * 为什么"取最后一次"：adapter 可能在收尾再报一次累计值（多见），
+ * 最后一次是权威。一个都没有 → undefined（**不发**，而不是发 0）。
+ *
+ * 字段别名为什么这么多：各家 adapter 的 chunk.usage 形状不统一
+ * （DSH 的 TokenUsage 是 inputTokens/outputTokens，官方 OpenAI 是
+ * prompt_tokens/completion_tokens，trae 的 SSE 原文是 snake_case）。
+ * 这里做一次归一，比让 Go 侧三处各写一份判别名可靠。
+ */
+export function lastUsage(chunks) {
+  let found;
+  for (const c of chunks) {
+    if (c && c.type === 'usage' && c.usage && typeof c.usage === 'object') found = c.usage;
+  }
+  if (found === undefined) return undefined;
+  const num = (...names) => {
+    for (const n of names) {
+      const v = found[n];
+      if (typeof v === 'number' && Number.isFinite(v)) return v;
+    }
+    return undefined;
+  };
+  const inp = num('prompt_tokens', 'inputTokens', 'input_tokens');
+  const out = num('completion_tokens', 'outputTokens', 'output_tokens');
+  const total = num('total_tokens', 'totalTokens', 'total_tokens');
+  const cached = num('cached_tokens', 'cacheReadTokens', 'cache_read_input_tokens');
+  const reasoning = num('reasoning_tokens', 'reasoningTokens', 'reasoning_tokens');
+  const usage = {};
+  if (inp !== undefined) usage.prompt_tokens = inp;
+  if (out !== undefined) usage.completion_tokens = out;
+  if (total !== undefined) usage.total_tokens = total;
+  else if (inp !== undefined && out !== undefined) usage.total_tokens = inp + out;
+  if (cached !== undefined) usage.prompt_tokens_details = { cached_tokens: cached };
+  if (reasoning !== undefined) usage.completion_tokens_details = { reasoning_tokens: reasoning };
+  // 一个 token 字段都没解出来 → 当作"上游没报"，不发 usage。
+  if (usage.prompt_tokens === undefined && usage.completion_tokens === undefined) return undefined;
+  return usage;
 }
 
 // chunksToCompletion 把 StreamChunk 流合成一条**非流式** chat.completion。
@@ -456,10 +509,14 @@ export function chunksToCompletion(model, chunks) {
   const message = { role: 'assistant', content };
   if (reasoning) message.reasoning_content = reasoning;
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
+  const usage = lastUsage(chunks);
   return {
     id, object: 'chat.completion', created, model,
     choices: [{ index: 0, message, finish_reason: finish }],
-    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    // 上游没报就不写 usage 字段（三态：缺席 = 未知，与"明确为 0"不同）。
+    // 以前这里写死 0/0/0，把"没拿到"伪装成"确实用了 0 token"，
+    // 计量台账因此永远显示零消耗（05-storage.md §9 明令禁止）。
+    ...usage !== undefined ? { usage } : {},
   };
 }
 

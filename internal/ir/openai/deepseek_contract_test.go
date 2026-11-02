@@ -287,3 +287,44 @@ func TestDeepSeekThinkingCapabilities(t *testing.T) {
 		t.Errorf("ThinkingSignature=true：OpenAI 侧没有签名承载位，声明它会让签名被静默丢弃")
 	}
 }
+
+// TestDeepSeekStreamUsageFrame 流式 usage 帧（choices 为空数组）必须解成 EvUsage。
+//
+// 为什么单列一条：这是仪表盘「今天有调用但没数据」的链路末端——sidecar
+// 现在会按 OpenAI 约定把 usage 放进**最后一个 choices 为空的 chunk**，
+// 而解码器必须先记 usage 再因 choices 为空 continue。若顺序写反，
+// 每一帧 usage 都会被静默吞掉，requests.in_tokens 继续恒 NULL。
+func TestDeepSeekStreamUsageFrame(t *testing.T) {
+	sse := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"答案\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		// 关键帧：choices 为空、usage 独占
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":123,\"completion_tokens\":45,\"total_tokens\":168,\"prompt_tokens_details\":{\"cached_tokens\":100},\"completion_tokens_details\":{\"reasoning_tokens\":30}}}\n\n" +
+		"data: [DONE]\n\n"
+
+	rd := Adapter().NewStreamReader(strings.NewReader(sse), ir.DecodeOptions{RequestID: "r1"})
+	var usage *ir.Usage
+	for {
+		ev, err := rd.Next()
+		if err != nil {
+			break
+		}
+		if ev.Type == ir.EvUsage {
+			usage = ev.Usage
+		}
+	}
+	if usage == nil {
+		t.Fatalf("usage 帧被吞掉了（choices 为空时应先记 usage 再跳过）")
+	}
+	if usage.InputTokens == nil || *usage.InputTokens != 123 {
+		t.Errorf("in_tokens = %v，期望 123", usage.InputTokens)
+	}
+	if usage.OutputTokens == nil || *usage.OutputTokens != 45 {
+		t.Errorf("out_tokens = %v，期望 45", usage.OutputTokens)
+	}
+	if usage.CacheReadTokens == nil || *usage.CacheReadTokens != 100 {
+		t.Errorf("cache_read = %v，期望 100（缓存命中率依赖它）", usage.CacheReadTokens)
+	}
+	if usage.ReasoningTokens == nil || *usage.ReasoningTokens != 30 {
+		t.Errorf("reasoning_tokens = %v，期望 30", usage.ReasoningTokens)
+	}
+}

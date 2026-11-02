@@ -499,13 +499,27 @@ func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxy
 	return true, nil
 }
 
-// v1SwitchBudgetMs 是候选切换的总时长预算（M6 接线）。
+// v1SwitchBudgetMs 是候选切换的时长预算（M6 接线，2026-11-02 重新定义）。
 //
-// 为什么 5s：与 routing.DefaultMaxSwitches=3 同属「一批候选同时坏」的
-// 防御——次数上限限制打击面，时长上限避免用户干等（客户端重试比我们
-// 内部慢慢换路体验好）。数字写在装配层（本包）：routing 明确把
-// MaxDurationMs 定为装配参数（order.go 注释），协议语义层不养第二个常量。
-const v1SwitchBudgetMs = 5000
+// 语义修正：它约束的是**切换窗口**——从「第一个候选失败」到「放弃换路」
+// 这段时间里我方额外付出的等待，**不包含第一个候选本身的耗时**。
+//
+// 原实现把「请求开始至今的总耗时」与它比较，于是出现两种畸形：
+//   - 第一个候选慢（上游 402 花了 5.6s）→ 预算当场耗尽 → attempted=1，
+//     `latest` 后面几十个候选一次都没试，直接 502。生产日志实证：
+//     「switching budget exhausted, attempted:1, elapsed_ms:5739」。
+//   - 而单次尝试本身的超时是 60s（pool.ResponseHeaderTimeout），
+//     5s 的总预算与 60s 的单次上限自相矛盾——合法的一次慢尝试
+//     就必然吃掉全部切换预算。
+//
+// 为什么仍然要有上限（不能直接取消）：03-strategy.md §4.5 的意图是防
+// 「一批候选同时坏」时我们依次打遍全池，把重试放大成对上游的小规模打击、
+// 进而触发风控伤到贡献者账号。所以限额保留，只是改成**计量真正该计量的
+// 那一段**：第一个候选失败之后的额外切换时间。
+//
+// 取值 8s：够试 2~3 个快速失败候选（正常失败在 100~600ms 量级，
+// 见生产日志 elapsed_ms），又不至于让用户在「全池都慢」时干等太久。
+const v1SwitchBudgetMs = 8000
 
 // proxyV1 是三端点共享的编排入口。
 // 失败切换：按 CandidateSource 顺序逐候选尝试；流式路径一旦
@@ -727,21 +741,32 @@ func writeV1ErrorSafe(w http.ResponseWriter, code, message, requestID string) {
 // no_candidate（它需要自己的错误形状：anthropic 形态与 OpenAI 形态不同）。
 func (s *Server) runCandidates(ctx context.Context, w http.ResponseWriter, requestID string,
 	cs CandidateSource, cands []Candidate, attempt func(Candidate) (bool, *AttemptFailure), onExhausted func()) {
-	start := time.Now()
+	// 注意：这里刻意不取「请求开始时刻」做预算基准——切换预算只该计量
+	// 切换窗口内的开销（见 v1SwitchBudgetMs），第一个候选的耗时不属于它。
 	var notifier CandidateOutcomeNotifier
 	if n, ok := cs.(CandidateOutcomeNotifier); ok {
 		notifier = n
 	}
 	budget := routing.SwitchBudget{MaxDurationMs: v1SwitchBudgetMs}
+	// switchStart 从**第一个候选失败**之后才开始计时（见 v1SwitchBudgetMs
+	// 注释：第一个候选的耗时属于「请求本身必须付的代价」，不是切换开销）。
+	// 零值表示还没进入切换窗口——那时不该做任何预算判定。
+	var switchStart time.Time
 	for i, cand := range cands {
 		if i > 0 {
-			budget.ElapsedMs = time.Since(start).Milliseconds()
+			if !switchStart.IsZero() {
+				budget.ElapsedMs = time.Since(switchStart).Milliseconds()
+			}
 			if !budget.CanSwitch(false, i) {
 				s.log.Warn("v1 switching budget exhausted",
 					"request_id", requestID, "attempted", i, "elapsed_ms", budget.ElapsedMs)
 				onExhausted()
 				return
 			}
+		}
+		if switchStart.IsZero() && i > 0 {
+			// 能走到这里说明第一次切换已获准：切换窗口从此刻起算。
+			switchStart = time.Now()
 		}
 		if ok, fail := attempt(cand); ok {
 			// 成功也要回传：不可用台账靠「一次真实成功」删行（恢复的第一现场）。

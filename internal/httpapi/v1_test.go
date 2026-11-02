@@ -9,12 +9,14 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/config"
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
@@ -945,4 +947,56 @@ func toInt(v any) int64 {
 		return int64(f)
 	}
 	return -1
+}
+
+// slowFailingUpstream 每次调用先睡 delay 再失败（模拟「上游 402 花了 5.6s」那种慢失败）。
+type slowFailingUpstream struct {
+	delay    time.Duration
+	calls    int
+	failUpTo int // 前 failUpTo 次调用失败，之后一次返回成功体
+	okBody   string
+}
+
+func (u *slowFailingUpstream) Call(ctx context.Context, cand Candidate, req ir.Request, stream bool) (*UpstreamCall, error) {
+	u.calls++
+	select {
+	case <-time.After(u.delay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if u.calls <= u.failUpTo {
+		return nil, errSlowFail
+	}
+	return &UpstreamCall{Body: io.NopCloser(strings.NewReader(u.okBody))}, nil
+}
+
+var errSlowFail = errors.New("慢失败（模拟上游 402/超时）")
+
+// TestContractSwitchBudgetExcludesFirstCandidate 切换预算**不含第一个候选的耗时**。
+//
+// 2026-11-02 生产事故：`latest` 有 8 个子模型、几十个候选，但第一个候选
+// （vendor 402）花了 5.6s，旧实现把「请求开始至今」与 5s 预算比较 ⇒
+// 第一次切换就判定预算耗尽（日志 attempted:1, elapsed_ms:5739）⇒ 直接 502，
+// 后面几十个候选一次都没试。预算的意图是「限制切换带来的额外打击面」，
+// 第一个候选的耗时属于请求本身必须付的代价，不该吃掉切换预算。
+func TestContractSwitchBudgetExcludesFirstCandidate(t *testing.T) {
+	// 第一个候选慢失败 5.5s（> 5s 旧预算的判定点），第二个候选成功。
+	up := &slowFailingUpstream{delay: 5500 * time.Millisecond, failUpTo: 1, okBody: `{
+		"id":"c1","model":"deepseek-flash","choices":[{"index":0,
+		"message":{"role":"assistant","content":"好了"},"finish_reason":"stop"}]}`}
+	cs := &fakeCandidates{models: map[string][]Candidate{"smart": {
+		chatCandidate("m1"), chatCandidate("m2"),
+	}}}
+	s := newV1Server(t, up, cs)
+
+	rec := httptest.NewRecorder()
+	s.HandleV1Chat(rec, v1Request("POST", "/v1/chat/completions",
+		`{"model":"smart","messages":[{"role":"user","content":"你好"}]}`))
+
+	if up.calls < 2 {
+		t.Fatalf("只试了 %d 个候选就放弃——慢失败的首个候选吃掉了切换预算", up.calls)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200（第二个候选应被尝试）；body=%s", rec.Code, rec.Body.String())
+	}
 }
