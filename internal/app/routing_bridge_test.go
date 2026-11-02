@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/LittleFishStars/FreeRouter/internal/config"
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
+	"github.com/LittleFishStars/FreeRouter/internal/routing"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
 
@@ -464,5 +466,154 @@ func TestContractRoutingAggregateExcludedRegardlessOfChannel(t *testing.T) {
 	}
 	if len(cands) != 0 {
 		t.Fatalf("聚合模型必须被剔除，得到 %d 条候选", len(cands))
+	}
+}
+
+// seedModelCaps 建一条带能力位的链路（seedModel 不填 efforts/modalities，
+// 而 /v1/models 的能力聚合契约正是围绕这两个字段）。
+func seedModelCaps(t *testing.T, a *App, abstractName, upstreamModel string, ctxWin *int64, efforts, modalities []string) {
+	t.Helper()
+	ctx := context.Background()
+	up, err := a.store.Repos().Models.UpsertUpstream(ctx, "selfhosted", "cap-u-"+abstractName+"-"+upstreamModel,
+		"https://example.com/v1", nil, true)
+	if err != nil {
+		t.Fatalf("建上游失败: %v", err)
+	}
+	var ej, mj *string
+	if len(efforts) > 0 {
+		b, _ := json.Marshal(efforts)
+		s := string(b)
+		ej = &s
+	}
+	if len(modalities) > 0 {
+		b, _ := json.Marshal(modalities)
+		s := string(b)
+		mj = &s
+	}
+	rmID, err := a.store.Repos().Models.UpsertRealModel(ctx, store.RealModel{
+		UpstreamID: up, UpstreamModelID: upstreamModel,
+		ContextWindow: ctxWin, Efforts: ej, Modalities: mj,
+	})
+	if err != nil {
+		t.Fatalf("建真实模型失败: %v", err)
+	}
+	amID, err := a.store.Repos().Models.CreateAbstractModel(ctx, store.AbstractModel{
+		Name: abstractName, DisplayName: abstractName, Status: store.ModelActive, CapabilityMode: "strict",
+	})
+	if err != nil {
+		t.Fatalf("建抽象模型失败: %v", err)
+	}
+	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
+		{AbstractModelID: amID, TargetID: rmID},
+	}); err != nil {
+		t.Fatalf("设候选失败: %v", err)
+	}
+}
+
+// TestContractModelCatalogAggregatesCapabilities：/v1/models 的能力是候选的
+// 聚合结论（窗口取 max、档位与模态取并集），且**绝不外泄候选明细**。
+func TestContractModelCatalogAggregatesCapabilities(t *testing.T) {
+	a := newRoutingTestApp(t)
+	w1, w2 := int64(262144), int64(1048576)
+	// 同一抽象模型下两个候选：窗口不同、档位不同 → 报 max + 并集。
+	ctx := context.Background()
+	up, err := a.store.Repos().Models.UpsertUpstream(ctx, "selfhosted", "agg-u", "https://example.com/v1", nil, true)
+	if err != nil {
+		t.Fatalf("建上游失败: %v", err)
+	}
+	mk := func(model string, win *int64, eff []string, mod []string) string {
+		var ej, mj *string
+		if eff != nil {
+			b, _ := json.Marshal(eff)
+			s := string(b)
+			ej = &s
+		}
+		if mod != nil {
+			b, _ := json.Marshal(mod)
+			s := string(b)
+			mj = &s
+		}
+		id, err := a.store.Repos().Models.UpsertRealModel(ctx, store.RealModel{
+			UpstreamID: up, UpstreamModelID: model, ContextWindow: win, Efforts: ej, Modalities: mj,
+		})
+		if err != nil {
+			t.Fatalf("建真实模型失败: %v", err)
+		}
+		return id
+	}
+	rm1 := mk("agg-a", &w1, []string{"off", "low"}, []string{"text"})
+	rm2 := mk("agg-b", &w2, []string{"off", "high", "max"}, []string{"text", "image"})
+	amID, err := a.store.Repos().Models.CreateAbstractModel(ctx, store.AbstractModel{
+		Name: "agg", DisplayName: "agg", Status: store.ModelActive, CapabilityMode: "strict",
+	})
+	if err != nil {
+		t.Fatalf("建抽象模型失败: %v", err)
+	}
+	if err := a.store.Repos().Models.SetCandidates(ctx, amID, []store.Candidate{
+		{AbstractModelID: amID, TargetID: rm1}, {AbstractModelID: amID, TargetID: rm2},
+	}); err != nil {
+		t.Fatalf("设候选失败: %v", err)
+	}
+
+	cat := modelCatalog{models: a.store.Repos().Models, resolver: routing.NewResolver(newAbstractModelBridge(a))}
+	caps, err := cat.ListModelCapabilities(ctx)
+	if err != nil {
+		t.Fatalf("聚合失败: %v", err)
+	}
+	c, ok := caps["agg"]
+	if !ok {
+		t.Fatalf("agg 缺席：%v", caps)
+	}
+	if c.ContextWindow != w2 {
+		t.Errorf("ContextWindow = %d，期望取候选最大值 %d", c.ContextWindow, w2)
+	}
+	want := []string{"off", "low", "high", "max"}
+	if len(c.Efforts) != len(want) {
+		t.Errorf("Efforts = %v，期望并集且按 IR 档位序 %v", c.Efforts, want)
+	} else {
+		for i := range want {
+			if c.Efforts[i] != want[i] {
+				t.Errorf("Efforts[%d]=%q，期望 %q（全部 %v）", i, c.Efforts[i], want[i], c.Efforts)
+			}
+		}
+	}
+	if len(c.Modalities) != 2 || c.Modalities[0] != "image" || c.Modalities[1] != "text" {
+		t.Errorf("Modalities = %v，期望并集 [image text]", c.Modalities)
+	}
+	// 红线 C2：聚合值里不能混进真实模型名/上游 id。
+	b, _ := json.Marshal(c)
+	if strings.Contains(string(b), "agg-a") || strings.Contains(string(b), "agg-b") {
+		t.Errorf("能力聚合泄露了候选明细：%s", b)
+	}
+}
+
+// TestContractModelCatalogNoResolverIsNil：未注入 resolver 时能力面整体缺席，
+// 而不是报一份编造的能力（客户端会把零值读成「明确不支持」）。
+func TestContractModelCatalogNoResolverIsNil(t *testing.T) {
+	a := newRoutingTestApp(t)
+	seedModelCaps(t, a, "plain", "plain-m", nil, nil, nil)
+	cat := modelCatalog{models: a.store.Repos().Models}
+	caps, err := cat.ListModelCapabilities(context.Background())
+	if caps != nil || err != nil {
+		t.Fatalf("无 resolver 应回 (nil,nil)，得到 caps=%v err=%v", caps, err)
+	}
+}
+
+// TestContractModelCatalogSkipsEmptyCandidates：候选为空的模型从能力表缺席。
+func TestContractModelCatalogSkipsEmptyCandidates(t *testing.T) {
+	a := newRoutingTestApp(t)
+	ctx := context.Background()
+	if _, err := a.store.Repos().Models.CreateAbstractModel(ctx, store.AbstractModel{
+		Name: "lonely2", DisplayName: "lonely2", Status: store.ModelActive, CapabilityMode: "strict",
+	}); err != nil {
+		t.Fatalf("建抽象模型失败: %v", err)
+	}
+	cat := modelCatalog{models: a.store.Repos().Models, resolver: routing.NewResolver(newAbstractModelBridge(a))}
+	caps, err := cat.ListModelCapabilities(ctx)
+	if err != nil {
+		t.Fatalf("聚合失败: %v", err)
+	}
+	if _, has := caps["lonely2"]; has {
+		t.Errorf("无候选模型不该出现在能力表里：%v", caps)
 	}
 }

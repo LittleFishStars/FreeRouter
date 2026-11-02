@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LittleFishStars/FreeRouter/internal/ir"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 	"github.com/LittleFishStars/FreeRouter/internal/upstream/dshprovider"
 )
@@ -324,12 +325,58 @@ func modelInfoInputOf(m dshprovider.ModelInfo) ModelInfoInput {
 			in.ModalitiesJSON = string(b)
 		}
 	}
-	if len(m.Efforts) > 0 {
-		if b, err := json.Marshal(m.Efforts); err == nil {
+	if eff := canonicalEfforts(m.Efforts); len(eff) > 0 {
+		if b, err := json.Marshal(eff); err == nil {
 			in.EffortsJSON = string(b)
 		}
 	}
 	return in
+}
+
+// canonicalEfforts 把目录上报的档位拼写归一到 IR 的档位词表。
+//
+// 为什么必须归一（routing/candidates.go 的注释一直声称"在目录刷新器归一"，
+// 但这件事以前**没有做**）：候选过滤是**字符串全等比对**，目录给 `none`
+// 而请求侧是 `off`（IR 口径）时永远匹配不上——一个声明了五档的模型，
+// 在 `reasoning_effort=off` 的请求上反而会被剔除。各家拼写本来就不统一
+// （官方 Chat 用 none/low/high/max，loomy 用 none/low/medium/high/xhigh，
+// Anthropic 用 enabled/disabled），不归一等于把方言差异漏进路由判定。
+//
+// 映射与 ir/openai 的 decodeEffort 同一套口径（minimal→low、medium→high、
+// xhigh→max），归一后去重——medium 与 high 落同一档是刻意的：IR 没有更细的位。
+func canonicalEfforts(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		e := strings.ToLower(strings.TrimSpace(raw))
+		if e == "" {
+			continue
+		}
+		var canon string
+		switch e {
+		case "off", "none", "disabled":
+			canon = string(ir.EffortOff)
+		case "minimal", "low":
+			canon = string(ir.EffortLow)
+		case "medium", "high":
+			canon = string(ir.EffortHigh)
+		case "xhigh", "max":
+			canon = string(ir.EffortMax)
+		default:
+			// 不认识的拼写照原样保留：它可能是某个上游特有的档位名，
+			// 丢弃会让候选能力面比上游实际提供的更窄（静默降级）。
+			canon = e
+		}
+		if seen[canon] {
+			continue
+		}
+		seen[canon] = true
+		out = append(out, canon)
+	}
+	return out
 }
 
 // upsertModel 把一条目录条目转成仓储行并 upsert。
@@ -397,8 +444,8 @@ func (r *ModelRefresher) upsertModel(ctx context.Context, upstreamID string, m d
 			row.Modalities = ptr(string(b))
 		}
 	}
-	if len(m.Efforts) > 0 {
-		if b, err := json.Marshal(m.Efforts); err == nil {
+	if eff := canonicalEfforts(m.Efforts); len(eff) > 0 {
+		if b, err := json.Marshal(eff); err == nil {
 			row.Efforts = ptr(string(b))
 		}
 	}

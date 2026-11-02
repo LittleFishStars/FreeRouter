@@ -92,10 +92,16 @@ func (a *App) fetchHTTPModels(ctx context.Context, u store.Upstream) ([]dshprovi
 		if name == "" {
 			name = it.ID
 		}
-		out = append(out, dshprovider.ModelInfo{
-			UpstreamModelID: it.ID,
-			DisplayName:     name,
-		})
+		mi := dshprovider.ModelInfo{UpstreamModelID: it.ID, DisplayName: name}
+		// 这三个字段上面已经解析出来了，以前却没塞进返回值——等于「读了就扔」。
+		// 能力位丢失会让候选过滤按最保守口径走（无 efforts ⇒ 只认 off/low），
+		// 用户带 reasoning_effort=high 的请求会被整池剔除成 503。
+		if it.ContextWindow != nil && *it.ContextWindow > 0 {
+			mi.ContextWindow = it.ContextWindow
+		}
+		mi.Modalities = it.Modalities
+		mi.Efforts = it.Efforts
+		out = append(out, mi)
 	}
 	return out, nil
 }
@@ -139,9 +145,11 @@ func (a *App) fetchStaticModelCatalog(ctx context.Context, provider string) ([]d
 	}
 	var res struct {
 		Models []struct {
-			ID            string `json:"id"`
-			DisplayName   string `json:"display_name"`
-			ContextWindow int64  `json:"context_window"`
+			ID            string   `json:"id"`
+			DisplayName   string   `json:"display_name"`
+			ContextWindow int64    `json:"context_window"`
+			Efforts       []string `json:"efforts"`
+			Modalities    []string `json:"modalities"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
@@ -154,6 +162,11 @@ func (a *App) fetchStaticModelCatalog(ctx context.Context, provider string) ([]d
 			cw := int(m.ContextWindow)
 			mi.ContextWindow = &cw
 		}
+		// 能力位必须带上：以前这里只搬 id/展示名/窗口，efforts 被丢掉 ⇒
+		// real_models.efforts 恒 NULL ⇒ 路由按「未声明=仅 off/low」过滤，
+		// 带 reasoning_effort=high/max 的请求整池 503（2026-11-02）。
+		mi.Efforts = m.Efforts
+		mi.Modalities = m.Modalities
 		out = append(out, mi)
 	}
 	return out, nil

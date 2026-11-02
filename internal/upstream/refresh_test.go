@@ -511,3 +511,40 @@ func TestContractRefreshStaticCatalogForOAuthUpstream(t *testing.T) {
 		t.Errorf("落库计数 = %d，期望 1", res.Models)
 	}
 }
+
+// TestContractCanonicalEfforts 档位拼写归一（2026-11-02）。
+//
+// 候选过滤是字符串全等比对，而各家拼写不一（官方 none/low/high/max、
+// loomy 带 medium/xhigh、Anthropic 用 disabled）：不归一的话一个声明了
+// 五档的模型在 reasoning_effort=off 的请求上反而会被剔除（目录给 none、
+// IR 侧是 off）。routing/candidates.go 的注释一直声称"在刷新器归一"，
+// 此前并没有实现——本用例把它钉住。
+func TestContractCanonicalEfforts(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"官方四档", []string{"none", "low", "high", "max"}, []string{"off", "low", "high", "max"}},
+		{"loomy 五档", []string{"none", "low", "medium", "high", "xhigh"}, []string{"off", "low", "high", "max"}},
+		{"minimal 归 low", []string{"minimal", "high"}, []string{"low", "high"}},
+		{"去重且保序", []string{"high", "medium"}, []string{"high"}},
+		{"disabled 归 off", []string{"disabled", "enabled"}, []string{"off", "enabled"}},
+		{"未知拼写照原样保留", []string{"turbo"}, []string{"turbo"}},
+		{"空输入", nil, nil},
+		{"全空白", []string{"", "  "}, nil},
+		{"大小写与空白", []string{" HIGH ", "Max"}, []string{"high", "max"}},
+	}
+	for _, c := range cases {
+		got := canonicalEfforts(c.in)
+		if len(got) != len(c.want) {
+			t.Errorf("%s: got %v，期望 %v", c.name, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("%s: [%d]=%q，期望 %q（全部 got=%v）", c.name, i, got[i], c.want[i], got)
+			}
+		}
+	}
+}

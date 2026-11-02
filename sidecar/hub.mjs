@@ -349,7 +349,14 @@ export async function listModels({ provider, credentialRef, apiKey }) {
     displayName: m.name || m.id,
     contextWindow: typeof m.contextWindow === 'number' ? m.contextWindow : null,
     modalities: Array.isArray(m.inputModalities) ? m.inputModalities : (m.modalities || []),
-    efforts: Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts : [],
+    // ⚠️ 档位字段名两家不一：hub 共享骨架的条目叫 `reasoningEfforts`，而本地
+    // adapter（astudio/loomy 的目录表）叫 `efforts`。之前只读前者 ⇒ efforts
+    // 恒为空数组 ⇒ Go 落库 NULL ⇒ 路由按「未声明=仅 off/low」保守过滤，
+    // high/max 请求整池被剔（2026-11-02「DSH 拿不到推理等级」根因之一）。
+    // 两个名字都读，谁先非空用谁。
+    efforts: Array.isArray(m.reasoningEfforts) && m.reasoningEfforts.length > 0
+      ? m.reasoningEfforts
+      : (Array.isArray(m.efforts) ? m.efforts : []),
   }));
 }
 

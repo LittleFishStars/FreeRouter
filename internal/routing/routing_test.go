@@ -625,3 +625,49 @@ func equalIDs(got, want []string) bool {
 	}
 	return true
 }
+
+// TestContractFilterEffortUnknownPasses 档位**未声明**时候选放行（2026-11-02 口径修正）。
+//
+// 原实现把「不知道」当成「不支持」，而 relay 上游的目录来源（hub toModelInfo）
+// 压根不输出档位字段 ⇒ 全池 efforts 为空 ⇒ 带 reasoning_effort=high 的请求
+// 被剔成 no_candidate 503，用户完全无法使用且无自愈路径。
+// 与 context_window 的 2026-10-30 修正是同一条哲学：能力未知不构成剔除理由。
+func TestContractFilterEffortUnknownPasses(t *testing.T) {
+	cw := int64(131072)
+	paths := []Path{
+		{RealModel: *mkReal("rm20", "a", "m1"), Caps: Capabilities{ContextWindow: &cw, SupportsTools: true}},                                          // 档位未知
+		{RealModel: *mkReal("rm21", "b", "m2"), Caps: Capabilities{ContextWindow: &cw, SupportsTools: true, Efforts: []string{"off", "low"}}},         // 明确只到 low
+		{RealModel: *mkReal("rm22", "c", "m3"), Caps: Capabilities{ContextWindow: &cw, SupportsTools: true, Efforts: []string{"off", "low", "high"}}}, // 明确支持 high
+	}
+	profile := RequestProfile{NeedEffort: "high", EstInputTokens: 100, MaxOutputTokens: 100}
+
+	kept, outs := FilterPaths(profile, paths)
+	// rm20（未知）与 rm22（声明支持）留下；rm21 被确凿剔除。
+	if len(kept) != 2 || kept[0].RealModel.ID != "rm20" || kept[1].RealModel.ID != "rm22" {
+		t.Fatalf("未知档位应放行、明确不支持仍剔除: kept=%+v", kept)
+	}
+	if len(outs) != 1 || outs[0].Reason != "effort" || outs[0].PathID != "rm21" {
+		t.Fatalf("应只剔 rm21 且原因为 effort: %+v", outs)
+	}
+}
+
+// TestContractEffortSupportedDeclaredStrict 声明了档位集合时照旧严格比对——
+// 放行未知不等于放弃已知（否则就是另一头的静默降级）。
+func TestContractEffortSupportedDeclaredStrict(t *testing.T) {
+	cases := []struct {
+		declared []string
+		need     string
+		want     bool
+	}{
+		{nil, "max", true},                     // 未知 → 放行
+		{[]string{}, "max", true},              // 空集同上
+		{[]string{"off", "low"}, "max", false}, // 声明了就照声明判
+		{[]string{"off", "low", "max"}, "max", true},
+		{[]string{"off"}, "off", true},
+	}
+	for _, c := range cases {
+		if got := effortSupported(Capabilities{Efforts: c.declared}, c.need); got != c.want {
+			t.Errorf("effortSupported(declared=%v, need=%q) = %v，期望 %v", c.declared, c.need, got, c.want)
+		}
+	}
+}

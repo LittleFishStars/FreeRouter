@@ -177,12 +177,25 @@ func modalitySupported(caps Capabilities, need string) bool {
 	return false
 }
 
-// effortSupported 档位判定：候选未声明档位集合时按「仅 off/low」保守处理
-// （无思考能力的模型占池子多数，宁缺勿滥；真支持 high 的模型目录必然带
-// efforts 字段——01-catalog.md §2.3 的映射保证）。
+// effortSupported 档位判定：**候选未声明档位集合时放行**。
+//
+// 口径修正（2026-11-02，与同文件 context_window 那条 2026-10-30 的实测教训同构）：
+// 原实现按「未声明 = 只支持 off/low」剔除，把「不知道」当成了「不支持」。
+// 而 efforts 的实际来源决定了这个假设不成立——relay 上游的目录经
+// dsh-providers-hub 的 toModelInfo 只输出 id/name/inputModalities，
+// **根本没有档位字段**（不是模型没档位，是我们拿不到）。于是：
+//   - 剔除的最坏后果：整个池被剔空 → no_candidate 503，用户完全无法使用，
+//     且客户端没有任何自愈路径（改参数也没用）；
+//   - 放行的最坏后果：请求打到上游，不支持思考的模型忽略该字段或回 400
+//     （invalid_request，错误现场准确、客户端可自愈）。
+//
+// 两者取其轻——与 SupportsTools 恒真的处理是同一条哲学：**能力未知不构成
+// 剔除理由，因为剔除把「上游可能拒绝」升级成了「我们必定拒绝」**。
+//
+// 声明了档位集合时照旧严格比对（那是确凿事实，不是未知）。
 func effortSupported(caps Capabilities, need string) bool {
 	if len(caps.Efforts) == 0 {
-		return need == "off" || need == "low"
+		return true
 	}
 	for _, e := range caps.Efforts {
 		// canonical 档位映射（off ↔ none 等）在目录刷新器归一，这里只比对。

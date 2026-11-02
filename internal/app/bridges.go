@@ -15,10 +15,14 @@ import (
 	"context"
 	"fmt"
 	"github.com/LittleFishStars/FreeRouter/internal/idgen"
+	"sort"
 	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
+	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
+	"github.com/LittleFishStars/FreeRouter/internal/ir"
 	"github.com/LittleFishStars/FreeRouter/internal/meter"
+	"github.com/LittleFishStars/FreeRouter/internal/routing"
 	"github.com/LittleFishStars/FreeRouter/internal/store"
 )
 
@@ -170,6 +174,114 @@ func (a *App) groupIDsSource(ctx context.Context, accountID string) ([]string, b
 // disabled 不出现、deprecated 仍可见（弃用模型必须能被看见才能迁移）。
 type modelCatalog struct {
 	models *store.ModelRepo
+	// resolver 复用路由的候选展开（含嵌套抽象模型的递归与弃用链），
+	// 这样 /v1/models 报出的能力与推理时 FilterPaths 看到的候选**同源**。
+	// 两处各写一份展开是迟早漂移的重复实现——而漂移的表现是
+	// 「列表说支持 max，实际请求被剔成 503」，比不报能力更糟。
+	// nil = 未注入（测试场景）：能力面整体缺席，handler 按未声明处理。
+	resolver *routing.Resolver
+}
+
+// effortOrder 是档位的对外稳定次序（并集后按它排，不按 DB 读序）。
+//
+// 为什么必须定序：/v1/models 是「目录快照」语义，同一份配置两次读
+// 应当逐字节相同；并集走 map 会随 Go 的随机序变，客户端会看到
+// 档位列表在 high/max 之间反复跳。
+var effortOrder = map[string]int{
+	string(ir.EffortOff):  0,
+	string(ir.EffortLow):  1,
+	string(ir.EffortHigh): 2,
+	string(ir.EffortMax):  3,
+}
+
+// ListModelCapabilities 实现 httpapi.ModelCapabilitySource。
+//
+// 聚合口径（每一处都有理由，不是随手取个值）：
+//   - ContextWindow 取候选**最大值**：路由按「有候选装得下就能服务」过滤，
+//     报最小值会低估能力，让客户端提前放弃一个其实能服务的模型；
+//   - Efforts / Modalities 取**并集**：只要有一个候选支持，请求就可能被服务；
+//   - 没有 max_output_tokens 可报：real_models 只有 context_window 列，
+//     上游输出上限我们并不掌握——**留空而不是编一个数**（05-storage.md
+//     「没有可靠数字时不填」的同一纪律）。
+//
+// 只报聚合结论、绝不报候选明细（红线 C2：真实模型名与池结构对外不可见）。
+func (m modelCatalog) ListModelCapabilities(ctx context.Context) (map[string]httpapi.ModelCapability, error) {
+	if m.resolver == nil {
+		return nil, nil
+	}
+	rows, err := m.models.ListAbstractModels(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]httpapi.ModelCapability, len(rows))
+	for _, am := range rows {
+		resolved, rerr, err := m.resolver.Resolve(ctx, am.Name)
+		if err != nil {
+			// 存储故障：整体报错，让 handler 降级成"无能力"而不是报半截。
+			return nil, err
+		}
+		if rerr != nil || len(resolved.Candidates) == 0 {
+			// 解析不出候选（空候选集/弃用链断裂）：这个模型没有可报的能力，
+			// 缺席比报一份零值诚实——零值会被客户端读成"明确不支持"。
+			continue
+		}
+		var cw int64
+		efforts := map[string]bool{}
+		modalities := map[string]bool{}
+		for _, c := range resolved.Candidates {
+			if c.ContextWindow != nil && *c.ContextWindow > cw {
+				cw = *c.ContextWindow
+			}
+			for _, e := range c.Efforts {
+				efforts[e] = true
+			}
+			for _, md := range c.Modalities {
+				modalities[md] = true
+			}
+		}
+		cap0 := httpapi.ModelCapability{ContextWindow: cw}
+		if len(efforts) > 0 {
+			cap0.Efforts = sortedEfforts(efforts)
+		}
+		if len(modalities) > 0 {
+			cap0.Modalities = sortedKeys(modalities)
+		}
+		out[am.Name] = cap0
+	}
+	return out, nil
+}
+
+// sortedEfforts 按 IR 档位序输出并集（未知拼写垫底、按字典序稳定）。
+func sortedEfforts(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for e := range set {
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		oi, oki := effortOrder[out[i]]
+		if !oki {
+			oi = len(effortOrder) + 1
+		}
+		oj, okj := effortOrder[out[j]]
+		if !okj {
+			oj = len(effortOrder) + 1
+		}
+		if oi != oj {
+			return oi < oj
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
+// sortedKeys 把集合摊平成稳定序（同上，为的是响应逐字节可复现）。
+func sortedKeys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (m modelCatalog) ListModelIDs(ctx context.Context) ([]string, error) {

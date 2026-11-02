@@ -16,6 +16,7 @@ import (
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
 	"github.com/LittleFishStars/FreeRouter/internal/httpapi"
 	"github.com/LittleFishStars/FreeRouter/internal/meter"
+	"github.com/LittleFishStars/FreeRouter/internal/routing"
 	"github.com/LittleFishStars/FreeRouter/internal/webui"
 )
 
@@ -41,7 +42,10 @@ func (a *App) buildServer() *httpapi.Server {
 	// 是占位通道兼容层（httpapi 既有 v1 测试用 InjectTestAccount 无
 	// KeyPrincipal；生产带 Key 流量走严格判定），迁移后删。
 	vis := a.newVisibilityDeps(
-		modelCatalog{models: a.store.Repos().Models},
+		// resolver 与候选源同源：/v1/models 报出的能力必须与推理时
+		// FilterPaths 看到的候选一致，否则会出现「列表说支持 max、
+		// 实际请求被剔成 503」这种最难解释的不一致。
+		modelCatalog{models: a.store.Repos().Models, resolver: routing.NewResolver(newAbstractModelBridge(a))},
 		newRoutingCandidates(a),
 	)
 

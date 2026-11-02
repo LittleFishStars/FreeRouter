@@ -848,3 +848,101 @@ func TestContractV1ModelRetrieve(t *testing.T) {
 		t.Errorf("错误码应为 model_not_found；body=%s", rec2.Body.String())
 	}
 }
+
+// capabilityCatalog 是带能力面的目录 fake（同时实现两个接口）。
+type capabilityCatalog struct {
+	fakeCatalog
+	caps map[string]ModelCapability
+	err  error
+}
+
+func (c capabilityCatalog) ListModelCapabilities(ctx context.Context) (map[string]ModelCapability, error) {
+	return c.caps, c.err
+}
+
+// TestContractV1ModelsCarriesCapabilities：/v1/models 必须带聚合能力位。
+//
+// 为什么这是契约而不只是增强：DSH 等客户端的档位选择器读的就是这些字段，
+// 读不到就退化成「无思考能力」，用户在客户端里再也选不到推理等级
+// （2026-11-02 用户报的症状）。
+func TestContractV1ModelsCarriesCapabilities(t *testing.T) {
+	s := newV1Server(t, &fakeUpstream{}, &fakeCandidates{models: map[string][]Candidate{}})
+	s.AttachV1Models(&capabilityCatalog{
+		fakeCatalog: fakeCatalog{ids: []string{"smart"}},
+		caps: map[string]ModelCapability{
+			"smart": {ContextWindow: 1000000, Efforts: []string{"off", "low", "high", "max"}, Modalities: []string{"text"}},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	s.HandleV1Models(rec, v1Request("GET", "/v1/models", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	var list struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("响应不是合法 JSON：%v", err)
+	}
+	if len(list.Data) != 1 {
+		t.Fatalf("条目数 = %d", len(list.Data))
+	}
+	e := list.Data[0]
+	// 两种拼写都要有：OpenAI 生态读 snake_case，DSH/pi-ai 的 readListing 两种都试。
+	if v, ok := e["context_window"]; !ok || toInt(v) != 1000000 {
+		t.Errorf("缺 context_window 或值错：%v", e)
+	}
+	if v, ok := e["contextWindow"]; !ok || toInt(v) != 1000000 {
+		t.Errorf("缺 contextWindow（DSH 读这份拼写）：%v", e)
+	}
+	if v, ok := e["reasoning_efforts"]; !ok || fmt.Sprint(v) != "[off low high max]" {
+		t.Errorf("缺 reasoning_efforts：%v", e)
+	}
+	if v, ok := e["reasoningEfforts"]; !ok || fmt.Sprint(v) != "[off low high max]" {
+		t.Errorf("缺 reasoningEfforts：%v", e)
+	}
+	// 红线 C2：能力是聚合结论，绝不能把候选明细漏出去。
+	if strings.Contains(body, "upstream") || strings.Contains(body, "candidate") {
+		t.Errorf("响应泄露了池结构：%s", body)
+	}
+}
+
+// TestContractV1ModelsWithoutCapabilitySource：目录不实现能力面时字段省略，
+// 而不是编一份零值能力（零值会被客户端读成「明确不支持」）。
+func TestContractV1ModelsWithoutCapabilitySource(t *testing.T) {
+	s := newV1Server(t, &fakeUpstream{}, &fakeCandidates{models: map[string][]Candidate{}})
+	s.AttachV1Models(&fakeCatalog{ids: []string{"smart"}})
+	rec := httptest.NewRecorder()
+	s.HandleV1Models(rec, v1Request("GET", "/v1/models", ""))
+	body := rec.Body.String()
+	if strings.Contains(body, "reasoning_efforts") || strings.Contains(body, "context_window") {
+		t.Errorf("无能力来源时不该出现能力字段：%s", body)
+	}
+	if !strings.Contains(body, `"id":"smart"`) {
+		t.Errorf("列表本身必须照常工作：%s", body)
+	}
+}
+
+// TestContractV1ModelRetrieveSameCapabilities：单查与列表同源。
+func TestContractV1ModelRetrieveSameCapabilities(t *testing.T) {
+	s := newV1Server(t, &fakeUpstream{}, &fakeCandidates{models: map[string][]Candidate{}})
+	s.AttachV1Models(&capabilityCatalog{
+		fakeCatalog: fakeCatalog{ids: []string{"smart"}},
+		caps:        map[string]ModelCapability{"smart": {ContextWindow: 262144, Efforts: []string{"off", "high"}}},
+	})
+	rec := httptest.NewRecorder()
+	s.HandleV1ModelRetrieve(rec, v1Request("GET", "/v1/models/smart", ""))
+	body := rec.Body.String()
+	if !strings.Contains(body, `"context_window":262144`) || !strings.Contains(body, `"reasoningEfforts":["off","high"]`) {
+		t.Errorf("单查未带能力，与列表口径不一致：%s", body)
+	}
+}
+
+func toInt(v any) int64 {
+	if f, ok := v.(float64); ok {
+		return int64(f)
+	}
+	return -1
+}

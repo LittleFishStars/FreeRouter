@@ -5,7 +5,7 @@
 // 印象填），shim 里动态 import 即可，零拷贝。反代型没有 OpenAI 兼容的
 // /models 可探测，这条静态目录就是模型卡的数据来源。
 //
-// 形状：[{ id, display_name, context_window? }]
+// 形状：[{ id, display_name, context_window?, efforts?, default_effort?, modalities? }]
 // 变体（qoder/qodercn、minimax/minimaxintl、autoclaw/autoclawintl、
 // buddy/workbuddy）各自的表独立取。
 
@@ -43,7 +43,7 @@ export function catalogSupportedProviders() {
 
 /**
  * 取一家的静态模型目录。
- * @returns [{id, display_name, context_window?}]；不支持/无表 → []。
+ * @returns [{id, display_name, context_window?, efforts?, default_effort?, modalities?}]；不支持/无表 → []。
  */
 export async function modelCatalog(provider) {
   const loader = CATALOG_BY_PROVIDER[provider]
@@ -63,6 +63,20 @@ export async function modelCatalog(provider) {
       display_name: typeof m.name === 'string' && m.name ? m.name : m.id,
       ...(typeof m.contextWindow === 'number' && Number.isFinite(m.contextWindow)
         ? { context_window: m.contextWindow }
+        : {}),
+      // ⚠️ 能力字段必须带上：源表（loomy/astudio 的 product 模块）本来就声明了
+      // `efforts`，而这份映射以前只输出 id/name/context_window ⇒ Go 侧落库的
+      // real_models.efforts 恒为 NULL ⇒ 路由按「未声明=仅 off/low」保守过滤，
+      // 带 reasoning_effort=high/max 的请求整池被剔（2026-11-02 用户报
+      // 「DSH 里拿不到推理等级」的根因之一）。
+      ...(Array.isArray(m.efforts) && m.efforts.length > 0
+        ? { efforts: m.efforts.filter((e) => typeof e === 'string' && e.length > 0) }
+        : {}),
+      ...(typeof m.defaultEffort === 'string' && m.defaultEffort
+        ? { default_effort: m.defaultEffort }
+        : {}),
+      ...(Array.isArray(m.inputModalities) && m.inputModalities.length > 0
+        ? { modalities: m.inputModalities }
         : {}),
     })
   }
