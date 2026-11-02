@@ -438,7 +438,7 @@ export function openaiBodyToGenerateOptions(provider, model, body) {
 // chunksToSSE 把 StreamChunk 序列还原成 OpenAI chat.completion.chunk 的 SSE 文本。
 // 为什么还原成 SSE 而不是自造 JSON：Go 侧的 StreamReader 是按候选方言（openai chat）
 // 解包的，返回线上格式意味着 Go 侧一行都不用改（relay.go 的既定消费面）。
-function chunksToSSE(model, chunks) {
+export function chunksToSSE(model, chunks) {
   const id = `chatcmpl-fr-${Date.now().toString(36)}`;
   const created = Math.floor(Date.now() / 1000);
   let out = '';

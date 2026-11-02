@@ -198,6 +198,28 @@ await test('infer.stream / listModels：无可用 adapter 时如实拒绝', asyn
     (e) => e.code === 'E_NOT_IMPLEMENTED');
 });
 
+await test('chunksToSSE：每个 chunk 恰一帧，不得重发', async () => {
+  // 2026-11-03「模型输出重复」排查：先排除 SSE 拼装层自己重发帧的可能。
+  // 一个 delta chunk 编两帧 = 客户端看到每个字都×2，症状与模型复读一致，
+  // 必须能一眼分清是「上游重复产出」还是「我们重复转发」。
+  const { chunksToSSE } = await import('./hub.mjs');
+  const chunks = [
+    { type: 'reasoning-delta', text: '先想' },
+    { type: 'text-delta', text: '答' },
+    { type: 'text-delta', text: '案' },
+    { type: 'finish', reason: 'stop' },
+  ];
+  const sse = chunksToSSE('m', chunks);
+  const dataLines = sse.split('\n').filter((l) => l.startsWith('data: '));
+  // 1 合成首帧 + 3 个 delta + 1 finish + 1 [DONE] = 6
+  assert.equal(dataLines.length, 6, `帧数 = ${dataLines.length}，期望 6（每 chunk 恰一帧）`);
+  assert.equal(dataLines.at(-1), 'data: [DONE]');
+  const texts = dataLines
+    .slice(0, -1)
+    .map((l) => JSON.parse(l.slice(6)).choices?.[0]?.delta?.content ?? '');
+  assert.equal(texts.join(''), '答案', '正文必须按原序各出现一次');
+});
+
 await test('openaiBodyToGenerateOptions：工具历史必须翻译成 IR 块形状', async () => {
   if (!hubOK) throw Object.assign(new Error('hub 不在本机'), { skip: true });
   const { openaiBodyToGenerateOptions } = await import('./hub.mjs');
