@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
@@ -388,6 +389,19 @@ func (s *Server) proxyOnce(ctx context.Context, w http.ResponseWriter, pr proxyR
 		obs.Usage = &u
 		obs.RealModelID = cand.ID
 		obs.TotalMs = time.Since(start).Milliseconds()
+		// 非流式的正文是完整拿到的：拼进 OutText 供估算用（上游没报时）。
+		var b strings.Builder
+		for _, p := range resp.Parts {
+			switch v := p.(type) {
+			case ir.TextPart:
+				b.WriteString(v.Text)
+			case ir.ThinkingPart:
+				b.WriteString(v.Text)
+			case ir.ToolCallPart:
+				b.WriteString(v.Arguments)
+			}
+		}
+		obs.OutText = b.String()
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -455,6 +469,19 @@ func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxy
 		if ev.Type == ir.EvUsage && ev.Usage != nil && obs != nil {
 			obs.Usage = ev.Usage
 		}
+		// 累计已转发的正文：上游不报 usage 时结算要用它估输出 token。
+		// 只累正文与思考（工具调用参数也是模型的产出，一并计入——
+		// 它们确实消耗了上游算力，漏掉会低估）。
+		if obs != nil {
+			switch ev.Type {
+			case ir.EvTextDelta, ir.EvThinkingDelta:
+				obs.OutText += ev.Text
+			case ir.EvToolCallStart, ir.EvToolCallDelta:
+				if ev.Call != nil {
+					obs.OutText += ev.Call.Arguments
+				}
+			}
+		}
 		if err := writer.Write(ev); err != nil {
 			// 客户端断开：整场结束（写失败没有恢复语义）。
 			streamErr = err
@@ -517,9 +544,19 @@ func (s *Server) streamOnce(ctx context.Context, w http.ResponseWriter, pr proxy
 // 进而触发风控伤到贡献者账号。所以限额保留，只是改成**计量真正该计量的
 // 那一段**：第一个候选失败之后的额外切换时间。
 //
-// 取值 8s：够试 2~3 个快速失败候选（正常失败在 100~600ms 量级，
-// 见生产日志 elapsed_ms），又不至于让用户在「全池都慢」时干等太久。
-const v1SwitchBudgetMs = 8000
+// 取值为什么是 20s：它必须与 routing.DefaultMaxSwitches（8 次）**配套**，
+// 否则次数上限形同虚设——两类失败的耗时差一个量级：
+//   - 快失败（404/429/连接拒绝）：100~600ms，生产日志实测；
+//   - 慢失败（欠费 402 的上游要先建连再回、relay 要经 sidecar 往返）：
+//     3~5s，同样来自生产日志（elapsed_ms 5739 / 3948 / 4140）。
+//
+// 8 个候选全是慢失败时需要 ~30s，全快失败只要 ~3s。20s 是两者之间的折中：
+// 足以越过常见的前几位僵尸上游拿到一个可用候选，又不会让「全池都慢」的用户
+// 干等半分钟——那种情况客户端重试的体验比我们在内部慢慢换路更好。
+//
+// 注意它仍与单次尝试的 60s ResponseHeaderTimeout 不冲突：那道闸管的是
+// 「单个候选能跑多久」，这道闸管的是「切换总共能花多久」，两者独立生效。
+const v1SwitchBudgetMs = 20000
 
 // proxyV1 是三端点共享的编排入口。
 // 失败切换：按 CandidateSource 顺序逐候选尝试；流式路径一旦
@@ -539,7 +576,10 @@ func (s *Server) proxyV1(ctx context.Context, w http.ResponseWriter, pr proxyReq
 	// 终态结算的唯一入口：一次请求恰一个 defer（自围栏在 attempt 内会
 	// 因换候选写多行——见 settle.go 文件头）。st 是单 goroutine 写读，
 	// 无需加锁；TTFTMs 初值 -1 = 无样本。
-	st := &settleState{obs: attemptObs{TTFTMs: -1}}
+	// ReqText 在这里算一次：它是请求本身的属性，不随候选变化。
+	// 只有在上游不报 usage 时才会被用到（结算时判），但代价只有一次
+	// 字符串拼接——比"结算时再回头翻请求结构"简单得多。
+	st := &settleState{obs: attemptObs{TTFTMs: -1, ReqText: requestTextOf(pr.req)}}
 	defer s.settleRequest(ctx, pr, requestID, st)
 
 	if pr.traceRequested {

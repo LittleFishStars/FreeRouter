@@ -115,6 +115,18 @@ func Classify(err error) ErrClass {
 // 调用方应改用 Classify(err) 的结果。
 func ClassifyStatus(status int) ErrClass {
 	switch {
+	// 402 Payment Required 必须单列，不能落进下面的 >=400 兜底。
+	//
+	// 2026-11-02 生产事故：多个上游返回 402（"累计充值满 ¥20 后即可使用"
+	// "余额不足或无可用资源包"），被归为 ErrBadRequest。而 ErrBadRequest 的
+	// 语义是「这条请求写错了」——不记不可用台账、每次请求都重新尝试它、
+	// 每次重新等 3~5 秒。于是欠费上游成了「永远排在候选前几位的僵尸」，
+	// 把切换次数与时长预算全吃光，真正可用的候选轮不到，用户稳定看到 502。
+	//
+	// 归入 ErrQuota（额度耗尽类）后：它进不可用台账 + 后台探测，恢复时
+	// 自动出册；期间的请求直接跳过它，不再为必然失败的尝试支付等待成本。
+	case status == 402:
+		return ErrQuota
 	case status == 429:
 		return ErrRateLimited
 	case status == 401 || status == 403:

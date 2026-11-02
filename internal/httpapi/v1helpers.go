@@ -10,6 +10,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
+
+	"github.com/LittleFishStars/FreeRouter/internal/ir"
 )
 
 // requestIDOf 从 ctx 取请求 ID（mwRequestID 注入；直接调 handler 的测试
@@ -67,4 +70,42 @@ func isStreamRequest(r *http.Request, body []byte) bool {
 // 面），无条件回写等于把它变成对租户的默认暴露面（02-abstract.md §6.2）。
 func wantsTrace(r *http.Request) bool {
 	return r.Header.Get("X-FR-Trace") == "1"
+}
+
+// requestTextOf 把请求里所有"会被上游计费的文本"拼成一串，供估算用。
+//
+// 为什么连工具定义也算进来：工具 schema 会作为 prompt 的一部分发给上游，
+// 它们真实消耗输入 token。漏掉它们会让"带一堆工具"的请求被严重低估——
+// 而那恰是最贵的请求类型。
+//
+// 图片不计（各家的图片 token 折算差异极大，估算它只会引入更大误差；
+// 缺的那部分由 estimated 标记本身声明"这是估算"）。
+func requestTextOf(req ir.Request) string {
+	var b strings.Builder
+	for _, m := range req.Messages {
+		for _, p := range m.Parts {
+			switch v := p.(type) {
+			case ir.TextPart:
+				b.WriteString(v.Text)
+				b.WriteByte('\n')
+			case ir.ToolResultPart:
+				for _, sub := range v.Parts {
+					if t, ok := sub.(ir.TextPart); ok {
+						b.WriteString(t.Text)
+						b.WriteByte('\n')
+					}
+				}
+			case ir.ToolCallPart:
+				b.WriteString(v.Arguments)
+				b.WriteByte('\n')
+			}
+		}
+	}
+	for _, t := range req.Tools {
+		b.WriteString(t.Name)
+		b.WriteString(t.Description)
+		b.WriteString(t.Schema)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }

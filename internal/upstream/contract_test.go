@@ -408,6 +408,9 @@ func TestContractErrorClassification(t *testing.T) {
 	}{
 		{429, ErrRateLimited}, {401, ErrAuth}, {403, ErrAuth},
 		{500, ErrUpstream5xx}, {503, ErrUpstream5xx}, {400, ErrBadRequest}, {404, ErrBadRequest},
+		// 402 是「额度耗尽」不是「请求写错了」：归 ErrBadRequest 会让欠费上游
+		// 不进不可用台账、每次请求都被重新尝试并重新等 3~5s（2026-11-02 事故）。
+		{402, ErrQuota},
 		{200, ""}, {204, ""}, {0, ""},
 	}
 	for _, tc := range sc {

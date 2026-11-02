@@ -20,6 +20,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/LittleFishStars/FreeRouter/internal/ir"
+
 	"github.com/LittleFishStars/FreeRouter/internal/auth"
 )
 
@@ -277,5 +279,74 @@ func TestContractSettleSkippedWithoutInjection(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d，期望 200（无 Settler 不影响服务）", rec.Code)
+	}
+}
+
+// TestContractSettleEstimatesWhenUpstreamSilent 上游不报 usage 时按估算落账。
+//
+// 2026-11-02「使全部模型都有 token 统计」：多数 adapter 不向
+// 上游请求 usage，`requests.in_tokens` 恒为 NULL，仪表盘按 token 聚合的图
+// 永远是平的。这里锁住补位行为——但估算值**必须**带 Source=estimated，
+// 与上游上报严格分离（02-ir.md §9）。
+func TestContractSettleEstimatesWhenUpstreamSilent(t *testing.T) {
+	// 假上游返回一条**不含 usage** 的正常响应。
+	up := &fakeUpstream{script: []fakeCall{{Response: `{"id":"c1","model":"m","choices":[
+		{"index":0,"message":{"role":"assistant","content":"这是模型给出的回答正文，用于估算输出 token。"},
+		 "finish_reason":"stop"}]}`}}}
+	cs := &fakeCandidates{models: map[string][]Candidate{"smart": {chatCandidate("a")}}}
+	s := newV1Server(t, up, cs)
+	fs := &fakeSettler{}
+	s.SetSettler(fs)
+
+	rec := httptest.NewRecorder()
+	s.HandleV1Chat(rec, v1Request("POST", "/v1/chat/completions",
+		`{"model":"smart","messages":[{"role":"user","content":"请介绍一下你自己，尽量详细一些。"}]}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d；body=%s", rec.Code, rec.Body.String())
+	}
+
+	in := fs.only(t)
+	if in.Status != "ok" {
+		t.Fatalf("Status = %q", in.Status)
+	}
+	if in.Usage == nil {
+		t.Fatalf("上游没报 usage 时应回填估算值，否则仪表盘永远没数")
+	}
+	if in.Usage.Source != ir.UsageEstimated {
+		t.Fatalf("Source = %q，估算值必须标记 estimated（不能与上游上报混同）", in.Usage.Source)
+	}
+	if in.Usage.InputTokens == nil || *in.Usage.InputTokens <= 0 {
+		t.Errorf("InputTokens = %v，应为正的估算值", in.Usage.InputTokens)
+	}
+	if in.Usage.OutputTokens == nil || *in.Usage.OutputTokens <= 0 {
+		t.Errorf("OutputTokens = %v，应为正的估算值", in.Usage.OutputTokens)
+	}
+}
+
+// TestContractSettlePrefersUpstreamUsage 上游报了就以它为准，绝不覆盖成估算。
+func TestContractSettlePrefersUpstreamUsage(t *testing.T) {
+	up := &fakeUpstream{script: []fakeCall{{Response: `{"id":"c1","model":"m",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"回答"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":111,"completion_tokens":22,"total_tokens":133}}`}}}
+	cs := &fakeCandidates{models: map[string][]Candidate{"smart": {chatCandidate("a")}}}
+	s := newV1Server(t, up, cs)
+	fs := &fakeSettler{}
+	s.SetSettler(fs)
+
+	rec := httptest.NewRecorder()
+	s.HandleV1Chat(rec, v1Request("POST", "/v1/chat/completions",
+		`{"model":"smart","messages":[{"role":"user","content":"hi"}]}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d", rec.Code)
+	}
+	in := fs.only(t)
+	if in.Usage == nil {
+		t.Fatalf("usage 丢失")
+	}
+	if in.Usage.Source == ir.UsageEstimated {
+		t.Errorf("上游给了权威数字时不该标 estimated")
+	}
+	if in.Usage.InputTokens == nil || *in.Usage.InputTokens != 111 {
+		t.Errorf("InputTokens = %v，应为上游上报的 111（估算不得覆盖）", in.Usage.InputTokens)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/LittleFishStars/FreeRouter/internal/ir"
+	"github.com/LittleFishStars/FreeRouter/internal/meter"
 )
 
 // settle.go：v1 请求终态结算的接线点（M1「终态结算整链」的 httpapi 侧）。
@@ -127,6 +128,38 @@ type attemptObs struct {
 	TotalMs int64
 	// RealModelID 是本次尝试命中的 real_models 行 UUID（空串 = 未知）。
 	RealModelID string
+	// OutText 是本次尝试**已转发给客户端的正文累计**，仅在需要估算时
+	// 累加（上游没报 usage 的情况）。为什么记在这里而不是从响应体重读：
+	// 流式响应是边解边写的，结束后原始字节已不可得；非流式虽然整读，
+	// 但重解析一遍只为数 token 不值得——累加在事件循环里是零额外成本。
+	OutText string
+	// ReqText 是请求侧文本（消息正文 + 工具定义），用于估算输入 token。
+	// 只在本次尝试需要估算时由调用方填一次。
+	ReqText string
+}
+
+// usageOrEstimate 决定最终落库的 usage：上游报了就用它，没报就估算。
+//
+// 为什么必须"上游上报优先"：估算只是补位，一旦上游给了权威数字，
+// 任何估算都只会更差。这里不比较两者大小、不做加权——混合两种来源
+// 会让"对不对得上账"永远无法回答（02-ir.md §9）。
+//
+// 估算结果自带 Source=estimated，落库与展示据此区分；tokenizer 不可用时
+// 返回 nil（继续记 NULL）——"未知"比"编一个数"诚实。
+func usageOrEstimate(upstream *ir.Usage, reqText, outText string, ok bool) *ir.Usage {
+	// 注意：解码器在上游不报 usage 时返回的是 Source=unknown 的**非 nil**
+	// 值（三态的中间态），不是 nil。只判 nil 会让估算永远不触发。
+	// 判据是「有没有权威数字」：Source==upstream 且有任一 token 字段。
+	if upstream != nil && upstream.Source == ir.UsageUpstream &&
+		(upstream.InputTokens != nil || upstream.OutputTokens != nil) {
+		return upstream
+	}
+	// 失败请求不估算：一次没跑通的尝试没有可计量的产出，
+	// 给它编一个数等于凭空记账（04-tenant 的对账口径会因此对不上）。
+	if !ok {
+		return nil
+	}
+	return meter.EstimateUsage(reqText, outText)
 }
 
 // settleRequest 在 proxyV1 的 defer 里执行一次终态结算。
@@ -171,8 +204,11 @@ func (s *Server) settleRequest(ctx context.Context, pr proxyReq, requestID strin
 		RetryCount:  retries,
 		TTFTMs:      st.obs.TTFTMs,
 		TotalMs:     st.obs.TotalMs,
-		Usage:       st.obs.Usage,
-		EndedAt:     time.Now().UTC(),
+		// 只在成功请求上估算：失败请求（连一个候选都没跑通）不产生可计量
+		// 的产出，给它估一个数等于凭空记账。失败尝试里即便有部分输出也已
+		// 在换候选时被丢弃（C7），不该计入本次账。
+		Usage:   usageOrEstimate(st.obs.Usage, st.obs.ReqText, st.obs.OutText, st.status == "ok"),
+		EndedAt: time.Now().UTC(),
 	}
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
 	defer cancel()

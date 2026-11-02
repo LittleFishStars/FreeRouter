@@ -1000,3 +1000,35 @@ func TestContractSwitchBudgetExcludesFirstCandidate(t *testing.T) {
 		t.Fatalf("状态码 = %d，期望 200（第二个候选应被尝试）；body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestContractSwitchBeyondLegacyLimit 前 4 个候选都坏时仍应试到第 5 个。
+//
+// 2026-11-02 生产事故复现：`latest` 聚合 8 个子模型、几十个候选，
+// 前几位是欠费上游（402）。旧 DefaultMaxSwitches=3 意味着只试 3 个就
+// 判定「全部上游候选均失败」，第 4 个起的可用候选永远轮不到——
+// 用户看到的是稳定的 502，而池子里明明有能用的上游。
+func TestContractSwitchBeyondLegacyLimit(t *testing.T) {
+	// 前 4 个候选失败（快失败），第 5 个成功。旧上限 3 会在第 4 个之前就放弃。
+	up := &fakeUpstream{script: []fakeCall{
+		{Err: errSlowFail}, {Err: errSlowFail}, {Err: errSlowFail}, {Err: errSlowFail},
+		{Response: `{"id":"c1","model":"m","choices":[{"index":0,
+			"message":{"role":"assistant","content":"终于通了"},"finish_reason":"stop"}]}`},
+	}}
+	cands := []Candidate{
+		chatCandidate("m1"), chatCandidate("m2"), chatCandidate("m3"),
+		chatCandidate("m4"), chatCandidate("m5"),
+	}
+	cs := &fakeCandidates{models: map[string][]Candidate{"smart": cands}}
+	s := newV1Server(t, up, cs)
+
+	rec := httptest.NewRecorder()
+	s.HandleV1Chat(rec, v1Request("POST", "/v1/chat/completions",
+		`{"model":"smart","messages":[{"role":"user","content":"你好"}]}`))
+
+	if up.calls < 5 {
+		t.Fatalf("只试了 %d 个候选（旧上限 3 的遗留）——第 5 个可用候选该被尝试", up.calls)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200；body=%s", rec.Code, rec.Body.String())
+	}
+}
